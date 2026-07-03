@@ -24,7 +24,7 @@ config_var_exists() {
   local cfg="$1"
   local var="$2"
   [ -f "$cfg" ] || return 1
-  grep -q "^${var}=" "$cfg"
+  grep -q "^[[:space:]]*${var}=" "$cfg"
 }
 
 config_get_var() {
@@ -32,7 +32,7 @@ config_get_var() {
   local var="$2"
   [ -z "$cfg" ] && cfg="$(config_get_file)" || true
   [ -f "$cfg" ] || return 1
-  sed -n "s/^${var}=//p" "$cfg" | head -n1
+  sed -n "s/^[[:space:]]*${var}=//p" "$cfg" | head -n1
 }
 
 config_set_var() {
@@ -43,8 +43,8 @@ config_set_var() {
 
   [ -f "$cfg" ] || return 1
   esc_val=$(printf '%s' "$val" | sed 's/[\/&]/\\&/g')
-  if grep -q "^${var}=" "$cfg"; then
-    sed -i "s#^${var}=.*#${var}=${esc_val}#" "$cfg"
+  if grep -q "^[[:space:]]*${var}=" "$cfg"; then
+    sed -i "s#^[[:space:]]*${var}=.*#${var}=${esc_val}#" "$cfg"
   else
     printf '%s=%s\n' "$var" "$val" >> "$cfg"
   fi
