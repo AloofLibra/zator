@@ -2,7 +2,7 @@
 Скрипт поддерживает быстрый подбор стратегий из проверенных и добавленных в него.
 YouTube без ограничений, работа войсов Telegram, Whatsapp, Discord, доступ к ntc.party, meduza.io и прочим ресурсам
 
-![Меню скрипта2](https://github.com/IndeecFOX/z4r/blob/main/menu.png)
+[Репозиторий проекта zator](https://github.com/AloofLibra/zator)
 
 1. [Установка и обновление](#установка-и-обновление)
 2. [Требования и зависимости](#требования-и-зависимости)
@@ -18,7 +18,7 @@ YouTube без ограничений, работа войсов Telegram, Whats
 
 **Установка/обновление/подбор стратегий** (копируйте и вставляйте в SSH):
 ```bash
-curl -O https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r && sh z2r
+curl -O https://raw.githubusercontent.com/AloofLibra/zator/zator/z2r.sh && sh z2r.sh
 ```
 
 **После запуска:**

@@ -29,10 +29,10 @@ Bblue='\033[44m'
 Bpink='\033[45m'
 Bcyan='\033[46m'
 
-Z2R_BRANCH="${Z2R_BRANCH:-z2r}"
-Z2R_PROJECT_RAW_BASE="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${Z2R_BRANCH}}"
+Z2R_BRANCH="${Z2R_BRANCH:-zator}"
+Z2R_PROJECT_RAW_BASE="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/${Z2R_BRANCH}}"
 Z2R_PROJECT_MIRROR_BASE="${Z2R_PROJECT_MIRROR_BASE:-https://git.px.rkn.quest/AloofLibra/plain}"
-Z2R_INSTALLER_URL="${Z2R_INSTALLER_URL:-${Z2R_PROJECT_RAW_BASE}/z2r}"
+Z2R_INSTALLER_URL="${Z2R_INSTALLER_URL:-${Z2R_PROJECT_RAW_BASE}/z2r.sh}"
 ZAPRET2_UPSTREAM_RAW_BASE="${ZAPRET2_UPSTREAM_RAW_BASE:-https://raw.githubusercontent.com/bol-van/zapret2/master}"
 ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-https://git.px.rkn.quest/zapret2/plain}"
 ZAPRET2_RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2/releases/download}"
@@ -1700,13 +1700,13 @@ detect_os
 set_zapret2_init
 
 #Инфа о времени обновления скрпта
-commit_date=$(curl -s --max-time 30 "https://api.github.com/repos/IndeecFOX/zapret4rocket/commits?path=z4r.sh&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4)
+commit_date=$(curl -s --max-time 30 "https://api.github.com/repos/AloofLibra/zator/commits?path=z2r.sh&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4)
 if [[ -z "$commit_date" ]]; then
     echo -e "${red}Не был получен доступ к api.github.com (таймаут 30 сек). Возможны проблемы при установке.${plain}"
 	if [ "$hardware" = "keenetic" ]; then
 		echo "Добавляем ip с от DNS 1.1.1.1 к api.github.com и пытаемся снова"
 		ndmc -c "ip host api.github.com $(nslookup api.github.com 1.1.1.1 | sed -n 's/^Address [0-9]*: \([0-9.]*\).*/\1/p' | tail -n1)"
-		echo -e "${yellow}zeefeer обновлен (UTC +0): $(curl -s --max-time 10 "https://api.github.com/repos/IndeecFOX/zapret4rocket/commits?path=z4r.sh&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
+		echo -e "${yellow}zeefeer обновлен (UTC +0): $(curl -s --max-time 10 "https://api.github.com/repos/AloofLibra/zator/commits?path=z2r.sh&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
 	fi
 else
     echo -e "${yellow}zeefeer обновлен (UTC +0): $commit_date ${plain}"
@@ -1745,7 +1745,7 @@ backup_strats
 remove_zapret
 
 #Запрос желаемой версии zapret2
-echo -e "${yellow}Конфиг обновлен (UTC +0): $(curl -s "https://api.github.com/repos/IndeecFOX/zapret4rocket/commits?path=config.default&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
+echo -e "${yellow}Конфиг обновлен (UTC +0): $(curl -s "https://api.github.com/repos/AloofLibra/zator/commits?path=config.default&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
 version_select
 
 #Запрос на установку web-ssh
