@@ -382,10 +382,10 @@ wireguard_submenu() {
     read -re -p "Ваш выбор: " ans
     case "$ans" in
       "1")
-        menu_action_wg_repeats
+        menu_action_wg_repeats || true
         ;;
       "2")
-        menu_action_set_wg_blob
+        menu_action_set_wg_blob || true
         ;;
       "0"|"")
         return
@@ -460,13 +460,13 @@ advanced_settings_submenu() {
         pause_enter
         ;;
       "2")
-        menu_action_toggle_wireguard_fake
+        menu_action_toggle_wireguard_fake || true
         ;;
       "3")
-        wireguard_submenu
+        wireguard_submenu || true
         ;;
       "4")
-        menu_action_toggle_quic443_fake
+        menu_action_toggle_quic443_fake || true
         ;;
       "0"|"")
         return
