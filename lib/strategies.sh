@@ -1,33 +1,13 @@
-# Функция определяет номер активной стратегии в указанной папке
-# Использование: get_active_strat_num "/path/to/folder" MAX_COUNT
-get_active_strat_num() {
-    local folder="$1"
-    local max="$2"
-    local i
-    
-    # Перебираем файлы от 1 до MAX
-    for ((i=1; i<=max; i++)); do
-        if [ -s "${folder}/${i}.txt" ]; then
-            echo "$i"
-            return
-        fi
-    done
-    
-    # Если ничего не найдено - 0
-    echo "0"
-}
-
 # Функция для генерации строки статуса стратегий
 get_current_strategies_info() {
-    local s_udp=$(get_active_strat_num "/opt/zapret2/extra_strats/UDP/YT" 8)
-    local s_tcp=$(get_active_strat_num "/opt/zapret2/extra_strats/TCP/YT" 19)
-    local s_gv=$(get_active_strat_num "/opt/zapret2/extra_strats/TCP/GV" 19)
-    local s_rkn=$(get_active_strat_num "/opt/zapret2/extra_strats/TCP/RKN" 19)
-    
-    # Формируем красивую строку. Цвета можно менять.
-    # Функция для окраски: 0 - серый, >0 - зеленый
+    local s_udp s_tcp s_gv s_rkn
+    s_udp="$(orch_locked_get 5 udp)"
+    s_tcp="$(orch_locked_get 1 tls)"
+    s_gv="$(orch_locked_get 2 tls)"
+    s_rkn="$(orch_locked_get 3 tls)"
+
     colorize_num() {
-        if [ "$1" == "0" ]; then
+        if ! printf "%s" "$1" | grep -Eq '^[0-9]+$' || [ "$1" -le 0 ]; then
             echo "${gray}Def${plain}"
         else
             echo "${green}$1${plain}"
@@ -164,46 +144,129 @@ custom_rkn_file() {
     echo "/opt/zapret2/extra_strats/TCP_Custom.txt"
 }
 
-# Полное удаление домена из TCP_Custom:
-#  - убирает точное совпадение домена из TCP_Custom.txt и чистит пустые строки;
-#  - снимает лок стратегии для домена в текущем ORCH_LOCK_FILE по всем протоколам.
-# Числовые (профильные) строки не затрагиваются, т.к. $1 - домен.
+domain_list_prepare() {
+    local file="$1"
+    mkdir -p "$(dirname "$file")"
+    touch "$file" 2>/dev/null || true
+    sed -i '/^[[:space:]]*$/d' "$file" 2>/dev/null || true
+}
+
+domain_list_remove() {
+    local file="$1" domain="$2" tmp
+    [ -n "$domain" ] || return 1
+    [ -f "$file" ] || return 0
+    tmp="${file}.tmp.$$"
+    grep -Fxv -- "$domain" "$file" > "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$file" 2>/dev/null || true
+    sed -i '/^[[:space:]]*$/d' "$file" 2>/dev/null || true
+}
+
+domain_list_add() {
+    local file="$1" domain="$2" label="$3"
+    [ -n "$domain" ] || return 1
+    domain_list_prepare "$file"
+    if grep -Fixq "$domain" "$file" 2>/dev/null; then
+        echo -e "Домен ${yellow}$domain${plain} уже есть в $label."
+        return 0
+    fi
+    echo "$domain" >> "$file"
+    echo -e "Домен ${yellow}$domain${plain} добавлен в $label."
+}
+
+domain_list_read() {
+    local file="$1" line
+    domains=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && domains+=("$line")
+    done < "$file"
+}
+
+domain_list_manage() {
+    local file="$1" title="$2" empty_text="$3" list_text="$4" remove_message="$5" with_strategy="$6"
+    local choice confirm i target strat
+    local domains=()
+
+    domain_list_prepare "$file"
+    while true; do
+        clear -x
+        echo -e "${cyan}--- $title ---${plain}"
+        echo ""
+
+        domain_list_read "$file"
+        if [ "${#domains[@]}" -eq 0 ]; then
+            echo -e "${yellow}$empty_text${plain}"
+            echo ""
+            pause_enter
+            return 0
+        fi
+
+        echo -e "${yellow}$list_text${plain}"
+        echo ""
+        i=1
+        for d in "${domains[@]}"; do
+            if [ "$with_strategy" = "1" ]; then
+                strat="$(orch_locked_get "$d" "tls")"
+                if printf "%s" "$strat" | grep -Eq '^[0-9]+$' && [ "$strat" -gt 0 ]; then
+                    printf "  ${Fcyan}%s.${plain} ${green}%s${plain} [стратегия ${Fcyan}%s${plain}]\n" "$i" "$d" "$strat"
+                else
+                    printf "  ${Fcyan}%s.${plain} ${green}%s${plain} [${yellow}Стратегии RKN${plain}]\n" "$i" "$d"
+                fi
+            else
+                printf "  ${Fcyan}%s.${plain} ${green}%s${plain}\n" "$i" "$d"
+            fi
+            i=$((i+1))
+        done
+        echo ""
+        echo -e "Введите номер домена для удаления, ${Fyellow}0${plain} - назад."
+        read -re -p "Ваш выбор: " choice
+
+        case "$choice" in
+            "0"|"")
+                return 0
+                ;;
+            *[!0-9]*)
+                echo -e "${red}Некорректный ввод.${plain}"
+                sleep 1
+                ;;
+            *)
+                if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#domains[@]}" ]; then
+                    echo -e "${red}Номер вне диапазона.${plain}"
+                    sleep 1
+                    continue
+                fi
+                target="${domains[$((choice-1))]}"
+                echo -e "${yellow}Удалить домен $target?${plain}"
+                echo "1 - да, удалить"
+                echo "0 - отмена"
+                read -re -p "Ваш выбор: " confirm
+                if [ "$confirm" = "1" ]; then
+                    domain_list_remove "$file" "$target"
+                    [ "$with_strategy" = "1" ] && {
+                        orch_locked_clear "$target" "tls"
+                        orch_locked_clear "$target" "http"
+                        orch_locked_clear "$target" "udp"
+                    }
+                    echo -e "${green}$remove_message${plain}"
+                    pause_enter
+                else
+                    echo "Отменено."
+                    sleep 1
+                fi
+                ;;
+        esac
+    done
+}
+
 custom_rkn_remove_domain() {
     local domain="$1"
-    local custom_file tmp
-    [ -n "$domain" ] || return 1
-    custom_file="$(custom_rkn_file)"
-    [ -f "$custom_file" ] || return 0
-
-    tmp="${custom_file}.tmp.$$"
-    # Оставляем все строки, кроме точного совпадения с доменом
-    grep -Fxv -- "$domain" "$custom_file" > "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$custom_file" 2>/dev/null || true
-    # Чистим пустые строки
-    sed -i '/^[[:space:]]*$/d' "$custom_file" 2>/dev/null || true
-
-    # Снимаем лок стратегии для домена по всем протоколам
+    domain_list_remove "$(custom_rkn_file)" "$domain" || return 1
     orch_locked_clear "$domain" "tls"
     orch_locked_clear "$domain" "http"
     orch_locked_clear "$domain" "udp"
-    return 0
 }
 
 custom_rkn_add_domain() {
-    local domain="$1"
-    local custom_file
-    [ -n "$domain" ] || return 1
-    custom_file="$(custom_rkn_file)"
-    mkdir -p /opt/zapret2/extra_strats
-    touch "$custom_file" 2>/dev/null || true
-    sed -i '/^[[:space:]]*$/d' "$custom_file" 2>/dev/null || true
-
-    if ! grep -Fxq "$domain" "$custom_file" 2>/dev/null; then
-        echo "$domain" >> "$custom_file"
-        echo -e "${green}Домен $domain добавлен в $custom_file${plain}"
-    else
-        echo -e "${yellow}Домен $domain уже есть в $custom_file${plain}"
-    fi
+    domain_list_add "$(custom_rkn_file)" "$1" "TCP_Custom"
 }
 
 manage_custom_rkn_domain() {
@@ -213,7 +276,10 @@ manage_custom_rkn_domain() {
     local need_mode_prompt=1
     local existing_strat=""
 
-    read -re -p "Введите домен для добавления в TCP_Custom (RKN-обработка, например example.com): " user_domain
+    user_domain="${1:-}"
+    if [ -z "$user_domain" ]; then
+        read -re -p "Введите домен для добавления в TCP_Custom (RKN-обработка, например example.com): " user_domain
+    fi
     if [ -z "$user_domain" ]; then
         echo "Ввод пустой, ничего не добавлено."
         pause_enter
@@ -230,10 +296,7 @@ manage_custom_rkn_domain() {
     fi
 
     custom_file="$(custom_rkn_file)"
-    mkdir -p /opt/zapret2/extra_strats
-    touch "$custom_file" 2>/dev/null || true
-    # Очистка файла от пустых строк
-    sed -i '/^[[:space:]]*$/d' "$custom_file" 2>/dev/null || true
+    domain_list_prepare "$custom_file"
 
     # Проверка: существует ли уже домен и есть ли для него подобранная стратегия.
     if grep -Fxq "$user_domain" "$custom_file" 2>/dev/null; then
@@ -356,93 +419,13 @@ manage_custom_rkn_domain() {
     pause_enter
 }
 
-# Просмотр и удаление доменов из TCP_Custom (пункт 11 меню стратегий).
-# Выводит список доменов с номерами и подобранными стратегиями (из locked.tsv),
-# позволяет удалить выбранный домен с очисткой обоих файлов.
 manage_custom_rkn_list() {
-    local custom_file choice confirm i strat target tstrat line
-    local domains=()
-
-    custom_file="$(custom_rkn_file)"
-    mkdir -p /opt/zapret2/extra_strats
-    touch "$custom_file" 2>/dev/null || true
-    sed -i '/^[[:space:]]*$/d' "$custom_file" 2>/dev/null || true
-
-    while true; do
-        clear -x
-        echo -e "${cyan}--- TCP_Custom: домены и стратегии ---${plain}"
-        echo ""
-
-        # Собираем непустые домены в массив
-        domains=()
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            domains+=("$line")
-        done < "$custom_file"
-
-        if [ "${#domains[@]}" -eq 0 ]; then
-            echo -e "${yellow}Список TCP_Custom пуст. Домены добавляются через пункт 10.${plain}"
-            echo ""
-            pause_enter
-            return 0
-        fi
-
-        echo -e "${yellow}Домены в TCP_Custom и подобранные стратегии:${plain}"
-        echo ""
-        i=1
-        for d in "${domains[@]}"; do
-            strat="$(orch_locked_get "$d" "tls")"
-            if printf "%s" "$strat" | grep -Eq '^[0-9]+$' && [ "$strat" -gt 0 ]; then
-                printf "  ${Fcyan}%s.${plain} ${green}%s${plain} [стратегия ${Fcyan}%s${plain}]\n" "$i" "$d" "$strat"
-            else
-                printf "  ${Fcyan}%s.${plain} ${green}%s${plain} [${yellow}Стратегии RKN${plain}]\n" "$i" "$d"
-            fi
-            i=$((i+1))
-        done
-        echo ""
-        echo -e "Введите номер домена для удаления, ${Fyellow}0${plain} - назад."
-        read -re -p "Ваш выбор: " choice
-
-        case "$choice" in
-            "0"|"")
-                return 0
-                ;;
-            *)
-                if ! printf "%s" "$choice" | grep -Eq '^[0-9]+$'; then
-                    echo -e "${red}Некорректный ввод.${plain}"
-                    sleep 1
-                    continue
-                fi
-                if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#domains[@]}" ]; then
-                    echo -e "${red}Номер вне диапазона.${plain}"
-                    sleep 1
-                    continue
-                fi
-                target="${domains[$((choice-1))]}"
-                tstrat="$(orch_locked_get "$target" "tls")"
-                echo -e "${yellow}Удалить домен $target"
-                if printf "%s" "$tstrat" | grep -Eq '^[0-9]+$' && [ "$tstrat" -gt 0 ]; then
-                    echo -e "(стратегия $tstrat для домена будет также очищена)?${plain}"
-                else
-                    echo -e "(стратегия не была подобрана)?${plain}"
-                fi
-                echo "1 - да, удалить"
-                echo "0 - отмена"
-                read -re -p "Ваш выбор: " confirm
-                case "$confirm" in
-                    "1")
-                        custom_rkn_remove_domain "$target"
-                        echo -e "${green}Домен $target удалён из TCP_Custom и locked.tsv.${plain}"
-                        pause_enter
-                        ;;
-                    *)
-                        echo "Отменено."
-                        sleep 1
-                        ;;
-                esac
-                ;;
-        esac
-    done
+    domain_list_manage "$(custom_rkn_file)" \
+        "TCP_Custom: домены и стратегии" \
+        "Список TCP_Custom пуст. Домены добавляются через пункт 10." \
+        "Домены в TCP_Custom и подобранные стратегии:" \
+        "Домен удалён из TCP_Custom и locked.tsv." \
+        1
 }
 
 # Путь к файлу листа исключений netrogat.txt.
@@ -450,33 +433,14 @@ netrogat_file() {
     echo "/opt/zapret2/lists/netrogat.txt"
 }
 
-# Удаление домена из netrogat.txt:
-#  - убирает точное совпадение домена из файла и чистит пустые строки.
 netrogat_remove_domain() {
-    local domain="$1"
-    local net_file tmp
-    [ -n "$domain" ] || return 1
-    net_file="$(netrogat_file)"
-    [ -f "$net_file" ] || return 0
-
-    tmp="${net_file}.tmp.$$"
-    # Оставляем все строки, кроме точного совпадения с доменом
-    grep -Fxv -- "$domain" "$net_file" > "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$net_file" 2>/dev/null || true
-    # Чистим пустые строки
-    sed -i '/^[[:space:]]*$/d' "$net_file" 2>/dev/null || true
-    return 0
+    domain_list_remove "$(netrogat_file)" "$1"
 }
 
-# Добавление домена в netrogat.txt:
-#  - нормализует ввод, проверяет дубликат, чистит пустые строки.
 netrogat_add_domain() {
     local user_domain="" clean_domain="" net_file
     net_file="$(netrogat_file)"
-    mkdir -p /opt/zapret2/lists
-    touch "$net_file" 2>/dev/null || true
-    # Очистка файла от пустых строк
-    sed -i '/^[[:space:]]*$/d' "$net_file" 2>/dev/null || true
+    domain_list_prepare "$net_file"
 
     read -re -p "Введите домен, который добавить в исключения (например, mydomain.com): " user_domain
     if [ -z "$user_domain" ]; then
@@ -486,13 +450,7 @@ netrogat_add_domain() {
     fi
 
     if clean_domain="$(z2r_normalize_domain "$user_domain")"; then
-        # проверка на дубликат (регистронезависимо, точное совпадение строки)
-        if grep -Fixq "$clean_domain" "$net_file" 2>/dev/null; then
-            echo -e "Домен ${yellow}$clean_domain${plain} уже есть в исключениях (netrogat.txt)."
-        else
-            echo "$clean_domain" >> "$net_file"
-            echo -e "Домен ${yellow}$clean_domain${plain} добавлен в исключения (netrogat.txt)."
-        fi
+        domain_list_add "$net_file" "$clean_domain" "исключениях (netrogat.txt)"
     else
         echo -e "${red}Не удалось распознать домен из ввода:${plain} ${yellow}$user_domain${plain}"
         echo -e "Укажите домен или ссылку, например: example.com или https://www.youtube.com/watch?v=..."
@@ -500,260 +458,41 @@ netrogat_add_domain() {
     pause_enter
 }
 
-# Просмотр и удаление доменов из листа исключений netrogat.txt.
-# Выводит список доменов с номерами, позволяет удалить выбранный домен.
-# Чистит пустые строки.
 manage_netrogat_list() {
-    local net_file choice confirm i target line
-    local domains=()
-
-    net_file="$(netrogat_file)"
-    mkdir -p /opt/zapret2/lists
-    touch "$net_file" 2>/dev/null || true
-    sed -i '/^[[:space:]]*$/d' "$net_file" 2>/dev/null || true
-
-    while true; do
-        clear -x
-        echo -e "${cyan}--- netrogat.txt: домены-исключения ---${plain}"
-        echo ""
-
-        # Собираем непустые домены в массив
-        domains=()
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            domains+=("$line")
-        done < "$net_file"
-
-        if [ "${#domains[@]}" -eq 0 ]; then
-            echo -e "${yellow}Список netrogat.txt пуст.${plain}"
-            echo ""
-            pause_enter
-            return 0
-        fi
-
-        echo -e "${yellow}Домены в netrogat.txt (лист исключений):${plain}"
-        echo ""
-        i=1
-        for d in "${domains[@]}"; do
-            printf "  ${Fcyan}%s.${plain} ${green}%s${plain}\n" "$i" "$d"
-            i=$((i+1))
-        done
-        echo ""
-        echo -e "Введите номер домена для удаления, ${Fyellow}0${plain} - назад."
-        read -re -p "Ваш выбор: " choice
-
-        case "$choice" in
-            "0"|"")
-                return 0
-                ;;
-            *)
-                if ! printf "%s" "$choice" | grep -Eq '^[0-9]+$'; then
-                    echo -e "${red}Некорректный ввод.${plain}"
-                    sleep 1
-                    continue
-                fi
-                if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#domains[@]}" ]; then
-                    echo -e "${red}Номер вне диапазона.${plain}"
-                    sleep 1
-                    continue
-                fi
-                target="${domains[$((choice-1))]}"
-                echo -e "${yellow}Удалить домен $target из netrogat.txt?${plain}"
-                echo "1 - да, удалить"
-                echo "0 - отмена"
-                read -re -p "Ваш выбор: " confirm
-                case "$confirm" in
-                    "1")
-                        netrogat_remove_domain "$target"
-                        echo -e "${green}Домен $target удалён из netrogat.txt.${plain}"
-                        pause_enter
-                        ;;
-                    *)
-                        echo "Отменено."
-                        sleep 1
-                        ;;
-                esac
-                ;;
-        esac
-    done
+    domain_list_manage "$(netrogat_file)" \
+        "netrogat.txt: домены-исключения" \
+        "Список netrogat.txt пуст." \
+        "Домены в netrogat.txt (лист исключений):" \
+        "Домен удалён из netrogat.txt." \
+        0
 }
 
-#Функция для функции подбора стратегий
-try_strategies() {
-    local count="$1"
-    local base_path="$2"
-    local list_file="$3"
-    local final_action="$4"
-    local current_active=""
-    local prev_active=""
-    local prev_file=""
-    local strat_num=""
-    local answer_strat=""
-    local active=""
-    
-    current_active="$(get_active_strat_num "$base_path" "$count")"
-    prev_active="$current_active"
-    active="$current_active"
-
-    read -re -p "Введите номер стратегии к которой перейти (Enter - текущая): " strat_num
-    if [ -z "$strat_num" ]; then
-        if [ "$current_active" -ge 1 ]; then
-            strat_num="$current_active"
-        else
-            strat_num=1
-        fi
-    fi
-    if ! printf "%s" "$strat_num" | grep -Eq '^[0-9]+$'; then
-        echo "Введено некорректное значение. Начинаем с 1 стратегии"
-        strat_num=1
-    elif (( strat_num < 1 || strat_num > count )); then
-        echo "Введено значение не из диапазона. Начинаем с 1 стратегии"
-        strat_num=1
-    fi
-
-    if [ "$prev_active" -ge 1 ] && [ -s "$base_path/${prev_active}.txt" ]; then
-        prev_file="$(mktemp -p /tmp z2r_prev_strat.XXXXXX 2>/dev/null || echo "/tmp/z2r_prev_strat.$$")"
-        cp "$base_path/${prev_active}.txt" "$prev_file"
-    fi
-    cleanup_prev_file() {
-        [ -n "$prev_file" ] && rm -f "$prev_file"
-    }
-
-    # Основной цикл перебора
-    for ((strat_num=strat_num; strat_num<=count; strat_num++)); do
-        
-        # Очищаем файл предыдущей стратегии (чтобы не было дублей)
-        if [ -n "$active" ] && [ "$active" -ge 1 ] && [ "$active" -ne "$strat_num" ]; then
-            echo -n > "$base_path/${active}.txt"
-        fi
-
-        # Запись в файл текущей стратегии
-        if [[ "$list_file" != "/dev/null" ]]; then
-            # Режим списка (копируем весь файл)
-            cp "$list_file" "$base_path/${strat_num}.txt"
-        else
-            # Режим одного домена
-            printf "%s\n" "$user_domain" > "$base_path/${strat_num}.txt"
-        fi
-        
-        echo "Стратегия номер $strat_num активирована"
-        active="$strat_num"
-            
-        read -re -p "Проверьте работу вручную (1 - сохранить, 0 - отмена, Enter - далее): " answer_strat
-        
-        if [[ "$answer_strat" == "1" ]]; then
-            echo "Стратегия $strat_num сохранена."
-            send_stats  # Отправка телеметрии (если включена)
-
-            for ((clr_txt=1; clr_txt<=count; clr_txt++)); do
-                if [ "$clr_txt" -ne "$strat_num" ]; then
-                    echo -n > "$base_path/${clr_txt}.txt"
-                fi
-            done
-            
-            # Если передано дополнительное действие (final_action), выполняем его
-            if [[ -n "$final_action" ]]; then
-                eval "$final_action"
-            fi
-            cleanup_prev_file
-            return
-            
-        elif [[ "$answer_strat" == "0" ]]; then
-            # Сброс текущей стратегии при отмене
-            echo -n > "$base_path/${strat_num}.txt"
-            echo "Изменения отменены."
-            if [ -n "$prev_file" ] && [ "$prev_active" -ge 1 ]; then
-                cp "$prev_file" "$base_path/${prev_active}.txt"
-            fi
-            cleanup_prev_file
-            return
-        fi
-    done
-
-    # Если цикл закончился, а пользователь ничего не выбрал
-    if [ -n "$active" ] && [ "$active" -ge 1 ]; then
-        echo -n > "$base_path/${active}.txt"
-    fi
-    if [ -n "$prev_file" ] && [ "$prev_active" -ge 1 ]; then
-        cp "$prev_file" "$base_path/${prev_active}.txt"
-    fi
-    echo "Все стратегии испробованы. Ничего не подошло."
-    pause_enter
-    cleanup_prev_file
-    return
-}
-
-#Сама функция подбора стратегий
 Strats_Tryer() {
   local mode_domain="$1"
-  local answer_strat_mode=""
-  local user_domain=""
-
-  # ВАЖНО: теперь Strats_Tryer не рисует меню и не спрашивает режим сам.
-  # Режим выбирается снаружи (strategies_submenu), а сюда приходит либо:
-  # - "1".."4" (режим)
-  # - или строка-домен (режим кастомного домена)
 
   case "$mode_domain" in
-    "1"|"2"|"3"|"4")
-      answer_strat_mode="$mode_domain"
-      ;;
-    *)
-      # Если аргумент не похож на режим — считаем, что это домен
-      answer_strat_mode="5"
-      user_domain="$mode_domain"
-      ;;
-  esac
-
-  case "$answer_strat_mode" in
     "1")
-      echo "Подбор для хост-листа YouTube с видеопотоком (UDP QUIC - браузеры, моб. приложения). Ранее заданная стратегия этого листа сброшена в дефолт."
       #вывод подсказки
       show_hint "UDP"
-      try_strategies 13 "/opt/zapret2/extra_strats/UDP/YT" "/opt/zapret2/extra_strats/UDP/YT/List.txt" ""
+      orch_profile_try "5" "Профиль 5: UDP 443 (YouTube QUIC)" "udp" ""
       ;;
     "2")
-      echo "Подбор для хост-листа YouTube (TCP - сам интерфейс. Без видео-домена). Ранее заданная стратегия этого листа сброшена в дефолт."
       #вывод подсказки
       show_hint "TCP"
-      try_strategies 19 "/opt/zapret2/extra_strats/TCP/YT" "/opt/zapret2/extra_strats/TCP/YT/List.txt" ""
+      orch_profile_try "1" "Профиль 1: TCP 80/443 (YouTube)" "tls http" "https://www.youtube.com/"
       ;;
     "3")
-      echo "Подбор для googlevideo.com (Видеопоток YouTube). Ранее заданная стратегия этого листа сброшена в дефолт."
-      #на всякий случай убираем GV из листа YT
-      [ -f "/opt/zapret2/extra_strats/TCP/YT/List.txt" ] && \
-        sed -i '/googlevideo.com/d' "/opt/zapret2/extra_strats/TCP/YT/List.txt"
-      user_domain="googlevideo.com"
       #вывод подсказки
       show_hint "GV"
-      try_strategies 19 "/opt/zapret2/extra_strats/TCP/GV" "/dev/null" ""
+      orch_profile_try "2" "Профиль 2: TCP 80/443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
       ;;
     "4")
-      echo "Подбор для хост-листа основных доменов блока RKN. Проверка доступности задана на домен meduza.io. Ранее заданная стратегия этого листа сброшена в дефолт."
-      for numRKN in {1..19}; do
-        echo -n > "/opt/zapret2/extra_strats/TCP/RKN/${numRKN}.txt"
-      done
-      user_domain="meduza.io"
       #вывод подсказки
       show_hint "RKN"
-      try_strategies 19 "/opt/zapret2/extra_strats/TCP/RKN" "/opt/zapret2/extra_strats/TCP/RKN/List.txt" ""
-      ;;
-    "5")
-      echo "Режим ручного указания домена"
-      # раньше домен спрашивался тут, но теперь ввод домена делается в сабменю
-      if [ -z "$user_domain" ]; then
-        echo "Домен не задан. Отмена."
-        return 0
-      fi
-      echo "Введён домен: $user_domain"
-
-      try_strategies 19 "/opt/zapret2/extra_strats/TCP/temp" "/dev/null" \
-        "echo -n > \"/opt/zapret2/extra_strats/TCP/temp/\${strat_num}.txt\"; \
-         echo \"$user_domain\" >> \"/opt/zapret2/extra_strats/TCP/User/\${strat_num}.txt\""
+      orch_profile_try "3" "Профиль 3: TCP 80/443 (RKN)" "tls" "https://meduza.io"
       ;;
     *)
-      echo "Пропуск подбора альтернативной стратегии"
-      return 0
+      manage_custom_rkn_domain "$mode_domain"
       ;;
   esac
 }

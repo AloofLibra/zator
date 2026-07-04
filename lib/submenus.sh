@@ -233,7 +233,7 @@ tcp443_submenu() {
   clear -x
   selected_count="$(config_tcp443_current_strategy "$cfg")"
   echo -e "${yellow}Безразборный режим по стратегии: ${plain}$selected_count"
-  echo -e "\033[33mС каким номером применить стратегию? (1-19, 0 - отключение безразборного режима, Enter - выход) \033[31mПри активации кастомно подобранные домены будут очищены:${plain}"
+  echo -e "\033[33mС каким номером применить стратегию? (1-19, 0 - отключение безразборного режима, Enter - выход):${plain}"
   read -re -p " " answer_bezr
   
   case "$answer_bezr" in
@@ -249,10 +249,6 @@ tcp443_submenu() {
             pause_enter
             continue
           fi
-          for f_clear in $(seq 1 19); do
-            echo -n > "/opt/zapret2/extra_strats/TCP/User/$f_clear.txt"
-            echo -n > "/opt/zapret2/extra_strats/TCP/temp/$f_clear.txt"
-          done
           "$ZAPRET2_INIT" restart
           echo -e "${green}Выполнена команда перезапуска zapret. ${yellow}Безразборный режим активирован на $answer_bezr стратегии для TCP-443. Проверка доступа к meduza.io${plain}"
           check_access_list
