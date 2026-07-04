@@ -291,11 +291,11 @@ source "$SCRIPT_DIR/zapret2/z2r_lib/netcheck.sh"
 # Функции: rand_from_list, spinner_for_seconds, premium_get_or_set_title, zefeer_premium_777, zefeer_space_999
 source "$SCRIPT_DIR/zapret2/z2r_lib/premium.sh" 
 
-# Логика стратегий: определение активной стратегии, статус строкой, перебор стратегий, быстрый подбор
-# Функции: get_active_strat_num, get_current_strategies_info, try_strategies, Strats_Tryer
+# Логика стратегий: статус, lock-файлы, быстрый подбор
+# Функции: get_current_strategies_info, orch_profile_try, Strats_Tryer
 source "$SCRIPT_DIR/zapret2/z2r_lib/strategies.sh" 
 
-# Подменю (UI-обвязка над Strats_Tryer + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
+# Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
 source "$SCRIPT_DIR/zapret2/z2r_lib/submenus.sh" 
 

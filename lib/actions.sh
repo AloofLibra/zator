@@ -88,7 +88,7 @@ menu_action_update_config_reset() {
 menu_action_toggle_bolvan_ports() {
   local cfg="/opt/zapret2/config"
   local voice_ports_csv="50000-50099,1400,3478-3481,5349,19294-19344"
-  local voice_port current_ports new_ports p
+  local current_ports new_ports
   local init_dir custom_dir
 
   if [ ! -f "$cfg" ]; then
@@ -101,11 +101,7 @@ menu_action_toggle_bolvan_ports() {
   current_ports="$(sed -n 's/^NFQWS2_PORTS_UDP=//p' "$cfg" | head -n1)"
 
   if ! printf "%s" "$current_ports" | grep -Eq '(^|,)50000-50099(,|$)'; then
-    if [ -n "$current_ports" ]; then
-      new_ports="$current_ports,$voice_ports_csv"
-    else
-      new_ports="443,$voice_ports_csv"
-    fi
+    new_ports="$(csv_add_tokens "${current_ports:-443}" "$voice_ports_csv")"
     sed -i "s/^NFQWS2_PORTS_UDP=.*/NFQWS2_PORTS_UDP=$new_ports/" "$cfg"
     sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--skip[[:space:]]\+--filter-udp=/--filter-udp=/' "$cfg"
 
@@ -115,11 +111,7 @@ menu_action_toggle_bolvan_ports() {
     echo -e "${green}Включён 6 блок конфига для голосовой связи. Скрипты bol-van отключены.${plain}"
 
   elif printf "%s" "$current_ports" | grep -Eq '(^|,)50000-50099(,|$)'; then
-    new_ports=",$current_ports,"
-    for voice_port in 50000-50099 1400 3478-3481 5349 19294-19344; do
-      new_ports="$(printf "%s" "$new_ports" | sed "s/,$voice_port,/,/g")"
-    done
-    new_ports="$(printf "%s" "$new_ports" | sed 's/,,*/,/g; s/^,//; s/,$//')"
+    new_ports="$(csv_remove_tokens "$current_ports" "$voice_ports_csv")"
     [ -n "$new_ports" ] || new_ports="443"
     sed -i "s/^NFQWS2_PORTS_UDP=.*/NFQWS2_PORTS_UDP=$new_ports/" "$cfg"
     sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=/--skip --filter-udp=/' "$cfg"
@@ -165,18 +157,13 @@ menu_action_toggle_udp_range() {
   current_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
 
   if ! printf "%s" "$current_ports" | grep -Eq '(^|,)1026-65531(,|$)'; then
-    if [ -n "$current_ports" ]; then
-      new_ports="1026-65531,$current_ports"
-    else
-      new_ports="1026-65531,443"
-    fi
+    new_ports="$(csv_add_tokens "" "1026-65531,${current_ports:-443}")"
     config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
     sed -i '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/ s/^--skip[[:space:]]\+--filter-udp=1026/--filter-udp=1026/' "$cfg"
     echo -e "${green}Стратегия UDP обхода активирована. Выделены порты 1026-65531${plain}"
 
   elif printf "%s" "$current_ports" | grep -Eq '(^|,)1026-65531(,|$)'; then
-    new_ports=",$current_ports,"
-    new_ports="$(printf "%s" "$new_ports" | sed 's/,1026-65531,/,/g; s/,,*/,/g; s/^,//; s/,$//')"
+    new_ports="$(csv_remove_token "$current_ports" "1026-65531")"
     [ -n "$new_ports" ] || new_ports="443"
     config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
     sed -i '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=1026/--skip --filter-udp=1026/' "$cfg"
@@ -777,6 +764,25 @@ csv_remove_token() {
     [ -n "$t" ] || continue
     [ "$t" = "$token" ] && continue
     if [ -z "$out" ]; then out="$t"; else out="$out,$t"; fi
+  done
+  printf '%s' "$out"
+}
+
+csv_add_tokens() {
+  local csv="$1" tokens="$2" arr=() tok out="$csv"
+  [ -n "$tokens" ] && IFS=',' read -ra arr <<< "$tokens"
+  for tok in "${arr[@]}"; do
+    [ -n "$tok" ] || continue
+    csv_contains_token "$out" "$tok" || out="$(ports_join "$out" "$tok")"
+  done
+  printf '%s' "$out"
+}
+
+csv_remove_tokens() {
+  local csv="$1" tokens="$2" arr=() tok out="$csv"
+  [ -n "$tokens" ] && IFS=',' read -ra arr <<< "$tokens"
+  for tok in "${arr[@]}"; do
+    [ -n "$tok" ] && out="$(csv_remove_token "$out" "$tok")"
   done
   printf '%s' "$out"
 }

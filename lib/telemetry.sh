@@ -88,10 +88,14 @@ send_stats() {
     [ -z "$my_isp" ] && my_isp="Unknown"
 
     # 2. Определяем номера стратегий
-    local s_udp=$(get_active_strat_num "/opt/zapret2/extra_strats/UDP/YT" 8)
-    local s_tcp=$(get_active_strat_num "/opt/zapret2/extra_strats/TCP/YT" 19)
-    local s_gv=$(get_active_strat_num "/opt/zapret2/extra_strats/TCP/GV" 19)
-    local s_rkn=$(get_active_strat_num "/opt/zapret2/extra_strats/TCP/RKN" 19)
+    local s_udp=$(orch_locked_get 5 udp)
+    local s_tcp=$(orch_locked_get 1 tls)
+    local s_gv=$(orch_locked_get 2 tls)
+    local s_rkn=$(orch_locked_get 3 tls)
+    s_udp="${s_udp:-0}"
+    s_tcp="${s_tcp:-0}"
+    s_gv="${s_gv:-0}"
+    s_rkn="${s_rkn:-0}"
 
     # 3. Отправка в Google Forms (Тихий режим, в фоне &)
     curl -sL --max-time 10 \
