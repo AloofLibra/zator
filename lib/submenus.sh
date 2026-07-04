@@ -329,12 +329,16 @@ wireguard_submenu() {
     local has_wg_block=0
     local current_repeats=""
     local current_blob=""
+    local wg_block=""
 
     clear -x
     [ ! -f "$cfg" ] && cfg="/opt/zapret2/config.default"
 
     if [ -f "$cfg" ]; then
-      if wg_config_has_block "$cfg"; then
+      wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' "$cfg")"
+      if printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard' &&
+         printf "%s\n" "$wg_block" | grep -q 'blob=fakewgblob:repeats=' &&
+         grep -q -- '--blob=fakewgblob:@/opt/zapret2/files/fake/wg_initial_fake_' "$cfg"; then
         has_wg_block=1
       fi
       current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
@@ -397,7 +401,10 @@ wireguard_submenu() {
 advanced_settings_submenu() {
   while true; do
     local current_state current_label
-    local quic_state quic_label
+    local wg_label
+    local wg_block
+    local quic_label
+    local quic_block
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -408,12 +415,23 @@ advanced_settings_submenu() {
       current_label="${yellow}недоступно${plain}"
     fi
 
-    quic_state="$(quic443_fake_state /opt/zapret2/config)"
-    case "$quic_state" in
-      enabled)  quic_label="${green}включено${plain}" ;;
-      disabled) quic_label="${red}выключено${plain}" ;;
-      *)        quic_label="${yellow}недоступно${plain}" ;;
-    esac
+    wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' /opt/zapret2/config 2>/dev/null)"
+    if printf "%s\n" "$wg_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
+      wg_label="${red}выключено${plain}"
+    elif printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard'; then
+      wg_label="${green}включено${plain}"
+    else
+      wg_label="${yellow}недоступно${plain}"
+    fi
+
+    quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' /opt/zapret2/config 2>/dev/null)"
+    if printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
+      quic_label="${green}включено${plain}"
+    elif printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$'; then
+      quic_label="${red}выключено${plain}"
+    else
+      quic_label="${yellow}недоступно${plain}"
+    fi
 
     echo -e "${cyan}--- Дополнительные настройки ---${plain}"
     echo ""
@@ -424,8 +442,9 @@ advanced_settings_submenu() {
     echo ""
 
     submenu_item "1" "Параметр --reasm-disable. Сейчас: ${current_label}"
-    submenu_item "2" "Настройки WireGuard (повторы и blob)"
-    submenu_item "3" "Фейки для всех QUIC-initial на 443 порту. Сейчас: ${quic_label}"
+    submenu_item "2" "Включить/выключить стратегию WireGuard. Сейчас: ${wg_label}"
+    submenu_item "3" "Настройки WireGuard (повторы и blob)"
+    submenu_item "4" "Фейки для всех QUIC-initial на 443 порту. Сейчас: ${quic_label}"
     submenu_item "0" "Назад"
     echo ""
 
@@ -441,9 +460,12 @@ advanced_settings_submenu() {
         pause_enter
         ;;
       "2")
-        wireguard_submenu
+        menu_action_toggle_wireguard_fake
         ;;
       "3")
+        wireguard_submenu
+        ;;
+      "4")
         menu_action_toggle_quic443_fake
         ;;
       "0"|"")
