@@ -341,31 +341,46 @@ menu_action_set_tls_blob() {
   return 0
 }
 
-# Проверка наличия блока стратегий WireGuard в конфиге.
-# Возвращает 0, если найдены и блок стратегии, и объявление blob fakewgblob.
-wg_config_has_block() {
-  local cfg="$1"
-  [ -f "$cfg" ] || return 1
-  # Блок стратегии: --filter-l7=wireguard + строка lua-desync с fakewgblob:repeats=
-  grep -q -- '--filter-l7=wireguard' "$cfg" || return 1
-  grep -q 'blob=fakewgblob:repeats=' "$cfg" || return 1
-  # Объявление blob-файла
-  grep -q -- '--blob=fakewgblob:@/opt/zapret2/files/fake/wg_initial_fake_' "$cfg" || return 1
+# Переключатель стратегии WireGuard. По умолчанию блок выключен через --skip.
+menu_action_toggle_wireguard_fake() {
+  local cfg
+  local wg_block
+
+  if ! cfg="$(get_config_file)"; then
+    echo -e "${red}Не найден config/config.default.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' "$cfg")"
+  if ! printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard'; then
+    echo -e "${red}В конфиге не найден блок WireGuard.${plain}"
+    echo -e "${yellow}Обновите конфиг через пункт 5 главного меню.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if printf "%s\n" "$wg_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
+    sed -i '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/ s/^[[:space:]]*--skip[[:space:]]\+--filter-l7=wireguard/--filter-l7=wireguard/' "$cfg"
+    echo -e "${green}Стратегия WireGuard ВКЛЮЧЕНА (--skip удалён).${plain}"
+  else
+    sed -i '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/ s/^[[:space:]]*--filter-l7=wireguard/--skip --filter-l7=wireguard/' "$cfg"
+    echo -e "${green}Стратегия WireGuard ВЫКЛЮЧЕНА (--skip добавлен).${plain}"
+  fi
+  echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
+  pause_enter
   return 0
 }
 
 # Изменение количества повторов (repeats) для стратегии WireGuard.
 # Диапазон: 2..99. Меняет только строку blob=fakewgblob:repeats=N.
 menu_action_wg_repeats() {
-  local cfg="/opt/zapret2/config"
+  local cfg
   local sed_ereg="-E"
   local current_repeats=""
   local new_repeats=""
 
-  if [ ! -f "$cfg" ]; then
-    cfg="/opt/zapret2/config.default"
-  fi
-  if [ ! -f "$cfg" ]; then
+  if ! cfg="$(get_config_file)"; then
     echo -e "${red}Не найден config/config.default.${plain}"
     pause_enter
     return 1
@@ -419,7 +434,7 @@ menu_action_wg_repeats() {
 # Смена blob-файла для стратегии WireGuard.
 # Показывает только файлы вида wg_initial_fake_* и позволяет выбрать по номеру.
 menu_action_set_wg_blob() {
-  local cfg="/opt/zapret2/config"
+  local cfg
   local fake_dir="/opt/zapret2/files/fake"
   local prefix="--blob=fakewgblob:@/opt/zapret2/files/fake/"
   local sed_ereg="-E"
@@ -429,10 +444,7 @@ menu_action_set_wg_blob() {
   local choice=""
   local selected_blob=""
 
-  if [ ! -f "$cfg" ]; then
-    cfg="/opt/zapret2/config.default"
-  fi
-  if [ ! -f "$cfg" ]; then
+  if ! cfg="$(get_config_file)"; then
     echo -e "${red}Не найден config/config.default.${plain}"
     pause_enter
     return 1
@@ -514,68 +526,33 @@ menu_action_set_wg_blob() {
   return 0
 }
 
-# Определяет состояние блока фейков QUIC (UDP443, quic_initial).
-# Блок однозначно определяется строкой --filter-udp=443 без --hostlist
-# (в отличие от блока UDP_YT, где после порта идёт --hostlist=...).
-# Включено: строка --filter-udp=443 без --skip.
-# Выключено: строка --skip --filter-udp=443 (конвенция всего config.default).
-# Возвращает: enabled | disabled | notfound
-quic443_fake_state() {
-  local cfg="$1"
-  [ -f "$cfg" ] || { echo "notfound"; return 0; }
-  if grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$' "$cfg"; then
-    echo "disabled"
-  elif grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$' "$cfg"; then
-    echo "enabled"
-  else
-    echo "notfound"
-  fi
-}
-
 # Переключатель фейков для всех QUIC-инициализаций на UDP 443 (последний блок конфига).
 # Включено/выключено определяется наличием --skip перед --filter-udp=443.
 menu_action_toggle_quic443_fake() {
-  local cfg="/opt/zapret2/config"
-  local sed_ereg="-E"
-  local state=""
+  local cfg
+  local quic_block
 
-  if [ ! -f "$cfg" ]; then
-    cfg="/opt/zapret2/config.default"
-  fi
-  if [ ! -f "$cfg" ]; then
+  if ! cfg="$(get_config_file)"; then
     echo -e "${red}Не найден config/config.default.${plain}"
     pause_enter
     return 1
   fi
 
-  if ! printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
-    sed_ereg="-r"
-  fi
-
-  state="$(quic443_fake_state "$cfg")"
-
-  if [ "$state" = "notfound" ]; then
+  quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' "$cfg")"
+  if ! printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*(--skip[[:space:]]+)?--filter-udp=443[[:space:]]*$'; then
     echo -e "${red}В конфиге не найден блок QUIC (UDP443, quic_initial).${plain}"
     echo -e "${yellow}Обновите конфиг через пункт 5 главного меню.${plain}"
     pause_enter
     return 1
   fi
 
-  if [ "$state" = "enabled" ]; then
+  if printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
     # Выключаем: добавляем --skip перед --filter-udp=443
-    if [ "$sed_ereg" = "-E" ]; then
-      sed -i -E 's/^([[:space:]]*)--filter-udp=443[[:space:]]*$/\1--skip --filter-udp=443/' "$cfg"
-    else
-      sed -i -r 's/^([[:space:]]*)--filter-udp=443[[:space:]]*$/\1--skip --filter-udp=443/' "$cfg"
-    fi
+    sed -i '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/ s/^[[:space:]]*--filter-udp=443[[:space:]]*$/--skip --filter-udp=443/' "$cfg"
     echo -e "${green}Фейки для QUIC (UDP443) ВЫКЛЮЧЕНЫ (--skip добавлен).${plain}"
   else
     # Включаем: убираем --skip перед --filter-udp=443
-    if [ "$sed_ereg" = "-E" ]; then
-      sed -i -E 's/^([[:space:]]*)--skip[[:space:]]+--filter-udp=443[[:space:]]*$/\1--filter-udp=443/' "$cfg"
-    else
-      sed -i -r 's/^([[:space:]]*)--skip[[:space:]]+--filter-udp=443[[:space:]]*$/\1--filter-udp=443/' "$cfg"
-    fi
+    sed -i '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/ s/^[[:space:]]*--skip[[:space:]]\+--filter-udp=443[[:space:]]*$/--filter-udp=443/' "$cfg"
     echo -e "${green}Фейки для QUIC (UDP443) ВКЛЮЧЕНЫ (--skip удалён).${plain}"
   fi
   echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
