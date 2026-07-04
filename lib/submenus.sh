@@ -320,9 +320,91 @@ provider_submenu() {
   done
 }
 
+# Подменю настроек WireGuard (вызывается из пункта 19 "Дополнительные настройки").
+# Проверяет наличие блока стратегий WireGuard и объявления blob fakewgblob в конфиге.
+# Если их нет — предлагает обновить конфиг через пункт 5 главного меню.
+wireguard_submenu() {
+  while true; do
+    local cfg="/opt/zapret2/config"
+    local has_wg_block=0
+    local current_repeats=""
+    local current_blob=""
+    local wg_block=""
+
+    clear -x
+    [ ! -f "$cfg" ] && cfg="/opt/zapret2/config.default"
+
+    if [ -f "$cfg" ]; then
+      wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' "$cfg")"
+      if printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard' &&
+         printf "%s\n" "$wg_block" | grep -q 'blob=fakewgblob:repeats=' &&
+         grep -q -- '--blob=fakewgblob:@/opt/zapret2/files/fake/wg_initial_fake_' "$cfg"; then
+        has_wg_block=1
+      fi
+      current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
+      current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+    fi
+
+    echo -e "${cyan}--- Настройки WireGuard ---${plain}"
+    echo ""
+
+    if [ "$has_wg_block" -eq 0 ]; then
+      echo -e "${red}В конфиге не найден блок стратегий WireGuard или объявление blob fakewgblob.${plain}"
+      echo -e "${yellow}Обновите конфиг через пункт 5 главного меню, чтобы появились настройки WireGuard.${plain}"
+      echo ""
+      submenu_item "0" "Назад"
+      echo ""
+      read -re -p "Ваш выбор: " ans
+      case "$ans" in
+        "0"|"")
+          return
+          ;;
+        *)
+          echo -e "${yellow}Неверный ввод.${plain}"
+          sleep 1
+          ;;
+      esac
+      continue
+    fi
+
+    [ -z "$current_repeats" ] && current_repeats="не определено"
+    [ -z "$current_blob" ] && current_blob="не найден"
+
+    echo -e "${yellow}Стратегия WireGuard обнаружена в конфиге.${plain}"
+    echo -e "${yellow}Количество повторов (repeats): ${plain}${current_repeats}"
+    echo -e "${yellow}Файл blob: ${plain}${current_blob}"
+    echo ""
+    submenu_item "1" "Изменить количество повторов (repeats)"
+    submenu_item "2" "Сменить blob для WireGuard"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      "1")
+        menu_action_wg_repeats
+        ;;
+      "2")
+        menu_action_set_wg_blob
+        ;;
+      "0"|"")
+        return
+        ;;
+      *)
+        echo -e "${yellow}Неверный ввод.${plain}"
+        sleep 1
+        ;;
+    esac
+  done
+}
+
 advanced_settings_submenu() {
   while true; do
     local current_state current_label
+    local wg_label
+    local wg_block
+    local quic_label
+    local quic_block
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -331,6 +413,24 @@ advanced_settings_submenu() {
       current_label="${cyan}отсутствует${plain}"
     else
       current_label="${yellow}недоступно${plain}"
+    fi
+
+    wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' /opt/zapret2/config 2>/dev/null)"
+    if printf "%s\n" "$wg_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
+      wg_label="${red}выключено${plain}"
+    elif printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard'; then
+      wg_label="${green}включено${plain}"
+    else
+      wg_label="${yellow}недоступно${plain}"
+    fi
+
+    quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' /opt/zapret2/config 2>/dev/null)"
+    if printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
+      quic_label="${green}включено${plain}"
+    elif printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$'; then
+      quic_label="${red}выключено${plain}"
+    else
+      quic_label="${yellow}недоступно${plain}"
     fi
 
     echo -e "${cyan}--- Дополнительные настройки ---${plain}"
@@ -342,6 +442,9 @@ advanced_settings_submenu() {
     echo ""
 
     submenu_item "1" "Параметр --reasm-disable. Сейчас: ${current_label}"
+    submenu_item "2" "Включить/выключить стратегию WireGuard. Сейчас: ${wg_label}"
+    submenu_item "3" "Настройки WireGuard (повторы и blob)"
+    submenu_item "4" "Фейки для всех QUIC-initial на 443 порту. Сейчас: ${quic_label}"
     submenu_item "0" "Назад"
     echo ""
 
@@ -355,6 +458,15 @@ advanced_settings_submenu() {
           fi
         fi
         pause_enter
+        ;;
+      "2")
+        menu_action_toggle_wireguard_fake
+        ;;
+      "3")
+        wireguard_submenu
+        ;;
+      "4")
+        menu_action_toggle_quic443_fake
         ;;
       "0"|"")
         return
