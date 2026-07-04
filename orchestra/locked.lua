@@ -5,6 +5,7 @@ local cache_ttl = 2
 local LOCKED_TLS = {}
 local LOCKED_HTTP = {}
 local LOCKED_UDP = {}
+local EXCLUDE_HOSTLISTS = {}
 
 local function load_locked_file(path)
   local f = io.open(path, "r")
@@ -55,6 +56,40 @@ function locked_strategy_for_profile(profile, proto)
   return LOCKED_TLS[profile]
 end
 
+local function load_exclude_hostlist(path)
+  local cached = EXCLUDE_HOSTLISTS[path]
+  local now = os.time() or 0
+  if cached and (now - cached.loaded_at) < cache_ttl then
+    return cached.hosts
+  end
+
+  local hosts = {}
+  local f = io.open(path, "r")
+  if f then
+    for line in f:lines() do
+      local host = string.match(line, "^%s*([^#%s]+)")
+      if host and host ~= "" then
+        host = string.lower(host:gsub("%.+$", ""))
+        if host ~= "" then hosts[host] = true end
+      end
+    end
+    f:close()
+  end
+  EXCLUDE_HOSTLISTS[path] = { loaded_at = now, hosts = hosts }
+  return hosts
+end
+
+local function hostlist_has_host(path, host)
+  if not path or path == "" or not host or host == "" then return false end
+  host = string.lower(tostring(host):gsub("%.+$", ""))
+  local hosts = load_exclude_hostlist(path)
+  while host and host ~= "" do
+    if hosts[host] then return true end
+    host = string.match(host, "^[^.]+%.(.+)$")
+  end
+  return false
+end
+
 function desync_profile_key(desync)
   if desync.profile then return tostring(desync.profile) end
   if desync.profile_id then return tostring(desync.profile_id) end
@@ -67,9 +102,36 @@ function desync_profile_key(desync)
   return "default"
 end
 
+local function desync_proto(desync)
+  if desync.dis and desync.dis.udp then
+    return "udp"
+  end
+  if desync.arg and desync.arg.proto then
+    local proto = string.lower(tostring(desync.arg.proto))
+    if proto == "udp" or proto == "http" or proto == "tls" then
+      return proto
+    end
+  end
+  local key = desync_profile_key(desync)
+  if key == "5" or key == "6" or key == "7" then
+    return "udp"
+  end
+  if desync.l7payload == "http_req" or desync.l7payload == "http_reply" then
+    return "http"
+  end
+  return "tls"
+end
+
+local function desync_allow_nohost(desync)
+  local allow_nohost = desync.arg and desync.arg.allow_nohost
+  return allow_nohost == "1" or allow_nohost == 1 or allow_nohost == true
+end
+
 local function desync_hostname(desync)
   if desync.hostname then return tostring(desync.hostname) end
   if desync.host then return tostring(desync.host) end
+  if desync.track and desync.track.hostname then return tostring(desync.track.hostname) end
+  if desync.track and desync.track.host then return tostring(desync.track.host) end
   if desync.http_host then return tostring(desync.http_host) end
   if desync.sni then return tostring(desync.sni) end
   if desync.tls_sni then return tostring(desync.tls_sni) end
@@ -88,17 +150,18 @@ end
 
 function circular_locked(ctx, desync)
   orchestrate(ctx, desync)
-  if not desync.track then
+  local allow_nohost_enabled = desync_allow_nohost(desync)
+  if not desync.track and not allow_nohost_enabled then
     DLOG_ERR("circular_locked: conntrack is missing but required")
     return
   end
 
-  local allow_nohost_enabled = false
-  local hrec = automate_host_record(desync)
+  local hrec
+  if desync.track then
+    hrec = automate_host_record(desync)
+  end
   if not hrec then
-    local allow_nohost = desync.arg and desync.arg.allow_nohost
-    if allow_nohost == "1" or allow_nohost == 1 or allow_nohost == true then
-      allow_nohost_enabled = true
+    if allow_nohost_enabled then
       hrec = {}
       DLOG("circular_locked: allow_nohost enabled, using local record")
     else
@@ -136,16 +199,11 @@ function circular_locked(ctx, desync)
     error("circular_locked: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
   end
 
-  local proto = "tls"
-  if desync.dis and desync.dis.udp then
-    proto = "udp"
-  elseif desync.l7payload == "http_req" or desync.l7payload == "http_reply" then
-    proto = "http"
-  end
-
+  local proto = desync_proto(desync)
   local profile = desync_profile_key(desync)
+  local host
   if allow_nohost_enabled then
-    local host = desync_hostname(desync)
+    host = desync_hostname(desync)
     if host and host ~= "" then
       host = host:gsub("%.$", "")
       host = string.lower(host)
@@ -154,6 +212,10 @@ function circular_locked(ctx, desync)
         DLOG("circular_locked: allow_nohost profile from host "..profile)
       end
     end
+  end
+  if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, host) then
+    DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..host)
+    return VERDICT_PASS
   end
 
   local locked = locked_strategy_for_profile(profile, proto)

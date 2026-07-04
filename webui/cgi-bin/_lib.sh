@@ -31,6 +31,11 @@ find_runtime_libs() {
 find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{"error":"missing z2r runtime libs"}'; exit 0; }
 . "$LIB_DIR/config.sh"
 . "$LIB_DIR/orchestra_state.sh"
+[ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
+
+telemetry_notify() {
+  type send_stats >/dev/null 2>&1 && send_stats || true
+}
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\n/\\n/g'
@@ -236,6 +241,7 @@ api_set_lock() {
   for p in $proto_list; do
     orch_locked_set "$PARAM_PROFILE" "$p" "$PARAM_STRATEGY"
   done
+  telemetry_notify
   check_json="$(profile_check_json "$PARAM_PROFILE")"
   send_json "200 OK" "{\"ok\":true,\"check\":$check_json}"
 }
@@ -249,6 +255,7 @@ api_clear_lock() {
   for p in $proto_list; do
     orch_locked_clear "$PARAM_PROFILE" "$p"
   done
+  telemetry_notify
   send_json "200 OK" "{\"ok\":true}"
 }
 

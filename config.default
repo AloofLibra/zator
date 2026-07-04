@@ -131,7 +131,6 @@ NFQWS2_OPT="
 --lua-desync=hostfakesplit:host=ozon.ru:tcp_ts=-1000:tcp_md5:repeats=4:strategy=27
 --lua-desync=multidisorder:pos=1,host+2,sld+2,sld+5,sniext+1,sniext+2,endhost-2:seqovl=1:strategy=28
 --lua-desync=send:repeats=2:strategy=29 --lua-desync=syndata:blob=google_www:strategy=29 --lua-desync=multisplit:seqovl=211:seqovl_pattern=tls5:strategy=29
---lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=2:nodrop:ip_autottl=2,3-20:ip6_autottl=2,3-20:strategy=30 --lua-desync=fakedsplit:pos=midsld:tcp_ts=-1000:ip_autottl=2,3-20:ip6_autottl=2,3-20:strategy=30
 
 --new
 
@@ -216,7 +215,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
 --in-range=-d100
 --out-range=-d100
---lua-desync=circular_locked:key=5 
+--lua-desync=circular_locked:key=5:proto=udp
 --in-range=x
 --payload=quic_initial
 --lua-desync=fake:blob=quic5:repeats=3:strategy=1
@@ -238,7 +237,7 @@ NFQWS2_OPT="
 #Стратегии для голосовой связи. В первую очередь Discord, но может ещё для чего поможет
 --filter-udp=443,2053,2083,2087,2096,8443,50000-50099,1400,3478-3481,5349,19294-19344
 --filter-l7=discord,stun
---lua-desync=circular_locked:key=6:allow_nohost=1
+--lua-desync=circular_locked:key=6:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zapret2/lists/netrogat.txt
 --payload=discord_ip_discovery,stun
 --lua-desync=fake:blob=stun_fake:repeats=3:strategy=1 --lua-desync=fake:blob=discord_fake:repeats=3:strategy=1
 --lua-desync=fake:blob=discord_udp_1:repeats=10:out_range=-d8:strategy=2 --lua-desync=fake:blob=discord_udp_2:repeats=2:out_range=-d8:strategy=2
@@ -277,8 +276,7 @@ NFQWS2_OPT="
 
 #Стратегии для игрового UDP. Широкий диапазон портов для BF, FIFA/FC и похожих игр
 --skip --filter-udp=1026-65531
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---lua-desync=circular_locked:key=7:allow_nohost=1
+--lua-desync=circular_locked:key=7:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zapret2/lists/netrogat.txt
 --lua-desync=fake:blob=quic_google:repeats=10:out_range=-n2:strategy=1
 --lua-desync=fake:blob=fake_default_udp:repeats=3:out_range=-d3:strategy=2
 --lua-desync=fake:blob=0x00:repeats=4:out_range=-d4:strategy=3
