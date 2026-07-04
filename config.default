@@ -324,14 +324,18 @@ NFQWS2_OPT="
 
 #Стратегии для WireGuard и квика инициализации, второе для warp приложения
 --new
---filter-l7=wireguard
+#Z2R_WG_BEGIN
+--skip --filter-l7=wireguard
 --payload=wireguard_initiation
 --lua-desync=fake:blob=fakewgblob:repeats=10
+#Z2R_WG_END
 
 --new
+#Z2R_QUIC443_BEGIN
 --skip --filter-udp=443
 --payload=quic_initial
 --lua-desync=fake:blob=quic_google:repeats=10:out_range=-n2
+#Z2R_QUIC443_END
 
   
 "
