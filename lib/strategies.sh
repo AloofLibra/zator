@@ -422,7 +422,7 @@ manage_custom_rkn_domain() {
 manage_custom_rkn_list() {
     domain_list_manage "$(custom_rkn_file)" \
         "TCP_Custom: домены и стратегии" \
-        "Список TCP_Custom пуст. Домены добавляются через пункт 10." \
+        "Список TCP_Custom пуст. Домены добавляются через пункт 6-3." \
         "Домены в TCP_Custom и подобранные стратегии:" \
         "Домен удалён из TCP_Custom и locked.tsv." \
         1
