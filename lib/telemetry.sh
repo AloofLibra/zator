@@ -1,12 +1,7 @@
 # ---- Telemetry module integration ----
-# Настройки Google Forms
-STATS_FORM_ID="1FAIpQLScrUf7Pybm0n61aK8aZuxuAR8KhyNYZ-X0xjSUS8K72SmEhPw"
-ENTRY_UUID="entry.1346249141"
-ENTRY_ISP="entry.2008245653"
-ENTRY_UDP="entry.592144534"
-ENTRY_TCP="entry.1826276405"
-ENTRY_GV="entry.1549076812"
-ENTRY_RKN="entry.1527830884"
+# Настройки z4r telemetry endpoint
+STATS_ENDPOINT="https://alooflibra.fun/z4r/telemetry"
+STATS_TOKEN="TzeiCfYn5DUIwjHJ6dPa4bSKrkFRZqts3BGWpA9l"
 
 # 2. Пути к файлам (используем простые форматы)
 CACHE_DIR="/opt/zapret2/extra_strats/cache"
@@ -97,14 +92,15 @@ send_stats() {
     s_gv="${s_gv:-0}"
     s_rkn="${s_rkn:-0}"
 
-    # 3. Отправка в Google Forms (Тихий режим, в фоне &)
+    # 3. Отправка в z4r telemetry endpoint (Тихий режим, в фоне &)
     curl -sL --max-time 10 \
-        -d "$ENTRY_UUID=$tel_uuid" \
-        -d "$ENTRY_ISP=$my_isp" \
-        -d "$ENTRY_UDP=$s_udp" \
-        -d "$ENTRY_TCP=$s_tcp" \
-        -d "$ENTRY_GV=$s_gv" \
-        -d "$ENTRY_RKN=$s_rkn" \
-        "https://docs.google.com/forms/d/e/$STATS_FORM_ID/formResponse" > /dev/null 2>&1 &
+        -d "token=$STATS_TOKEN" \
+        -d "uuid=$tel_uuid" \
+        -d "isp=$my_isp" \
+        -d "udp=$s_udp" \
+        -d "tcp=$s_tcp" \
+        -d "gv=$s_gv" \
+        -d "rkn=$s_rkn" \
+        "$STATS_ENDPOINT" > /dev/null 2>&1 &
 }
 # ---- /Telemetry module integration ----

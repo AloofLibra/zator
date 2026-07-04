@@ -17,6 +17,10 @@ get_current_strategies_info() {
     echo -e "YT_UDP:$(colorize_num "$s_udp") YT_TCP:$(colorize_num "$s_tcp") YT_GV:$(colorize_num "$s_gv") RKN:$(colorize_num "$s_rkn")"
 }
 
+telemetry_notify() {
+    type send_stats >/dev/null 2>&1 && send_stats || true
+}
+
 orch_max_strategy_for_profile() {
     config_profile_max_strategy "$1"
 }
@@ -89,6 +93,7 @@ orch_profile_try() {
         read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
         if [ "$answer" = "1" ]; then
             echo "Стратегия $s сохранена для профиля $profile."
+            telemetry_notify
             pause_enter
             return
         elif [ "$answer" = "0" ]; then
@@ -403,6 +408,7 @@ manage_custom_rkn_domain() {
         read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
         if [ "$answer" = "1" ]; then
             echo "Стратегия $s сохранена для $user_domain."
+            telemetry_notify
             pause_enter
             return 0
         elif [ "$answer" = "0" ]; then
