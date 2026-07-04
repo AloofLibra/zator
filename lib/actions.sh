@@ -354,6 +354,248 @@ menu_action_set_tls_blob() {
   return 0
 }
 
+# Проверка наличия блока стратегий WireGuard в конфиге.
+# Возвращает 0, если найдены и блок стратегии, и объявление blob fakewgblob.
+wg_config_has_block() {
+  local cfg="$1"
+  [ -f "$cfg" ] || return 1
+  # Блок стратегии: --filter-l7=wireguard + строка lua-desync с fakewgblob:repeats=
+  grep -q -- '--filter-l7=wireguard' "$cfg" || return 1
+  grep -q 'blob=fakewgblob:repeats=' "$cfg" || return 1
+  # Объявление blob-файла
+  grep -q -- '--blob=fakewgblob:@/opt/zapret2/files/fake/wg_initial_fake_' "$cfg" || return 1
+  return 0
+}
+
+# Изменение количества повторов (repeats) для стратегии WireGuard.
+# Диапазон: 2..99. Меняет только строку blob=fakewgblob:repeats=N.
+menu_action_wg_repeats() {
+  local cfg="/opt/zapret2/config"
+  local sed_ereg="-E"
+  local current_repeats=""
+  local new_repeats=""
+
+  if [ ! -f "$cfg" ]; then
+    cfg="/opt/zapret2/config.default"
+  fi
+  if [ ! -f "$cfg" ]; then
+    echo -e "${red}Не найден config/config.default.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if ! printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
+    sed_ereg="-r"
+  fi
+
+  if ! grep -q 'blob=fakewgblob:repeats=' "$cfg"; then
+    echo -e "${red}В конфиге не найдена строка стратегии WireGuard (blob=fakewgblob:repeats=).${plain}"
+    echo -e "${yellow}Обновите конфиг через пункт 5 главного меню, чтобы появились настройки WireGuard.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
+  [ -z "$current_repeats" ] && current_repeats="не определено"
+
+  echo -e "${yellow}Текущее количество повторов WireGuard (repeats): ${plain}${current_repeats}"
+  echo -e "${yellow}Введите новое количество повторов (от 2 до 99):${plain}"
+  read -re new_repeats
+
+  if [ -z "$new_repeats" ]; then
+    echo "Отменено."
+    pause_enter
+    return 0
+  fi
+  if ! printf "%s" "$new_repeats" | grep -Eq '^[0-9]+$'; then
+    echo -e "${red}Некорректное значение: нужно целое число.${plain}"
+    pause_enter
+    return 1
+  fi
+  if [ "$new_repeats" -lt 2 ] || [ "$new_repeats" -gt 99 ]; then
+    echo -e "${red}Значение должно быть в диапазоне от 2 до 99.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if [ "$sed_ereg" = "-E" ]; then
+    sed -i -E "s#(blob=fakewgblob:repeats=)[0-9]+#\\1${new_repeats}#g" "$cfg"
+  else
+    sed -i -r "s#(blob=fakewgblob:repeats=)[0-9]+#\\1${new_repeats}#g" "$cfg"
+  fi
+  echo -e "${green}Количество повторов WireGuard изменено на ${new_repeats}.${plain}"
+  echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
+  pause_enter
+  return 0
+}
+
+# Смена blob-файла для стратегии WireGuard.
+# Показывает только файлы вида wg_initial_fake_* и позволяет выбрать по номеру.
+menu_action_set_wg_blob() {
+  local cfg="/opt/zapret2/config"
+  local fake_dir="/opt/zapret2/files/fake"
+  local prefix="--blob=fakewgblob:@/opt/zapret2/files/fake/"
+  local sed_ereg="-E"
+  local current_blob=""
+  local blobs=()
+  local i=0
+  local choice=""
+  local selected_blob=""
+
+  if [ ! -f "$cfg" ]; then
+    cfg="/opt/zapret2/config.default"
+  fi
+  if [ ! -f "$cfg" ]; then
+    echo -e "${red}Не найден config/config.default.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if [ ! -d "$fake_dir" ]; then
+    echo -e "${red}Каталог $fake_dir не найден.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if ! printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
+    sed_ereg="-r"
+  fi
+
+  if ! grep -q -- "--blob=fakewgblob:@/opt/zapret2/files/fake/" "$cfg"; then
+    echo -e "${red}В конфиге не найдено объявление --blob=fakewgblob:@...${plain}"
+    echo -e "${yellow}Обновите конфиг через пункт 5 главного меню, чтобы появились настройки WireGuard.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  # Только файлы, начинающиеся с wg_initial_fake_
+  if sort -z </dev/null >/dev/null 2>&1; then
+    while IFS= read -r -d '' f; do
+      blobs+=("$(basename "$f")")
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' -print0 | sort -z)
+  else
+    while IFS= read -r f; do
+      blobs+=("$(basename "$f")")
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' | sort)
+  fi
+
+  if [ "${#blobs[@]}" -eq 0 ]; then
+    echo -e "${red}В $fake_dir нет файлов wg_initial_fake_*.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  [ -z "$current_blob" ] && current_blob="не найден в конфиге"
+
+  echo -e "${yellow}Текущий blob для WireGuard: ${plain}${current_blob}"
+  echo -e "${yellow}Выберите файл blob для WireGuard:${plain}"
+  i=0
+  for b in "${blobs[@]}"; do
+    i=$((i+1))
+    echo "$i. $b"
+  done
+  echo "0. Отмена"
+  read -re -p "Ваш выбор: " choice
+
+  if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+    echo "Отменено."
+    pause_enter
+    return 0
+  fi
+  if ! printf "%s" "$choice" | grep -Eq '^[0-9]+$'; then
+    echo -e "${red}Некорректный выбор.${plain}"
+    pause_enter
+    return 1
+  fi
+  if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#blobs[@]}" ]; then
+    echo -e "${red}Номер вне диапазона.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  selected_blob="${blobs[$((choice-1))]}"
+
+  if [ "$sed_ereg" = "-E" ]; then
+    sed -i -E "s#(${prefix})[^[:space:]]+#\\1${selected_blob}#g" "$cfg"
+  else
+    sed -i -r "s#(${prefix})[^[:space:]]+#\\1${selected_blob}#g" "$cfg"
+  fi
+  echo -e "${green}Обновлено: --blob=fakewgblob -> ${selected_blob}${plain}"
+  echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
+  pause_enter
+  return 0
+}
+
+# Определяет состояние блока фейков QUIC (UDP443, quic_initial).
+# Блок однозначно определяется строкой --filter-udp=443 без --hostlist
+# (в отличие от блока UDP_YT, где после порта идёт --hostlist=...).
+# Включено: строка --filter-udp=443 без --skip.
+# Выключено: строка --skip --filter-udp=443 (конвенция всего config.default).
+# Возвращает: enabled | disabled | notfound
+quic443_fake_state() {
+  local cfg="$1"
+  [ -f "$cfg" ] || { echo "notfound"; return 0; }
+  if grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$' "$cfg"; then
+    echo "disabled"
+  elif grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$' "$cfg"; then
+    echo "enabled"
+  else
+    echo "notfound"
+  fi
+}
+
+# Переключатель фейков для всех QUIC-инициализаций на UDP 443 (последний блок конфига).
+# Включено/выключено определяется наличием --skip перед --filter-udp=443.
+menu_action_toggle_quic443_fake() {
+  local cfg="/opt/zapret2/config"
+  local sed_ereg="-E"
+  local state=""
+
+  if [ ! -f "$cfg" ]; then
+    cfg="/opt/zapret2/config.default"
+  fi
+  if [ ! -f "$cfg" ]; then
+    echo -e "${red}Не найден config/config.default.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if ! printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
+    sed_ereg="-r"
+  fi
+
+  state="$(quic443_fake_state "$cfg")"
+
+  if [ "$state" = "notfound" ]; then
+    echo -e "${red}В конфиге не найден блок QUIC (UDP443, quic_initial).${plain}"
+    echo -e "${yellow}Обновите конфиг через пункт 5 главного меню.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if [ "$state" = "enabled" ]; then
+    # Выключаем: добавляем --skip перед --filter-udp=443
+    if [ "$sed_ereg" = "-E" ]; then
+      sed -i -E 's/^([[:space:]]*)--filter-udp=443[[:space:]]*$/\1--skip --filter-udp=443/' "$cfg"
+    else
+      sed -i -r 's/^([[:space:]]*)--filter-udp=443[[:space:]]*$/\1--skip --filter-udp=443/' "$cfg"
+    fi
+    echo -e "${green}Фейки для QUIC (UDP443) ВЫКЛЮЧЕНЫ (--skip добавлен).${plain}"
+  else
+    # Включаем: убираем --skip перед --filter-udp=443
+    if [ "$sed_ereg" = "-E" ]; then
+      sed -i -E 's/^([[:space:]]*)--skip[[:space:]]+--filter-udp=443[[:space:]]*$/\1--filter-udp=443/' "$cfg"
+    else
+      sed -i -r 's/^([[:space:]]*)--skip[[:space:]]+--filter-udp=443[[:space:]]*$/\1--filter-udp=443/' "$cfg"
+    fi
+    echo -e "${green}Фейки для QUIC (UDP443) ВКЛЮЧЕНЫ (--skip удалён).${plain}"
+  fi
+  echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
+  pause_enter
+  return 0
+}
+
 toggle_hostlist_mode() {
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
