@@ -789,8 +789,8 @@ run_cdn_test() {
     wait "$pid_parallel"
   done
 
-  OK_COUNT=$(wc -l < /tmp/cdn_ok 2>/dev/null)
-  FAIL_COUNT=$(wc -l < /tmp/cdn_fail 2>/dev/null)
+  [ -f /tmp/cdn_ok ] && OK_COUNT=$(wc -l < /tmp/cdn_ok) || OK_COUNT=0
+  [ -f /tmp/cdn_fail ] && FAIL_COUNT=$(wc -l < /tmp/cdn_fail) || FAIL_COUNT=0
 
   echo
   echo -e "${YELLOW}=== SUMMARY ===${NC}"
