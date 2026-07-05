@@ -15,6 +15,11 @@ strategies_submenu() {
     p6_max="$(orch_max_strategy_for_profile 6)"
     p7_max="$(orch_max_strategy_for_profile 7)"
     p9_max="$(orch_max_strategy_for_profile 9)"
+    # Состояние безразборного режима (fallback): если выключен,
+    # пункты 8/9 (Fallback TLS/HTTP) становятся недоступными.
+    local fb_state fb_disabled
+    fb_state="$(config_mode_text fallback)"
+    [ "$fb_state" = "выключен" ] && fb_disabled=1 || fb_disabled=0
     clear -x
 
     echo -e "${cyan}--- Управление стратегиями ---${plain}"
@@ -29,8 +34,13 @@ strategies_submenu() {
     submenu_item "	5" "Профиль 5: UDP 443 (YouTube QUIC) [${p5_max:-0}]" "udp"
     submenu_item "	6" "Профиль 6: UDP Voice (Discord/STUN) [${p6_max:-0}]" "udp"
     submenu_item "	7" "Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]" "udp"
-    submenu_item "	8" "Fallback TLS (безразборный блок)"
-    submenu_item "	9" "Fallback HTTP (безразборный блок) [${p9_max:-0}]"
+    if [ "$fb_disabled" = "1" ]; then
+      echo -e "${Fcyan}	8.${plain} ${red}Fallback TLS (безразборный блок)${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
+      echo -e "${Fcyan}	9.${plain} ${red}Fallback HTTP (безразборный блок) [${p9_max:-0}]${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
+    else
+      submenu_item "	8" "Fallback TLS (безразборный блок)"
+      submenu_item "	9" "Fallback HTTP (безразборный блок) [${p9_max:-0}]"
+    fi
     submenu_item "	0" "Назад"
     echo ""
 
@@ -62,10 +72,22 @@ strategies_submenu() {
         orch_profile_try "7" "Профиль 7: UDP Games (1026-65531)" "udp" ""
         ;;
       "8")
-        fallback_profile_try
+        if [ "$fb_disabled" = "1" ]; then
+          echo -e "${red}Безразборный режим выключен.${plain}"
+          echo -e "${yellow}Сначала включите безразборный режим (fallback) в главном меню, пункт 13.${plain}"
+          pause_enter
+        else
+          fallback_profile_try
+        fi
         ;;
       "9")
-        fallback_http_profile_try
+        if [ "$fb_disabled" = "1" ]; then
+          echo -e "${red}Безразборный режим выключен.${plain}"
+          echo -e "${yellow}Сначала включите безразборный режим (fallback) в главном меню, пункт 13.${plain}"
+          pause_enter
+        else
+          fallback_http_profile_try
+        fi
         ;;
       "0"|"")
         return
@@ -545,6 +567,18 @@ beginner_guide_menu() {
   echo -e "- Пункт 16 меняет TLS blob; пробуй поиграться с ними, если TLS-профили работают нестабильно или не работают вовсе."
   echo -e "- Fallback/безразборный режим помогает в случаях когда нужно получить доступ ко множеству сайтов которых нет в списке RKN"
   echo -e "  Начни с 26 стратегии для безразборного режима. Она самая универсальная."
+  echo -e "${Fcyan}Пункт 19 — Дополнительные настройки${plain}"
+  echo -e "- ${green}--reasm-disable${plain}: отключает склейку больших пакетов для анализа. Нужен только на роутерах"
+  echo -e "  (Keenetic/Netcraze), где не удаётся выключить аппаратное ускорение и из-за этого ломаются соединения."
+  echo -e "- ${green}WireGuard${plain}: ТСПУ/DPI умеют распознавать и блокировать рукопожатие WireGuard по характерной сигнатуре."
+  echo -e "  Стратегия отправляет ДО настоящего начального пакета несколько фейковых (repeats = их количество),"
+  echo -e "  чтобы сбить с толку ТСПУ и пропустить реальное рукопожатие. Здесь можно включить/выключить стратегию,"
+  echo -e "  поменять количество фейков (repeats, 2-99) и выбрать другой blob-файл (wg_initial_fake_*)."
+  echo -e "  ${Fyellow}Важно:${plain} UDP-порт WireGuard должен перехватываться nfqws2 — если его нет в диапазоне"
+  echo -e "  NFQWS2_PORTS_UDP, добавь порт через пункт 20 (Управление портами NFQWS2)."
+  echo -e "- ${green}Фейки для QUIC-initial на 443${plain}: подмена начальных QUIC-пакетов на 443 порту."
+  echo -e "${Fyellow}Важно:${plain} после любых изменений конфигурации не забывай перезапускать zapret2"
+  echo -e "  (пункт 22 главного меню), иначе правки не вступят в силу."
   echo -e "- После обновления стратегий пунктом 5 старые списки подбора могут сброситься;"
   echo -e "  если есть рабочая схема, перед обновлением соглашайся на бэкап."
   echo ""
