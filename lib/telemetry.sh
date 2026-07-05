@@ -2,17 +2,29 @@
 # Настройки z4r telemetry endpoint
 STATS_ENDPOINT="https://alooflibra.fun/z4r/telemetry"
 STATS_TOKEN="TzeiCfYn5DUIwjHJ6dPa4bSKrkFRZqts3BGWpA9l"
+STATS_CHANNEL_ID="z4r-sql-v1"
 
 # 2. Пути к файлам (используем простые форматы)
 CACHE_DIR="/opt/zapret2/extra_strats/cache"
 TELEMETRY_CFG="/opt/zapret2/z2r_lib/telemetry.config"
 PROVIDER_TXT="$CACHE_DIR/provider.txt"
 
+telemetry_save_config() {
+    local enabled="$1"
+    local uuid="$2"
+    local channel_id="${3:-}"
+
+    echo "tel_enabled=$enabled" > "$TELEMETRY_CFG"
+    echo "tel_uuid=$uuid" >> "$TELEMETRY_CFG"
+    [ -n "$channel_id" ] && echo "tel_channel_id=$channel_id" >> "$TELEMETRY_CFG"
+}
+
 # Функция инициализации (Спрашивает пользователя один раз)
 init_telemetry() {
     mkdir -p "$CACHE_DIR"
     local tel_enabled=""
     local tel_uuid=""
+    local tel_channel_id=""
 
     # 1. Загружаем конфиг, если он есть
     [ -f "$TELEMETRY_CFG" ] && source "$TELEMETRY_CFG"
@@ -30,8 +42,7 @@ init_telemetry() {
         esac
 
         # Сразу сохраняем выбор
-        echo "tel_enabled=$tel_enabled" > "$TELEMETRY_CFG"
-        echo "tel_uuid=$tel_uuid" >> "$TELEMETRY_CFG"
+        telemetry_save_config "$tel_enabled" "$tel_uuid" "$tel_channel_id"
 
         if [ "$tel_enabled" == "1" ]; then
             echo -e "${green}Спасибо! Статистика включена.${plain}"
@@ -51,8 +62,14 @@ init_telemetry() {
         fi
 
         # Перезаписываем конфиг с новым UUID
-        echo "tel_enabled=$tel_enabled" > "$TELEMETRY_CFG"
-        echo "tel_uuid=$tel_uuid" >> "$TELEMETRY_CFG"
+        telemetry_save_config "$tel_enabled" "$tel_uuid" "$tel_channel_id"
+    fi
+
+    # 4. Принудительная первичная отправка после смены канала телеметрии.
+    # Старые включенные установки не должны ждать ручной смены стратегии.
+    if [ "$tel_enabled" == "1" ] && [ "$tel_channel_id" != "$STATS_CHANNEL_ID" ]; then
+        send_stats
+        telemetry_save_config "$tel_enabled" "$tel_uuid" "$STATS_CHANNEL_ID"
     fi
 }
 
