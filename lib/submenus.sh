@@ -20,6 +20,11 @@ strategies_submenu() {
     local fb_state fb_disabled
     fb_state="$(config_mode_text fallback)"
     [ "$fb_state" = "выключен" ] && fb_disabled=1 || fb_disabled=0
+    # Состояние обхода UDP на 1026-65531 (пункт 10): если выключен,
+    # пункт 7 (UDP Games) становится недоступным.
+    local games_state games_disabled
+    games_state="$(config_mode_text udp_games)"
+    [ "$games_state" = "Выключен" ] && games_disabled=1 || games_disabled=0
     clear -x
 
     echo -e "${cyan}--- Управление стратегиями ---${plain}"
@@ -33,7 +38,11 @@ strategies_submenu() {
     submenu_item "	4" "Профиль 4: TCP 80/443 (Discord) [${p4_max:-0}]" "tls"
     submenu_item "	5" "Профиль 5: UDP 443 (YouTube QUIC) [${p5_max:-0}]" "udp"
     submenu_item "	6" "Профиль 6: UDP Voice (Discord/STUN) [${p6_max:-0}]" "udp"
-    submenu_item "	7" "Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]" "udp"
+    if [ "$games_disabled" = "1" ]; then
+      echo -e "${Fcyan}	7.${plain} ${red}Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]${plain} ${red}[выключен — включите обход UDP, п.10]${plain}"
+    else
+      submenu_item "	7" "Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]" "udp"
+    fi
     if [ "$fb_disabled" = "1" ]; then
       echo -e "${Fcyan}	8.${plain} ${red}Fallback TLS (безразборный блок)${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
       echo -e "${Fcyan}	9.${plain} ${red}Fallback HTTP (безразборный блок) [${p9_max:-0}]${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
@@ -68,8 +77,14 @@ strategies_submenu() {
         orch_profile_try "6" "Профиль 6: UDP Voice (Discord/STUN)" "udp" ""
         ;;
       "7")
-        echo -e "${yellow}Проверьте работоспособность в игре.${plain}"
-        orch_profile_try "7" "Профиль 7: UDP Games (1026-65531)" "udp" ""
+        if [ "$games_disabled" = "1" ]; then
+          echo -e "${red}Обход UDP на 1026-65531 выключен.${plain}"
+          echo -e "${yellow}Сначала включите обход UDP на 1026-65531 портах в главном меню, пункт 10.${plain}"
+          pause_enter
+        else
+          echo -e "${yellow}Проверьте работоспособность в игре.${plain}"
+          orch_profile_try "7" "Профиль 7: UDP Games (1026-65531)" "udp" ""
+        fi
         ;;
       "8")
         if [ "$fb_disabled" = "1" ]; then
