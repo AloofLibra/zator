@@ -21,7 +21,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  html[data-theme="auto"] {
     --bg: #0d1219;
     --bg-elevated: #111925;
     --surface: rgba(17, 25, 37, 0.9);
@@ -41,33 +41,7 @@
   }
 }
 
-html[data-theme="light"],
-html.theme-light,
-body[data-theme="light"],
-body.theme-light {
-  color-scheme: light;
-  --bg: #eef2f7;
-  --bg-elevated: #f7f9fc;
-  --surface: rgba(255, 255, 255, 0.88);
-  --surface-strong: #ffffff;
-  --surface-muted: #eef3f9;
-  --line: rgba(37, 52, 71, 0.14);
-  --text: #162230;
-  --muted: #5b6778;
-  --accent: #2457d6;
-  --accent-strong: #163fb0;
-  --accent-soft: rgba(36, 87, 214, 0.12);
-  --success: #19714d;
-  --danger: #bb2d3f;
-  --warning: #9b6b00;
-  --shadow: 0 16px 40px rgba(16, 25, 39, 0.08);
-  --shadow-strong: 0 20px 48px rgba(16, 25, 39, 0.12);
-}
-
-html[data-theme="dark"],
-html.theme-dark,
-body[data-theme="dark"],
-body.theme-dark {
+html[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0d1219;
   --bg-elevated: #111925;

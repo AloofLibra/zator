@@ -7,7 +7,6 @@ export PATH
 
 WEBUI_ROOT="/opt/zapret2/webui"
 WEBUI_WWW="$WEBUI_ROOT/www"
-WEBUI_CGI="$WEBUI_ROOT/cgi-bin"
 WEBUI_RUN="$WEBUI_ROOT/run"
 PID_FILE="$WEBUI_RUN/webui.pid"
 LOG_FILE="$WEBUI_RUN/webui.log"
@@ -24,31 +23,23 @@ has_busybox_httpd() {
   busybox --list 2>/dev/null | grep -qx 'httpd'
 }
 
-detect_server() {
-  if command -v uhttpd >/dev/null 2>&1; then
-    echo "uhttpd"
-    return
-  fi
-  if command -v uhttpd_kn >/dev/null 2>&1; then
-    echo "uhttpd_kn"
-    return
-  fi
-  if command -v httpd >/dev/null 2>&1; then
-    echo "httpd"
-    return
-  fi
-  if has_busybox_httpd; then
-    echo "busybox"
-    return
-  fi
-  echo "none"
-}
-
 available_servers() {
   command -v uhttpd >/dev/null 2>&1 && echo "uhttpd"
   command -v uhttpd_kn >/dev/null 2>&1 && echo "uhttpd_kn"
   command -v httpd >/dev/null 2>&1 && echo "httpd"
   has_busybox_httpd && echo "busybox"
+}
+
+first_server() {
+  available_servers | sed -n '1p'
+}
+
+server_patterns() {
+  printf '%s\n' \
+    "uhttpd_kn.*${WEBUI_WWW}" \
+    "uhttpd.*${WEBUI_WWW}" \
+    "httpd.*${WEBUI_WWW}" \
+    "busybox httpd.*${WEBUI_WWW}"
 }
 
 is_running() {
@@ -72,11 +63,13 @@ has_port_listener() {
 }
 
 has_matching_process() {
+  local pattern
   if command -v pgrep >/dev/null 2>&1; then
-    pgrep -f "uhttpd_kn.*${WEBUI_WWW}" >/dev/null 2>&1 && return 0
-    pgrep -f "uhttpd.*${WEBUI_WWW}" >/dev/null 2>&1 && return 0
-    pgrep -f "httpd.*${WEBUI_WWW}" >/dev/null 2>&1 && return 0
-    pgrep -f "busybox httpd.*${WEBUI_WWW}" >/dev/null 2>&1 && return 0
+    while IFS= read -r pattern; do
+      pgrep -f "$pattern" >/dev/null 2>&1 && return 0
+    done <<EOF
+$(server_patterns)
+EOF
   fi
   if command -v ps >/dev/null 2>&1; then
     ps w 2>/dev/null | grep -F "$WEBUI_WWW" | grep -E "uhttpd_kn|uhttpd|(^|[[:space:]])httpd|busybox httpd" | grep -v grep >/dev/null 2>&1 && return 0
@@ -114,18 +107,14 @@ run_server_once() {
 }
 
 run_server() {
-  local server tried_any=0
-  for server in $(available_servers); do
-    tried_any=1
-    echo "Trying web server: $server" >&2
-    run_server_once "$server"
-  done
-  if [ "$tried_any" -eq 0 ]; then
+  local server
+  server="$(first_server)"
+  if [ -z "$server" ]; then
     echo "No supported web server found" >&2
-  else
-    echo "Failed to start any supported web server" >&2
+    exit 1
   fi
-  exit 1
+  echo "Trying web server: $server" >&2
+  run_server_once "$server"
 }
 
 start_detached() {
@@ -157,6 +146,7 @@ start_server() {
 }
 
 stop_server() {
+  local pattern
   if is_running; then
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
     sleep 1
@@ -165,20 +155,24 @@ stop_server() {
     fi
   fi
   if command -v pgrep >/dev/null 2>&1; then
-    pgrep -f "uhttpd_kn.*${WEBUI_WWW}" >/dev/null 2>&1 && pkill -f "uhttpd_kn.*${WEBUI_WWW}" 2>/dev/null || true
-    pgrep -f "uhttpd.*${WEBUI_WWW}" >/dev/null 2>&1 && pkill -f "uhttpd.*${WEBUI_WWW}" 2>/dev/null || true
-    pgrep -f "httpd.*${WEBUI_WWW}" >/dev/null 2>&1 && pkill -f "httpd.*${WEBUI_WWW}" 2>/dev/null || true
-    pgrep -f "busybox httpd.*${WEBUI_WWW}" >/dev/null 2>&1 && pkill -f "busybox httpd.*${WEBUI_WWW}" 2>/dev/null || true
+    while IFS= read -r pattern; do
+      pgrep -f "$pattern" >/dev/null 2>&1 && pkill -f "$pattern" 2>/dev/null || true
+    done <<EOF
+$(server_patterns)
+EOF
   fi
   rm -f "$PID_FILE"
   echo "stopped"
 }
 
 status_server() {
+  local server
+  server="$(first_server)"
+  [ -n "$server" ] || server="none"
   if is_running_any; then
-    echo "running:$(detect_server):${PORT}"
+    echo "running:${server}:${PORT}"
   else
-    echo "stopped:$(detect_server):${PORT}"
+    echo "stopped:${server}:${PORT}"
   fi
 }
 

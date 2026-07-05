@@ -1,5 +1,4 @@
 const state = {
-  meta: {},
   locks: [],
   status: null,
   strategyChecks: {},
@@ -70,7 +69,6 @@ async function api(path, options = {}) {
 function applyTheme(theme) {
   const normalized = ['auto', 'light', 'dark'].includes(theme) ? theme : 'auto';
   document.documentElement.dataset.theme = normalized;
-  document.body.dataset.theme = normalized;
   const select = document.getElementById('theme-mode');
   if (select) {
     select.value = normalized;
@@ -187,7 +185,7 @@ function renderStrategies() {
       input.value = profile.current_lock;
     }
     if (state.strategyChecks[profile.profile]) {
-      renderInlineCheck(inlineCheck, state.strategyChecks[profile.profile]);
+      renderCheckResults(inlineCheck, state.strategyChecks[profile.profile], 'Нет результатов быстрой проверки.', false);
     }
 
     stepButtons.forEach((button) => {
@@ -257,46 +255,14 @@ function appendText(parent, tag, text, className) {
   return element;
 }
 
-function renderChecks(payload) {
-  const container = document.getElementById('check-results');
-  container.innerHTML = '';
-
-  const results = Array.isArray(payload?.results) ? payload.results : [];
-  if (!results.length) {
-    container.classList.add('empty');
-    container.textContent = payload?.message || 'Нет результатов проверки.';
-    return;
-  }
-
-  container.classList.remove('empty');
-
-  results.forEach((item) => {
-    const article = document.createElement('article');
-    article.className = 'check-item';
-
-    const title = document.createElement('div');
-    title.className = 'check-title';
-    appendText(title, 'strong', item.label || 'Цель');
-    appendText(title, 'span', item.target || '');
-
-    const pair = document.createElement('div');
-    pair.className = 'check-pair';
-    appendText(pair, 'span', `TLS 1.2: ${item.tls12 ? 'OK' : 'FAIL'}`, item.tls12 ? 'ok' : 'bad');
-    appendText(pair, 'span', `TLS 1.3: ${item.tls13 ? 'OK' : 'FAIL'}`, item.tls13 ? 'ok' : 'bad');
-
-    article.append(title, pair);
-    container.appendChild(article);
-  });
-}
-
-function renderInlineCheck(container, payload) {
+function renderCheckResults(container, payload, emptyMessage, emptyIsHidden = true) {
   if (!container) return;
   container.innerHTML = '';
 
   const results = Array.isArray(payload?.results) ? payload.results : [];
   if (!results.length) {
-    container.classList.remove('empty');
-    container.textContent = payload?.message || 'Нет результатов быстрой проверки.';
+    container.classList.toggle('empty', emptyIsHidden && !payload?.message);
+    container.textContent = payload?.message || emptyMessage;
     return;
   }
 
@@ -321,14 +287,9 @@ function renderInlineCheck(container, payload) {
 }
 
 async function refreshAll() {
-  const [meta, status, locks] = await Promise.all([
-    api('/cgi-bin/meta.cgi'),
-    api('/cgi-bin/status.cgi'),
-    api('/cgi-bin/locks.cgi'),
-  ]);
-  state.meta = meta;
+  const status = await api('/cgi-bin/status.cgi');
   state.status = status;
-  state.locks = locks.profiles || [];
+  state.locks = status.profiles || [];
   renderStatus();
   renderStrategies();
 }
@@ -382,7 +343,7 @@ document.getElementById('restart-service').addEventListener('click', (event) => 
 document.getElementById('run-check').addEventListener('click', async (event) => {
   try {
     const payload = await withBusy(event.currentTarget, 'Проверка...', () => api('/cgi-bin/check.cgi', { method: 'POST' }));
-    renderChecks(payload);
+    renderCheckResults(document.getElementById('check-results'), payload, 'Нет результатов проверки.');
     showBanner('Проверка завершена.');
   } catch (error) {
     showBanner(error.message, 'error');

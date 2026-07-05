@@ -8,7 +8,6 @@ export PATH
 WEBUI_ROOT="/opt/zapret2/webui"
 ZAPRET_ROOT="/opt/zapret2"
 CONFIG_FILE="$ZAPRET_ROOT/config"
-CONFIG_DEFAULT_FILE="$ZAPRET_ROOT/config.default"
 ORCH_DIR="$ZAPRET_ROOT/extra_strats/cache/orchestra"
 LIB_DIR=""
 
@@ -212,10 +211,6 @@ profile_check_json() {
   esac
 }
 
-api_meta() {
-  send_json "200 OK" "{\"profiles\":$(all_profiles_json)}"
-}
-
 api_status() {
   local running
   if zapret2_running; then running=true; else running=false; fi
@@ -223,10 +218,6 @@ api_status() {
 {"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","profiles":$(all_profiles_json)}
 EOF
 )"
-}
-
-api_locks() {
-  send_json "200 OK" "{\"profiles\":$(all_profiles_json)}"
 }
 
 api_set_lock() {
@@ -256,11 +247,6 @@ api_clear_lock() {
     orch_locked_clear "$PARAM_PROFILE" "$p"
   done
   telemetry_notify
-  send_json "200 OK" "{\"ok\":true}"
-}
-
-api_restart() {
-  service_zapret2 restart || send_error "500 Internal Server Error" "Не удалось перезапустить zapret2"
   send_json "200 OK" "{\"ok\":true}"
 }
 
