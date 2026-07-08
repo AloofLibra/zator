@@ -964,6 +964,7 @@ done
 zapret_get() {
  local archive
  local extract_dir
+ local workdir
  if [[ "$OSystem" == "WRT" ]]; then
      tarfile="zapret2-v$VER-openwrt-embedded.tar.gz"
  else
@@ -977,40 +978,96 @@ zapret_get() {
      rm -f "$archive"
      return 1
  fi
- rm -rf zapret2 zapret2-v*
- if ! tar -xzf "$archive"; then
+ workdir="/tmp/z2r_zapret2_$$"
+ rm -rf "$workdir"
+ mkdir -p "$workdir"
+ if ! tar -xzf "$archive" -C "$workdir"; then
      echo -e "${red}Архив zapret2 повреждён или не является tar.gz: $tarfile.${plain}"
      rm -f "$archive"
+     rm -rf "$workdir"
      return 1
  fi
  rm -f "$archive"
 
- if [ -d "zapret2-v$VER" ]; then
-     extract_dir="zapret2-v$VER"
+ if [ -d "$workdir/zapret2-v$VER" ]; then
+     extract_dir="$workdir/zapret2-v$VER"
  else
-     extract_dir="$(find . -maxdepth 1 -type d -name 'zapret2-v*' | sed 's#^\./##' | head -n1)"
+     extract_dir="$(find "$workdir" -maxdepth 1 -type d -name 'zapret2-v*' | head -n1)"
  fi
  if [ -z "$extract_dir" ] || [ ! -d "$extract_dir" ]; then
      echo -e "${red}После распаковки не найден каталог zapret2-v*.${plain}"
+     rm -rf "$workdir"
      return 1
  fi
- if [ "$extract_dir" != "zapret2-v$VER" ]; then
-     echo -e "${yellow}Используется архив zapret2 из Яндекс.Диска: $extract_dir вместо выбранной версии $VER.${plain}"
+ if [ "$(basename "$extract_dir")" != "zapret2-v$VER" ]; then
+     echo -e "${yellow}Используется архив zapret2 из Яндекс.Диска: $(basename "$extract_dir") вместо выбранной версии $VER.${plain}"
  fi
- mv "$extract_dir" zapret2
- if [ ! -f /tmp/zapret2/install_bin.sh ] || [ ! -f /tmp/zapret2/install_easy.sh ]; then
+ mv "$extract_dir" "$workdir/zapret2"
+ if [ ! -f "$workdir/zapret2/install_bin.sh" ] || [ ! -f "$workdir/zapret2/install_easy.sh" ]; then
      echo -e "${red}Архив zapret2 распакован некорректно: нет install_bin.sh или install_easy.sh.${plain}"
+     rm -rf "$workdir"
      return 1
  fi
- sh /tmp/zapret2/install_bin.sh
- find /tmp/zapret2/binaries/* -maxdepth 0 -type d ! -name "$(basename "$(dirname "$(readlink /tmp/zapret2/nfq2/nfqws2)")")" -exec rm -rf {} +
+ sh "$workdir/zapret2/install_bin.sh"
+ find "$workdir/zapret2/binaries"/* -maxdepth 0 -type d ! -name "$(basename "$(dirname "$(readlink "$workdir/zapret2/nfq2/nfqws2")")")" -exec rm -rf {} +
+ z2r_prune_staged_binaries "$workdir/zapret2"
+ z2r_prune_staged_sources "$workdir/zapret2"
+ rm -rf "$workdir/zapret2/docs"
+ rm -f "$workdir/zapret2/files/fake"/*
  rm -rf /opt/zapret2
- mv zapret2 /opt/zapret2
+ mv "$workdir/zapret2" /opt/zapret2
+ rm -rf "$workdir"
  if [ ! -f /opt/zapret2/install_easy.sh ]; then
      echo -e "${red}zapret2 установлен некорректно: нет /opt/zapret2/install_easy.sh.${plain}"
      return 1
  fi
  set_zapret2_init
+}
+
+z2r_prune_staged_binaries() {
+ local base="$1"
+ local link target src keep_file
+ local keep_list=""
+ local arch_dir=""
+ local file
+
+ for link in "$base/nfq2/nfqws2" "$base/ip2net/ip2net" "$base/mdig/mdig"; do
+  [ -L "$link" ] || continue
+  target="$(readlink "$link")" || continue
+  case "$target" in
+   /*) src="$target" ;;
+   *) src="$(dirname "$link")/$target" ;;
+  esac
+  [ -f "$src" ] || continue
+  arch_dir="$(dirname "$src")"
+  keep_file="$(basename "$src")"
+  case " $keep_list " in
+   *" $keep_file "*) ;;
+   *) keep_list="$keep_list $keep_file" ;;
+  esac
+ done
+
+ [ -n "$arch_dir" ] || return 0
+ [ -d "$arch_dir" ] || return 0
+
+ for file in "$arch_dir"/*; do
+  [ -f "$file" ] || continue
+  case " $keep_list " in
+   *" $(basename "$file") "*) ;;
+   *) rm -f "$file" ;;
+  esac
+ done
+
+ echo -e "${green}В /opt/zapret2/binaries будет оставлен только выбранный набор:$(printf '%s' "$keep_list").${plain}"
+}
+
+z2r_prune_staged_sources() {
+ local base="$1"
+
+ find "$base/nfq2" -mindepth 1 ! -name nfqws2 -exec rm -rf {} + 2>/dev/null || true
+ find "$base/ip2net" -mindepth 1 ! -name ip2net -exec rm -rf {} + 2>/dev/null || true
+ find "$base/mdig" -mindepth 1 ! -name mdig -exec rm -rf {} + 2>/dev/null || true
+ rm -f "$base/Makefile"
 }
 
 #Запуск установочных скриптов и перезагрузка
