@@ -200,7 +200,8 @@ function circular_locked(ctx, desync)
   end
 
   local proto = desync_proto(desync)
-  local profile = desync_profile_key(desync)
+  local base_profile = desync_profile_key(desync)
+  local profile = base_profile
   local host
   if allow_nohost_enabled then
     host = desync_hostname(desync)
@@ -219,6 +220,12 @@ function circular_locked(ctx, desync)
   end
 
   local locked = locked_strategy_for_profile(profile, proto)
+  if (not locked) and profile ~= base_profile then
+    locked = locked_strategy_for_profile(base_profile, proto)
+    if locked then
+      DLOG("circular_locked: fallback lock profile="..base_profile.." for host profile="..profile)
+    end
+  end
   if locked and locked >= 1 and locked <= hrec.ctstrategy then
     hrec.nstrategy = locked
     DLOG("circular_locked: locked strategy "..hrec.nstrategy.." profile="..profile)
