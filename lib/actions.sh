@@ -1108,9 +1108,355 @@ backup_check_blobs() {
   return "$missing"
 }
 
+# =============================================================================
+# Умный перенос настроек (режим 3 восстановления).
+# Неразрушающий перенос: живой /opt/zapret2/config НЕ заменяется.
+# Старый config из бэкапа — только источник данных для чтения.
+# Переносятся: порты NFQWS2_PORTS_*, blob-файлы (по совпадению имён),
+# флаги пунктов 13/18/19/20. Применяются штатные sed-паттерны проекта
+# (логическое ядро toggle_* / menu_action_toggle_*), но параметризованно:
+# каждый «сеттер» принимает конкретный cfg и желаемое состояние.
+# =============================================================================
+
+# Детектор расширенного синтаксиса sed: -E (GNU/modern BusyBox) или -r (старый).
+# Печатает флаг в stdout. Повторяет приём из menu_action_set_wg_blob().
+backup_smart_sed_ereg() {
+  if printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
+    printf '%s' "-E"
+  else
+    printf '%s' "-r"
+  fi
+}
+
+# Точечный перенос портов NFQWS2_PORTS_TCP / NFQWS2_PORTS_UDP.
+# Значения целиком берутся из старого конфига и записываются в новый через
+# штатный config_set_var. Для TCP дополнительно синхронизируется --filter-tcp
+# блока RKN через ports_set_rkn_filter() — как при ручном добавлении портов.
+backup_smart_apply_ports() {
+  local old_cfg="$1" new_cfg="$2"
+  local old_tcp old_udp new_tcp_user
+
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+
+  old_tcp="$(config_get_var "$old_cfg" NFQWS2_PORTS_TCP)"
+  old_udp="$(config_get_var "$old_cfg" NFQWS2_PORTS_UDP)"
+
+  if [ -n "$old_tcp" ]; then
+    config_set_var "$new_cfg" NFQWS2_PORTS_TCP "$old_tcp"
+    # Синхронизация --filter-tcp блока RKN = пользовательские порты + база.
+    ports_split "$old_tcp" "80"
+    new_tcp_user="$_PORTS_USER"
+    ports_set_rkn_filter "$new_cfg" "$new_tcp_user"
+  fi
+  if [ -n "$old_udp" ]; then
+    config_set_var "$new_cfg" NFQWS2_PORTS_UDP "$old_udp"
+  fi
+  return 0
+}
+
+# Синхронизация blob-файлов по совпадению имён + синхронизация режима maxru.
+# Блоб прописывается в конфиге в ДВУХ местах (см. menu_action_set_tls_blob):
+#   1. Декларация: --blob=maxru:@/opt/zapret2/files/fake/ФАЙЛ
+#   2. Ссылки в стратегиях: blob=fake_default_tls ↔ blob=maxru в --lua-desync=
+# Шаг 1: переносятся декларации для имён, есть и в старом, и в новом (файл
+#   должен физически существовать на устройстве). Новые блобы не затрагиваются.
+# Шаг 2: если режим maxru в старом конфиге отличается от нового — переключаем
+#   теми же sed, что и menu_action_set_tls_blob() (кроме strategy=26).
+backup_smart_apply_blobs() {
+  local old_cfg="$1" new_cfg="$2"
+  local tmp_old tmp_new name oldfile newfile ereg
+  local old_mode new_mode
+
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+  ereg="$(backup_smart_sed_ereg)"
+  tmp_old="/tmp/z4r_smart_old_$$"
+  tmp_new="/tmp/z4r_smart_new_$$"
+
+  # --- Шаг 1: перенос деклараций --blob=NAME:@.../FILE по совпадению имён ---
+  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$old_cfg" | sort -u > "$tmp_old"
+  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$new_cfg" | sort -u > "$tmp_new"
+
+  while read -r name oldfile; do
+    [ -n "$name" ] || continue
+    [ -n "$oldfile" ] || continue
+    # Только имена, присутствующие в новом конфиге.
+    grep -q "^${name} " "$tmp_new" || continue
+    # Не ломаем конфиг: переносим только существующие на устройстве файлы.
+    [ -f "/opt/zapret2/files/fake/$oldfile" ] || continue
+    # Текущий файл этого блоба в новом конфиге.
+    newfile="$(sed -n "s#.*--blob=${name}:@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1#p" "$new_cfg" | head -n1)"
+    [ "$newfile" = "$oldfile" ] && continue
+    # Замена пути файла для данного имени блоба (строка объявления).
+    sed -i $ereg "s#(--blob=${name}:@/opt/zapret2/files/fake/)[^[:space:]]+#\\1${oldfile}#g" "$new_cfg"
+  done < "$tmp_old"
+
+  rm -f "$tmp_old" "$tmp_new"
+
+  # --- Шаг 2: синхронизация режима maxru (ссылки в --lua-desync= строках) ---
+  # config_tls_blob_mode_value() определяет: maxru / fake_default_tls / mixed.
+  old_mode="$(config_tls_blob_mode_value "$old_cfg")"
+  new_mode="$(config_tls_blob_mode_value "$new_cfg")"
+
+  # Режимы совпадают или старый неоднозначен — ничего делать не нужно.
+  [ "$old_mode" = "$new_mode" ] && return 0
+  [ "$old_mode" = "mixed" ] && return 0
+  [ "$old_mode" = "не определён" ] && return 0
+
+  # Переключаем режим в новом конфиге теми же sed, что и menu_action_set_tls_blob().
+  if [ "$old_mode" = "maxru" ]; then
+    # Включаем maxru: fake_default_tls → maxru в lua-desync (кроме strategy=26).
+    sed -i $ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$new_cfg"
+  elif [ "$old_mode" = "fake_default_tls" ]; then
+    # Возвращаем default: maxru → fake_default_tls в lua-desync (кроме strategy=26).
+    sed -i $ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)maxru#\1fake_default_tls#g; }' "$new_cfg"
+  fi
+
+  return 0
+}
+
+# --- Программные «сеттеры» состояний (логическое ядро тумблеров) ---
+# Каждый принимает cfg и желаемое состояние (1=вкл, 0=выкл) и применяет
+# точечные sed-замены только к указанному файлу (без интерактивного read).
+
+# Пункт 13: безразборный режим (fallback). --skip в блоках #Z2R_FALLBACK*.
+# Повторяет логическое ядро toggle_fallback_mode(), но для одного cfg.
+backup_smart_set_fallback() {
+  local cfg="$1" want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--skip[[:space:]]\+//' "$cfg"
+    sed -i '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/ s/^[[:space:]]*--skip[[:space:]]\+//' "$cfg"
+  else
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--filter-tcp=443 --filter-l7=tls/--skip --filter-tcp=443 --filter-l7=tls/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--filter-tcp=443$/--skip --filter-tcp=443/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/ s/^[[:space:]]*--filter-tcp=80 --filter-l7=http/--skip --filter-tcp=80 --filter-l7=http/' "$cfg"
+  fi
+}
+
+# Пункт 18: защита от RST-инъекций. circular_locked <-> rst_guard_locked (key 1,2,3,4,8,9).
+# Повторяет логическое ядро toggle_rst_guard_mode(), но для одного cfg.
+backup_smart_set_rst_guard() {
+  local cfg="$1" want_on="$2"
+  local key
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--filter-tcp=443 --filter-l7=tls$/--filter-tcp=443/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--skip --filter-tcp=443 --filter-l7=tls$/--skip --filter-tcp=443/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello$/--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty/' "$cfg"
+    for key in 1 2 3 4 8 9; do
+      sed -i "s/--lua-desync=circular_locked:key=$key/--lua-desync=rst_guard_locked:key=$key/g" "$cfg"
+    done
+  else
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--filter-tcp=443$/--filter-tcp=443 --filter-l7=tls/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--skip --filter-tcp=443$/--skip --filter-tcp=443 --filter-l7=tls/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty$/--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello/' "$cfg"
+    for key in 1 2 3 4 8 9; do
+      sed -i "s/--lua-desync=rst_guard_locked:key=$key/--lua-desync=circular_locked:key=$key/g" "$cfg"
+    done
+  fi
+}
+
+# Пункт 19: --reasm-disable (вставка/удаление строки после NFQWS2_OPT=").
+# Повторяет логическое ядро menu_action_toggle_reasm_disable().
+backup_smart_set_reasm() {
+  local cfg="$1" want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    grep -q '^[[:space:]]*--reasm-disable[[:space:]]*$' "$cfg" || \
+      sed -i '/^NFQWS2_OPT="/a --reasm-disable' "$cfg"
+  else
+    sed -i '/^[[:space:]]*--reasm-disable[[:space:]]*$/d' "$cfg"
+  fi
+}
+
+# Пункт 19: стратегия WireGuard (--skip перед --filter-l7=wireguard).
+# Повторяет логическое ядро menu_action_toggle_wireguard_fake().
+backup_smart_set_wireguard() {
+  local cfg="$1" want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/ s/^[[:space:]]*--skip[[:space:]]\+--filter-l7=wireguard/--filter-l7=wireguard/' "$cfg"
+  else
+    sed -i '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/ s/^[[:space:]]*--filter-l7=wireguard/--skip --filter-l7=wireguard/' "$cfg"
+  fi
+}
+
+# Пункт 19: фейки QUIC-initial на 443 (--skip перед --filter-udp=443).
+# Повторяет логическое ядро menu_action_toggle_quic443_fake().
+backup_smart_set_quic443() {
+  local cfg="$1" want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/ s/^[[:space:]]*--skip[[:space:]]\+--filter-udp=443[[:space:]]*$/--filter-udp=443/' "$cfg"
+  else
+    sed -i '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/ s/^[[:space:]]*--filter-udp=443[[:space:]]*$/--skip --filter-udp=443/' "$cfg"
+  fi
+}
+
+# Пункт 19: голосовая связь (--skip перед --filter-udp= в блоке голосовой связи).
+# Повторяет логическое ядро menu_action_toggle_bolvan_ports() (config-часть).
+backup_smart_set_voice() {
+  local cfg="$1" want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--skip[[:space:]]\+--filter-udp=/--filter-udp=/' "$cfg"
+  else
+    sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=/--skip --filter-udp=/' "$cfg"
+  fi
+}
+
+# Пункт 19: игровой UDP (--skip перед --filter-udp=1026 в блоке игрового UDP).
+# Повторяет логическое ядро menu_action_toggle_udp_range() (config-часть).
+backup_smart_set_udp_games() {
+  local cfg="$1" want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/ s/^--skip[[:space:]]\+--filter-udp=1026/--filter-udp=1026/' "$cfg"
+  else
+    sed -i '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=1026/--skip --filter-udp=1026/' "$cfg"
+  fi
+}
+
+# Пункт 19: MODE_FILTER (hostlist/autohostlist) + плейсхолдер <HOSTLIST> для RKN.
+# Повторяет логическое ядро toggle_hostlist_mode(), но для одного указанного cfg.
+backup_smart_set_hostlist() {
+  local cfg="$1" want_auto="$2"
+  if [ "$want_auto" = "1" ]; then
+    sed -i 's/^MODE_FILTER=hostlist/MODE_FILTER=autohostlist/' "$cfg"
+    sed -i 's#\(--hostlist=/opt/zapret2/extra_strats/TCP_RKN_list\.txt\)#\1 <HOSTLIST>#g' "$cfg"
+  else
+    sed -i 's/^MODE_FILTER=autohostlist/MODE_FILTER=hostlist/' "$cfg"
+    sed -i 's#\(--hostlist=/opt/zapret2/extra_strats/TCP_RKN_list\.txt\) <HOSTLIST>#\1#g' "$cfg"
+  fi
+}
+
+# Детектор состояния WireGuard в указанном cfg: 1=вкл, 0=выкл, пусто=блока нет.
+backup_smart_wg_state() {
+  local cfg="$1" blk
+  blk="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' "$cfg" 2>/dev/null)"
+  if printf "%s\n" "$blk" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
+    printf '0'
+  elif printf "%s\n" "$blk" | grep -q -- '--filter-l7=wireguard'; then
+    printf '1'
+  fi
+}
+
+# Детектор состояния QUIC443 в указанном cfg: 1=вкл, 0=выкл, пусто=блока нет.
+backup_smart_quic443_state() {
+  local cfg="$1" blk
+  blk="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' "$cfg" 2>/dev/null)"
+  if printf "%s\n" "$blk" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
+    printf '1'
+  elif printf "%s\n" "$blk" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$'; then
+    printf '0'
+  fi
+}
+
+# Оркестратор флагов: читает состояния из старого конфига и применяет к новому.
+# Порядок важен: RST-защита меняет формат --filter-tcp в блоке fallback,
+# поэтому применяется раньше безразборного режима (fallback-сеттер умеет оба формата).
+backup_smart_apply_flags() {
+  local old_cfg="$1" new_cfg="$2"
+  local s_old s_new v_old v_new
+
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+
+  # --- Пункт 18: RST-защита (первой — меняет формат filter-tcp) ---
+  s_old="$(config_mode_text rst_guard "$old_cfg")"
+  s_new="$(config_mode_text rst_guard "$new_cfg")"
+  if [ "$s_old" != "$s_new" ]; then
+    if [ "$s_old" = "включен" ]; then backup_smart_set_rst_guard "$new_cfg" 1
+    else backup_smart_set_rst_guard "$new_cfg" 0; fi
+  fi
+
+  # --- Пункт 13: безразборный режим (fallback) ---
+  s_old="$(config_mode_text fallback "$old_cfg")"
+  s_new="$(config_mode_text fallback "$new_cfg")"
+  if [ "$s_old" != "$s_new" ]; then
+    if [ "$s_old" = "включен" ]; then backup_smart_set_fallback "$new_cfg" 1
+    else backup_smart_set_fallback "$new_cfg" 0; fi
+  fi
+
+  # --- Пункт 19: --reasm-disable ---
+  s_old="$(config_mode_text reasm_disable "$old_cfg")"
+  s_new="$(config_mode_text reasm_disable "$new_cfg")"
+  if [ "$s_old" != "$s_new" ]; then
+    if [ "$s_old" = "включено" ]; then backup_smart_set_reasm "$new_cfg" 1
+    else backup_smart_set_reasm "$new_cfg" 0; fi
+  fi
+
+  # --- Пункт 19: голосовая связь ---
+  s_old="$(config_mode_text voice "$old_cfg")"
+  s_new="$(config_mode_text voice "$new_cfg")"
+  if [ "$s_old" != "$s_new" ]; then
+    if [ "$s_old" = "Кастомные стратегии" ]; then backup_smart_set_voice "$new_cfg" 1
+    else backup_smart_set_voice "$new_cfg" 0; fi
+  fi
+
+  # --- Пункт 19: игровой UDP ---
+  s_old="$(config_mode_text udp_games "$old_cfg")"
+  s_new="$(config_mode_text udp_games "$new_cfg")"
+  if [ "$s_old" != "$s_new" ]; then
+    if [ "$s_old" = "Включен" ]; then backup_smart_set_udp_games "$new_cfg" 1
+    else backup_smart_set_udp_games "$new_cfg" 0; fi
+  fi
+
+  # --- Пункт 19: WireGuard ---
+  v_old="$(backup_smart_wg_state "$old_cfg")"
+  v_new="$(backup_smart_wg_state "$new_cfg")"
+  if [ -n "$v_old" ] && [ -n "$v_new" ] && [ "$v_old" != "$v_new" ]; then
+    backup_smart_set_wireguard "$new_cfg" "$v_old"
+  fi
+
+  # --- Пункт 19: QUIC443 ---
+  v_old="$(backup_smart_quic443_state "$old_cfg")"
+  v_new="$(backup_smart_quic443_state "$new_cfg")"
+  if [ -n "$v_old" ] && [ -n "$v_new" ] && [ "$v_old" != "$v_new" ]; then
+    backup_smart_set_quic443 "$new_cfg" "$v_old"
+  fi
+
+  # --- Пункт 19: FWTYPE ---
+  v_old="$(config_get_var "$old_cfg" FWTYPE)"
+  v_new="$(config_get_var "$new_cfg" FWTYPE)"
+  if [ -n "$v_old" ] && [ "$v_old" != "$v_new" ]; then
+    config_set_var "$new_cfg" FWTYPE "$v_old"
+  fi
+
+  # --- Пункт 19/20: FLOWOFFLOAD ---
+  v_old="$(config_get_var "$old_cfg" FLOWOFFLOAD)"
+  v_new="$(config_get_var "$new_cfg" FLOWOFFLOAD)"
+  if [ -n "$v_old" ] && [ "$v_old" != "$v_new" ]; then
+    config_set_var "$new_cfg" FLOWOFFLOAD "$v_old"
+  fi
+
+  # --- Пункт 19: MODE_FILTER (hostlist/autohostlist) ---
+  s_old="$(config_mode_text hostlist "$old_cfg")"
+  s_new="$(config_mode_text hostlist "$new_cfg")"
+  if [ "$s_old" != "$s_new" ]; then
+    if [ "$s_old" = "авто" ]; then backup_smart_set_hostlist "$new_cfg" 1
+    else backup_smart_set_hostlist "$new_cfg" 0; fi
+  fi
+
+  return 0
+}
+
+# Полный умный перенос: порты + blob'ы + флаги. Живой config не заменяется.
+# Аргументы: old_cfg (из бэкапа), new_cfg (живой /opt/zapret2/config).
+menu_action_backup_restore_smart() {
+  local old_cfg="$1" new_cfg="$2"
+
+  [ -f "$old_cfg" ] || { echo -e "${red}В архиве нет config — умный перенос невозможен.${plain}"; return 1; }
+  [ -f "$new_cfg" ] || { echo -e "${red}Живой config не найден: $new_cfg${plain}"; return 1; }
+
+  echo -e "${cyan}Умный перенос настроек (живой config не заменяется)...${plain}"
+  backup_smart_apply_ports "$old_cfg" "$new_cfg"
+  echo -e "${green}  • Порты NFQWS2_PORTS_TCP/UDP перенесены.${plain}"
+  backup_smart_apply_blobs "$old_cfg" "$new_cfg"
+  echo -e "${green}  • Blob-файлы синхронизированы по совпадению имён.${plain}"
+  backup_smart_apply_flags "$old_cfg" "$new_cfg"
+  echo -e "${green}  • Флаги (п.13/18/19/20) применены к живому config.${plain}"
+  return 0
+}
+
 # Восстановление из выбранного архива.
 # Режим 1 — полное: config + списки доменов + номера стратегий (с проверкой blob).
 # Режим 2 — только пользовательские списки доменов и выбранные номера стратегий.
+# Режим 3 — умный перенос: живой config НЕ заменяется; из бэкапа точечно
+#   переносятся порты NFQWS2_PORTS_*, blob-файлы (по совпадению имён) и флаги
+#   пунктов 13/18/19/20 через штатные sed-паттерны проекта.
 menu_action_backup_restore() {
   local archive restore_dir mode rel src dst tmp_list was_running
 
@@ -1123,11 +1469,13 @@ menu_action_backup_restore() {
   echo -e "${yellow}Режим восстановления:${plain}"
   echo -e "  ${Fcyan}1${plain} — ${green}Полное${plain} (config + списки доменов + номера стратегий)"
   echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
+  echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
   echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
   read -re -p "Ваш выбор: " mode
   case "$mode" in
     1) ;;
     2) ;;
+    3) ;;
     *) echo -e "${yellow}Восстановление отменено.${plain}"; pause_enter; return 0 ;;
   esac
 
@@ -1179,6 +1527,15 @@ menu_action_backup_restore() {
       fi
     else
       echo -e "${yellow}В архиве нет config — текущий config не изменён.${plain}"
+    fi
+  elif [ "$mode" = "3" ]; then
+    # Умный перенос: живой /opt/zapret2/config не заменяется. Старый config из
+    # архива — только источник данных. Проверка blob не нужна: синхронизация
+    # идёт по совпадению имён и переносит только существующие на устройстве файлы.
+    if ! menu_action_backup_restore_smart "$restore_dir/config" /opt/zapret2/config; then
+      rm -rf "$restore_dir"
+      pause_enter
+      return 1
     fi
   else
     echo -e "${yellow}Config не затронут (режим 2 — списки доменов и номера стратегий).${plain}"
