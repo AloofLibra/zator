@@ -516,6 +516,44 @@ advanced_settings_submenu() {
   done
 }
 
+backup_submenu() {
+  local count
+  while true; do
+    clear -x
+    count="$(backup_count_archives)"
+    echo -e "${cyan}--- Управление бэкапами ---${plain}"
+    echo -e "${yellow}Каталог: ${plain}${green}/opt/zator_backup${plain}"
+    echo -e "${yellow}Архивов: ${plain}${green}${count}${plain}"
+    echo ""
+    submenu_item "1" "Создать новый бэкап"
+    submenu_item "2" "Восстановить из бэкапа"
+    submenu_item "3" "Удалить старые бэкапы"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+
+    case "$ans" in
+      "1")
+        menu_action_backup_create || true
+        ;;
+      "2")
+        menu_action_backup_restore || true
+        ;;
+      "3")
+        menu_action_backup_delete || true
+        ;;
+      "0"|"")
+        return
+        ;;
+      *)
+        echo -e "${yellow}Неверный ввод.${plain}"
+        sleep 1
+        ;;
+    esac
+  done
+}
+
 beginner_guide_menu() {
   clear -x
   echo -e "${Bblue}${Fplain} Не знаешь, с чего начать? Есть проблемы? ${plain}"
