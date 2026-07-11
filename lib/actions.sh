@@ -943,3 +943,298 @@ ports_menu_status() {
     printf 'дефолт'
   fi
 }
+
+Z2R_BACKUP_DIR="/opt/zator_backup"
+
+z2r_backup_state_files() {
+  cat <<'EOF'
+lists/netrogat.txt
+extra_strats/TCP_Custom.txt
+extra_strats/cache/orchestra/locked.tsv
+extra_strats/cache/orchestra/locked.manual.tsv
+extra_strats/cache/orchestra/auto_locked.tsv
+EOF
+}
+
+backup_build_list_file() {
+  local out="$1"
+  : > "$out"
+  if [ -d "$Z2R_BACKUP_DIR" ]; then
+    find "$Z2R_BACKUP_DIR" -maxdepth 1 -type f -name 'z2r_backup_*.tar' 2>/dev/null | sort > "$out"
+  fi
+  return 0
+}
+
+backup_count_archives() {
+  local list_file n
+  list_file="/tmp/z2r_backup_cnt_$$"
+  backup_build_list_file "$list_file"
+  n="$(wc -l < "$list_file" | tr -d '[:space:]')"
+  rm -f "$list_file"
+  [ -n "$n" ] || n=0
+  printf '%s' "$n"
+}
+
+backup_pick_archive() {
+  local prompt="$1"
+  local list_file count choice i selected
+  BACKUP_PICKED=""
+  list_file="/tmp/z2r_backup_pick_$$"
+  backup_build_list_file "$list_file"
+  count="$(wc -l < "$list_file" | tr -d '[:space:]')"
+  [ -n "$count" ] || count=0
+
+  if [ "$count" -eq 0 ]; then
+    echo -e "${yellow}Архивы бэкапов не найдены в $Z2R_BACKUP_DIR${plain}"
+    rm -f "$list_file"
+    pause_enter
+    return 1
+  fi
+
+  echo -e "${yellow}Доступные архивы бэкапов:${plain}"
+  i=0
+  while IFS= read -r f; do
+    i=$((i+1))
+    printf "  ${Fcyan}%s.${plain} ${green}%s${plain}\n" "$i" "$(basename "$f")"
+  done < "$list_file"
+  echo -e "  ${Fyellow}0.${plain} ${Fyellow}Отмена${plain}"
+  echo ""
+  read -re -p "$prompt" choice
+
+  if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+    rm -f "$list_file"
+    return 1
+  fi
+  if ! printf '%s' "$choice" | grep -Eq '^[0-9]+$'; then
+    echo -e "${red}Некорректный ввод.${plain}"
+    rm -f "$list_file"
+    pause_enter
+    return 1
+  fi
+  if [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+    echo -e "${red}Номер вне диапазона.${plain}"
+    rm -f "$list_file"
+    pause_enter
+    return 1
+  fi
+
+  selected="$(sed -n "${choice}p" "$list_file")"
+  rm -f "$list_file"
+  BACKUP_PICKED="$selected"
+  return 0
+}
+
+# Создание нового бэкапа с временной меткой.
+# Сбор во временную директорию /tmp, упаковка в .tar (BusyBox), перемещение в /opt/zator_backup.
+menu_action_backup_create() {
+  local ts archive stage rel src tmp_list
+  ts="$(date +%Y%m%d_%H%M%S)"
+  archive="$Z2R_BACKUP_DIR/z2r_backup_${ts}.tar"
+  stage="/tmp/z2r_backup_stage_$$"
+  tmp_list="/tmp/z2r_backup_state_$$"
+
+  rm -rf "$stage"
+  if ! mkdir -p "$stage"; then
+    echo -e "${red}Не удалось создать временную директорию $stage.${plain}"
+    return 1
+  fi
+
+  # Активный рабочий конфиг (всегда включается в архив).
+  if [ -f /opt/zapret2/config ]; then
+    if ! cp -f /opt/zapret2/config "$stage/config"; then
+      rm -rf "$stage" "$tmp_list"
+      echo -e "${red}Ошибка копирования config.${plain}"
+      return 1
+    fi
+  fi
+
+  # Пользовательские списки/стратегии.
+  z2r_backup_state_files > "$tmp_list"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    src="/opt/zapret2/$rel"
+    [ -f "$src" ] || continue
+    mkdir -p "$stage/$(dirname "$rel")"
+    if ! cp -f "$src" "$stage/$rel"; then
+      rm -rf "$stage" "$tmp_list"
+      echo -e "${red}Ошибка копирования $rel.${plain}"
+      return 1
+    fi
+  done < "$tmp_list"
+  rm -f "$tmp_list"
+
+  if ! mkdir -p "$Z2R_BACKUP_DIR"; then
+    rm -rf "$stage"
+    echo -e "${red}Не удалось создать каталог $Z2R_BACKUP_DIR.${plain}"
+    return 1
+  fi
+
+  if ! tar -cf "$archive" -C "$stage" . 2>/dev/null; then
+    rm -rf "$stage" "$archive"
+    echo -e "${red}Ошибка упаковки архива.${plain}"
+    return 1
+  fi
+  rm -rf "$stage"
+
+  echo -e "${green}Бэкап создан: $(basename "$archive")${plain}"
+  echo -e "${yellow}Путь: $archive${plain}"
+  pause_enter
+  return 0
+}
+
+# Проверка наличия всех blob-файлов, на которые ссылается config.
+# Если хотя бы один файл отсутствует — печатает его и возвращает 1 (импорт недопустим).
+# Если все на месте — возвращает 0.
+backup_check_blobs() {
+  local cfg="$1"
+  local tmp_pairs name file missing
+  [ -f "$cfg" ] || return 0
+
+  tmp_pairs="/tmp/z4r_blob_pairs_$$"
+  missing=0
+  # Извлекаем пары "ИМЯ ФАЙЛ" из строк --blob=NAME:@/opt/zapret2/files/fake/FILE
+  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$cfg" \
+    | sort -u > "$tmp_pairs"
+
+  while read -r name file; do
+    [ -n "$name" ] || continue
+    [ -n "$file" ] || continue
+    if [ ! -f "/opt/zapret2/files/fake/$file" ]; then
+      echo -e "${red}Blob ${name}: файл ${file} отсутствует на устройстве.${plain}"
+      missing=1
+    fi
+  done < "$tmp_pairs"
+  rm -f "$tmp_pairs"
+  return "$missing"
+}
+
+# Восстановление из выбранного архива.
+# Режим 1 — полное: config + списки доменов + номера стратегий (с проверкой blob).
+# Режим 2 — только пользовательские списки доменов и выбранные номера стратегий.
+menu_action_backup_restore() {
+  local archive restore_dir mode rel src dst tmp_list was_running
+
+  if ! backup_pick_archive "Выберите номер архива для восстановления: "; then
+    return 0
+  fi
+  archive="$BACKUP_PICKED"
+  echo ""
+
+  echo -e "${yellow}Режим восстановления:${plain}"
+  echo -e "  ${Fcyan}1${plain} — ${green}Полное${plain} (config + списки доменов + номера стратегий)"
+  echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
+  echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
+  read -re -p "Ваш выбор: " mode
+  case "$mode" in
+    1) ;;
+    2) ;;
+    *) echo -e "${yellow}Восстановление отменено.${plain}"; pause_enter; return 0 ;;
+  esac
+
+  restore_dir="/tmp/z4r_restore_$$"
+  rm -rf "$restore_dir"
+  if ! mkdir -p "$restore_dir"; then
+    echo -e "${red}Не удалось создать временную директорию.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  if ! tar -xf "$archive" -C "$restore_dir" 2>/dev/null; then
+    rm -rf "$restore_dir"
+    echo -e "${red}Не удалось распаковать архив: $(basename "$archive")${plain}"
+    pause_enter
+    return 1
+  fi
+
+  # Режим 1: предварительная проверка blob-файлов. Если config из архива
+  # ссылается на отсутствующий blob — прерываем импорт, ничего не меняем.
+  if [ "$mode" = "1" ] && [ -f "$restore_dir/config" ]; then
+    if ! backup_check_blobs "$restore_dir/config"; then
+      rm -rf "$restore_dir"
+      echo ""
+      echo -e "${red}Восстановление прервано: отсутствуют blob-файлы.${plain}"
+      echo -e "${yellow}Установите недостающие blob-файлы или обновите проект перед восстановлением.${plain}"
+      pause_enter
+      return 1
+    fi
+  fi
+
+  # Останавливаем zapret2 перед накатом файлов.
+  was_running=0
+  if pidof nfqws2 >/dev/null 2>&1; then
+    was_running=1
+  fi
+  "$ZAPRET2_INIT" stop 2>/dev/null || true
+
+  # Режим 1: config — все переключения пользователя физически живут внутри config.
+  if [ "$mode" = "1" ]; then
+    if [ -f "$restore_dir/config" ]; then
+      if cp -f "$restore_dir/config" /opt/zapret2/config; then
+        echo -e "${green}config восстановлен.${plain}"
+      else
+        rm -rf "$restore_dir"
+        echo -e "${red}Ошибка восстановления config.${plain}"
+        pause_enter
+        return 1
+      fi
+    else
+      echo -e "${yellow}В архиве нет config — текущий config не изменён.${plain}"
+    fi
+  else
+    echo -e "${yellow}Config не затронут (режим 2 — списки доменов и номера стратегий).${plain}"
+  fi
+
+  # Пользовательские списки/состояния/блокировки (оба режима).
+  tmp_list="/tmp/z2r_state_list_$$"
+  z2r_backup_state_files > "$tmp_list"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    src="$restore_dir/$rel"
+    [ -f "$src" ] || continue
+    dst="/opt/zapret2/$rel"
+    mkdir -p "$(dirname "$dst")"
+    if ! cp -f "$src" "$dst"; then
+      rm -rf "$restore_dir" "$tmp_list"
+      echo -e "${red}Ошибка восстановления $rel.${plain}"
+      pause_enter
+      return 1
+    fi
+  done < "$tmp_list"
+  rm -f "$tmp_list"
+  echo -e "${green}Списки доменов и номера стратегий восстановлены.${plain}"
+
+  rm -rf "$restore_dir"
+
+  # Перезапуск, если zapret2 был активен.
+  if [ "$was_running" = "1" ]; then
+    "$ZAPRET2_INIT" start 2>/dev/null || true
+    echo -e "${green}zapret2 перезапущен для применения восстановленных настроек.${plain}"
+  fi
+
+  echo -e "${green}Восстановление завершено.${plain}"
+  pause_enter
+  return 0
+}
+
+menu_action_backup_delete() {
+  local archive confirm
+
+  if ! backup_pick_archive "Выберите номер архива для удаления: "; then
+    return 0
+  fi
+  archive="$BACKUP_PICKED"
+  echo ""
+  echo -e "${yellow}Удалить архив ${green}$(basename "$archive")${yellow} безвозвратно?${plain}"
+  echo -e "  ${Fcyan}1${plain} — да, удалить"
+  echo -e "  ${Fyellow}0${plain} — отмена"
+  read -re -p "Ваш выбор: " confirm
+
+  if [ "$confirm" = "1" ]; then
+    rm -f "$archive"
+    echo -e "${green}Архив удалён: $(basename "$archive")${plain}"
+  else
+    echo -e "${yellow}Удаление отменено.${plain}"
+  fi
+  pause_enter
+  return 0
+}
