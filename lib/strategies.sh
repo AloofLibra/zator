@@ -1,16 +1,20 @@
 # Функция для генерации строки статуса стратегий
 get_current_strategies_info() {
     local s_udp s_tcp s_gv s_rkn
-    s_udp="$(orch_locked_get 5 udp)"
-    s_tcp="$(orch_locked_get 1 tls)"
-    s_gv="$(orch_locked_get 2 tls)"
-    s_rkn="$(orch_locked_get 3 tls)"
+    s_udp="$(profile_state_display 5 udp)"
+    s_tcp="$(profile_state_display 1 tls)"
+    s_gv="$(profile_state_display 2 tls)"
+    s_rkn="$(profile_state_display 3 tls)"
 
     colorize_num() {
-        if ! printf "%s" "$1" | grep -Eq '^[0-9]+$' || [ "$1" -le 0 ]; then
-            echo "${gray}Def${plain}"
-        else
+        if [ "$1" = "auto" ]; then
+            echo "${gray}auto${plain}"
+        elif [ "$1" = "0" ]; then
+            echo "${Fyellow}0${plain}"
+        elif printf "%s" "$1" | grep -Eq '^[0-9]+$'; then
             echo "${green}$1${plain}"
+        else
+            echo "${gray}auto${plain}"
         fi
     }
 
@@ -25,6 +29,22 @@ orch_max_strategy_for_profile() {
     config_profile_max_strategy "$1"
 }
 
+profile_strategy_restart_notice() {
+    if [ -n "${ZAPRET2_INIT:-}" ] && [ -x "$ZAPRET2_INIT" ]; then
+        "$ZAPRET2_INIT" restart
+        echo -e "${green}zapret2 перезапущен для применения изменений config.${plain}"
+    else
+        echo -e "${yellow}Перезапустите zapret2, чтобы изменения config вступили в силу.${plain}"
+    fi
+}
+
+profile_strategy_restart_if_needed() {
+    if [ "$1" = "6" ]; then
+        profile_strategy_restart_notice
+    fi
+    return 0
+}
+
 orch_profile_try() {
     local profile="$1"
     local title="$2"
@@ -33,6 +53,7 @@ orch_profile_try() {
     local max_strat=""
     local start_strat=""
     local current_strat=""
+    local current_state=""
     local answer=""
     local first_proto="${proto_list%% *}"
     local -A prev_map
@@ -44,15 +65,29 @@ orch_profile_try() {
         return
     fi
 
-    current_strat="$(orch_locked_get "$profile" "$first_proto")"
-    if [ -z "$current_strat" ] || [ "$current_strat" -le 0 ]; then
+    current_state="$(profile_state_display "$profile" "$first_proto")"
+    current_strat="$current_state"
+    if [ "$current_strat" = "auto" ] || [ "$current_strat" = "0" ] || [ -z "$current_strat" ]; then
         current_strat=1
     fi
 
     echo "$title"
-    read -re -p "Введите номер стратегии (Enter - текущая $current_strat): " start_strat
+    echo "Текущее состояние: $current_state"
+    read -re -p "Введите номер стратегии (0 - отключить профиль, Enter - без изменений): " start_strat
     if [ -z "$start_strat" ]; then
-        start_strat="$current_strat"
+        echo "Без изменений."
+        return
+    fi
+    if [ "$start_strat" = "0" ]; then
+        if profile_state_set_and_apply "$profile" "$proto_list" "0" "$(get_config_file)"; then
+            echo "Профиль $profile выключен и сохранён как 0."
+            profile_strategy_restart_if_needed "$profile"
+        else
+            echo -e "${red}Не удалось выключить профиль $profile.${plain}"
+        fi
+        telemetry_notify
+        pause_enter
+        return
     fi
     if ! printf "%s" "$start_strat" | grep -Eq '^[0-9]+$'; then
         echo "Неверный номер стратегии. Начинаем с 1."
@@ -64,6 +99,7 @@ orch_profile_try() {
 
     for p in $proto_list; do
         prev_map["$p"]="$(orch_locked_get "$profile" "$p")"
+        [ "$current_state" = "0" ] && prev_map["$p"]="0"
     done
 
     for ((s=start_strat; s<=max_strat; s++)); do
@@ -92,7 +128,12 @@ orch_profile_try() {
 
         read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
         if [ "$answer" = "1" ]; then
-            echo "Стратегия $s сохранена для профиля $profile."
+            if profile_state_set_and_apply "$profile" "$proto_list" "$s" "$(get_config_file)"; then
+                echo "Стратегия $s сохранена для профиля $profile."
+                profile_strategy_restart_if_needed "$profile"
+            else
+                echo -e "${red}Не удалось сохранить стратегию $s для профиля $profile.${plain}"
+            fi
             telemetry_notify
             pause_enter
             return
@@ -104,6 +145,8 @@ orch_profile_try() {
     for p in $proto_list; do
         if [ -n "${prev_map[$p]}" ] && [ "${prev_map[$p]}" -gt 0 ]; then
             orch_locked_set "$profile" "$p" "${prev_map[$p]}"
+        elif [ "${prev_map[$p]}" = "0" ]; then
+            orch_locked_set "$profile" "$p" 0
         else
             orch_locked_clear "$profile" "$p"
         fi
@@ -113,27 +156,30 @@ orch_profile_try() {
 }
 
 get_orchestra_locks_info() {
-    local yt_tls="" gv_tls="" rkn_tls="" ds_tls="" yt_quic_udp="" voice_udp="" games_udp="" fb_http=""
+    local yt_tls="" gv_tls="" rkn_tls="" ds_tls="" yt_quic_udp="" voice_udp="" games_udp="" fb_tls="" fb_http=""
     local v=""
-    yt_tls="$(orch_locked_get 1 tls)"
-    gv_tls="$(orch_locked_get 2 tls)"
-    rkn_tls="$(orch_locked_get 3 tls)"
-    ds_tls="$(orch_locked_get 4 tls)"
-    yt_quic_udp="$(orch_locked_get 5 udp)"
-    voice_udp="$(orch_locked_get 6 udp)"
-    games_udp="$(orch_locked_get 7 udp)"
-    fb_http="$(orch_locked_get 9 http)"
+    yt_tls="$(profile_state_display 1 tls)"
+    gv_tls="$(profile_state_display 2 tls)"
+    rkn_tls="$(profile_state_display 3 tls)"
+    ds_tls="$(profile_state_display 4 tls)"
+    yt_quic_udp="$(profile_state_display 5 udp)"
+    voice_udp="$(profile_state_display 6 udp)"
+    games_udp="$(profile_state_display 7 udp)"
+    fb_tls="$(profile_state_display 8 tls)"
+    fb_http="$(profile_state_display 9 http)"
 
     fmt_status_num() {
-        v="${1:-0}"
-        if [ "$v" = "0" ]; then
+        v="${1:-auto}"
+        if [ "$v" = "auto" ]; then
+            printf "%b" "${gray}auto${plain}"
+        elif [ "$v" = "0" ]; then
             printf "%b" "${Fyellow}0${plain}"
         else
             printf "%b" "${Fcyan}${v}${plain}"
         fi
     }
 
-    printf "YT_TLS=%s GV_TLS=%s RKN_TLS=%s DS_TLS=%s YT_QUIC_UDP=%s VOICE_UDP=%s GAMES_UDP=%s FB_HTTP=%s" \
+    printf "YT_TLS=%s GV_TLS=%s RKN_TLS=%s DS_TLS=%s YT_QUIC_UDP=%s VOICE_UDP=%s GAMES_UDP=%s FB_TLS=%s FB_HTTP=%s" \
         "$(fmt_status_num "$yt_tls")" \
         "$(fmt_status_num "$gv_tls")" \
         "$(fmt_status_num "$rkn_tls")" \
@@ -141,6 +187,7 @@ get_orchestra_locks_info() {
         "$(fmt_status_num "$yt_quic_udp")" \
         "$(fmt_status_num "$voice_udp")" \
         "$(fmt_status_num "$games_udp")" \
+        "$(fmt_status_num "$fb_tls")" \
         "$(fmt_status_num "$fb_http")"
 }
 

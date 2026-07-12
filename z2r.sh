@@ -1837,6 +1837,8 @@ if [[ "$OSystem" == "entware" ]]; then
  config_keenetic_set_wan_iface_all
 fi
 
+profile_apply_all /opt/zapret2/config.default
+
 #Для x-wrt
 if [[ "$release" == "x-wrt" ]]; then
 	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' /opt/zapret2/common/installer.sh

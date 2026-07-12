@@ -69,6 +69,8 @@ menu_action_update_config_reset() {
     config_keenetic_set_wan_iface /opt/zapret2/config.default
   fi
 
+  profile_apply_all /opt/zapret2/config.default
+
   cp -f /opt/zapret2/config.default /opt/zapret2/config
   # После копирования синхронизируем рабочий конфиг, чтобы reset не терял IFACE_WAN.
   if [ "$hardware" = "keenetic" ]; then
