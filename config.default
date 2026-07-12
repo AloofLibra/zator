@@ -131,6 +131,7 @@ NFQWS2_OPT="
 --lua-desync=hostfakesplit:host=ozon.ru:tcp_ts=-1000:tcp_md5:repeats=4:strategy=27
 --lua-desync=multidisorder:pos=1,host+2,sld+2,sld+5,sniext+1,sniext+2,endhost-2:seqovl=1:strategy=28
 --lua-desync=send:repeats=2:strategy=29 --lua-desync=syndata:blob=google_www:strategy=29 --lua-desync=multisplit:seqovl=211:seqovl_pattern=tls5:strategy=29
+--lua-desync=multisplit:payload=tls_client_hello:pos=sld+1,midsld:seqovl=22:seqovl_pattern=custom:strategy=30
 
 --new
 
