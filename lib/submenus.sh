@@ -482,6 +482,9 @@ advanced_settings_submenu() {
     submenu_item "2" "Включить/выключить стратегию WireGuard. Сейчас: ${wg_label}"
     submenu_item "3" "Настройки WireGuard (повторы и blob)"
     submenu_item "4" "Фейки для всех QUIC-initial на 443 порту. Сейчас: ${quic_label}"
+    if keenetic_policy_ndmc_is_supported; then
+      submenu_item "5" "Настройка Keenetic-политики для nfqws2. Сейчас: $(get_keenetic_policy_status)"
+    fi
     submenu_item "0" "Назад"
     echo ""
 
@@ -505,6 +508,11 @@ advanced_settings_submenu() {
       "4")
         menu_action_toggle_quic443_fake || true
         ;;
+      "5")
+        if keenetic_policy_ndmc_is_supported; then
+          keenetic_policy_submenu
+        fi
+        ;;
       "0"|"")
         return
         ;;
@@ -512,6 +520,26 @@ advanced_settings_submenu() {
         echo -e "${yellow}Неверный ввод.${plain}"
         sleep 1
         ;;
+    esac
+  done
+}
+
+keenetic_policy_submenu() {
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Keenetic Policy ---${plain}"
+    echo -e "Текущее состояние: ${green}$(get_keenetic_policy_status)${plain}"
+    echo ""
+    submenu_item "1" "Задать или очистить имя политики"
+    submenu_item "2" "$( [ "$(get_keenetic_policy_mode_label)" = "Все, кроме устройств из политики" ] && echo 'Переключить режим на "Только устройства из политики"' || echo 'Переключить режим на "Все, кроме устройств из политики"' )"
+    submenu_item "0" "Назад"
+    echo ""
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      "1") menu_action_set_keenetic_policy_name; pause_enter ;;
+      "2") menu_action_toggle_keenetic_policy_mode; pause_enter ;;
+      "0"|"") return ;;
+      *) echo -e "${yellow}Неверный ввод.${plain}"; sleep 1 ;;
     esac
   done
 }
@@ -617,7 +645,7 @@ beginner_guide_menu() {
   echo ""
 
   echo -e "${Fcyan}Полезные ориентиры${plain}"
-  echo -e "- Пункт 16 меняет TLS blob; пробуй поиграться с ними, если TLS-профили работают нестабильно или не работают вовсе."
+  echo -e "- Пункт 16 меняет TLS blob; пробуй его, если TLS-профили работают нестабильно или не работают вовсе."
   echo -e "- Fallback/безразборный режим помогает в случаях когда нужно получить доступ ко множеству сайтов которых нет в списке RKN"
   echo -e "  Начни с 26 стратегии для безразборного режима. Она самая универсальная."
   echo -e "${Fcyan}Пункт 19 — Дополнительные настройки${plain}"

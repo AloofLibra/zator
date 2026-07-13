@@ -370,6 +370,10 @@ INIT_APPLY_FW=1
 #INIT_FW_PRE_DOWN_HOOK="/etc/firewall.zapret2.hook.pre_down"
 #INIT_FW_POST_DOWN_HOOK="/etc/firewall.zapret2.hook.post_down"
 
+# Keenetic policy integration. Leave POLICY_NAME empty to process all devices.
+POLICY_NAME=
+POLICY_EXCLUDE=0
+
 # do not work with ipv4
 #DISABLE_IPV4=1
 # do not work with ipv6

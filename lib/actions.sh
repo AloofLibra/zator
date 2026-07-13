@@ -1,3 +1,48 @@
+ensure_keenetic_policy_config() {
+  local cfg="${1:-/opt/zapret2/config}"
+  [ -f "$cfg" ] || return 1
+  grep -q '^POLICY_NAME=' "$cfg" || echo 'POLICY_NAME=' >> "$cfg"
+  grep -q '^POLICY_EXCLUDE=' "$cfg" || echo 'POLICY_EXCLUDE=0' >> "$cfg"
+  sed -i 's|^#\?INIT_FW_POST_UP_HOOK=.*|INIT_FW_POST_UP_HOOK="/opt/zapret2/init.d/sysv/keenetic-policy.sh up"|' "$cfg"
+  sed -i 's|^#\?INIT_FW_PRE_DOWN_HOOK=.*|INIT_FW_PRE_DOWN_HOOK="/opt/zapret2/init.d/sysv/keenetic-policy.sh down"|' "$cfg"
+}
+
+get_keenetic_policy_name() {
+  sed -n 's/^POLICY_NAME=//p' /opt/zapret2/config 2>/dev/null | tail -n1
+}
+
+get_keenetic_policy_mode_label() {
+  [ "$(sed -n 's/^POLICY_EXCLUDE=//p' /opt/zapret2/config 2>/dev/null | tail -n1)" = "1" ] &&
+    echo "Все, кроме устройств из политики" || echo "Только устройства из политики"
+}
+
+get_keenetic_policy_status() {
+  local name
+  name="$(get_keenetic_policy_name)"
+  [ -n "$name" ] && echo "$name | $(get_keenetic_policy_mode_label)" || echo "Не задана"
+}
+
+menu_action_set_keenetic_policy_name() {
+  local name
+  ensure_keenetic_policy_config || return 1
+  read -re -p "Введите имя Keenetic-политики. Enter очистит настройку, 0 - отмена: " name
+  [ "$name" = "0" ] && { echo "Изменение отменено."; return; }
+  case "$name" in *$'\n'*|*'|'*) echo -e "${red}Недопустимое имя политики.${plain}"; return 1;; esac
+  sed -i "s|^POLICY_NAME=.*|POLICY_NAME=$name|" /opt/zapret2/config
+  "$ZAPRET2_INIT" restart
+  [ -n "$name" ] && echo -e "${green}Установлена Keenetic-политика:${plain} $name" || echo -e "${yellow}Ограничение по Keenetic-политике отключено.${plain}"
+}
+
+menu_action_toggle_keenetic_policy_mode() {
+  local next value
+  ensure_keenetic_policy_config || return 1
+  value="$(sed -n 's/^POLICY_EXCLUDE=//p' /opt/zapret2/config | tail -n1)"
+  [ "$value" = "1" ] && { next=0; value="Только устройства из политики"; } || { next=1; value="Все, кроме устройств из политики"; }
+  sed -i "s/^POLICY_EXCLUDE=.*/POLICY_EXCLUDE=$next/" /opt/zapret2/config
+  "$ZAPRET2_INIT" restart
+  echo -e "${green}Режим Keenetic-политики изменён:${plain} $value"
+}
+
 backup_strats() {
   # Бэкап папки стратегий
   if [ -d /opt/zapret2/extra_strats ]; then
@@ -70,6 +115,7 @@ menu_action_update_config_reset() {
   fi
 
   cp -f /opt/zapret2/config.default /opt/zapret2/config
+  [ "$hardware" = "keenetic" ] && ensure_keenetic_policy_config /opt/zapret2/config
   # После копирования синхронизируем рабочий конфиг, чтобы reset не терял IFACE_WAN.
   if [ "$hardware" = "keenetic" ]; then
     config_keenetic_set_wan_iface /opt/zapret2/config

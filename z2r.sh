@@ -304,6 +304,17 @@ source "$SCRIPT_DIR/zapret2/z2r_lib/submenus.sh"
 #          menu_action_toggle_fwtype, menu_action_toggle_udp_range, menu_action_set_tls_blob
 source "$SCRIPT_DIR/zapret2/z2r_lib/actions.sh" 
 
+keenetic_policy_ndmc_is_supported() {
+  local output
+  [ "$hardware" = "keenetic" ] || return 1
+  command -v ndmc >/dev/null 2>&1 || return 1
+  output="$(ndmc -c "show ip policy" 2>/dev/null)" || return 1
+  [ -n "$output" ] || return 1
+  case "$output" in
+    *"ndmc: system failed ["*|*"Cli::Main: failed to initialize."*) return 1 ;;
+  esac
+}
+
 detect_os() {
   if [[ -f /etc/os-release ]]; then
     source /etc/os-release
@@ -859,7 +870,11 @@ get_repo() {
     echo "Востановление листа исключений выполнено."
   fi
   #Копирование нашего конфига на замену стандартному и скриптов для войсов DS, WA, TG
-  z2r_download_project_file /opt/zapret2/config.default "config.default" || return 1
+ z2r_download_project_file /opt/zapret2/config.default "config.default" || return 1
+  if [ "$hardware" = "keenetic" ]; then
+    z2r_download_project_file /opt/zapret2/init.d/sysv/keenetic-policy.sh "Entware/keenetic-policy.sh" || return 1
+    chmod +x /opt/zapret2/init.d/sysv/keenetic-policy.sh
+  fi
   if command -v nft >/dev/null 2>&1; then
     sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "/opt/zapret2/config.default"
   fi
@@ -1563,7 +1578,7 @@ Enter (без цифр) - переустановка/обновление zapret
 '"${Fcyan}"'20.'"${yellow}"' Управление портами NFQWS2 (TCP/UDP). Сейчас: '"${plain}"'['"$(ports_menu_status)"']'"${yellow}"'
 '"${Fcyan}"'21.'"${yellow}"' Управление бэкапами (создание/восстановление/удаление архивов)
 '"${Fcyan}"'777.'"${yellow}"' Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)\033[0m'
-    echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
+	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
 	if [[ -f "$PREMIUM_FLAG" ]]; then
       echo -e "${red}999. Секретный пункт. Нажимать на свой страх и риск${plain}"
     fi
@@ -1848,4 +1863,7 @@ if [[ "$release" == "x-wrt" ]]; then
 fi
 
 #Запуск установочных скриптов и перезагрузка
+if [ "$hardware" = "keenetic" ]; then
+ ensure_keenetic_policy_config /opt/zapret2/config.default
+fi
 install_zapret_reboot
