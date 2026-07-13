@@ -362,3 +362,241 @@ config_tcp443_set_strategy() {
     END{exit((target==0 || changed)?0:1)}
   ' "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
 }
+
+config_profile_proto_list() {
+  case "$1" in
+    1) echo "tls http" ;;
+    2|3|4|8) echo "tls" ;;
+    5|6|7) echo "udp" ;;
+    9) echo "http" ;;
+    *) echo "" ;;
+  esac
+}
+
+csv_contains_token() {
+  local csv="$1"
+  local token="$2"
+  local old_ifs="$IFS"
+  local t
+
+  [ -n "$csv" ] || return 1
+  IFS=','
+  for t in $csv; do
+    [ "$t" = "$token" ] && { IFS="$old_ifs"; return 0; }
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
+csv_add_tokens() {
+  local csv="$1"
+  local tokens="$2"
+  local old_ifs="$IFS"
+  local token out
+
+  out="$csv"
+  IFS=','
+  for token in $tokens; do
+    [ -n "$token" ] || continue
+    if ! csv_contains_token "$out" "$token"; then
+      if [ -n "$out" ]; then
+        out="$out,$token"
+      else
+        out="$token"
+      fi
+    fi
+  done
+  IFS="$old_ifs"
+  printf '%s' "$out"
+}
+
+csv_remove_tokens() {
+  local csv="$1"
+  local tokens="$2"
+  local old_ifs="$IFS"
+  local token current out="" keep remove
+
+  IFS=','
+  for current in $csv; do
+    [ -n "$current" ] || continue
+    keep=1
+    for remove in $tokens; do
+      if [ "$current" = "$remove" ]; then
+        keep=0
+        break
+      fi
+    done
+    if [ "$keep" -eq 1 ]; then
+      if [ -n "$out" ]; then
+        out="$out,$current"
+      else
+        out="$current"
+      fi
+    fi
+  done
+  IFS="$old_ifs"
+  printf '%s' "$out"
+}
+
+config_profile_voice_ports() {
+  echo "50000-50099,1400,3478-3481,5349,19294-19344"
+}
+
+config_profile_voice_scripts_disable() {
+  local init="${ZAPRET2_INIT:-/opt/zapret2/init.d/sysv/zapret2}"
+  local custom_dir disabled_dir script
+
+  custom_dir="$(dirname "$init")/custom.d"
+  disabled_dir="${custom_dir}.disabled"
+  for script in 50-discord-media 50-stun4all; do
+    if [ -f "$custom_dir/$script" ]; then
+      mkdir -p "$disabled_dir"
+      mv -f "$custom_dir/$script" "$disabled_dir/$script"
+    fi
+  done
+}
+
+config_profile_voice_ports_apply() {
+  local cfg="$1"
+  local state="$2"
+  local ports new_ports
+
+  [ -f "$cfg" ] || return 0
+  ports="$(config_profile_voice_ports)"
+  case "$state" in
+    0)
+      new_ports="$(csv_remove_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
+      [ -n "$new_ports" ] || new_ports="443"
+      ;;
+    *)
+      new_ports="$(csv_add_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
+      ;;
+  esac
+  [ "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" = "$new_ports" ] || config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
+  config_profile_voice_scripts_disable
+}
+
+profile_config_orch_set() {
+  local profile="$1"
+  local proto="$2"
+  local strategy="$3"
+  local saved_lock_file="$ORCH_LOCK_FILE"
+  local rc=0
+
+  if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
+    ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
+  fi
+  orch_locked_set "$profile" "$proto" "$strategy" || rc=$?
+  ORCH_LOCK_FILE="$saved_lock_file"
+  return "$rc"
+}
+
+profile_config_orch_clear() {
+  local profile="$1"
+  local proto="$2"
+  local saved_lock_file="$ORCH_LOCK_FILE"
+  local rc=0
+
+  if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
+    ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
+  fi
+  orch_locked_clear "$profile" "$proto" || rc=$?
+  ORCH_LOCK_FILE="$saved_lock_file"
+  return "$rc"
+}
+
+profile_config_apply_state() {
+  local profile="$1"
+  local proto_list="$2"
+  local state="$3"
+  local cfg="$4"
+  local proto normalized max
+
+  cfg="$(config_get_file "$cfg")" || return 0
+  [ -n "$proto_list" ] || proto_list="$(config_profile_proto_list "$profile")"
+  [ -n "$proto_list" ] || return 0
+  normalized="$(profile_state_normalize "$state")" || return 2
+
+  case "$normalized" in
+    auto)
+      for proto in $proto_list; do
+        profile_config_orch_clear "$profile" "$proto" || return 1
+      done
+      if [ "$profile" = "6" ]; then
+        config_profile_voice_ports_apply "$cfg" auto
+      fi
+      ;;
+    0)
+      for proto in $proto_list; do
+        profile_config_orch_set "$profile" "$proto" 0 || return 1
+      done
+      if [ "$profile" = "6" ]; then
+        config_profile_voice_ports_apply "$cfg" 0
+      fi
+      ;;
+    *)
+      max="$(config_profile_max_strategy "$profile" "$cfg")"
+      if ! printf '%s' "$max" | grep -Eq '^[1-9][0-9]*$' || [ "$normalized" -gt "$max" ]; then
+        echo "Пропуск сохранённого состояния профиля $profile: стратегия $normalized вне диапазона."
+        return 0
+      fi
+      for proto in $proto_list; do
+        profile_config_orch_set "$profile" "$proto" "$normalized" || return 1
+      done
+      if [ "$profile" = "6" ]; then
+        config_profile_voice_ports_apply "$cfg" "$normalized"
+      fi
+      ;;
+  esac
+}
+
+profile_state_set_and_apply() {
+  local profile="$1"
+  local proto_list="$2"
+  local state="$3"
+  local cfg="$4"
+  local proto normalized
+
+  normalized="$(profile_state_normalize "$state")" || return 1
+  [ -n "$proto_list" ] || proto_list="$(config_profile_proto_list "$profile")"
+  [ -n "$proto_list" ] || return 1
+
+  for proto in $proto_list; do
+    if [ "$normalized" = "auto" ]; then
+      profile_state_clear "$profile" "$proto" || return 1
+    else
+      profile_state_set "$profile" "$proto" "$normalized" || return 1
+    fi
+  done
+  profile_config_apply_state "$profile" "$proto_list" "$normalized" "$cfg"
+}
+
+profile_apply_all() {
+  local cfg="$1"
+  local file profile proto state rest rc
+
+  cfg="$(config_get_file "$cfg")" || return 0
+  file="$(profile_state_file)"
+  [ -f "$file" ] || return 0
+
+  while read -r profile proto state rest; do
+    case "$profile" in
+      ""|\#*) continue ;;
+    esac
+    if [ -z "$state" ]; then
+      state="$proto"
+      proto="$(config_profile_proto_list "$profile")"
+    fi
+    if profile_config_apply_state "$profile" "$proto" "$state" "$cfg"; then
+      continue
+    else
+      rc=$?
+    fi
+    if [ "$rc" -eq 2 ]; then
+      echo "Пропуск сохранённого состояния профиля $profile: некорректное состояние '$state'."
+      continue
+    fi
+    return "$rc"
+  done < "$file"
+  return 0
+}
