@@ -226,7 +226,10 @@ function circular_locked(ctx, desync)
       DLOG("circular_locked: fallback lock profile="..base_profile.." for host profile="..profile)
     end
   end
-  if locked and locked >= 1 and locked <= hrec.ctstrategy then
+  if locked == 0 then
+    DLOG("circular_locked: profile disabled by lock 0 profile="..profile)
+    return VERDICT_PASS
+  elseif locked and locked >= 1 and locked <= hrec.ctstrategy then
     hrec.nstrategy = locked
     DLOG("circular_locked: locked strategy "..hrec.nstrategy.." profile="..profile)
   else

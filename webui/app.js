@@ -179,9 +179,9 @@ function renderStrategies() {
     const inlineCheck = node.querySelector('.inline-check');
     const stepButtons = node.querySelectorAll('.step-strategy');
 
-    input.min = '1';
+    input.min = '0';
     input.max = String(profile.max_strategy);
-    if (profile.current_lock && profile.current_lock !== '0') {
+    if (/^[0-9]+$/.test(String(profile.current_lock || ''))) {
       input.value = profile.current_lock;
     }
     if (state.strategyChecks[profile.profile]) {
@@ -193,7 +193,8 @@ function renderStrategies() {
         const step = Number(button.dataset.step || 0);
         const min = Number(input.min || 1);
         const max = Number(input.max || profile.max_strategy || min);
-        const current = Number(input.value || profile.current_lock || min);
+        const parsed = Number(input.value || profile.current_lock);
+        const current = Number.isFinite(parsed) ? parsed : min;
         const next = Math.min(max, Math.max(min, current + step));
         input.value = String(next);
         input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -202,8 +203,9 @@ function renderStrategies() {
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const value = Number(input.value);
-      if (!value) {
+      const rawValue = input.value.trim();
+      const value = Number(rawValue);
+      if (!/^[0-9]+$/.test(rawValue) || value > Number(input.max || profile.max_strategy || 0)) {
         showBanner('Введите номер стратегии.', 'error');
         return;
       }
@@ -218,7 +220,7 @@ function renderStrategies() {
           state.strategyChecks[profile.profile] = payload?.check;
           await refreshAll();
         });
-        showBanner(`Стратегия ${value} сохранена для ${profile.label}.`);
+        showBanner(value === 0 ? `Профиль ${profile.label} выключен.` : `Стратегия ${value} сохранена для ${profile.label}.`);
       } catch (error) {
         showBanner(error.message, 'error');
       }
