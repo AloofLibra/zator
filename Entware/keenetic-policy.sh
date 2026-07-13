@@ -1,7 +1,6 @@
 #!/bin/sh
 
 KEENETIC_POLICY_COMMENT="z2r-keenetic-policy"
-KEENETIC_POLICY_SHOW_CMD="show ip policy"
 KEENETIC_ZAPRET_CONFIG="/opt/zapret2/config"
 
 keenetic_policy_log() {
@@ -9,49 +8,18 @@ keenetic_policy_log() {
 }
 
 keenetic_policy_load_config() {
-    [ -f "$KEENETIC_ZAPRET_CONFIG" ] && . "$KEENETIC_ZAPRET_CONFIG"
+    [ -f "$KEENETIC_ZAPRET_CONFIG" ] || return 1
+    POLICY_NAME="$(sed -n 's/^POLICY_NAME=//p' "$KEENETIC_ZAPRET_CONFIG" | tail -n1)"
+    POLICY_MARK="$(sed -n 's/^POLICY_MARK=//p' "$KEENETIC_ZAPRET_CONFIG" | tail -n1)"
+    POLICY_EXCLUDE="$(sed -n 's/^POLICY_EXCLUDE=//p' "$KEENETIC_ZAPRET_CONFIG" | tail -n1)"
     POLICY_NAME="${POLICY_NAME:-}"
+    POLICY_MARK="${POLICY_MARK:-}"
     POLICY_EXCLUDE="${POLICY_EXCLUDE:-0}"
 }
 
 keenetic_policy_is_enabled() {
     keenetic_policy_load_config
     [ -n "$POLICY_NAME" ]
-}
-
-keenetic_policy_ndmc_is_supported() {
-    local ndmc_output ndmc_rc
-
-    command -v ndmc >/dev/null 2>&1 || return 1
-
-    ndmc_output="$(ndmc -c "$KEENETIC_POLICY_SHOW_CMD" 2>/dev/null)"
-    ndmc_rc=$?
-    if [ "$ndmc_rc" -ne 0 ] || [ -z "$ndmc_output" ]; then
-        return 1
-    fi
-
-    case "$ndmc_output" in
-        *"ndmc: system failed ["*|*"Cli::Main: failed to initialize."*)
-            return 1
-            ;;
-    esac
-
-    KEENETIC_POLICY_NDMC_OUTPUT="$ndmc_output"
-    return 0
-}
-
-keenetic_policy_get_mark() {
-    keenetic_policy_load_config
-    [ -n "$POLICY_NAME" ] || return 1
-
-    printf '%s\n' "$KEENETIC_POLICY_NDMC_OUTPUT" | awk -v policy="$POLICY_NAME" '
-        index($0, "description = " policy ":") { found=1; next }
-        found && /mark[[:space:]]*[:=][[:space:]]*/ {
-            sub(/^.*mark[[:space:]]*[:=][[:space:]]*/, "", $0)
-            print $0
-            exit
-        }
-    '
 }
 
 keenetic_policy_mark_args() {
@@ -130,14 +98,9 @@ keenetic_policy_apply_rules() {
     keenetic_policy_cleanup_rules
     keenetic_policy_is_enabled || return 0
 
-    if ! keenetic_policy_ndmc_is_supported; then
-        keenetic_policy_log "ndmc is unavailable in the current shell context, policy integration disabled"
-        return 0
-    fi
-
-    policy_mark="$(keenetic_policy_get_mark)"
+    policy_mark="$POLICY_MARK"
     if [ -z "$policy_mark" ]; then
-        keenetic_policy_log "policy '$POLICY_NAME' not found, fallback to default nfqws2 behaviour"
+        keenetic_policy_log "mark for policy '$POLICY_NAME' is not cached; select the policy again in z2r"
         return 0
     fi
 

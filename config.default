@@ -372,6 +372,7 @@ INIT_APPLY_FW=1
 
 # Keenetic policy integration. Leave POLICY_NAME empty to process all devices.
 POLICY_NAME=
+POLICY_MARK=
 POLICY_EXCLUDE=0
 
 # do not work with ipv4

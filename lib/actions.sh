@@ -1,7 +1,20 @@
+keenetic_policy_get_mark() {
+  local name="$1"
+  ndmc -c "show ip policy" 2>/dev/null | awk -v policy="$name" '
+    index($0, "name = " policy ",") || index($0, "description = " policy ":") { found=1; next }
+    found && /mark[[:space:]]*[:=][[:space:]]*/ {
+      sub(/^.*mark[[:space:]]*[:=][[:space:]]*/, "", $0)
+      print $0
+      exit
+    }
+  '
+}
+
 ensure_keenetic_policy_config() {
   local cfg="${1:-/opt/zapret2/config}"
   [ -f "$cfg" ] || return 1
   grep -q '^POLICY_NAME=' "$cfg" || echo 'POLICY_NAME=' >> "$cfg"
+  grep -q '^POLICY_MARK=' "$cfg" || echo 'POLICY_MARK=' >> "$cfg"
   grep -q '^POLICY_EXCLUDE=' "$cfg" || echo 'POLICY_EXCLUDE=0' >> "$cfg"
   sed -i 's|^#\?INIT_FW_POST_UP_HOOK=.*|INIT_FW_POST_UP_HOOK="/opt/zapret2/init.d/sysv/keenetic-policy.sh up"|' "$cfg"
   sed -i 's|^#\?INIT_FW_PRE_DOWN_HOOK=.*|INIT_FW_PRE_DOWN_HOOK="/opt/zapret2/init.d/sysv/keenetic-policy.sh down"|' "$cfg"
@@ -23,12 +36,17 @@ get_keenetic_policy_status() {
 }
 
 menu_action_set_keenetic_policy_name() {
-  local name
+  local name mark=""
   ensure_keenetic_policy_config || return 1
   read -re -p "Введите имя Keenetic-политики. Enter очистит настройку, 0 - отмена: " name
   [ "$name" = "0" ] && { echo "Изменение отменено."; return; }
   case "$name" in *$'\n'*|*'|'*) echo -e "${red}Недопустимое имя политики.${plain}"; return 1;; esac
-  sed -i "s|^POLICY_NAME=.*|POLICY_NAME=$name|" /opt/zapret2/config
+  if [ -n "$name" ]; then
+    mark="$(keenetic_policy_get_mark "$name")"
+    [ -n "$mark" ] || { echo -e "${red}Политика '$name' не найдена.${plain}"; return 1; }
+  fi
+  config_set_var /opt/zapret2/config POLICY_NAME "$name"
+  config_set_var /opt/zapret2/config POLICY_MARK "$mark"
   "$ZAPRET2_INIT" restart
   [ -n "$name" ] && echo -e "${green}Установлена Keenetic-политика:${plain} $name" || echo -e "${yellow}Ограничение по Keenetic-политике отключено.${plain}"
 }
