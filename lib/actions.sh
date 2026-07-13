@@ -229,7 +229,7 @@ menu_action_toggle_udp_range() {
     echo -e "${green}Стратегия UDP обхода активирована. Выделены порты 1026-65531${plain}"
 
   elif printf "%s" "$current_ports" | grep -Eq '(^|,)1026-65531(,|$)'; then
-    new_ports="$(csv_remove_token "$current_ports" "1026-65531")"
+    new_ports="$(csv_remove_tokens "$current_ports" "1026-65531")"
     [ -n "$new_ports" ] || new_ports="443"
     config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
     sed -i '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=1026/--skip --filter-udp=1026/' "$cfg"
@@ -785,51 +785,6 @@ ports_validate() {
   return 0
 }
 
-# Есть ли точное совпадение токена в CSV-строке? (0 - есть, 1 - нет)
-csv_contains_token() {
-  local csv="$1" token="$2"
-  local arr=() t
-  [ -n "$csv" ] || return 1
-  IFS=',' read -ra arr <<< "$csv"
-  for t in "${arr[@]}"; do
-    [ "$t" = "$token" ] && return 0
-  done
-  return 1
-}
-
-# Удалить точное совпадение токена из CSV (печатает результат).
-csv_remove_token() {
-  local csv="$1" token="$2"
-  local arr=() t out=""
-  [ -n "$csv" ] || return 0
-  IFS=',' read -ra arr <<< "$csv"
-  for t in "${arr[@]}"; do
-    [ -n "$t" ] || continue
-    [ "$t" = "$token" ] && continue
-    if [ -z "$out" ]; then out="$t"; else out="$out,$t"; fi
-  done
-  printf '%s' "$out"
-}
-
-csv_add_tokens() {
-  local csv="$1" tokens="$2" arr=() tok out="$csv"
-  [ -n "$tokens" ] && IFS=',' read -ra arr <<< "$tokens"
-  for tok in "${arr[@]}"; do
-    [ -n "$tok" ] || continue
-    csv_contains_token "$out" "$tok" || out="$(ports_join "$out" "$tok")"
-  done
-  printf '%s' "$out"
-}
-
-csv_remove_tokens() {
-  local csv="$1" tokens="$2" arr=() tok out="$csv"
-  [ -n "$tokens" ] && IFS=',' read -ra arr <<< "$tokens"
-  for tok in "${arr[@]}"; do
-    [ -n "$tok" ] && out="$(csv_remove_token "$out" "$tok")"
-  done
-  printf '%s' "$out"
-}
-
 # Записать строку --filter-tcp блока RKN = пользовательские TCP-порты + база из конфига.
 # Базовые порты (от якоря 80 и правее) берутся прямо из NFQWS2_PORTS_TCP — без констант.
 ports_set_rkn_filter() {
@@ -973,7 +928,7 @@ ports_manage() {
         case "$confirm" in
           "1")
             local new_user
-            new_user="$(csv_remove_token "$_PORTS_USER" "$target")"
+            new_user="$(csv_remove_tokens "$_PORTS_USER" "$target")"
             config_set_var "$cfg" "$var" "$(ports_join "$new_user" "$_PORTS_BASE")"
             [ "$proto" = "tcp" ] && ports_set_rkn_filter "$cfg" "$new_user"
             echo -e "${green}Порт ${target} удалён.${plain}"

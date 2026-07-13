@@ -373,7 +373,7 @@ config_profile_proto_list() {
   esac
 }
 
-config_csv_contains_token() {
+csv_contains_token() {
   local csv="$1"
   local token="$2"
   local old_ifs="$IFS"
@@ -388,7 +388,7 @@ config_csv_contains_token() {
   return 1
 }
 
-config_csv_add_tokens() {
+csv_add_tokens() {
   local csv="$1"
   local tokens="$2"
   local old_ifs="$IFS"
@@ -398,7 +398,7 @@ config_csv_add_tokens() {
   IFS=','
   for token in $tokens; do
     [ -n "$token" ] || continue
-    if ! config_csv_contains_token "$out" "$token"; then
+    if ! csv_contains_token "$out" "$token"; then
       if [ -n "$out" ]; then
         out="$out,$token"
       else
@@ -410,7 +410,7 @@ config_csv_add_tokens() {
   printf '%s' "$out"
 }
 
-config_csv_remove_tokens() {
+csv_remove_tokens() {
   local csv="$1"
   local tokens="$2"
   local old_ifs="$IFS"
@@ -438,17 +438,6 @@ config_csv_remove_tokens() {
   printf '%s' "$out"
 }
 
-config_set_csv_var_if_changed() {
-  local cfg="$1"
-  local var="$2"
-  local value="$3"
-  local current
-
-  current="$(config_get_var "$cfg" "$var")"
-  [ "$current" = "$value" ] && return 0
-  config_set_var "$cfg" "$var" "$value"
-}
-
 config_profile_voice_ports() {
   echo "50000-50099,1400,3478-3481,5349,19294-19344"
 }
@@ -473,22 +462,18 @@ config_profile_voice_ports_apply() {
   local ports new_ports
 
   [ -f "$cfg" ] || return 0
+  ports="$(config_profile_voice_ports)"
   case "$state" in
     0)
-      ports="$(config_profile_voice_ports)"
-      new_ports="$(config_csv_remove_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
+      new_ports="$(csv_remove_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
       [ -n "$new_ports" ] || new_ports="443"
-      config_set_csv_var_if_changed "$cfg" NFQWS2_PORTS_UDP "$new_ports"
-      config_profile_voice_scripts_disable
       ;;
     *)
-      ports="$(config_profile_voice_ports)"
-      new_ports="$(config_csv_add_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
-      [ -n "$new_ports" ] || new_ports="$ports"
-      config_set_csv_var_if_changed "$cfg" NFQWS2_PORTS_UDP "$new_ports"
-      config_profile_voice_scripts_disable
+      new_ports="$(csv_add_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
       ;;
   esac
+  [ "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" = "$new_ports" ] || config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
+  config_profile_voice_scripts_disable
 }
 
 profile_config_orch_set() {

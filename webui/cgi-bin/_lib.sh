@@ -91,18 +91,9 @@ orch_max_strategy_for_profile() {
   config_profile_max_strategy "$1" "$CONFIG_FILE"
 }
 
-profile_proto_list() {
-  case "$1" in
-    1) echo "tls http" ;;
-    2|3|4) echo "tls" ;;
-    5|6|7) echo "udp" ;;
-    *) echo "" ;;
-  esac
-}
-
 profile_proto() {
   local list
-  list="$(profile_proto_list "$1")"
+  list="$(config_profile_proto_list "$1")"
   echo "${list%% *}"
 }
 
@@ -224,19 +215,14 @@ api_set_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-7]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   [[ "${PARAM_STRATEGY:-}" =~ ^[0-9]+$ ]] || send_error "400 Bad Request" "Некорректная стратегия"
-  local max proto_list check_json saved_state
+  local max proto_list check_json
   max="$(orch_max_strategy_for_profile "$PARAM_PROFILE")"
   if [ "${PARAM_STRATEGY}" -ne 0 ]; then
     [ "${PARAM_STRATEGY}" -ge 1 ] && [ "${PARAM_STRATEGY}" -le "${max:-0}" ] || send_error "400 Bad Request" "Стратегия вне диапазона"
   fi
-  proto_list="$(profile_proto_list "$PARAM_PROFILE")"
+  proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
-  if [ "${PARAM_STRATEGY}" -eq 0 ]; then
-    saved_state="0"
-  else
-    saved_state="$PARAM_STRATEGY"
-  fi
-  profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$saved_state" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
+  profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$PARAM_STRATEGY" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
   [ "$PARAM_PROFILE" = "6" ] && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
   check_json="$(profile_check_json "$PARAM_PROFILE")"
@@ -247,7 +233,7 @@ api_clear_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-7]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   local proto_list
-  proto_list="$(profile_proto_list "$PARAM_PROFILE")"
+  proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
   profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "auto" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сбросить состояние профиля"
   [ "$PARAM_PROFILE" = "6" ] && service_zapret2 restart >/dev/null 2>&1 || true
