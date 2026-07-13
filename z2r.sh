@@ -1644,6 +1644,7 @@ Enter (без цифр) - переустановка/обновление zapret
     read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
     case "$del_confirm" in
       "5")
+        backup_helper_ask_and_create
         remove_zapret
         echo -e "${yellow}zapret2 удалён${plain}"
         ;;
@@ -1655,10 +1656,12 @@ Enter (без цифр) - переустановка/обновление zapret
     ;;
 
   "5")
+    backup_helper_ask_and_create
     locked_lua_update_from_repo
     mkdir -p /opt/zapret2/extra_strats/cache/orchestra
     chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
     menu_action_update_config_reset
+    backup_update_offer_restore
     pause_enter
     ;;
 

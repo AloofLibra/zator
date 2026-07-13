@@ -102,8 +102,6 @@ backup_strats() {
 menu_action_update_config_reset() {
   echo -e "${yellow}Конфиг обновлен (UTC +0): $(curl -s "https://api.github.com/repos/AloofLibra/zator/commits?path=config.default&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
 
-  backup_strats
-
   "$ZAPRET2_INIT" stop
 
   rm -rf /opt/zapret2/lists /opt/zapret2/extra_strats
@@ -1092,6 +1090,10 @@ backup_pick_archive() {
 # Сбор во временную директорию /tmp, упаковка в .tar (BusyBox), перемещение в /opt/zator_backup.
 menu_action_backup_create() {
   local ts archive stage rel src tmp_list
+  # Глобальная переменная: путь к свежесозданному архиву. Используется хелпером
+  # backup_helper_ask_and_create() и пост-обновлением (пункт 5), чтобы восстановить
+  # настройки именно из только что созданного бэкапа.
+  BACKUP_LAST_ARCHIVE=""
   ts="$(date +%Y%m%d_%H%M%S)"
   archive="$Z2R_BACKUP_DIR/z2r_backup_${ts}.tar"
   stage="/tmp/z2r_backup_stage_$$"
@@ -1140,9 +1142,83 @@ menu_action_backup_create() {
   fi
   rm -rf "$stage"
 
+  BACKUP_LAST_ARCHIVE="$archive"
   echo -e "${green}Бэкап создан: $(basename "$archive")${plain}"
   echo -e "${yellow}Путь: $archive${plain}"
   pause_enter
+  return 0
+}
+
+
+backup_helper_ask_and_create() {
+  local ans
+  BACKUP_HELPER_CONSENT=0
+  BACKUP_HELPER_CREATED=0
+  BACKUP_LAST_ARCHIVE=""
+
+  echo -e "${yellow}Создать резервную копию (бэкап) перед операцией?${plain}"
+  echo -e "  ${Fcyan}1${plain} — да, создать бэкап"
+  echo -e "  ${Fyellow}0${plain} — нет, продолжить без бэкапа"
+  read -re -p "Ваш выбор: " ans
+
+  case "$ans" in
+    1|5|y|Y|д|Д)
+      BACKUP_HELPER_CONSENT=1
+      if menu_action_backup_create; then
+        BACKUP_HELPER_CREATED=1
+      else
+        echo -e "${red}Не удалось создать бэкап. Продолжаем без него.${plain}"
+      fi
+      ;;
+    *)
+      echo -e "${yellow}Продолжаем без создания бэкапа.${plain}"
+      ;;
+  esac
+  return 0
+}
+
+backup_update_offer_restore() {
+  local ans
+
+  # Сценарий А: только что создан архив.
+  if [ "$BACKUP_HELPER_CREATED" = "1" ] && [ -n "$BACKUP_LAST_ARCHIVE" ] && [ -f "$BACKUP_LAST_ARCHIVE" ]; then
+    echo ""
+    echo -e "${yellow}Обновление завершено. Хотите восстановить ваши настройки из только что созданного бэкапа?${plain}"
+    echo -e "${yellow}(Доступны только безопасные режимы: умный перенос / списки. Полное восстановление заблокировано, чтобы не затереть обновлённый config.)${plain}"
+    echo -e "  ${Fcyan}1${plain} — да, восстановить из свежего бэкапа"
+    echo -e "  ${Fyellow}0${plain} — нет, оставить обновлённый config как есть"
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      1|5|y|Y|д|Д)
+        # block_full=1: режим «Полное» (a) недоступен — только списки (2) и умный перенос (3).
+        menu_action_backup_restore "$BACKUP_LAST_ARCHIVE" 1 || true
+        ;;
+      *)
+        echo -e "${green}Обновлённый config оставлен без изменений.${plain}"
+        ;;
+    esac
+    return 0
+  fi
+
+  # Сценарий Б: отказ от бэкапа. Ищем ранее созданные архивы.
+  if [ "$(backup_count_archives)" -gt 0 ]; then
+    echo ""
+    echo -e "${yellow}Найдены ранее созданные архивы бэкапов в /opt/zator_backup/.${plain}"
+    echo -e "${yellow}Перейти в меню бэкапов для восстановления прошлых настроек?${plain}"
+    echo -e "${yellow}(Полное восстановление будет заблокировано в контексте обновления.)${plain}"
+    echo -e "  ${Fcyan}1${plain} — да, перейти в меню бэкапов"
+    echo -e "  ${Fyellow}0${plain} — нет, выйти"
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      1|5|y|Y|д|Д)
+        # block_full=1 пробрасывается в подменю: полное восстановление скрыто.
+        backup_submenu 1 || true
+        ;;
+      *)
+        echo -e "${green}Выход без восстановления.${plain}"
+        ;;
+    esac
+  fi
   return 0
 }
 
@@ -1522,26 +1598,70 @@ menu_action_backup_restore_smart() {
 #   переносятся порты NFQWS2_PORTS_*, blob-файлы (по совпадению имён) и флаги
 #   пунктов 13/18/19/20 через штатные sed-паттерны проекта.
 menu_action_backup_restore() {
+  # $1 (preset_archive) — необязательный путь к архиву; если задан, выбор из
+  #   списка пропускается (используется при восстановлении из только что
+  #   созданного бэкапа после обновления, пункт 5).
+  # $2 (block_full) — 1 = запретить режим «Полное» (mode 1). Применяется в
+  #   контексте обновления, чтобы архив не затёр только что обновлённый config.
+  local preset_archive="${1:-}"
+  local block_full="${2:-0}"
   local archive restore_dir mode rel src dst tmp_list was_running
 
-  if ! backup_pick_archive "Выберите номер архива для восстановления: "; then
-    return 0
+  if [ -n "$preset_archive" ]; then
+    archive="$preset_archive"
+    if [ ! -f "$archive" ]; then
+      echo -e "${red}Архив не найден: $archive${plain}"
+      pause_enter
+      return 1
+    fi
+    echo -e "${yellow}Восстановление из архива: $(basename "$archive")${plain}"
+  else
+    if ! backup_pick_archive "Выберите номер архива для восстановления: "; then
+      return 0
+    fi
+    archive="$BACKUP_PICKED"
   fi
-  archive="$BACKUP_PICKED"
   echo ""
 
-  echo -e "${yellow}Режим восстановления:${plain}"
-  echo -e "  ${Fcyan}1${plain} — ${green}Полное${plain} (config + списки доменов + номера стратегий)"
-  echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
-  echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
-  echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
-  read -re -p "Ваш выбор: " mode
-  case "$mode" in
-    1) ;;
-    2) ;;
-    3) ;;
-    *) echo -e "${yellow}Восстановление отменено.${plain}"; pause_enter; return 0 ;;
-  esac
+  # Выбор режима восстановления. В контексте обновления (block_full=1) режим
+  # «Полное» (1) недоступен иначе маразм, не надо заменять обновленынй конфиг на старый
+  while true; do
+    echo -e "${yellow}Режим восстановления:${plain}"
+    if [ "$block_full" = "1" ]; then
+      # Контекст обновления: полное восстановление заблокировано.
+      echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
+      echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
+      echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
+      echo -e "${yellow}(Полное восстановление заблокировано: обновлённый config защищён от перезаписи старым файлом из архива.)${plain}"
+    else
+      echo -e "  ${Fcyan}1${plain} — ${green}Полное${plain} (config + списки доменов + номера стратегий)"
+      echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
+      echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
+      echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
+    fi
+    read -re -p "Ваш выбор: " mode
+    case "$mode" in
+      2|3) break ;;
+      1)
+        if [ "$block_full" = "1" ]; then
+          echo -e "${red}Полное восстановление заблокировано в контексте обновления (защита обновлённого config). Доступно: 2, 3 или 0.${plain}"
+          sleep 1
+          continue
+        fi
+        break
+        ;;
+      0|"")
+        echo -e "${yellow}Восстановление отменено.${plain}"
+        pause_enter
+        return 0
+        ;;
+      *)
+        echo -e "${red}Некорректный ввод. Выберите доступный режим (2, 3 или 0).${plain}"
+        sleep 1
+        continue
+        ;;
+    esac
+  done
 
   restore_dir="/tmp/z4r_restore_$$"
   rm -rf "$restore_dir"

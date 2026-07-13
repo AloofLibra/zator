@@ -545,6 +545,9 @@ keenetic_policy_submenu() {
 }
 
 backup_submenu() {
+  # $1 (block_full) — 1 = контекст обновления: в восстановлении скрывается режим
+  # «Полное» (защита обновлённого config). По умолчанию 0 (все режимы доступны).
+  local block_full="${1:-0}"
   local count
   while true; do
     clear -x
@@ -552,6 +555,9 @@ backup_submenu() {
     echo -e "${cyan}--- Управление бэкапами ---${plain}"
     echo -e "${yellow}Каталог: ${plain}${green}/opt/zator_backup${plain}"
     echo -e "${yellow}Архивов: ${plain}${green}${count}${plain}"
+    if [ "$block_full" = "1" ]; then
+      echo -e "${yellow}Режим: контекст обновления (полное восстановление заблокировано).${plain}"
+    fi
     echo ""
     submenu_item "1" "Создать новый бэкап"
     submenu_item "2" "Восстановить из бэкапа"
@@ -566,7 +572,7 @@ backup_submenu() {
         menu_action_backup_create || true
         ;;
       "2")
-        menu_action_backup_restore || true
+        menu_action_backup_restore "" "$block_full" || true
         ;;
       "3")
         menu_action_backup_delete || true
