@@ -49,7 +49,7 @@ keenetic_policy_cleanup_rules() {
 }
 
 keenetic_policy_rule_signature() {
-    printf '%s|%s|%s|%s|%s' "$1" "$2" "$3" "$4" "$5"
+    printf '%s|%s|%s|%s' "$1" "$2" "$3" "$4"
 }
 
 keenetic_policy_extract_field() {
@@ -66,7 +66,7 @@ keenetic_policy_insert_rules_family() {
     command -v "$cmd" >/dev/null 2>&1 || return 0
 
     "$cmd"-save -t mangle 2>/dev/null | grep -- "-j NFQUEUE" | grep "^-A POSTROUTING " | while IFS= read -r line; do
-        local out_if proto port_flag ports signature policy_args
+        local out_if proto port_flag ports port_args signature policy_args
 
         out_if="$(keenetic_policy_extract_field "$line" '.* -o \([^[:space:]]\+\).*')"
         proto="$(keenetic_policy_extract_field "$line" '.* -p \([^[:space:]]\+\).*')"
@@ -74,9 +74,14 @@ keenetic_policy_insert_rules_family() {
         ports="$(printf '%s\n' "$line" | sed -n 's/.* --\(dports\|sports\|dport\|sport\) \([^[:space:]]\+\).*/\2/p' | head -n1)"
 
         [ -n "$proto" ] || continue
-        [ -n "$ports" ] || continue
+        if [ -n "$ports" ]; then
+            port_args="$port_flag $ports"
+        else
+            port_args="$(printf '%s\n' "$line" | sed -n 's/.*\(-m set --match-set zport_[^[:space:]]* dst\).*/\1/p' | head -n1)"
+            [ -n "$port_args" ] || continue
+        fi
 
-        signature="$(keenetic_policy_rule_signature "$cmd" "$out_if" "$proto" "$port_flag" "$ports")"
+        signature="$(keenetic_policy_rule_signature "$cmd" "$out_if" "$proto" "$port_args")"
         case "|$seen|" in
             *"|$signature|"*) continue ;;
         esac
@@ -85,9 +90,9 @@ keenetic_policy_insert_rules_family() {
         policy_args="$(keenetic_policy_mark_args "$policy_mark")"
 
         if [ -n "$out_if" ]; then
-            "$cmd" -t mangle -I POSTROUTING 1 -o "$out_if" -p "$proto" $port_flag "$ports" $policy_args -m comment --comment "$KEENETIC_POLICY_COMMENT" -j ACCEPT >/dev/null 2>&1 || true
+            "$cmd" -t mangle -I POSTROUTING 1 -o "$out_if" -p "$proto" $port_args $policy_args -m comment --comment "$KEENETIC_POLICY_COMMENT" -j ACCEPT || keenetic_policy_log "failed to add $cmd rule for $proto/$port_args"
         else
-            "$cmd" -t mangle -I POSTROUTING 1 -p "$proto" $port_flag "$ports" $policy_args -m comment --comment "$KEENETIC_POLICY_COMMENT" -j ACCEPT >/dev/null 2>&1 || true
+            "$cmd" -t mangle -I POSTROUTING 1 -p "$proto" $port_args $policy_args -m comment --comment "$KEENETIC_POLICY_COMMENT" -j ACCEPT || keenetic_policy_log "failed to add $cmd rule for $proto/$port_args"
         fi
     done
 }
@@ -103,6 +108,7 @@ keenetic_policy_apply_rules() {
         keenetic_policy_log "mark for policy '$POLICY_NAME' is not cached; select the policy again in z2r"
         return 0
     fi
+    case "$policy_mark" in 0x*) ;; *) policy_mark="0x$policy_mark" ;; esac
 
     keenetic_policy_insert_rules_family iptables "$policy_mark"
     keenetic_policy_insert_rules_family ip6tables "$policy_mark"

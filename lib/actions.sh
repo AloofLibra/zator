@@ -4,7 +4,7 @@ keenetic_policy_get_mark() {
     index($0, "name = " policy ",") || index($0, "description = " policy ":") { found=1; next }
     found && /mark[[:space:]]*[:=][[:space:]]*/ {
       sub(/^.*mark[[:space:]]*[:=][[:space:]]*/, "", $0)
-      print $0
+      print ($0 ~ /^0x/ ? $0 : "0x" $0)
       exit
     }
   '
