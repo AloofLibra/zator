@@ -44,12 +44,10 @@ export ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
 export PROFILE_STATE_FILE="$TMP_DIR/profile.lock"
 export ZAPRET2_INIT="$ROOT/init.d/sysv/zapret2"
 
-mkdir -p "$ORCH_DIR" "$ROOT/init.d/sysv/custom.d"
+mkdir -p "$ORCH_DIR" "$ROOT/init.d/sysv"
 sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$CFG"
 printf '#!/bin/sh\nexit 0\n' > "$ZAPRET2_INIT"
 chmod +x "$ZAPRET2_INIT"
-printf 'script\n' > "$ROOT/init.d/sysv/custom.d/50-stun4all"
-printf 'script\n' > "$ROOT/init.d/sysv/custom.d/50-discord-media"
 
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/config.sh"
@@ -99,9 +97,6 @@ profile_apply_all "$CFG"
 [ "$(orch_locked_get 6 udp)" = "0" ] || fail "VOICE 0 was not rehydrated into orchestra lock"
 udp_ports_line="$(config_get_var "$CFG" NFQWS2_PORTS_UDP)"
 assert_not_contains "$udp_ports_line" '(^|,)50000-50099(,|$)' "VOICE ports are still in NFQWS2_PORTS_UDP"
-[ -f "$ROOT/init.d/sysv/custom.d.disabled/50-stun4all" ] || fail "50-stun4all was not disabled"
-[ -f "$ROOT/init.d/sysv/custom.d.disabled/50-discord-media" ] || fail "50-discord-media was not disabled"
-
 profile_state_set 6 udp 2
 profile_apply_all "$CFG"
 udp_ports_line="$(config_get_var "$CFG" NFQWS2_PORTS_UDP)"

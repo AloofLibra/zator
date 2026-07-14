@@ -149,7 +149,6 @@ config_tls_blob_menu_value() {
 config_mode_text() {
   local mode="$1"
   local cfg="$2"
-  local ports voice_block_active
 
   cfg="$(config_get_file "$cfg")" || {
     case "$mode" in
@@ -206,20 +205,6 @@ config_mode_text() {
         echo "Выключен"
       else
         echo "Неизвестно"
-      fi
-      ;;
-    voice)
-      ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
-      voice_block_active=0
-      if sed -n '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/p' "$cfg" | grep -q '^[[:space:]]*--filter-udp='; then
-        voice_block_active=1
-      fi
-      if printf "%s" "$ports" | grep -Eq '(^|,)50000-50099(,|$)' && [ "$voice_block_active" -eq 1 ]; then
-        echo "Кастомные стратегии"
-      elif ! printf "%s" "$ports" | grep -Eq '(^|,)50000-50099(,|$)' && [ "$voice_block_active" -eq 0 ]; then
-        echo "Скрипты bol-van"
-      else
-        echo "неизвестно"
       fi
       ;;
     tls_blob_mode)
@@ -442,20 +427,6 @@ config_profile_voice_ports() {
   echo "50000-50099,1400,3478-3481,5349,19294-19344"
 }
 
-config_profile_voice_scripts_disable() {
-  local init="${ZAPRET2_INIT:-/opt/zapret2/init.d/sysv/zapret2}"
-  local custom_dir disabled_dir script
-
-  custom_dir="$(dirname "$init")/custom.d"
-  disabled_dir="${custom_dir}.disabled"
-  for script in 50-discord-media 50-stun4all; do
-    if [ -f "$custom_dir/$script" ]; then
-      mkdir -p "$disabled_dir"
-      mv -f "$custom_dir/$script" "$disabled_dir/$script"
-    fi
-  done
-}
-
 config_profile_voice_ports_apply() {
   local cfg="$1"
   local state="$2"
@@ -473,7 +444,6 @@ config_profile_voice_ports_apply() {
       ;;
   esac
   [ "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" = "$new_ports" ] || config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
-  config_profile_voice_scripts_disable
 }
 
 profile_config_orch_set() {

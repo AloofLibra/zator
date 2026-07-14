@@ -151,50 +151,6 @@ menu_action_update_config_reset() {
   return 0
 }
 
-menu_action_toggle_bolvan_ports() {
-  local cfg="/opt/zapret2/config"
-  local voice_ports_csv="50000-50099,1400,3478-3481,5349,19294-19344"
-  local current_ports new_ports
-  local init_dir custom_dir
-
-  if [ ! -f "$cfg" ]; then
-    echo -e "${red}Не найден $cfg.${plain}"
-    return 1
-  fi
-
-  init_dir="$(dirname "$ZAPRET2_INIT")"
-  custom_dir="$init_dir/custom.d"
-  current_ports="$(sed -n 's/^NFQWS2_PORTS_UDP=//p' "$cfg" | head -n1)"
-
-  if ! printf "%s" "$current_ports" | grep -Eq '(^|,)50000-50099(,|$)'; then
-    new_ports="$(csv_add_tokens "${current_ports:-443}" "$voice_ports_csv")"
-    sed -i "s/^NFQWS2_PORTS_UDP=.*/NFQWS2_PORTS_UDP=$new_ports/" "$cfg"
-    sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--skip[[:space:]]\+--filter-udp=/--filter-udp=/' "$cfg"
-
-    rm -f "$custom_dir/50-discord-media" \
-          "$custom_dir/50-stun4all"
-
-    echo -e "${green}Включён 6 блок конфига для голосовой связи. Скрипты bol-van отключены.${plain}"
-
-  elif printf "%s" "$current_ports" | grep -Eq '(^|,)50000-50099(,|$)'; then
-    new_ports="$(csv_remove_tokens "$current_ports" "$voice_ports_csv")"
-    [ -n "$new_ports" ] || new_ports="443"
-    sed -i "s/^NFQWS2_PORTS_UDP=.*/NFQWS2_PORTS_UDP=$new_ports/" "$cfg"
-    sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=/--skip --filter-udp=/' "$cfg"
-
-    z2r_install_bolvan_voice_scripts "$custom_dir" || return 1
-
-    echo -e "${green}Включены скрипты bol-van 50-discord-media/50-stun4all. 6 блок конфига отключён через --skip.${plain}"
-  else
-    echo -e "${yellow}Неизвестное состояние строки NFQWS2_PORTS_UDP. Проверь конфиг вручную.${plain}"
-    return 0
-  fi
-
-  "$ZAPRET2_INIT" restart
-  echo -e "${green}Выполнение переключений завершено.${plain}"
-  return 0
-}
-
 menu_action_toggle_fwtype() {
   local cfg
   cfg="$(get_config_file)"
@@ -1309,17 +1265,6 @@ backup_smart_set_quic443() {
   fi
 }
 
-# Пункт 19: голосовая связь (--skip перед --filter-udp= в блоке голосовой связи).
-# Повторяет логическое ядро menu_action_toggle_bolvan_ports() (config-часть).
-backup_smart_set_voice() {
-  local cfg="$1" want_on="$2"
-  if [ "$want_on" = "1" ]; then
-    sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--skip[[:space:]]\+--filter-udp=/--filter-udp=/' "$cfg"
-  else
-    sed -i '/#Стратегии для голосовой связи/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=/--skip --filter-udp=/' "$cfg"
-  fi
-}
-
 # Пункт 19: игровой UDP (--skip перед --filter-udp=1026 в блоке игрового UDP).
 # Повторяет логическое ядро menu_action_toggle_udp_range() (config-часть).
 backup_smart_set_udp_games() {
@@ -1397,14 +1342,6 @@ backup_smart_apply_flags() {
   if [ "$s_old" != "$s_new" ]; then
     if [ "$s_old" = "включено" ]; then backup_smart_set_reasm "$new_cfg" 1
     else backup_smart_set_reasm "$new_cfg" 0; fi
-  fi
-
-  # --- Пункт 19: голосовая связь ---
-  s_old="$(config_mode_text voice "$old_cfg")"
-  s_new="$(config_mode_text voice "$new_cfg")"
-  if [ "$s_old" != "$s_new" ]; then
-    if [ "$s_old" = "Кастомные стратегии" ]; then backup_smart_set_voice "$new_cfg" 1
-    else backup_smart_set_voice "$new_cfg" 0; fi
   fi
 
   # --- Пункт 19: игровой UDP ---

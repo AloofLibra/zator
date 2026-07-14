@@ -300,7 +300,7 @@ source "$SCRIPT_DIR/zapret2/z2r_lib/strategies.sh"
 source "$SCRIPT_DIR/zapret2/z2r_lib/submenus.sh" 
 
 # Действия меню (бэкапы/сбросы/переключатели)
-# Функции: backup_strats, menu_action_update_config_reset, menu_action_toggle_bolvan_ports,
+# Функции: backup_strats, menu_action_update_config_reset,
 #          menu_action_toggle_fwtype, menu_action_toggle_udp_range, menu_action_set_tls_blob
 source "$SCRIPT_DIR/zapret2/z2r_lib/actions.sh" 
 
@@ -809,23 +809,7 @@ run_cdn_test() {
   echo -e "${RED}FAIL:${NC} ${FAIL_COUNT:-0}"
 }
 
-#Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
-z2r_install_bolvan_voice_scripts() {
-  local custom_dir="$1"
-  local examples_dir="/opt/zapret2/init.d/custom.d.examples.linux"
-  local script
-
-  mkdir -p "$custom_dir"
-  for script in 50-stun4all 50-discord-media; do
-    if [ -f "$examples_dir/$script" ]; then
-      cp -f "$examples_dir/$script" "$custom_dir/$script" || return 1
-    else
-      z2r_download_upstream_file "$custom_dir/$script" "init.d/custom.d.examples.linux/$script" || return 1
-    fi
-    chmod +x "$custom_dir/$script" 2>/dev/null || true
-  done
-}
-
+#Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
 
@@ -869,7 +853,7 @@ get_repo() {
     mv -f /opt/netrogat.txt /opt/zapret2/lists/netrogat.txt
     echo "Востановление листа исключений выполнено."
   fi
-  #Копирование нашего конфига на замену стандартному и скриптов для войсов DS, WA, TG
+  #Копирование нашего конфига на замену стандартному
  z2r_download_project_file /opt/zapret2/config.default "config.default" || return 1
   if [ "$hardware" = "keenetic" ]; then
     z2r_download_project_file /opt/zapret2/init.d/sysv/keenetic-policy.sh "Entware/keenetic-policy.sh" || return 1
@@ -878,10 +862,6 @@ get_repo() {
   if command -v nft >/dev/null 2>&1; then
     sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "/opt/zapret2/config.default"
   fi
-  init_dir="$(dirname "$ZAPRET2_INIT")"
-  custom_dir="$init_dir/custom.d"
-  z2r_install_bolvan_voice_scripts "$custom_dir" || return 1
-
 # cache
 mkdir -p /opt/zapret2/extra_strats/cache
 
@@ -1564,7 +1544,6 @@ Enter (без цифр) - переустановка/обновление zapret
 '"${Fcyan}"'5.'"${yellow}"' Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
 '"${Fcyan}"'6.'"${yellow}"' Управление доменами
 '"${Fcyan}"'7.'"${yellow}"' Открыть в редакторе config (Установит nano редактор ~250kb)
-'"${Fcyan}"'8.'"${yellow}"' Переключатель между дефолтными сриптами от bol-van и кастомными стратегиями для голосовой связи. Сейчас: '"${plain}"'['"$(config_mode_text voice)"']'"${yellow}"'
 '"${Fcyan}"'9.'"${yellow}"' Переключатель zapret2 на nftables/iptables (На всё жать Enter). Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: '"${plain}"'['"$(config_mode_text fwtype)"']'"${yellow}"'
 '"${Fcyan}"'10.'"${yellow}"' (Де)активировать обход UDP на 1026-65531 портах (BF6, Fifa и т.п.). Сейчас: '"${plain}"'['"$(config_mode_text udp_games)"']'"${yellow}"'
 '"${Fcyan}"'11.'"${yellow}"' Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: '"${plain}"'['"$(config_mode_text flowoffload)"']'"${yellow}"'
@@ -1675,11 +1654,6 @@ Enter (без цифр) - переустановка/обновление zapret
     fi
     nano /opt/zapret2/config
     # после выхода из nano
-    ;;
-
-  "8")
-    menu_action_toggle_bolvan_ports
-    pause_enter
     ;;
 
   "9")
