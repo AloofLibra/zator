@@ -106,6 +106,7 @@ menu_action_update_config_reset() {
 
   "$ZAPRET2_INIT" stop
 
+  rm -f /opt/zapret2/init.d/{sysv,openwrt}/custom.d/{50-discord-media,50-stun4all}
   rm -rf /opt/zapret2/lists /opt/zapret2/extra_strats
 
   rm -f /opt/zapret2/files/fake/http_fake_MS.bin \
