@@ -29,6 +29,13 @@ Bblue='\033[44m'
 Bpink='\033[45m'
 Bcyan='\033[46m'
 
+
+z2r_github_commit_date() {
+  local path="$1" timeout="${2:-10}"
+  curl -s --max-time "$timeout" "https://api.github.com/repos/AloofLibra/zator/commits?path=${path}&per_page=1" \
+    | grep '"date"' | head -n1 | cut -d'"' -f4
+}
+
 Z2R_BRANCH="${Z2R_BRANCH:-zator}"
 Z2R_PROJECT_RAW_BASE="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/${Z2R_BRANCH}}"
 Z2R_PROJECT_MIRROR_BASE="${Z2R_PROJECT_MIRROR_BASE:-https://git.px.rkn.quest/AloofLibra/plain}"
@@ -443,11 +450,12 @@ if [ -f /opt/zapret2/config ]; then
   fi
 fi
 
-fallback_strategy_text() {
+_fallback_strategy_text() {
+  local profile="$1" proto="$2"
   local file="/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
   if [ -f "$file" ]; then
     local val
-    val="$(awk -F '\t' '$1=="8" && $2=="tls" && $3 ~ /^[0-9]+$/ {print $3; exit}' "$file")"
+    val="$(awk -F '\t' -v p="$profile" -v pr="$proto" '$1==p && $2==pr && $3 ~ /^[0-9]+$/ {print $3; exit}' "$file")"
     if [ -n "$val" ]; then
       echo "$val"
       return
@@ -456,17 +464,12 @@ fallback_strategy_text() {
   echo "не задана"
 }
 
+fallback_strategy_text() {
+  _fallback_strategy_text "8" "tls"
+}
+
 fallback_http_strategy_text() {
-  local file="/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
-  if [ -f "$file" ]; then
-    local val
-    val="$(awk -F '\t' '$1=="9" && $2=="http" && $3 ~ /^[0-9]+$/ {print $3; exit}' "$file")"
-    if [ -n "$val" ]; then
-      echo "$val"
-      return
-    fi
-  fi
-  echo "не задана"
+  _fallback_strategy_text "9" "http"
 }
 
 set_fallback_strategy() {
@@ -493,18 +496,20 @@ set_fallback_strategy() {
   fi
 }
 
-fallback_profile_try() {
+_fallback_profile_try() {
+  local profile="$1" title="$2" proto="$3" test_url="$4"
   local prev_lock_file="${ORCH_LOCK_FILE:-/opt/zapret2/extra_strats/cache/orchestra/locked.tsv}"
   ORCH_LOCK_FILE="/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
-  orch_profile_try "8" "Профиль 8: fallback (безразборный блок)" "tls" "__RUN_CDN_TEST__"
+  orch_profile_try "$profile" "$title" "$proto" "$test_url"
   ORCH_LOCK_FILE="$prev_lock_file"
 }
 
+fallback_profile_try() {
+  _fallback_profile_try "8" "Профиль 8: fallback (безразборный блок)" "tls" "__RUN_CDN_TEST__"
+}
+
 fallback_http_profile_try() {
-  local prev_lock_file="${ORCH_LOCK_FILE:-/opt/zapret2/extra_strats/cache/orchestra/locked.tsv}"
-  ORCH_LOCK_FILE="/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
-  orch_profile_try "9" "Профиль 9: fallback HTTP (безразборный блок)" "http" "http://deb.torproject.org/torproject.org"
-  ORCH_LOCK_FILE="$prev_lock_file"
+  _fallback_profile_try "9" "Профиль 9: fallback HTTP (безразборный блок)" "http" "http://deb.torproject.org/torproject.org"
 }
 
 change_user() {
@@ -1623,6 +1628,7 @@ Enter (без цифр) - переустановка/обновление zapret
     read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
     case "$del_confirm" in
       "5")
+        backup_helper_ask_and_create
         remove_zapret
         echo -e "${yellow}zapret2 удалён${plain}"
         ;;
@@ -1634,10 +1640,12 @@ Enter (без цифр) - переустановка/обновление zapret
     ;;
 
   "5")
+    backup_helper_ask_and_create
     locked_lua_update_from_repo
     mkdir -p /opt/zapret2/extra_strats/cache/orchestra
     chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
     menu_action_update_config_reset
+    backup_update_offer_restore
     pause_enter
     ;;
 
@@ -1751,13 +1759,13 @@ detect_os
 set_zapret2_init
 
 #Инфа о времени обновления скрпта
-commit_date=$(curl -s --max-time 30 "https://api.github.com/repos/AloofLibra/zator/commits?path=z2r.sh&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4)
+commit_date="$(z2r_github_commit_date z2r.sh 30)"
 if [[ -z "$commit_date" ]]; then
     echo -e "${red}Не был получен доступ к api.github.com (таймаут 30 сек). Возможны проблемы при установке.${plain}"
 	if [ "$hardware" = "keenetic" ]; then
 		echo "Добавляем ip с от DNS 1.1.1.1 к api.github.com и пытаемся снова"
 		ndmc -c "ip host api.github.com $(nslookup api.github.com 1.1.1.1 | sed -n 's/^Address [0-9]*: \([0-9.]*\).*/\1/p' | tail -n1)"
-		echo -e "${yellow}zeefeer обновлен (UTC +0): $(curl -s --max-time 10 "https://api.github.com/repos/AloofLibra/zator/commits?path=z2r.sh&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
+		echo -e "${yellow}zeefeer обновлен (UTC +0): $(z2r_github_commit_date z2r.sh) ${plain}"
 	fi
 else
     echo -e "${yellow}zeefeer обновлен (UTC +0): $commit_date ${plain}"
@@ -1796,7 +1804,7 @@ backup_strats
 remove_zapret
 
 #Запрос желаемой версии zapret2
-echo -e "${yellow}Конфиг обновлен (UTC +0): $(curl -s "https://api.github.com/repos/AloofLibra/zator/commits?path=config.default&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
+echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
 version_select
 
 #Запрос на установку web-ssh

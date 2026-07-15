@@ -108,8 +108,7 @@ strategies_submenu() {
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done
@@ -151,8 +150,7 @@ domains_submenu() {
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done
@@ -199,8 +197,7 @@ ports_submenu() {
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done
@@ -223,40 +220,24 @@ flowoffload_submenu() {
     read -re -p "Ваш выбор: " ans
 
     case "$ans" in
-      "1")
-        config_set_var /opt/zapret2/config FLOWOFFLOAD software
+      "1"|"2"|"3"|"4")
+        case "$ans" in
+          1) val="software" ;;
+          2) val="hardware" ;;
+          3) val="none" ;;
+          4) val="donttouch" ;;
+        esac
+        config_set_var /opt/zapret2/config FLOWOFFLOAD "$val"
         /opt/zapret2/install_prereq.sh
         "$ZAPRET2_INIT" restart
-        echo -e "${green}FLOWOFFLOAD=software применён.${plain}"
-        pause_enter
-        ;;
-      "2")
-        config_set_var /opt/zapret2/config FLOWOFFLOAD hardware
-        /opt/zapret2/install_prereq.sh
-        "$ZAPRET2_INIT" restart
-        echo -e "${green}FLOWOFFLOAD=hardware применён.${plain}"
-        pause_enter
-        ;;
-      "3")
-        config_set_var /opt/zapret2/config FLOWOFFLOAD none
-        /opt/zapret2/install_prereq.sh
-        "$ZAPRET2_INIT" restart
-        echo -e "${green}FLOWOFFLOAD=none применён.${plain}"
-        pause_enter
-        ;;
-      "4")
-        config_set_var /opt/zapret2/config FLOWOFFLOAD donttouch
-        /opt/zapret2/install_prereq.sh
-        "$ZAPRET2_INIT" restart
-        echo -e "${green}FLOWOFFLOAD=donttouch применён.${plain}"
+        echo -e "${green}FLOWOFFLOAD=$val применён.${plain}"
         pause_enter
         ;;
       "0"|"")
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done
@@ -297,8 +278,7 @@ tcp443_submenu() {
         fi
         read -n 1 -s -r -p "Нажмите любую клавишу для продолжения..."
       else
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         pause_enter
       fi
       ;;
@@ -350,8 +330,7 @@ provider_submenu() {
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done
@@ -397,8 +376,7 @@ wireguard_submenu() {
           return
           ;;
         *)
-          echo -e "${yellow}Неверный ввод.${plain}"
-          sleep 1
+          ui_invalid_input
           ;;
       esac
       continue
@@ -428,8 +406,7 @@ wireguard_submenu() {
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done
@@ -517,8 +494,7 @@ advanced_settings_submenu() {
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done
@@ -539,12 +515,15 @@ keenetic_policy_submenu() {
       "1") menu_action_set_keenetic_policy_name; pause_enter ;;
       "2") menu_action_toggle_keenetic_policy_mode; pause_enter ;;
       "0"|"") return ;;
-      *) echo -e "${yellow}Неверный ввод.${plain}"; sleep 1 ;;
+      *) ui_invalid_input ;;
     esac
   done
 }
 
 backup_submenu() {
+  # $1 (block_full) — 1 = контекст обновления: в восстановлении скрывается режим
+  # «Полное» (защита обновлённого config). По умолчанию 0 (все режимы доступны).
+  local block_full="${1:-0}"
   local count
   while true; do
     clear -x
@@ -552,6 +531,9 @@ backup_submenu() {
     echo -e "${cyan}--- Управление бэкапами ---${plain}"
     echo -e "${yellow}Каталог: ${plain}${green}/opt/zator_backup${plain}"
     echo -e "${yellow}Архивов: ${plain}${green}${count}${plain}"
+    if [ "$block_full" = "1" ]; then
+      echo -e "${yellow}Режим: контекст обновления (полное восстановление заблокировано).${plain}"
+    fi
     echo ""
     submenu_item "1" "Создать новый бэкап"
     submenu_item "2" "Восстановить из бэкапа"
@@ -566,7 +548,7 @@ backup_submenu() {
         menu_action_backup_create || true
         ;;
       "2")
-        menu_action_backup_restore || true
+        menu_action_backup_restore "" "$block_full" || true
         ;;
       "3")
         menu_action_backup_delete || true
@@ -575,8 +557,7 @@ backup_submenu() {
         return
         ;;
       *)
-        echo -e "${yellow}Неверный ввод.${plain}"
-        sleep 1
+        ui_invalid_input
         ;;
     esac
   done

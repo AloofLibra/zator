@@ -100,9 +100,7 @@ backup_strats() {
 
 
 menu_action_update_config_reset() {
-  echo -e "${yellow}Конфиг обновлен (UTC +0): $(curl -s "https://api.github.com/repos/AloofLibra/zator/commits?path=config.default&per_page=1" | grep '"date"' | head -n1 | cut -d'"' -f4) ${plain}"
-
-  backup_strats
+  echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
 
   "$ZAPRET2_INIT" stop
 
@@ -182,14 +180,14 @@ menu_action_toggle_udp_range() {
   if ! printf "%s" "$current_ports" | grep -Eq '(^|,)1026-65531(,|$)'; then
     new_ports="$(csv_add_tokens "" "1026-65531,${current_ports:-443}")"
     config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
-    sed -i '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/ s/^--skip[[:space:]]\+--filter-udp=1026/--filter-udp=1026/' "$cfg"
+    backup_smart_set_udp_games "$cfg" 1
     echo -e "${green}Стратегия UDP обхода активирована. Выделены порты 1026-65531${plain}"
 
   elif printf "%s" "$current_ports" | grep -Eq '(^|,)1026-65531(,|$)'; then
     new_ports="$(csv_remove_tokens "$current_ports" "1026-65531")"
     [ -n "$new_ports" ] || new_ports="443"
     config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
-    sed -i '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/ s/^--filter-udp=1026/--skip --filter-udp=1026/' "$cfg"
+    backup_smart_set_udp_games "$cfg" 0
     echo -e "${green}Стратегия UDP обхода ДЕактивирована. Выделенные порты 1026-65531 убраны${plain}"
 
   else
@@ -215,14 +213,14 @@ menu_action_toggle_reasm_disable() {
   state="$(config_mode_text reasm_disable "$cfg")"
 
   if [ "$state" = "включено" ]; then
-    sed -i '/^[[:space:]]*--reasm-disable[[:space:]]*$/d' "$cfg" || return 1
+    backup_smart_set_reasm "$cfg" 0
     echo -e "Параметр --reasm-disable: ${green}деактивирован${plain}."
   else
     if ! grep -q '^NFQWS2_OPT="' "$cfg"; then
       echo -e "${red}Не найден блок NFQWS2_OPT в $cfg.${plain}"
       return 1
     fi
-    sed -i '/^NFQWS2_OPT="/a --reasm-disable' "$cfg" || return 1
+    backup_smart_set_reasm "$cfg" 1
     echo -e "Параметр --reasm-disable: ${red}активирован${plain}."
   fi
 
@@ -236,8 +234,6 @@ menu_action_set_tls_blob() {
   local sed_ereg="-E"
   local current_blob=""
   local current_mode=""
-  local has_tls_maxru=0
-  local has_tls_default=0
   local blobs=()
   local i=0
   local choice=""
@@ -258,9 +254,7 @@ menu_action_set_tls_blob() {
     return 1
   fi
 
-  if ! printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
-    sed_ereg="-r"
-  fi
+  sed_ereg="$(config_sed_ereg)"
 
   if sort -z </dev/null >/dev/null 2>&1; then
     while IFS= read -r -d '' f; do
@@ -280,28 +274,11 @@ menu_action_set_tls_blob() {
 
   current_blob="$(sed -n -E 's#.*--blob=maxru:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
   [ -z "$current_blob" ] && current_blob="не найден в конфиге"
-  if awk '
-      /--lua-desync=/ && /blob=maxru/ && $0 !~ /strategy=26/ {found=1}
-      END {exit(found?0:1)}
-    ' "$cfg"; then
-    has_tls_maxru=1
-  fi
-  if awk '
-      /--lua-desync=/ && /blob=fake_default_tls/ && $0 !~ /strategy=26/ {found=1}
-      END {exit(found?0:1)}
-    ' "$cfg"; then
-    has_tls_default=1
-  fi
-
-  if [ "$has_tls_maxru" -eq 1 ] && [ "$has_tls_default" -eq 0 ]; then
-    current_mode="maxru (внешний файл)"
-  elif [ "$has_tls_default" -eq 1 ] && [ "$has_tls_maxru" -eq 0 ]; then
-    current_mode="fake_default_tls (встроенный)"
-  elif [ "$has_tls_default" -eq 1 ] && [ "$has_tls_maxru" -eq 1 ]; then
-    current_mode="mixed"
-  else
-    current_mode="не определён"
-  fi
+  current_mode="$(config_tls_blob_mode_value "$cfg")"
+  case "$current_mode" in
+    maxru)            current_mode="maxru (внешний файл)" ;;
+    fake_default_tls) current_mode="fake_default_tls (встроенный)" ;;
+  esac
 
   echo -e "${yellow}Текущий режим blob: ${plain}${current_mode}"
   echo -e "${yellow}Текущий файл для maxru: ${plain}${current_blob}"
@@ -320,13 +297,8 @@ menu_action_set_tls_blob() {
     pause_enter
     return 0
   fi
-  if ! printf "%s" "$choice" | grep -Eq '^[0-9]+$'; then
-    echo -e "${red}Некорректный выбор.${plain}"
-    pause_enter
-    return 1
-  fi
-  if [ "$choice" -lt 1 ] || [ "$choice" -gt "$(( ${#blobs[@]} + 1 ))" ]; then
-    echo -e "${red}Номер вне диапазона.${plain}"
+  if ! ui_is_number_in_range "$choice" 1 "$(( ${#blobs[@]} + 1 ))"; then
+    echo -e "${red}Некорректный выбор или номер вне диапазона.${plain}"
     pause_enter
     return 1
   fi
@@ -384,10 +356,10 @@ menu_action_toggle_wireguard_fake() {
   fi
 
   if printf "%s\n" "$wg_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
-    sed -i '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/ s/^[[:space:]]*--skip[[:space:]]\+--filter-l7=wireguard/--filter-l7=wireguard/' "$cfg"
+    backup_smart_set_wireguard "$cfg" 1
     echo -e "${green}Стратегия WireGuard ВКЛЮЧЕНА (--skip удалён).${plain}"
   else
-    sed -i '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/ s/^[[:space:]]*--filter-l7=wireguard/--skip --filter-l7=wireguard/' "$cfg"
+    backup_smart_set_wireguard "$cfg" 0
     echo -e "${green}Стратегия WireGuard ВЫКЛЮЧЕНА (--skip добавлен).${plain}"
   fi
   echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
@@ -409,9 +381,7 @@ menu_action_wg_repeats() {
     return 1
   fi
 
-  if ! printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
-    sed_ereg="-r"
-  fi
+  sed_ereg="$(config_sed_ereg)"
 
   if ! grep -q 'blob=fakewgblob:repeats=' "$cfg"; then
     echo -e "${red}В конфиге не найдена строка стратегии WireGuard (blob=fakewgblob:repeats=).${plain}"
@@ -432,13 +402,8 @@ menu_action_wg_repeats() {
     pause_enter
     return 0
   fi
-  if ! printf "%s" "$new_repeats" | grep -Eq '^[0-9]+$'; then
-    echo -e "${red}Некорректное значение: нужно целое число.${plain}"
-    pause_enter
-    return 1
-  fi
-  if [ "$new_repeats" -lt 2 ] || [ "$new_repeats" -gt 99 ]; then
-    echo -e "${red}Значение должно быть в диапазоне от 2 до 99.${plain}"
+  if ! ui_is_number_in_range "$new_repeats" 2 99; then
+    echo -e "${red}Значение должно быть целым числом от 2 до 99.${plain}"
     pause_enter
     return 1
   fi
@@ -479,9 +444,7 @@ menu_action_set_wg_blob() {
     return 1
   fi
 
-  if ! printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
-    sed_ereg="-r"
-  fi
+  sed_ereg="$(config_sed_ereg)"
 
   if ! grep -q -- "--blob=fakewgblob:@/opt/zapret2/files/fake/" "$cfg"; then
     echo -e "${red}В конфиге не найдено объявление --blob=fakewgblob:@...${plain}"
@@ -525,13 +488,8 @@ menu_action_set_wg_blob() {
     pause_enter
     return 0
   fi
-  if ! printf "%s" "$choice" | grep -Eq '^[0-9]+$'; then
-    echo -e "${red}Некорректный выбор.${plain}"
-    pause_enter
-    return 1
-  fi
-  if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#blobs[@]}" ]; then
-    echo -e "${red}Номер вне диапазона.${plain}"
+  if ! ui_is_number_in_range "$choice" 1 "${#blobs[@]}"; then
+    echo -e "${red}Некорректный выбор или номер вне диапазона.${plain}"
     pause_enter
     return 1
   fi
@@ -571,11 +529,11 @@ menu_action_toggle_quic443_fake() {
 
   if printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
     # Выключаем: добавляем --skip перед --filter-udp=443
-    sed -i '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/ s/^[[:space:]]*--filter-udp=443[[:space:]]*$/--skip --filter-udp=443/' "$cfg"
+    backup_smart_set_quic443 "$cfg" 0
     echo -e "${green}Фейки для QUIC (UDP443) ВЫКЛЮЧЕНЫ (--skip добавлен).${plain}"
   else
     # Включаем: убираем --skip перед --filter-udp=443
-    sed -i '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/ s/^[[:space:]]*--skip[[:space:]]\+--filter-udp=443[[:space:]]*$/--filter-udp=443/' "$cfg"
+    backup_smart_set_quic443 "$cfg" 1
     echo -e "${green}Фейки для QUIC (UDP443) ВКЛЮЧЕНЫ (--skip удалён).${plain}"
   fi
   echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
@@ -587,13 +545,9 @@ toggle_hostlist_mode() {
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
     if grep -q '^MODE_FILTER=autohostlist' "$cfg"; then
-      sed -i 's/^MODE_FILTER=autohostlist/MODE_FILTER=hostlist/' "$cfg"
-      # Disable <HOSTLIST> placeholder for RKN strategy only
-      sed -i 's#\(--hostlist=/opt/zapret2/extra_strats/TCP_RKN_list\.txt\) <HOSTLIST>#\1#g' "$cfg"
+      backup_smart_set_hostlist "$cfg" 0
     elif grep -q '^MODE_FILTER=hostlist' "$cfg"; then
-      sed -i 's/^MODE_FILTER=hostlist/MODE_FILTER=autohostlist/' "$cfg"
-      # Enable <HOSTLIST> placeholder for RKN strategy only
-      sed -i 's#\(--hostlist=/opt/zapret2/extra_strats/TCP_RKN_list\.txt\)#\1 <HOSTLIST>#g' "$cfg"
+      backup_smart_set_hostlist "$cfg" 1
     fi
   done
 }
@@ -602,12 +556,9 @@ toggle_fallback_mode() {
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
     if { sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg"; } | grep -q '^[[:space:]]*--skip[[:space:]]'; then
-      sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--skip[[:space:]]\+//' "$cfg"
-      sed -i '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/ s/^[[:space:]]*--skip[[:space:]]\+//' "$cfg"
+      backup_smart_set_fallback "$cfg" 1
     else
-      sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--filter-tcp=443 --filter-l7=tls/--skip --filter-tcp=443 --filter-l7=tls/' "$cfg"
-      sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--filter-tcp=443$/--skip --filter-tcp=443/' "$cfg"
-      sed -i '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/ s/^[[:space:]]*--filter-tcp=80 --filter-l7=http/--skip --filter-tcp=80 --filter-l7=http/' "$cfg"
+      backup_smart_set_fallback "$cfg" 0
     fi
   done
 }
@@ -615,7 +566,6 @@ toggle_fallback_mode() {
 toggle_rst_guard_mode() {
   local cfg="/opt/zapret2/config"
   local enable=1
-  local key
 
   if type rst_guard_lua_update_from_repo >/dev/null 2>&1 && [ ! -s /opt/zapret2/lua/rst-guard.lua ]; then
     rst_guard_lua_update_from_repo || true
@@ -630,21 +580,7 @@ toggle_rst_guard_mode() {
     enable=0
   fi
 
-  if [ "$enable" -eq 1 ]; then
-    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--filter-tcp=443 --filter-l7=tls$/--filter-tcp=443/' "$cfg"
-    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--skip --filter-tcp=443 --filter-l7=tls$/--skip --filter-tcp=443/' "$cfg"
-    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello$/--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty/' "$cfg"
-    for key in 1 2 3 4 8 9; do
-      sed -i "s/--lua-desync=circular_locked:key=$key/--lua-desync=rst_guard_locked:key=$key/g" "$cfg"
-    done
-  else
-    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--filter-tcp=443$/--filter-tcp=443 --filter-l7=tls/' "$cfg"
-    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--skip --filter-tcp=443$/--skip --filter-tcp=443 --filter-l7=tls/' "$cfg"
-    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty$/--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello/' "$cfg"
-    for key in 1 2 3 4 8 9; do
-      sed -i "s/--lua-desync=rst_guard_locked:key=$key/--lua-desync=circular_locked:key=$key/g" "$cfg"
-    done
-  fi
+  backup_smart_set_rst_guard "$cfg" "$enable"
 }
 
 # =============================================================================
@@ -865,13 +801,8 @@ ports_manage() {
         return 0
         ;;
       *)
-        if ! printf '%s' "$choice" | grep -Eq '^[0-9]+$'; then
-          echo -e "${red}Некорректный ввод.${plain}"
-          sleep 1
-          continue
-        fi
-        if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#ports[@]}" ]; then
-          echo -e "${red}Номер вне диапазона.${plain}"
+        if ! ui_is_number_in_range "$choice" 1 "${#ports[@]}"; then
+          echo -e "${red}Некорректный ввод или номер вне диапазона.${plain}"
           sleep 1
           continue
         fi
@@ -983,14 +914,8 @@ backup_pick_archive() {
     rm -f "$list_file"
     return 1
   fi
-  if ! printf '%s' "$choice" | grep -Eq '^[0-9]+$'; then
-    echo -e "${red}Некорректный ввод.${plain}"
-    rm -f "$list_file"
-    pause_enter
-    return 1
-  fi
-  if [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
-    echo -e "${red}Номер вне диапазона.${plain}"
+  if ! ui_is_number_in_range "$choice" 1 "$count"; then
+    echo -e "${red}Некорректный ввод или номер вне диапазона.${plain}"
     rm -f "$list_file"
     pause_enter
     return 1
@@ -1006,6 +931,10 @@ backup_pick_archive() {
 # Сбор во временную директорию /tmp, упаковка в .tar (BusyBox), перемещение в /opt/zator_backup.
 menu_action_backup_create() {
   local ts archive stage rel src tmp_list
+  # Глобальная переменная: путь к свежесозданному архиву. Используется хелпером
+  # backup_helper_ask_and_create() и пост-обновлением (пункт 5), чтобы восстановить
+  # настройки именно из только что созданного бэкапа.
+  BACKUP_LAST_ARCHIVE=""
   ts="$(date +%Y%m%d_%H%M%S)"
   archive="$Z2R_BACKUP_DIR/z2r_backup_${ts}.tar"
   stage="/tmp/z2r_backup_stage_$$"
@@ -1054,9 +983,83 @@ menu_action_backup_create() {
   fi
   rm -rf "$stage"
 
+  BACKUP_LAST_ARCHIVE="$archive"
   echo -e "${green}Бэкап создан: $(basename "$archive")${plain}"
   echo -e "${yellow}Путь: $archive${plain}"
   pause_enter
+  return 0
+}
+
+
+backup_helper_ask_and_create() {
+  local ans
+  BACKUP_HELPER_CONSENT=0
+  BACKUP_HELPER_CREATED=0
+  BACKUP_LAST_ARCHIVE=""
+
+  echo -e "${yellow}Создать резервную копию (бэкап) перед операцией?${plain}"
+  echo -e "  ${Fcyan}1${plain} — да, создать бэкап"
+  echo -e "  ${Fyellow}0${plain} — нет, продолжить без бэкапа"
+  read -re -p "Ваш выбор: " ans
+
+  case "$ans" in
+    1|5|y|Y|д|Д)
+      BACKUP_HELPER_CONSENT=1
+      if menu_action_backup_create; then
+        BACKUP_HELPER_CREATED=1
+      else
+        echo -e "${red}Не удалось создать бэкап. Продолжаем без него.${plain}"
+      fi
+      ;;
+    *)
+      echo -e "${yellow}Продолжаем без создания бэкапа.${plain}"
+      ;;
+  esac
+  return 0
+}
+
+backup_update_offer_restore() {
+  local ans
+
+  # Сценарий А: только что создан архив.
+  if [ "$BACKUP_HELPER_CREATED" = "1" ] && [ -n "$BACKUP_LAST_ARCHIVE" ] && [ -f "$BACKUP_LAST_ARCHIVE" ]; then
+    echo ""
+    echo -e "${yellow}Обновление завершено. Хотите восстановить ваши настройки из только что созданного бэкапа?${plain}"
+    echo -e "${yellow}(Доступны только безопасные режимы: умный перенос / списки. Полное восстановление заблокировано, чтобы не затереть обновлённый config.)${plain}"
+    echo -e "  ${Fcyan}1${plain} — да, восстановить из свежего бэкапа"
+    echo -e "  ${Fyellow}0${plain} — нет, оставить обновлённый config как есть"
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      1|5|y|Y|д|Д)
+        # block_full=1: режим «Полное» (a) недоступен — только списки (2) и умный перенос (3).
+        menu_action_backup_restore "$BACKUP_LAST_ARCHIVE" 1 || true
+        ;;
+      *)
+        echo -e "${green}Обновлённый config оставлен без изменений.${plain}"
+        ;;
+    esac
+    return 0
+  fi
+
+  # Сценарий Б: отказ от бэкапа. Ищем ранее созданные архивы.
+  if [ "$(backup_count_archives)" -gt 0 ]; then
+    echo ""
+    echo -e "${yellow}Найдены ранее созданные архивы бэкапов в /opt/zator_backup/.${plain}"
+    echo -e "${yellow}Перейти в меню бэкапов для восстановления прошлых настроек?${plain}"
+    echo -e "${yellow}(Полное восстановление будет заблокировано в контексте обновления.)${plain}"
+    echo -e "  ${Fcyan}1${plain} — да, перейти в меню бэкапов"
+    echo -e "  ${Fyellow}0${plain} — нет, выйти"
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      1|5|y|Y|д|Д)
+        # block_full=1 пробрасывается в подменю: полное восстановление скрыто.
+        backup_submenu 1 || true
+        ;;
+      *)
+        echo -e "${green}Выход без восстановления.${plain}"
+        ;;
+    esac
+  fi
   return 0
 }
 
@@ -1095,16 +1098,6 @@ backup_check_blobs() {
 # (логическое ядро toggle_* / menu_action_toggle_*), но параметризованно:
 # каждый «сеттер» принимает конкретный cfg и желаемое состояние.
 # =============================================================================
-
-# Детектор расширенного синтаксиса sed: -E (GNU/modern BusyBox) или -r (старый).
-# Печатает флаг в stdout. Повторяет приём из menu_action_set_wg_blob().
-backup_smart_sed_ereg() {
-  if printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
-    printf '%s' "-E"
-  else
-    printf '%s' "-r"
-  fi
-}
 
 # Точечный перенос портов NFQWS2_PORTS_TCP / NFQWS2_PORTS_UDP.
 # Значения целиком берутся из старого конфига и записываются в новый через
@@ -1146,7 +1139,7 @@ backup_smart_apply_blobs() {
   local old_mode new_mode
 
   [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
-  ereg="$(backup_smart_sed_ereg)"
+  ereg="$(config_sed_ereg)"
   tmp_old="/tmp/z4r_smart_old_$$"
   tmp_new="/tmp/z4r_smart_new_$$"
 
@@ -1417,26 +1410,70 @@ menu_action_backup_restore_smart() {
 #   переносятся порты NFQWS2_PORTS_*, blob-файлы (по совпадению имён) и флаги
 #   пунктов 13/18/19/20 через штатные sed-паттерны проекта.
 menu_action_backup_restore() {
+  # $1 (preset_archive) — необязательный путь к архиву; если задан, выбор из
+  #   списка пропускается (используется при восстановлении из только что
+  #   созданного бэкапа после обновления, пункт 5).
+  # $2 (block_full) — 1 = запретить режим «Полное» (mode 1). Применяется в
+  #   контексте обновления, чтобы архив не затёр только что обновлённый config.
+  local preset_archive="${1:-}"
+  local block_full="${2:-0}"
   local archive restore_dir mode rel src dst tmp_list was_running
 
-  if ! backup_pick_archive "Выберите номер архива для восстановления: "; then
-    return 0
+  if [ -n "$preset_archive" ]; then
+    archive="$preset_archive"
+    if [ ! -f "$archive" ]; then
+      echo -e "${red}Архив не найден: $archive${plain}"
+      pause_enter
+      return 1
+    fi
+    echo -e "${yellow}Восстановление из архива: $(basename "$archive")${plain}"
+  else
+    if ! backup_pick_archive "Выберите номер архива для восстановления: "; then
+      return 0
+    fi
+    archive="$BACKUP_PICKED"
   fi
-  archive="$BACKUP_PICKED"
   echo ""
 
-  echo -e "${yellow}Режим восстановления:${plain}"
-  echo -e "  ${Fcyan}1${plain} — ${green}Полное${plain} (config + списки доменов + номера стратегий)"
-  echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
-  echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
-  echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
-  read -re -p "Ваш выбор: " mode
-  case "$mode" in
-    1) ;;
-    2) ;;
-    3) ;;
-    *) echo -e "${yellow}Восстановление отменено.${plain}"; pause_enter; return 0 ;;
-  esac
+  # Выбор режима восстановления. В контексте обновления (block_full=1) режим
+  # «Полное» (1) недоступен иначе маразм, не надо заменять обновленынй конфиг на старый
+  while true; do
+    echo -e "${yellow}Режим восстановления:${plain}"
+    if [ "$block_full" = "1" ]; then
+      # Контекст обновления: полное восстановление заблокировано.
+      echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
+      echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
+      echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
+      echo -e "${yellow}(Полное восстановление заблокировано: обновлённый config защищён от перезаписи старым файлом из архива.)${plain}"
+    else
+      echo -e "  ${Fcyan}1${plain} — ${green}Полное${plain} (config + списки доменов + номера стратегий)"
+      echo -e "  ${Fcyan}2${plain} — ${green}Только списки доменов и номера стратегий${plain} (config не затрагивается)"
+      echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
+      echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
+    fi
+    read -re -p "Ваш выбор: " mode
+    case "$mode" in
+      2|3) break ;;
+      1)
+        if [ "$block_full" = "1" ]; then
+          echo -e "${red}Полное восстановление заблокировано в контексте обновления (защита обновлённого config). Доступно: 2, 3 или 0.${plain}"
+          sleep 1
+          continue
+        fi
+        break
+        ;;
+      0|"")
+        echo -e "${yellow}Восстановление отменено.${plain}"
+        pause_enter
+        return 0
+        ;;
+      *)
+        echo -e "${red}Некорректный ввод. Выберите доступный режим (2, 3 или 0).${plain}"
+        sleep 1
+        continue
+        ;;
+    esac
+  done
 
   restore_dir="/tmp/z4r_restore_$$"
   rm -rf "$restore_dir"

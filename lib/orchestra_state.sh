@@ -4,24 +4,25 @@ ORCH_DIR="${ORCH_DIR:-/opt/zapret2/extra_strats/cache/orchestra}"
 ORCH_LOCK_FILE="${ORCH_LOCK_FILE:-$ORCH_DIR/locked.tsv}"
 PROFILE_STATE_FILE="${PROFILE_STATE_FILE:-${Z2R_PROFILE_STATE_FILE:-/opt/etc/z2r/profile.lock}}"
 
-orch_locked_get() {
+# Базовое чтение блокировки из locked.tsv. $3 — значение по умолчанию.
+# Единый awk для orch_locked_get (default "0") и orch_locked_state_get (default "auto").
+_orch_locked_read() {
   local profile="$1"
   local proto="$2"
-  [ -f "$ORCH_LOCK_FILE" ] || { echo "0"; return; }
-  awk -v pr="$profile" -v p="$proto" 'BEGIN{FS="\t"}{
+  local default="${3:-0}"
+  [ -f "$ORCH_LOCK_FILE" ] || { echo "$default"; return; }
+  awk -v pr="$profile" -v p="$proto" -v d="$default" 'BEGIN{FS="\t"}{
     if ($1==pr && $2==p && NF>=3) {print $3; found=1; exit}
     if ($1==pr && NF==2 && p=="tls") {print $2; found=1; exit}
-  } END{if (!found) print 0}' "$ORCH_LOCK_FILE"
+  } END{if (!found) print d}' "$ORCH_LOCK_FILE"
+}
+
+orch_locked_get() {
+  _orch_locked_read "$1" "$2" "0"
 }
 
 orch_locked_state_get() {
-  local profile="$1"
-  local proto="$2"
-  [ -f "$ORCH_LOCK_FILE" ] || { echo "auto"; return; }
-  awk -v pr="$profile" -v p="$proto" 'BEGIN{FS="\t"}{
-    if ($1==pr && $2==p && NF>=3) {print $3; found=1; exit}
-    if ($1==pr && NF==2 && p=="tls") {print $2; found=1; exit}
-  } END{if (!found) print "auto"}' "$ORCH_LOCK_FILE"
+  _orch_locked_read "$1" "$2" "auto"
 }
 
 orch_locked_set() {
@@ -126,22 +127,13 @@ profile_state_validate_strategy() {
   return 0
 }
 
-profile_state_set() {
-  local profile="$1"
-  local proto="$2"
-  local state
-  local file tmp
+# Атомарная перезапись файла состояния профиля.
+# Удаляет запись профиля $2/$3, опционально добавляет новую ($4 — пусто = только удалить).
+# Единая awk+tmp+cmp логика для profile_state_set и profile_state_clear.
+_profile_state_write() {
+  local file="$1" profile="$2" proto="$3" state="$4"
+  local tmp="${file}.tmp.$$"
 
-  state="$(profile_state_normalize "$3")" || return 1
-  [ "$state" = "auto" ] && { profile_state_clear "$profile" "$proto"; return $?; }
-  profile_state_validate_strategy "$profile" "$state" || return 1
-
-  if [ "$(profile_state_stored_get "$profile" "$proto")" = "$state" ]; then
-    return 0
-  fi
-
-  file="$(profile_state_file)"
-  tmp="${file}.tmp.$$"
   mkdir -p "$(dirname "$file")"
   if [ -f "$file" ]; then
     awk -v pr="$profile" -v p="$proto" '
@@ -153,7 +145,7 @@ profile_state_set() {
   else
     : > "$tmp"
   fi
-  printf '%s\t%s\t%s\n' "$profile" "$proto" "$state" >> "$tmp"
+  [ -n "$state" ] && printf '%s\t%s\t%s\n' "$profile" "$proto" "$state" >> "$tmp"
 
   if [ -f "$file" ] && cmp -s "$file" "$tmp"; then
     rm -f "$tmp"
@@ -162,30 +154,25 @@ profile_state_set() {
   fi
 }
 
+profile_state_set() {
+  local profile="$1"
+  local proto="$2"
+  local state
+
+  state="$(profile_state_normalize "$3")" || return 1
+  [ "$state" = "auto" ] && { profile_state_clear "$profile" "$proto"; return $?; }
+  profile_state_validate_strategy "$profile" "$state" || return 1
+
+  [ "$(profile_state_stored_get "$profile" "$proto")" = "$state" ] && return 0
+
+  _profile_state_write "$(profile_state_file)" "$profile" "$proto" "$state"
+}
+
 profile_state_clear() {
   local profile="$1"
   local proto="$2"
-  local file tmp
 
   [ "$(profile_state_stored_get "$profile" "$proto")" = "auto" ] && return 0
 
-  file="$(profile_state_file)"
-  tmp="${file}.tmp.$$"
-  mkdir -p "$(dirname "$file")"
-  if [ -f "$file" ]; then
-    awk -v pr="$profile" -v p="$proto" '
-      BEGIN { FS=OFS="\t" }
-      /^[[:space:]]*#/ || NF == 0 { print; next }
-      $1 == pr && (($2 == p) || (NF == 2 && p == "tls")) { next }
-      { print }
-    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
-  else
-    : > "$tmp"
-  fi
-
-  if [ -f "$file" ] && cmp -s "$file" "$tmp"; then
-    rm -f "$tmp"
-  else
-    mv -f "$tmp" "$file"
-  fi
+  _profile_state_write "$(profile_state_file)" "$profile" "$proto" ""
 }

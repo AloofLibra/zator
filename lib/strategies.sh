@@ -93,11 +93,8 @@ orch_profile_try() {
         pause_enter
         return
     fi
-    if ! printf "%s" "$start_strat" | grep -Eq '^[0-9]+$'; then
-        echo "Неверный номер стратегии. Начинаем с 1."
-        start_strat=1
-    elif [ "$start_strat" -lt 1 ] || [ "$start_strat" -gt "$max_strat" ]; then
-        echo "Номер стратегии вне диапазона. Начинаем с 1."
+    if ! ui_is_number_in_range "$start_strat" 1 "$max_strat"; then
+        echo "Неверный номер стратегии или вне диапазона. Начинаем с 1."
         start_strat=1
     fi
 
@@ -439,11 +436,8 @@ manage_custom_rkn_domain() {
     if [ -z "$strategy_num" ]; then
         strategy_num="$current_strat"
     fi
-    if ! printf "%s" "$strategy_num" | grep -Eq '^[0-9]+$'; then
-        echo "Некорректный номер стратегии. Начинаем с 1."
-        strategy_num=1
-    elif [ "$strategy_num" -lt 1 ] || [ "$strategy_num" -gt "$max_strat" ]; then
-        echo "Номер вне диапазона. Начинаем с 1."
+    if ! ui_is_number_in_range "$strategy_num" 1 "$max_strat"; then
+        echo "Некорректный номер стратегии или вне диапазона. Начинаем с 1."
         strategy_num=1
     fi
 
