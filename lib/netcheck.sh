@@ -1,10 +1,10 @@
 # Network / access checks
 
-# Цвета
-plain='\033[0m'
-red='\033[0;31m'
-green='\033[0;32m'
-yellow='\033[0;33m'
+# Цвета (определяются глобально в z2r.sh; fallback для автономного запуска)
+[ -z "$plain" ] && plain='\033[0m'
+[ -z "$red" ] && red='\033[0;31m'
+[ -z "$green" ] && green='\033[0;32m'
+[ -z "$yellow" ] && yellow='\033[0;33m'
 
 get_yt_cluster_domain() {
     local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
