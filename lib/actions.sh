@@ -553,7 +553,6 @@ toggle_hostlist_mode() {
 }
 
 toggle_fallback_mode() {
-  local want_on
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
     if { sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg"; } | grep -q '^[[:space:]]*--skip[[:space:]]'; then
@@ -1100,12 +1099,6 @@ backup_check_blobs() {
 # каждый «сеттер» принимает конкретный cfg и желаемое состояние.
 # =============================================================================
 
-# Детектор расширенного синтаксиса sed: -E (GNU/modern BusyBox) или -r (старый).
-# Печатает флаг в stdout. Повторяет приём из menu_action_set_wg_blob().
-backup_smart_sed_ereg() {
-  config_sed_ereg
-}
-
 # Точечный перенос портов NFQWS2_PORTS_TCP / NFQWS2_PORTS_UDP.
 # Значения целиком берутся из старого конфига и записываются в новый через
 # штатный config_set_var. Для TCP дополнительно синхронизируется --filter-tcp
@@ -1146,7 +1139,7 @@ backup_smart_apply_blobs() {
   local old_mode new_mode
 
   [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
-  ereg="$(backup_smart_sed_ereg)"
+  ereg="$(config_sed_ereg)"
   tmp_old="/tmp/z4r_smart_old_$$"
   tmp_new="/tmp/z4r_smart_new_$$"
 
