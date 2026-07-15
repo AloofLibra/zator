@@ -215,15 +215,16 @@ api_set_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-7]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   [[ "${PARAM_STRATEGY:-}" =~ ^[0-9]+$ ]] || send_error "400 Bad Request" "Некорректная стратегия"
-  local max proto_list check_json
+  local max proto_list check_json old_udp_ports
   max="$(orch_max_strategy_for_profile "$PARAM_PROFILE")"
   if [ "${PARAM_STRATEGY}" -ne 0 ]; then
     [ "${PARAM_STRATEGY}" -ge 1 ] && [ "${PARAM_STRATEGY}" -le "${max:-0}" ] || send_error "400 Bad Request" "Стратегия вне диапазона"
   fi
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
+  old_udp_ports="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_UDP)"
   profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$PARAM_STRATEGY" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
-  [ "$PARAM_PROFILE" = "6" ] && service_zapret2 restart >/dev/null 2>&1 || true
+  profile_config_voice_ports_changed "$PARAM_PROFILE" "$CONFIG_FILE" "$old_udp_ports" && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
   check_json="$(profile_check_json "$PARAM_PROFILE")"
   send_json "200 OK" "{\"ok\":true,\"check\":$check_json}"
@@ -232,11 +233,12 @@ api_set_lock() {
 api_clear_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-7]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
-  local proto_list
+  local proto_list old_udp_ports
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
+  old_udp_ports="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_UDP)"
   profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "auto" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сбросить состояние профиля"
-  [ "$PARAM_PROFILE" = "6" ] && service_zapret2 restart >/dev/null 2>&1 || true
+  profile_config_voice_ports_changed "$PARAM_PROFILE" "$CONFIG_FILE" "$old_udp_ports" && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
   send_json "200 OK" "{\"ok\":true}"
 }

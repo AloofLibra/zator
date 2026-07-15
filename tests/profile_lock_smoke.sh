@@ -93,8 +93,10 @@ profile_apply_all "$CFG"
 [ "$(orch_locked_get 4 tls)" = "2" ] || fail "Discord TCP orchestra lock was not restored"
 
 profile_state_set 6 udp 0
+udp_ports_before="$(config_get_var "$CFG" NFQWS2_PORTS_UDP)"
 profile_apply_all "$CFG"
 [ "$(orch_locked_get 6 udp)" = "0" ] || fail "VOICE 0 was not rehydrated into orchestra lock"
+profile_config_voice_ports_changed 6 "$CFG" "$udp_ports_before" || fail "VOICE port removal was not detected"
 udp_ports_line="$(config_get_var "$CFG" NFQWS2_PORTS_UDP)"
 assert_not_contains "$udp_ports_line" '(^|,)50000-50099(,|$)' "VOICE ports are still in NFQWS2_PORTS_UDP"
 profile_state_set 6 udp 2
@@ -102,6 +104,11 @@ profile_apply_all "$CFG"
 udp_ports_line="$(config_get_var "$CFG" NFQWS2_PORTS_UDP)"
 assert_contains "$udp_ports_line" '(^|,)50000-50099(,|$)' "VOICE ports were not restored"
 [ "$(orch_locked_get 6 udp)" = "2" ] || fail "VOICE orchestra lock was not restored"
+udp_ports_before="$udp_ports_line"
+profile_config_apply_state 6 udp 1 "$CFG"
+if profile_config_voice_ports_changed 6 "$CFG" "$udp_ports_before"; then
+  fail "VOICE strategy change was mistaken for a port change"
+fi
 
 profile_state_set 8 tls 0
 profile_apply_all "$CFG"

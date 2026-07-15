@@ -446,6 +446,10 @@ config_profile_voice_ports_apply() {
   [ "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" = "$new_ports" ] || config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
 }
 
+profile_config_voice_ports_changed() {
+  [ "$1" = "6" ] && [ "$(config_get_var "$2" NFQWS2_PORTS_UDP)" != "$3" ]
+}
+
 profile_config_orch_set() {
   local profile="$1"
   local proto="$2"

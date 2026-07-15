@@ -38,6 +38,13 @@ profile_strategy_restart_notice() {
     fi
 }
 
+profile_strategy_restart_if_needed() {
+    if profile_config_voice_ports_changed "$1" "$2" "$3"; then
+        profile_strategy_restart_notice
+    fi
+    return 0
+}
+
 orch_profile_try() {
     local profile="$1"
     local title="$2"
@@ -48,6 +55,8 @@ orch_profile_try() {
     local current_strat=""
     local current_state=""
     local answer=""
+    local cfg=""
+    local old_udp_ports=""
     local first_proto="${proto_list%% *}"
     local -A prev_map
 
@@ -72,9 +81,11 @@ orch_profile_try() {
         return
     fi
     if [ "$start_strat" = "0" ]; then
-        if profile_state_set_and_apply "$profile" "$proto_list" "0" "$(get_config_file)"; then
+        cfg="$(get_config_file)"
+        old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+        if profile_state_set_and_apply "$profile" "$proto_list" "0" "$cfg"; then
             echo "Профиль $profile выключен и сохранён как 0."
-            if [ "$profile" = "6" ]; then profile_strategy_restart_notice; fi
+            profile_strategy_restart_if_needed "$profile" "$cfg" "$old_udp_ports"
         else
             echo -e "${red}Не удалось выключить профиль $profile.${plain}"
         fi
@@ -121,9 +132,11 @@ orch_profile_try() {
 
         read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
         if [ "$answer" = "1" ]; then
-            if profile_state_set_and_apply "$profile" "$proto_list" "$s" "$(get_config_file)"; then
+            cfg="$(get_config_file)"
+            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+            if profile_state_set_and_apply "$profile" "$proto_list" "$s" "$cfg"; then
                 echo "Стратегия $s сохранена для профиля $profile."
-                if [ "$profile" = "6" ]; then profile_strategy_restart_notice; fi
+                profile_strategy_restart_if_needed "$profile" "$cfg" "$old_udp_ports"
             else
                 echo -e "${red}Не удалось сохранить стратегию $s для профиля $profile.${plain}"
             fi
