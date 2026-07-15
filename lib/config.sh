@@ -50,6 +50,14 @@ config_set_var() {
   fi
 }
 
+config_sed_ereg() {
+  if printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
+    printf '%s' "-E"
+  else
+    printf '%s' "-r"
+  fi
+}
+
 # Определяет Linux-имя WAN интерфейса по default route.
 # На Keenetic это может быть ppp0, eth*, nwg*, wwan0 и т.п.
 config_keenetic_detect_default_iface() {
