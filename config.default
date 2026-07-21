@@ -289,6 +289,15 @@ NFQWS2_OPT="
 --lua-desync=fake:blob=fake_default_udp:ip_autottl=0,3-20:ip6_autottl=0,3-20:repeats=4:out_range=-d10:strategy=9
 --lua-desync=send:repeats=2:ip_autottl=1,3-20:strategy=10 --lua-desync=fake:blob=0x00:repeats=4:out_range=-d10:strategy=10
 --lua-desync=fake:blob=quic_google:ipfrag_pos_udp=16:ipfrag_disorder:repeats=6:out_range=-d10:strategy=11
+--lua-desync=fake:blob=stun_fake:ip_ttl=6:ip6_ttl=6:repeats=4:out_range=-d10:strategy=12
+--lua-desync=fake:blob=discord_fake:ip_ttl=6:ip6_ttl=6:repeats=4:out_range=-d10:strategy=13
+--lua-desync=fake:blob=stun_fake:ip_ttl=6:ip6_ttl=6:repeats=4:out_range=-d10:strategy=14 --lua-desync=fake:blob=discord_fake:ip_ttl=6:ip6_ttl=6:repeats=4:out_range=-d10:strategy=14
+--lua-desync=fake:blob=stun_fake:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:repeats=4:out_range=-d10:strategy=15
+--lua-desync=fake:blob=discord_fake:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:repeats=4:out_range=-d10:strategy=16
+--lua-desync=fake:blob=stun_fake:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:repeats=4:out_range=-d10:strategy=17 --lua-desync=fake:blob=discord_fake:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:repeats=4:out_range=-d10:strategy=17
+--lua-desync=fake:blob=stun_fake:badsum:repeats=4:out_range=-d10:strategy=18
+--lua-desync=fake:blob=discord_fake:badsum:repeats=4:out_range=-d10:strategy=19
+--lua-desync=fake:blob=stun_fake:badsum:repeats=4:out_range=-d10:strategy=20 --lua-desync=fake:blob=discord_fake:badsum:repeats=4:out_range=-d10:strategy=20
 
 --new
 
