@@ -1,0 +1,2 @@
+# Одна подстрока домена на строку. Регистр не важен.
+# Пример: cdn - все домены содержащие в себе "cdn" будут обработаны. Например, static.cdn.mysite.com, mycdn.example.org, extracdnnetwork.com

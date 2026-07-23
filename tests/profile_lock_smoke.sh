@@ -67,6 +67,14 @@ done
 
 grep -q 'locked == 0' "$REPO_DIR/orchestra/locked.lua" || fail "locked.lua does not handle explicit 0 lock"
 grep -q 'profile disabled by lock 0' "$REPO_DIR/orchestra/locked.lua" || fail "locked.lua 0 path is not logged"
+grep -q 'string.find(host, needle, 1, true)' "$REPO_DIR/orchestra/locked.lua" || fail "substring matching must be literal"
+grep -q 'lua_state.substring_hostlists' "$REPO_DIR/orchestra/locked.lua" || fail "substring decision is not cached per connection"
+grep -q 'lua_cutoff(ctx)' "$REPO_DIR/orchestra/locked.lua" || fail "non-matching substring traffic is not cut off from Lua"
+grep -q 'file_stat = stat(path)' "$REPO_DIR/orchestra/locked.lua" || fail "substring list changes are not checked by the nfqws2 C stat function"
+grep -q 'circular_locked:key=3:.*include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default" || fail "substring list is not wired into RKN strategies"
+[ "$(grep -c 'include_substrings=' "$REPO_DIR/config.default")" -eq 1 ] || fail "substring filtering must have only one RKN routing profile"
+[ "$(grep -c 'route_key=3:route_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default")" -eq 1 ] || fail "fallback does not route substring matches to RKN"
+[ -f "$REPO_DIR/extra_strats/TCP/RKN/Domains_By_Substring.txt" ] || fail "substring list source is missing"
 
 [ "$(profile_state_get 3 tls)" = "auto" ] || fail "missing state must be auto"
 

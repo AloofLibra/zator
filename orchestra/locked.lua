@@ -6,6 +6,7 @@ local LOCKED_TLS = {}
 local LOCKED_HTTP = {}
 local LOCKED_UDP = {}
 local EXCLUDE_HOSTLISTS = {}
+local SUBSTRING_HOSTLISTS = {}
 
 local function load_locked_file(path)
   local f = io.open(path, "r")
@@ -90,6 +91,75 @@ local function hostlist_has_host(path, host)
   return false
 end
 
+local function load_substring_hostlist(path)
+  local cached = SUBSTRING_HOSTLISTS[path]
+  local now = os.time() or 0
+  if cached and (now - cached.checked_at) < cache_ttl then
+    return cached
+  end
+
+  local file_stat
+  if type(stat) == "function" then
+    file_stat = stat(path)
+  end
+  if cached and file_stat and cached.mtime == file_stat.mtime and cached.size == file_stat.size then
+    cached.checked_at = now
+    return cached
+  end
+
+  local needles = {}
+  local f = io.open(path, "r")
+  if f then
+    for line in f:lines() do
+      local needle = string.match(line, "^%s*([^#%s]+)")
+      if needle and needle ~= "" then
+        needle = string.lower(needle)
+        needles[#needles + 1] = needle
+      end
+    end
+    f:close()
+  end
+  cached = {
+    checked_at = now,
+    mtime = file_stat and file_stat.mtime,
+    size = file_stat and file_stat.size,
+    needles = needles,
+    matches = {}
+  }
+  SUBSTRING_HOSTLISTS[path] = cached
+  return cached
+end
+
+-- Literal, case-insensitive substring matching. Unlike a regular hostlist,
+-- "cdn" matches cdn-delivery.com, mycdn.com and extracdnnetwork.com.
+function substring_hostlist_matches(path, host)
+  if not path or path == "" or not host or host == "" then return false end
+  host = string.lower(tostring(host):gsub("%.+$", ""))
+  local list = load_substring_hostlist(path)
+  local matched = list.matches[host]
+  if matched ~= nil then return matched end
+  for _, needle in ipairs(list.needles) do
+    if string.find(host, needle, 1, true) then
+      list.matches[host] = true
+      return true
+    end
+  end
+  list.matches[host] = false
+  return false
+end
+
+local function substring_hostlist_matches_desync(desync, path, host)
+  local lua_state = desync.track and desync.track.lua_state
+  if not lua_state then return substring_hostlist_matches(path, host) end
+  lua_state.substring_hostlists = lua_state.substring_hostlists or {}
+  local matched = lua_state.substring_hostlists[path]
+  if matched == nil then
+    matched = substring_hostlist_matches(path, host)
+    lua_state.substring_hostlists[path] = matched
+  end
+  return matched
+end
+
 function desync_profile_key(desync)
   if desync.profile then return tostring(desync.profile) end
   if desync.profile_id then return tostring(desync.profile_id) end
@@ -156,6 +226,38 @@ function circular_locked(ctx, desync)
     return
   end
 
+  local proto = desync_proto(desync)
+  local base_profile = desync_profile_key(desync)
+  local host
+  if allow_nohost_enabled then
+    host = desync_hostname(desync)
+    if host and host ~= "" then
+      host = host:gsub("%.$", "")
+      host = string.lower(host)
+      if host ~= "" then
+        DLOG("circular_locked: allow_nohost profile from host "..host)
+      end
+    end
+  end
+  local route_substrings = desync.arg and desync.arg.route_substrings
+  local route_key = desync.arg and desync.arg.route_key
+  if route_substrings and route_key and substring_hostlist_matches_desync(desync, route_substrings, host) then
+    base_profile = tostring(route_key)
+    desync.arg.key = base_profile
+    DLOG("circular_locked: substring routed to profile="..base_profile.." host="..tostring(host))
+  end
+  local profile = (host and host ~= "") and host or base_profile
+  if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, host) then
+    DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..host)
+    return VERDICT_PASS
+  end
+  local include_substrings = desync.arg and desync.arg.include_substrings
+  if include_substrings and not substring_hostlist_matches_desync(desync, include_substrings, host) then
+    DLOG("circular_locked: no substring match profile="..profile.." host="..tostring(host))
+    lua_cutoff(ctx)
+    return VERDICT_PASS
+  end
+
   local hrec
   if desync.track then
     hrec = automate_host_record(desync)
@@ -197,26 +299,6 @@ function circular_locked(ctx, desync)
 
   if hrec.ctstrategy == 0 then
     error("circular_locked: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
-  end
-
-  local proto = desync_proto(desync)
-  local base_profile = desync_profile_key(desync)
-  local profile = base_profile
-  local host
-  if allow_nohost_enabled then
-    host = desync_hostname(desync)
-    if host and host ~= "" then
-      host = host:gsub("%.$", "")
-      host = string.lower(host)
-      if host ~= "" then
-        profile = host
-        DLOG("circular_locked: allow_nohost profile from host "..profile)
-      end
-    end
-  end
-  if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, host) then
-    DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..host)
-    return VERDICT_PASS
   end
 
   local locked = locked_strategy_for_profile(profile, proto)

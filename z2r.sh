@@ -854,6 +854,10 @@ get_repo() {
     mkdir -p /opt/zapret2/extra_strats
     z2r_download_project_file /opt/zapret2/extra_strats/TCP_Custom.txt "extra_strats/TCP/RKN/Custom.txt" || touch /opt/zapret2/extra_strats/TCP_Custom.txt
   fi
+  if [ ! -f /opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt ]; then
+    mkdir -p /opt/zapret2/extra_strats
+    z2r_download_project_file /opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt "extra_strats/TCP/RKN/Domains_By_Substring.txt" || touch /opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt
+  fi
   if [ -f "/opt/netrogat.txt" ]; then
     mv -f /opt/netrogat.txt /opt/zapret2/lists/netrogat.txt
     echo "Востановление листа исключений выполнено."

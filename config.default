@@ -307,9 +307,19 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=8:allow_nohost=1
+--in-range=-s32768 --lua-desync=circular_locked:key=8:allow_nohost=1:route_key=3:route_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt
 --import=z2r_tcp_tls_common
   #Z2R_FALLBACK_END
+
+--new
+
+  # Lua-маршрутизатор: домены с нужной подстрокой передаются в блок стратегий RKN.
+--filter-tcp=443 --filter-l7=tls
+--hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
+--out-range=-s34228
+--in-range=-s32768 --lua-desync=circular_locked:key=3:allow_nohost=1:include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt
+--import=z2r_tcp_tls_common
 
 --new
 
