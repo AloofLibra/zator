@@ -217,27 +217,36 @@ domain_list_remove() {
 }
 
 domain_list_add() {
-    local file="$1" domain="$2" label="$3"
+    local file="$1" domain="$2" label="$3" item_name="${4:-Домен}"
     [ -n "$domain" ] || return 1
     domain_list_prepare "$file"
     if grep -Fixq "$domain" "$file" 2>/dev/null; then
-        echo -e "Домен ${yellow}$domain${plain} уже есть в $label."
+        echo -e "$item_name ${yellow}$domain${plain} уже есть в $label."
         return 0
     fi
     echo "$domain" >> "$file"
-    echo -e "Домен ${yellow}$domain${plain} добавлен в $label."
+
+    local action="добавлен"
+    [ "$item_name" = "Подстрока" ] && action="добавлена"
+
+    echo -e "$item_name ${yellow}$domain${plain} $action в $label."
 }
 
 domain_list_read() {
     local file="$1" line
     domains=()
     while IFS= read -r line; do
-        [ -n "$line" ] && domains+=("$line")
+        if [ -n "$line" ] && ! printf "%s" "$line" | grep -Eq '^[[:space:]]*#'; then
+            domains+=("$line")
+        fi
     done < "$file"
 }
 
 domain_list_manage() {
     local file="$1" title="$2" empty_text="$3" list_text="$4" remove_message="$5" with_strategy="$6"
+    local item_genitive="${7:-домена}"    # для фразы "Введите номер ..."
+    local item_accusative="${8:-домен}"   # для фразы "Удалить ..."
+
     local choice confirm i target strat
     local domains=()
 
@@ -272,7 +281,7 @@ domain_list_manage() {
             i=$((i+1))
         done
         echo ""
-        echo -e "Введите номер домена для удаления, ${Fyellow}0${plain} - назад."
+        echo -e "Введите номер ${item_genitive} для удаления, ${Fyellow}0${plain} - назад."
         read -re -p "Ваш выбор: " choice
 
         case "$choice" in
@@ -290,7 +299,8 @@ domain_list_manage() {
                     continue
                 fi
                 target="${domains[$((choice-1))]}"
-                echo -e "${yellow}Удалить домен $target?${plain}"
+                # Используем подставленную форму слова
+                echo -e "${yellow}Удалить ${item_accusative} $target?${plain}"
                 echo "1 - да, удалить"
                 echo "0 - отмена"
                 read -re -p "Ваш выбор: " confirm
@@ -518,6 +528,62 @@ manage_netrogat_list() {
         "Домены в netrogat.txt (лист исключений):" \
         "Домен удалён из netrogat.txt." \
         0
+}
+
+rkn_substring_file() {
+    echo "/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt"
+}
+
+rkn_substring_add_line() {
+    local file line
+    file="$(rkn_substring_file)"
+
+    if [ ! -f "$file" ]; then
+        echo -e "${red}Файл $file не найден.${plain}"
+        echo -e "${yellow}Обновите конфиг через пункт 5 главного меню.${plain}"
+        pause_enter
+        return 1
+    fi
+
+    clear -x
+    echo -e "${cyan}--- Домены по части имени ---${plain}"
+    echo "Добавьте часть имени домена, и все домены с таким текстом будут обрабатываться стратегией РКН."
+    echo "Например, если добавить cdn, стратегия РКН будет применяться к:"
+    echo "cdn-1.mysite.com, mycdn.com и другим доменам, в названии которых есть cdn."
+    echo "Примеры корректного ввода: cdn, media, static, assets"
+    echo "Примеры некорректного ввода: rkn.ru, youtube.com и т.д., где содержатся домены"
+    echo ""
+
+    read -re -p "Введите подстроку для добавления: " line
+
+    if [ -z "$line" ]; then
+        echo "Отменено."
+        pause_enter
+        return 0
+    fi
+
+    domain_list_add "$file" "$line" "список подстрок РКН" "Подстрока"
+    pause_enter
+}
+
+rkn_substring_manage_lines() {
+    local file
+    file="$(rkn_substring_file)"
+
+    if [ ! -f "$file" ]; then
+        echo -e "${red}Файл $file не найден.${plain}"
+        pause_enter
+        return 1
+    fi
+
+    domain_list_manage "$file" \
+        "Управление строками TCP_RKN_domains_by_substring" \
+        "Файл пуст. Добавьте подстроки через соответствующий пункт меню." \
+        "Текущие подстроки в файле:" \
+        "Подстрока успешно удалена." \
+        0 \
+        "подстроки" \
+        "подстроку"
 }
 
 Strats_Tryer() {

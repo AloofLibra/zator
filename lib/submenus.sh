@@ -128,6 +128,10 @@ domains_submenu() {
     echo -e "${yellow}TCP_Custom (RKN-обработка):${plain}"
     submenu_item "3" "Добавить домен в TCP_Custom (с/без подбора стратегии)"
     submenu_item "4" "Просмотр/удаление доменов TCP_Custom (с номерами стратегий)"
+    echo ""
+    echo -e "${yellow}TCP_RKN_domains_by_substring (строки):${plain}"
+    submenu_item "5" "Добавить строку в TCP_RKN_domains_by_substring"
+    submenu_item "6" "Просмотр/удаление строк TCP_RKN_domains_by_substring"
     submenu_item "0" "Назад"
     echo ""
 
@@ -145,6 +149,12 @@ domains_submenu() {
         ;;
       "4")
         manage_custom_rkn_list
+        ;;
+      "5")
+        rkn_substring_add_line
+        ;;
+      "6")
+        rkn_substring_manage_lines
         ;;
       "0"|"")
         return

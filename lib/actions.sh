@@ -61,44 +61,6 @@ menu_action_toggle_keenetic_policy_mode() {
   echo -e "${green}Режим Keenetic-политики изменён:${plain} $value"
 }
 
-backup_strats() {
-  # Бэкап папки стратегий
-  if [ -d /opt/zapret2/extra_strats ]; then
-    echo -e "${yellow}Сделать бэкап /opt/zapret2/extra_strats ?${plain}"
-    echo -e "${yellow}5 - Да, Enter - Нет, 0 - отмена${plain}"
-    read -r ans
-    if [ "$ans" = "0" ]; then
-        get_menu # сигнал “отмена/в меню”
-    fi
-    if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-      touch /opt/zapret2/extra_strats/TCP_Custom.txt 2>/dev/null || true
-      rm -rf /opt/extra_strats 2>/dev/null || true
-      cp -rf /opt/zapret2/extra_strats /opt/ || true
-      if [ -f /opt/zapret2/extra_strats/TCP_Custom.txt ] && [ ! -f /opt/extra_strats/TCP_Custom.txt ]; then
-        cp -f /opt/zapret2/extra_strats/TCP_Custom.txt /opt/extra_strats/TCP_Custom.txt 2>/dev/null || true
-      fi
-      echo -e "${green}Бэкап extra_strats сохранён в /opt/extra_strats${plain}"
-    fi
-  fi
-
-  # Бэкап листа исключений
-  if [ -f /opt/zapret2/lists/netrogat.txt ]; then
-    echo -e "${yellow}Сделать бэкап /opt/zapret2/lists/netrogat.txt ?${plain}"
-    echo -e "${yellow}5 - Да, Enter - Нет, 0 - отмена и выход в меню${plain}"
-    read -r ans2
-    if [ "$ans2" = "0" ]; then
-      get_menu
-    fi
-    if [ "$ans2" = "5" ] || [ "$ans2" = "y" ] || [ "$ans2" = "Y" ]; then
-      cp -f /opt/zapret2/lists/netrogat.txt /opt/netrogat.txt || true
-      echo -e "${green}Бэкап netrogat.txt сохранён в /opt/netrogat.txt${plain}"
-    fi
-  fi
-
-  return 0
-}
-
-
 menu_action_update_config_reset() {
   echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
 
@@ -859,6 +821,7 @@ z2r_backup_state_files() {
   cat <<'EOF'
 lists/netrogat.txt
 extra_strats/TCP_Custom.txt
+extra_strats/TCP_RKN_domains_by_substring.txt
 extra_strats/cache/orchestra/locked.tsv
 extra_strats/cache/orchestra/locked.manual.tsv
 extra_strats/cache/orchestra/auto_locked.tsv
