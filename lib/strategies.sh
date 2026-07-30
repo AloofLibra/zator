@@ -10,7 +10,7 @@ get_current_strategies_info() {
         if [ "$1" = "auto" ]; then
             echo "${gray}auto${plain}"
         elif [ "$1" = "0" ]; then
-            echo "${Fyellow}0${plain}"
+            echo "${red}0${plain}"
         elif printf "%s" "$1" | grep -Eq '^[0-9]+$'; then
             echo "${green}$1${plain}"
         else
@@ -159,8 +159,9 @@ orch_profile_try() {
 }
 
 get_orchestra_locks_info() {
+    local output_var="${1:-}"
     local yt_tls="" gv_tls="" rkn_tls="" ds_tls="" yt_quic_udp="" voice_udp="" games_udp="" fb_tls="" fb_http=""
-    local v=""
+    local v="" rendered=""
     yt_tls="$(profile_state_display 1 tls)"
     gv_tls="$(profile_state_display 2 tls)"
     rkn_tls="$(profile_state_display 3 tls)"
@@ -171,18 +172,28 @@ get_orchestra_locks_info() {
     fb_tls="$(profile_state_display 8 tls)"
     fb_http="$(profile_state_display 9 http)"
 
+    STRATEGY_STATE_YT_TLS="$yt_tls"
+    STRATEGY_STATE_GV_TLS="$gv_tls"
+    STRATEGY_STATE_RKN_TLS="$rkn_tls"
+    STRATEGY_STATE_DS_TLS="$ds_tls"
+    STRATEGY_STATE_YT_QUIC_UDP="$yt_quic_udp"
+    STRATEGY_STATE_VOICE_UDP="$voice_udp"
+    STRATEGY_STATE_GAMES_UDP="$games_udp"
+    STRATEGY_STATE_FB_TLS="$fb_tls"
+    STRATEGY_STATE_FB_HTTP="$fb_http"
+
     fmt_status_num() {
         v="${1:-auto}"
         if [ "$v" = "auto" ]; then
             printf "%b" "${gray}auto${plain}"
         elif [ "$v" = "0" ]; then
-            printf "%b" "${Fyellow}0${plain}"
+            printf "%b" "${red}0${plain}"
         else
             printf "%b" "${Fcyan}${v}${plain}"
         fi
     }
 
-    printf "YT_TLS=%s GV_TLS=%s RKN_TLS=%s DS_TLS=%s YT_QUIC_UDP=%s VOICE_UDP=%s GAMES_UDP=%s FB_TLS=%s FB_HTTP=%s" \
+    printf -v rendered "YT_TLS=%s GV_TLS=%s RKN_TLS=%s DS_TLS=%s YT_QUIC_UDP=%s VOICE_UDP=%s GAMES_UDP=%s FB_TLS=%s FB_HTTP=%s" \
         "$(fmt_status_num "$yt_tls")" \
         "$(fmt_status_num "$gv_tls")" \
         "$(fmt_status_num "$rkn_tls")" \
@@ -192,6 +203,12 @@ get_orchestra_locks_info() {
         "$(fmt_status_num "$games_udp")" \
         "$(fmt_status_num "$fb_tls")" \
         "$(fmt_status_num "$fb_http")"
+
+    if [ -n "$output_var" ]; then
+        printf -v "$output_var" "%s" "$rendered"
+    else
+        printf "%s" "$rendered"
+    fi
 }
 
 # Путь к файлу списка кастомных доменов TCP_Custom (RKN-обработка).
