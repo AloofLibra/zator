@@ -1277,6 +1277,7 @@ webui_install_files() {
   webui_repo_fetch "index.html" "$WEBUI_WWW/index.html" || return 1
   webui_repo_fetch "styles.css" "$WEBUI_WWW/styles.css" || return 1
   webui_repo_fetch "app.js" "$WEBUI_WWW/app.js" || return 1
+  webui_repo_fetch "favicon.svg" "$WEBUI_WWW/favicon.svg" || return 1
   webui_repo_fetch "run-webui.sh" "$WEBUI_RUNNER" || return 1
   webui_repo_fetch "cgi-bin/_lib.sh" "$WEBUI_CGI/_lib.sh" || return 1
   webui_repo_fetch "cgi-bin/status.cgi" "$WEBUI_CGI/status.cgi" || return 1
@@ -1284,6 +1285,8 @@ webui_install_files() {
   webui_repo_fetch "cgi-bin/clear-lock.cgi" "$WEBUI_CGI/clear-lock.cgi" || return 1
   webui_repo_fetch "cgi-bin/service.cgi" "$WEBUI_CGI/service.cgi" || return 1
   webui_repo_fetch "cgi-bin/check.cgi" "$WEBUI_CGI/check.cgi" || return 1
+  webui_repo_fetch "cgi-bin/domains.cgi" "$WEBUI_CGI/domains.cgi" || return 1
+  webui_repo_fetch "cgi-bin/settings.cgi" "$WEBUI_CGI/settings.cgi" || return 1
 
   chmod +x "$WEBUI_RUNNER" "$WEBUI_CGI"/*.sh "$WEBUI_CGI"/*.cgi
   webui_fix_interpreters
