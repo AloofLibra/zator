@@ -162,4 +162,16 @@ if profile_apply_all "$CFG" >/dev/null 2>&1; then
 fi
 ORCH_LOCK_FILE="$saved_orch_lock_file"
 
+snapshot_dir="$TMP_DIR/orchestra-snapshot"
+printf '1\ttls\t28\n2\ttls\t16\n' > "$ORCH_DIR/locked.tsv"
+printf '8\ttls\t3\n' > "$ORCH_DIR/locked.manual.tsv"
+orch_runtime_state_snapshot "$ORCH_DIR" "$snapshot_dir"
+rm -f "$ORCH_DIR/locked.tsv" "$ORCH_DIR/locked.manual.tsv"
+orch_runtime_state_restore "$ORCH_DIR" "$snapshot_dir"
+[ "$(orch_locked_get 1 tls)" = "28" ] || fail "runtime YT lock was not restored after update"
+[ "$(orch_locked_get 2 tls)" = "16" ] || fail "runtime GoogleVideo lock was not restored after update"
+ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
+[ "$(orch_locked_get 8 tls)" = "3" ] || fail "runtime fallback lock was not restored after update"
+ORCH_LOCK_FILE="$saved_orch_lock_file"
+
 echo "profile_lock smoke ok"

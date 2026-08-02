@@ -59,6 +59,40 @@ profile_state_file() {
   printf '%s\n' "$PROFILE_STATE_FILE"
 }
 
+# Снимок runtime-lock файлов нужен перед пересозданием /opt/zapret2: ранние
+# установки хранили ручные стратегии только в locked.tsv, без profile.lock.
+# Поэтому при обновлении нельзя полагаться лишь на persistent state вне /opt.
+orch_runtime_state_snapshot() {
+  local source_dir="${1:-$ORCH_DIR}"
+  local snapshot_dir="$2"
+  local name tmp
+
+  [ -n "$snapshot_dir" ] || return 1
+  mkdir -p "$snapshot_dir" || return 1
+  for name in locked.tsv locked.manual.tsv auto_locked.tsv; do
+    if [ -f "$source_dir/$name" ]; then
+      tmp="$snapshot_dir/$name.tmp.$$"
+      cp "$source_dir/$name" "$tmp" && mv -f "$tmp" "$snapshot_dir/$name" || return 1
+    else
+      rm -f "$snapshot_dir/$name"
+    fi
+  done
+}
+
+orch_runtime_state_restore() {
+  local target_dir="${1:-$ORCH_DIR}"
+  local snapshot_dir="$2"
+  local name tmp
+
+  [ -d "$snapshot_dir" ] || return 0
+  mkdir -p "$target_dir" || return 1
+  for name in locked.tsv locked.manual.tsv auto_locked.tsv; do
+    [ -f "$snapshot_dir/$name" ] || continue
+    tmp="$target_dir/$name.tmp.$$"
+    cp "$snapshot_dir/$name" "$tmp" && mv -f "$tmp" "$target_dir/$name" || return 1
+  done
+}
+
 profile_state_normalize() {
   case "$1" in
     ""|"auto")

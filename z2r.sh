@@ -29,6 +29,183 @@ Bblue='\033[44m'
 Bpink='\033[45m'
 Bcyan='\033[46m'
 
+# Optional updater state. На первом этапе эти значения только описывают
+# выбранный источник; существующий legacy URL flow ниже не меняется.
+Z2R_DEFAULT_SOURCE_RAW_BASE="https://raw.githubusercontent.com/AloofLibra/zator"
+Z2R_DEFAULT_SOURCE_REF="zator"
+Z2R_UPDATE_DIR="${Z2R_UPDATE_DIR:-/opt/etc/z2r}"
+Z2R_UPDATE_CONFIG="${Z2R_UPDATE_CONFIG:-$Z2R_UPDATE_DIR/update.conf}"
+Z2R_ORCHESTRA_SNAPSHOT_DIR="${Z2R_ORCHESTRA_SNAPSHOT_DIR:-$Z2R_UPDATE_DIR/orchestra-runtime}"
+Z2R_ENV_SOURCE_RAW_BASE="${Z2R_PROJECT_RAW_BASE-}"
+Z2R_ENV_SOURCE_REF="${Z2R_BRANCH-}"
+Z2R_ENV_SOURCE_REPOSITORY="${Z2R_REPOSITORY-}"
+Z2R_ENV_SOURCE_COMMIT="${Z2R_COMMIT-}"
+
+# z2r.sh выполняется из /opt, а рабочие функции — из runtime-каталога.
+# Держим список в одном месте: он нужен и для preflight перед удалением
+# старого runtime, и для его последующего развёртывания.
+Z2R_RUNTIME_LIBRARIES=(
+  ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh
+  strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh updater.sh
+)
+
+z2r_source_trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+z2r_source_validate_repository() {
+  local repository="$1" owner name
+  case "$repository" in */*) ;; *) return 1 ;; esac
+  owner="${repository%%/*}"
+  name="${repository#*/}"
+  [ -n "$owner" ] && [ -n "$name" ] || return 1
+  [ "$repository" = "$owner/$name" ] || return 1
+  case "$owner$name" in *[!A-Za-z0-9_.-]*) return 1 ;; esac
+}
+
+z2r_source_validate_ref() {
+  local ref="$1"
+  [ -n "$ref" ] || return 1
+  case "$ref" in
+    [.-]*|[.-]|*/|/*|*//*) return 1 ;;
+    *[!A-Za-z0-9._/-]*) return 1 ;;
+    *..*|*@\{*|*'/./'*|*'/../'*|./*|../*|*/.|*/..) return 1 ;;
+  esac
+}
+
+z2r_source_validate_sha() {
+  [ "${#1}" -eq 40 ] || return 1
+  case "$1" in *[!A-Fa-f0-9]*) return 1 ;; esac
+}
+
+z2r_source_validate_base() {
+  local base="$1"
+  if z2r_source_validate_repository "$base" 2>/dev/null; then
+    return 0
+  fi
+  case "$base" in
+    *[[:space:]]*|*\;*|*\&*|*\|*|*\`*|*\$*|*\(*|*\)*|*\<*|*\>*) return 1 ;;
+    [A-Za-z][A-Za-z0-9+.-]*://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+z2r_source_config_error() {
+  echo "Ошибка в $Z2R_UPDATE_CONFIG: $1" >&2
+  return 1
+}
+
+# Читает update.conf как данные. Файл намеренно не source-ится и не eval-ится.
+# Z2R_REPOSITORY/Z2R_COMMIT принимаются как совместимые aliases из раннего
+# формата proposal, но canonical запись использует raw base + installation ref.
+z2r_source_load_config() {
+  local raw_base="$Z2R_DEFAULT_SOURCE_RAW_BASE"
+  local ref="$Z2R_DEFAULT_SOURCE_REF"
+  local repository="" commit="" line key value legacy_path config_present=0
+
+  if [ -f "$Z2R_UPDATE_CONFIG" ]; then
+    config_present=1
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="$(z2r_source_trim "$line")"
+      [ -z "$line" ] && continue
+      case "$line" in \#*) continue ;; esac
+      case "$line" in *=*) ;; *) z2r_source_config_error "ожидался KEY=VALUE"; return 1 ;; esac
+      key="$(z2r_source_trim "${line%%=*}")"
+      value="$(z2r_source_trim "${line#*=}")"
+      case "$key" in
+        Z2R_PROJECT_RAW_BASE|Z2R_BRANCH|Z2R_REPOSITORY|Z2R_COMMIT) ;;
+        *) z2r_source_config_error "неизвестный ключ $key"; return 1 ;;
+      esac
+      case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}" ;;
+        \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        *[[:space:]]*|*\"*|*\'*|*\\*|*\$*|*\`*|*\;*|*\(*|*\)*|*\&*|*\|*)
+          z2r_source_config_error "небезопасное значение для $key"; return 1 ;;
+      esac
+      case "$key" in
+        Z2R_PROJECT_RAW_BASE) raw_base="$value" ;;
+        Z2R_BRANCH) ref="$value" ;;
+        Z2R_REPOSITORY) repository="$value" ;;
+        Z2R_COMMIT) commit="$value" ;;
+      esac
+    done < "$Z2R_UPDATE_CONFIG"
+  fi
+
+  [ -n "$repository" ] && raw_base="https://raw.githubusercontent.com/$repository"
+  [ -n "$commit" ] && ref="$commit"
+  [ -n "$Z2R_ENV_SOURCE_RAW_BASE" ] && raw_base="$Z2R_ENV_SOURCE_RAW_BASE"
+  [ -n "$Z2R_ENV_SOURCE_REPOSITORY" ] && raw_base="https://raw.githubusercontent.com/$Z2R_ENV_SOURCE_REPOSITORY"
+  [ -n "$Z2R_ENV_SOURCE_REF" ] && ref="$Z2R_ENV_SOURCE_REF"
+  [ -n "$Z2R_ENV_SOURCE_COMMIT" ] && ref="$Z2R_ENV_SOURCE_COMMIT"
+
+  # Старый контракт позволял передать уже собранный raw URL, включая ref.
+  # Если отдельный Z2R_BRANCH не задан, извлекаем его и приводим base к root.
+  if [ -z "$Z2R_ENV_SOURCE_REF" ] && [ -z "$Z2R_ENV_SOURCE_COMMIT" ]; then
+    case "$raw_base" in
+      https://raw.githubusercontent.com/*/*/*|http://raw.githubusercontent.com/*/*/*)
+        legacy_path="${raw_base#*://}"
+        legacy_path="${legacy_path#*/}"
+        legacy_path="${legacy_path#*/}"
+        legacy_path="${legacy_path#*/}"
+        if [ -n "$legacy_path" ]; then
+          ref="$legacy_path"
+          raw_base="${raw_base%/$legacy_path}"
+        fi
+        ;;
+    esac
+  fi
+
+  z2r_source_validate_base "$raw_base" || { z2r_source_config_error "некорректный project source"; return 1; }
+  z2r_source_validate_ref "$ref" || { z2r_source_config_error "некорректный installation ref"; return 1; }
+  [ -z "$repository" ] || z2r_source_validate_repository "$repository" || {
+    z2r_source_config_error "repository должен иметь вид owner/name"; return 1;
+  }
+  if [ -n "$commit" ]; then
+    z2r_source_validate_sha "$commit" || { z2r_source_config_error "commit должен быть полным 40-символьным SHA"; return 1; }
+  fi
+  if [ -n "$Z2R_ENV_SOURCE_COMMIT" ]; then
+    z2r_source_validate_sha "$Z2R_ENV_SOURCE_COMMIT" || { z2r_source_config_error "Z2R_COMMIT должен быть полным 40-символьным SHA"; return 1; }
+  fi
+
+  Z2R_SOURCE_RAW_BASE="$raw_base"
+  Z2R_SOURCE_REF="$ref"
+  Z2R_SOURCE_CONFIG_PRESENT="$config_present"
+  if [ -n "$Z2R_ENV_SOURCE_RAW_BASE" ] || [ -n "$Z2R_ENV_SOURCE_REF" ] || [ -n "$Z2R_ENV_SOURCE_REPOSITORY" ] || [ -n "$Z2R_ENV_SOURCE_COMMIT" ]; then
+    Z2R_SOURCE_CONFIG_ORIGIN="environment"
+  elif [ "$config_present" -eq 1 ]; then
+    Z2R_SOURCE_CONFIG_ORIGIN="config"
+  else
+    Z2R_SOURCE_CONFIG_ORIGIN="default"
+  fi
+  export Z2R_SOURCE_RAW_BASE Z2R_SOURCE_REF Z2R_SOURCE_CONFIG_PRESENT Z2R_SOURCE_CONFIG_ORIGIN
+}
+
+z2r_source_write_config() {
+  local raw_base="$1" ref="$2" tmp="${Z2R_UPDATE_CONFIG}.tmp.$$" old_umask
+  z2r_source_validate_base "$raw_base" || { echo "Некорректный project source: $raw_base" >&2; return 1; }
+  z2r_source_validate_ref "$ref" || { echo "Некорректный installation ref: $ref" >&2; return 1; }
+  mkdir -p "$Z2R_UPDATE_DIR" || return 1
+  old_umask="$(umask)"
+  umask 077
+  {
+    printf 'Z2R_PROJECT_RAW_BASE="%s"\n' "$raw_base"
+    printf 'Z2R_BRANCH="%s"\n' "$ref"
+  } > "$tmp" || { umask "$old_umask"; rm -f "$tmp"; return 1; }
+  umask "$old_umask"
+  if [ -f "$Z2R_UPDATE_CONFIG" ] && cmp -s "$tmp" "$Z2R_UPDATE_CONFIG"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$Z2R_UPDATE_CONFIG"
+  fi
+}
+
+if ! z2r_source_load_config; then
+  exit 1
+fi
+
 
 z2r_github_commit_date() {
   local path="$1" timeout="${2:-10}"
@@ -40,6 +217,7 @@ Z2R_BRANCH="${Z2R_BRANCH:-zator}"
 Z2R_PROJECT_RAW_BASE="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/${Z2R_BRANCH}}"
 Z2R_PROJECT_MIRROR_BASE="${Z2R_PROJECT_MIRROR_BASE:-https://git.px.rkn.quest/AloofLibra/plain}"
 Z2R_INSTALLER_URL="${Z2R_INSTALLER_URL:-${Z2R_PROJECT_RAW_BASE}/z2r.sh}"
+Z2R_LEGACY_INSTALLER_URL="${Z2R_LEGACY_INSTALLER_URL:-https://git.px.rkn.quest/AloofLibra/plain/z2r.sh?h=zator}"
 ZAPRET2_UPSTREAM_RAW_BASE="${ZAPRET2_UPSTREAM_RAW_BASE:-https://raw.githubusercontent.com/bol-van/zapret2/master}"
 ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-https://git.px.rkn.quest/zapret2/plain}"
 ZAPRET2_RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2/releases/download}"
@@ -66,6 +244,186 @@ z2r_fetch_url_to_file() {
   return 127
 }
 
+z2r_fetch_url_stdout() {
+  local url="$1"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url"
+    return $?
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -qO- "$url"
+    return $?
+  fi
+  return 127
+}
+
+z2r_source_repository_from_base() {
+  local base="$1" rest owner repository
+  case "$base" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+
+  case "$base" in
+    https://github.com/*|http://github.com/*|https://www.github.com/*|http://www.github.com/*)
+      rest="${base#*://}"
+      rest="${rest#*/}"
+      ;;
+    https://raw.githubusercontent.com/*|http://raw.githubusercontent.com/*)
+      rest="${base#*://}"
+      rest="${rest#*/}"
+      ;;
+    [A-Za-z0-9_.-]*/[A-Za-z0-9_.-]*)
+      z2r_source_validate_repository "$base" || return 1
+      printf '%s\n' "$base"
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+
+  owner="${rest%%/*}"
+  rest="${rest#*/}"
+  repository="${rest%%/*}"
+  [ -n "$owner" ] && [ -n "$repository" ] || return 1
+  z2r_source_validate_repository "$owner/$repository" || return 1
+  printf '%s/%s\n' "$owner" "$repository"
+}
+
+z2r_source_raw_root() {
+  local repository="$1" raw_base="$2"
+  if [ -n "$repository" ]; then
+    printf 'https://raw.githubusercontent.com/%s\n' "$repository"
+  else
+    printf '%s\n' "${raw_base%/}"
+  fi
+}
+
+z2r_source_resolve_ref() {
+  local repository="$1" ref="$2" response commit
+
+  if z2r_source_validate_sha "$ref"; then
+    printf '%s\n' "$ref"
+    return 0
+  fi
+  [ -n "$repository" ] || return 1
+
+  response="$(z2r_fetch_url_stdout "${Z2R_GITHUB_API_BASE:-https://api.github.com}/repos/${repository}/commits/${ref}")" || return 1
+  commit="$(printf '%s\n' "$response" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([A-Fa-f0-9][A-Fa-f0-9]*\)".*/\1/p' | head -n 1)"
+  z2r_source_validate_sha "$commit" || return 1
+  printf '%s\n' "$commit"
+}
+
+z2r_source_prepare() {
+  local repository raw_root commit
+  repository="$(z2r_source_repository_from_base "$Z2R_SOURCE_RAW_BASE" 2>/dev/null || true)"
+  raw_root="$(z2r_source_raw_root "$repository" "$Z2R_SOURCE_RAW_BASE")"
+  commit="$(z2r_source_resolve_ref "$repository" "$Z2R_SOURCE_REF")" || {
+    echo "Не удалось разрешить installation ref '$Z2R_SOURCE_REF' в точный commit." >&2
+    return 1
+  }
+
+  Z2R_SOURCE_REPOSITORY="$repository"
+  Z2R_SOURCE_RAW_ROOT="$raw_root"
+  Z2R_SOURCE_RESOLVED_COMMIT="$commit"
+  Z2R_SOURCE_STRICT=1
+  export Z2R_SOURCE_REPOSITORY Z2R_SOURCE_RAW_ROOT Z2R_SOURCE_RESOLVED_COMMIT Z2R_SOURCE_STRICT
+}
+
+z2r_source_raw_url() {
+  local rel="$1"
+  case "$rel" in ''|/*|*'..'*) return 1 ;; esac
+  [ -n "${Z2R_SOURCE_RAW_ROOT:-}" ] || return 1
+  [ -n "${Z2R_SOURCE_RESOLVED_COMMIT:-}" ] || return 1
+  printf '%s/%s/%s\n' "$Z2R_SOURCE_RAW_ROOT" "$Z2R_SOURCE_RESOLVED_COMMIT" "$rel"
+}
+
+z2r_launcher_path() {
+  local launcher="${1:-$0}" target attempts=0
+  if [ "$#" -eq 0 ] && [ -n "${Z2R_LAUNCHER_PATH:-}" ]; then
+    printf '%s\n' "$Z2R_LAUNCHER_PATH"
+    return 0
+  fi
+  if [ "${launcher#*/}" = "$launcher" ]; then
+    launcher="$(command -v "$launcher" 2>/dev/null)" || return 1
+  fi
+  while [ -L "$launcher" ] && [ "$attempts" -lt 8 ]; do
+    target="$(readlink "$launcher" 2>/dev/null)" || return 1
+    case "$target" in
+      /*) launcher="$target" ;;
+      *) launcher="$(dirname -- "$launcher")/$target" ;;
+    esac
+    attempts=$((attempts + 1))
+  done
+  [ ! -L "$launcher" ] || return 1
+  cd -- "$(dirname -- "$launcher")" 2>/dev/null || return 1
+  printf '%s/%s\n' "$(pwd)" "$(basename -- "$launcher")"
+}
+
+z2r_bootstrap_refresh_launcher() {
+  local launcher tmp url shell_bin
+  [ "${Z2R_DISABLE_SELF_REFRESH:-0}" = "1" ] && return 0
+  [ "${Z2R_SELF_REFRESHED:-0}" = "1" ] && return 0
+  launcher="$(z2r_launcher_path)" || return 0
+  case "$launcher" in
+    /opt/*) ;;
+    "${Z2R_SELF_REFRESH_ROOT:-/nonexistent}"/*) [ -n "${Z2R_SELF_REFRESH_ROOT:-}" ] || return 0 ;;
+    *) return 0 ;;
+  esac
+  if [ -z "${Z2R_LAUNCHER_PATH:-}" ] && [ "$(basename -- "$launcher")" != "z2r.sh" ]; then
+    return 0
+  fi
+  z2r_source_prepare >/dev/null 2>&1 || return 0
+  url="$(z2r_source_raw_url z2r.sh)" || return 0
+  tmp="${launcher}.new.$$"
+  rm -f "$tmp"
+  z2r_fetch_url_to_file "$tmp" "$url" || { rm -f "$tmp"; return 0; }
+  bash -n "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 0; }
+  if cmp -s "$tmp" "$launcher"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  chmod 755 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$launcher" || { rm -f "$tmp"; return 0; }
+  shell_bin="$(command -v bash 2>/dev/null || true)"
+  [ -n "$shell_bin" ] || return 0
+  Z2R_SELF_REFRESHED=1 exec "$shell_bin" "$launcher" "$@"
+}
+
+z2r_install_persistent_launcher() {
+  local command_launcher="${Z2R_COMMAND_LAUNCHER:-/opt/bin/z2r}"
+  local runtime_launcher="${Z2R_RUNTIME_LAUNCHER:-/opt/z2r.sh}"
+  local backup="${Z2R_UPDATE_DIR}/legacy-bootstrap.z2r"
+  local shell_bin tmp old_umask
+
+  [ "${Z2R_DISABLE_PERSISTENT_LAUNCHER:-0}" = "1" ] && return 0
+  [ -x "$runtime_launcher" ] || return 0
+  mkdir -p "$(dirname "$command_launcher")" "$Z2R_UPDATE_DIR" || return 1
+  shell_bin="$(command -v bash 2>/dev/null || true)"
+  [ -n "$shell_bin" ] || return 0
+  if [ -f "$command_launcher" ] && grep -F '# z2r persistent launcher' "$command_launcher" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -f "$command_launcher" ] && [ ! -e "$backup" ]; then
+    cp -p "$command_launcher" "$backup" || return 1
+  fi
+  tmp="${command_launcher}.new.$$"
+  old_umask="$(umask)"
+  umask 022
+  {
+    printf '%s\n' '#!/bin/sh'
+    printf '%s\n' '# z2r persistent launcher'
+    printf 'exec "%s" "%s" "$@"\n' "$shell_bin" "$runtime_launcher"
+  } > "$tmp" || { umask "$old_umask"; rm -f "$tmp"; return 1; }
+  umask "$old_umask"
+  chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
+  if cmp -s "$tmp" "$command_launcher"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$command_launcher"
+  fi
+}
+
 z2r_download_project_file() {
   local dest="$1"
   local rel="$2"
@@ -73,13 +431,29 @@ z2r_download_project_file() {
   local primary="${Z2R_PROJECT_RAW_BASE}/${rel}"
   local mirror
 
-  mirror="$(z2r_mirror_url "$rel")"
+  if [ "${Z2R_SOURCE_STRICT:-0}" != "1" ]; then
+    z2r_source_prepare || return 1
+  fi
+  if [ "${Z2R_SOURCE_STRICT:-0}" = "1" ]; then
+    primary="$(z2r_source_raw_url "$rel")" || return 1
+    mirror=""
+  else
+    mirror="$(z2r_mirror_url "$rel")"
+  fi
   mkdir -p "$(dirname "$dest")"
   rm -f "$tmp"
-  if z2r_fetch_url_to_file "$tmp" "$primary"; then
+  if type z2r_source_cache_restore >/dev/null 2>&1 && z2r_source_cache_restore "$rel" "$tmp"; then
     mv -f "$tmp" "$dest"
+    type z2r_source_track_file >/dev/null 2>&1 && z2r_source_track_file "$dest" "$rel"
     return 0
   fi
+  if z2r_fetch_url_to_file "$tmp" "$primary"; then
+    type z2r_source_cache_store >/dev/null 2>&1 && z2r_source_cache_store "$rel" "$tmp" || true
+    mv -f "$tmp" "$dest"
+    type z2r_source_track_file >/dev/null 2>&1 && z2r_source_track_file "$dest" "$rel"
+    return 0
+  fi
+  [ -n "$mirror" ] || { rm -f "$tmp"; return 1; }
   echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало.${plain}" >&2
   rm -f "$tmp"
   if z2r_fetch_url_to_file "$tmp" "$mirror"; then
@@ -198,12 +572,19 @@ z2r_download_zapret2_release() {
 }
 
 z2r_exec_external_installer() {
-  local mirror
+  local installer_url="" shell_bin
   local tmp="/tmp/z2r_installer_$$"
 
-  mirror="$(z2r_mirror_url "z2r")"
-  if z2r_fetch_url_to_file "$tmp" "$Z2R_INSTALLER_URL" || z2r_fetch_url_to_file "$tmp" "$mirror"; then
-    exec sh "$tmp" "$@"
+  if z2r_source_prepare >/dev/null 2>&1; then
+    installer_url="$(z2r_source_raw_url z2r.sh)"
+    if z2r_fetch_url_to_file "$tmp" "$installer_url"; then
+      shell_bin="$(command -v bash 2>/dev/null || true)"
+      [ -n "$shell_bin" ] && exec "$shell_bin" "$tmp" "$@"
+    fi
+  fi
+  if [ "$Z2R_SOURCE_CONFIG_ORIGIN" = "default" ] && z2r_fetch_url_to_file "$tmp" "$Z2R_LEGACY_INSTALLER_URL"; then
+    shell_bin="$(command -v bash 2>/dev/null || true)"
+    [ -n "$shell_bin" ] && exec "$shell_bin" "$tmp" "$@"
   fi
   rm -f "$tmp"
   echo "Ошибка: не удалось загрузить внешний z2r."
@@ -228,6 +609,30 @@ done
 if [ "$missing_libs" -ne 0 ]; then
   echo "Не найдены нужные файлы в $LIB_DIR. Запускаю внешний z2r..."
   z2r_exec_external_installer "$@"
+fi
+
+z2r_bootstrap_sync_updater_module() {
+  local dest="$LIB_DIR/updater.sh" tmp url
+  [ -d "$LIB_DIR" ] || return 1
+  [ -s "$dest" ] && return 0
+  z2r_source_prepare >/dev/null 2>&1 || return 1
+  url="$(z2r_source_raw_url lib/updater.sh)" || return 1
+  tmp="${dest}.tmp.$$"
+  rm -f "$tmp"
+  z2r_fetch_url_to_file "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  bash -n "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+  chmod 644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$dest"
+}
+
+z2r_bootstrap_sync_updater_module || true
+if [ -s "$LIB_DIR/updater.sh" ]; then
+  # shellcheck disable=SC1090
+  source "$LIB_DIR/updater.sh"
+elif [ -s "$SCRIPT_DIR/lib/updater.sh" ]; then
+  # Удобно для запуска из checkout; на роутере используется только runtime-копия.
+  # shellcheck disable=SC1090
+  source "$SCRIPT_DIR/lib/updater.sh"
 fi
 
 #___Общие вспомогательные функции____
@@ -413,28 +818,20 @@ ORCH_LUA_LOCKED="/opt/zapret2/lua/locked.lua"
 RST_GUARD_LUA="/opt/zapret2/lua/rst-guard.lua"
 
 locked_lua_update_from_repo() {
-  local tmp="${ORCH_LUA_LOCKED}.tmp"
-
   mkdir -p "$ORCH_DIR" "$(dirname "$ORCH_LUA_LOCKED")"
-  if ! z2r_download_project_file "$tmp" "orchestra/locked.lua"; then
+  if ! z2r_download_project_file "$ORCH_LUA_LOCKED" "orchestra/locked.lua"; then
     echo -e "${red}Не удалось скачать locked.lua.${plain}"
     return 1
   fi
-
-  mv "$tmp" "$ORCH_LUA_LOCKED"
   echo -e "${green}locked.lua обновлен из репозитория.${plain}"
 }
 
 rst_guard_lua_update_from_repo() {
-  local tmp="${RST_GUARD_LUA}.tmp"
-
   mkdir -p "$(dirname "$RST_GUARD_LUA")"
-  if ! z2r_download_project_file "$tmp" "lua/rst-guard.lua"; then
+  if ! z2r_download_project_file "$RST_GUARD_LUA" "lua/rst-guard.lua"; then
     echo -e "${red}Не удалось скачать rst-guard.lua.${plain}"
     return 1
   fi
-
-  mv "$tmp" "$RST_GUARD_LUA"
   echo -e "${green}rst-guard.lua обновлен из репозитория.${plain}"
 }
 
@@ -814,12 +1211,67 @@ run_cdn_test() {
   echo -e "${RED}FAIL:${NC} ${FAIL_COUNT:-0}"
 }
 
+# Скачивает обязательный набор zator в SHA-scoped cache до удаления runtime.
+# Так сетевой сбой не оставляет пользователя без уже работавшего /opt/zapret2.
+z2r_stage_project_core() {
+  local stage_dir rel safe_rel
+  local -a project_files=(
+    "orchestra/locked.lua"
+    "lua/rst-guard.lua"
+    "lists/cloudflare-ipset.txt"
+    "lists/cloudflare-ipset_v6.txt"
+    "lists/netrogat.txt"
+    "lists/russia-discord.txt"
+    "lists/russia-youtube-rtmps.txt"
+    "lists/russia-youtube.txt"
+    "lists/russia-youtubeQ.txt"
+    "lists/tg_cidr.txt"
+    "fake_files.tar.gz"
+    "fake/custom_tls.bin"
+    "extra_strats/UDP/YT/List.txt"
+    "extra_strats/TCP/RKN/List.txt"
+    "extra_strats/TCP/RKN/Custom.txt"
+    "extra_strats/TCP/YT/List.txt"
+    "extra_strats/TCP/RKN/Discord.txt"
+    "extra_strats/TCP/RKN/Domains_By_Substring.txt"
+    "blockcheck2.d/z4r/10-list.sh"
+    "blockcheck2.d/z4r/list_https_tls12.txt"
+    "blockcheck2.d/z4r/list_https_tls13.txt"
+    "config.default"
+  )
+
+  for rel in "${Z2R_RUNTIME_LIBRARIES[@]}"; do
+    project_files+=("lib/$rel")
+  done
+
+  [ "$hardware" = "keenetic" ] && project_files+=("Entware/keenetic-policy.sh")
+  [ "$OSystem" = "entware" ] && project_files+=("Entware/zapret" "Entware/000-zapret.sh" "Entware/S00fix")
+  stage_dir="$(mktemp -d /tmp/z2r-project-stage.XXXXXX)" || return 1
+  for rel in "${project_files[@]}"; do
+    safe_rel="$(printf '%s' "$rel" | tr '/' '@')"
+    if ! z2r_download_project_file "$stage_dir/$safe_rel" "$rel"; then
+      rm -rf "$stage_dir"
+      echo "Не удалось подготовить $rel из выбранного source." >&2
+      return 1
+    fi
+  done
+  rm -rf "$stage_dir"
+}
+
 #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
 
+  z2r_source_prepare || return 1
+  if type z2r_source_track_begin >/dev/null 2>&1; then
+    z2r_source_track_begin || return 1
+  fi
   mkdir -p /opt/zapret2/lists /opt/zapret2/extra_strats /opt/zapret2/extra_strats/cache /opt/zapret2/files/fake
   mkdir -p /opt/zapret2/extra_strats/cache/orchestra
+  mkdir -p /opt/zapret2/z2r_lib
+  for lib in "${Z2R_RUNTIME_LIBRARIES[@]}"; do
+    z2r_download_project_file "/opt/zapret2/z2r_lib/$lib" "lib/$lib" || return 1
+  done
   chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
   locked_lua_update_from_repo || true
   rst_guard_lua_update_from_repo || true
@@ -1514,7 +1966,13 @@ get_menu() {
     update_recommendations  
   while true; do
   	local strategies_status
+    local source_status
     strategies_status=$(get_orchestra_locks_info)
+	if type z2r_source_status_line >/dev/null 2>&1; then
+	  source_status="$(z2r_source_status_line)"
+	else
+	  source_status="${Z2R_SOURCE_RAW_BASE} @ ${Z2R_SOURCE_REF}"
+	fi
 	TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
       TITLE_MENU_LINE="\n${pink}Титул:${plain} $(cat "$PREMIUM_TITLE_FILE")${yellow}\n"
@@ -1538,6 +1996,7 @@ get_menu() {
 '"\033[32mЯ черепашка Дейв. И я медленный.\033[33m"'
 '"\033[32mПрямо как твой интернет.\033[33m"'
 
+'"${yellow}"'Источник zator: '"${plain}${source_status}${yellow}"'
 
 '"Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}"'
 '"${TITLE_MENU_LINE}"'
@@ -1758,6 +2217,19 @@ esac
 
 #___Само выполнение скрипта начинается тут____
 
+if [ "${1:-}" = "source" ]; then
+  if type z2r_source_command >/dev/null 2>&1; then
+    z2r_source_command "${@:2}"
+    exit $?
+  fi
+  echo "Модуль updater ещё не установлен. Выполните полное обновление z2r при доступной сети." >&2
+  exit 1
+fi
+
+z2r_bootstrap_refresh_launcher "$@" || true
+z2r_install_persistent_launcher || \
+  echo -e "${yellow}Не удалось обновить постоянный launcher z2r; текущий запуск продолжится.${plain}" >&2
+
 
 detect_os
 set_zapret2_init
@@ -1801,6 +2273,21 @@ fi
 mkdir -p /opt
 cd /tmp
 
+# До удаления текущего runtime убеждаемся, что все project-файлы будут взяты из
+# одного exact commit выбранного источника.
+if ! z2r_source_prepare; then
+  echo -e "${red}Обновление отменено: источник zator недоступен или ref не разрешён.${plain}" >&2
+  exit 1
+fi
+if ! z2r_stage_project_core; then
+  echo -e "${red}Обновление отменено: не удалось подготовить файлы выбранного source.${plain}" >&2
+  exit 1
+fi
+if ! orch_runtime_state_snapshot "$ORCH_DIR" "$Z2R_ORCHESTRA_SNAPSHOT_DIR"; then
+  echo -e "${red}Обновление отменено: не удалось сохранить состояния стратегий.${plain}" >&2
+  exit 1
+fi
+
 #Удаление старого запрета, если есть
 remove_zapret
 
@@ -1824,6 +2311,10 @@ zapret_get
 
 #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
 get_repo
+if ! orch_runtime_state_restore "$ORCH_DIR" "$Z2R_ORCHESTRA_SNAPSHOT_DIR"; then
+  echo -e "${red}Не удалось восстановить состояния стратегий после обновления.${plain}" >&2
+  exit 1
+fi
 if [ ! -s "$ORCH_LUA_LOCKED" ]; then
   echo "Повторная попытка загрузки locked.lua..."
   if locked_lua_update_from_repo; then
@@ -1850,5 +2341,8 @@ fi
 #Запуск установочных скриптов и перезагрузка
 if [ "$hardware" = "keenetic" ]; then
  ensure_keenetic_policy_config /opt/zapret2/config.default
+fi
+if type z2r_source_track_finish >/dev/null 2>&1; then
+  z2r_source_track_finish || exit 1
 fi
 install_zapret_reboot
