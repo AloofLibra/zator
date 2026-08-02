@@ -19,7 +19,7 @@ find_runtime_libs() {
     "$here/../../z2r_lib" \
     "$here/../../lib" \
     "$here/../lib"; do
-    if [ -f "$dir/orchestra_state.sh" ] && [ -f "$dir/config.sh" ]; then
+    if [ -f "$dir/orchestra_state.sh" ] && [ -f "$dir/config.sh" ] && [ -f "$dir/strategies.sh" ]; then
       LIB_DIR="$dir"
       return 0
     fi
@@ -30,6 +30,7 @@ find_runtime_libs() {
 find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{"error":"missing z2r runtime libs"}'; exit 0; }
 . "$LIB_DIR/config.sh"
 . "$LIB_DIR/orchestra_state.sh"
+. "$LIB_DIR/strategies.sh"
 [ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
 
 telemetry_notify() {
@@ -635,80 +636,8 @@ api_udp_games_set() {
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
 
-# ===========================================================================
-# Управление доменами (пункт 6 CLI-меню z2r.sh -> lib/strategies.sh).
-# Локальные копии CLI-логики (как _fallback_*): должны оставаться в синке
-# с lib/strategies.sh (domain_list_*, netrogat_*, custom_rkn_*, rkn_substring_*)
-# и z2r.sh (z2r_normalize_domain). См. AGENTS.md "High-Risk Areas".
-# ===========================================================================
-
-# Пути к файлам списков (идентичны lib/strategies.sh:198-200,495-497,533-535).
-netrogat_file()      { echo "$ZAPRET_ROOT/lists/netrogat.txt"; }
-custom_rkn_file()    { echo "$ZAPRET_ROOT/extra_strats/TCP_Custom.txt"; }
-rkn_substring_file() { echo "$ZAPRET_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt"; }
-
-# Нормализация домена — порт z2r_normalize_domain() из z2r.sh:239-266.
-# Отсекает схему/userinfo/путь/порт/крайние точки, lower-case, проверка символов.
-# Возвращает 0 и печатает домен, либо 1.
-z2r_normalize_domain() {
-  local d="$1"
-  d="${d#"${d%%[![:space:]]*}"}"
-  d="${d%"${d##*[![:space:]]}"}"
-  [ -z "$d" ] && return 1
-  d="$(printf '%s' "$d" | sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')"
-  d="${d#*://}"
-  d="${d##*@}"
-  d="${d%%/*}"
-  d="${d%%:*}"
-  d="${d#.}"
-  d="${d%.}"
-  [ -z "$d" ] && return 1
-  case "$d" in *[!a-z0-9.-]*) return 1 ;; esac
-  case "$d" in *[a-z0-9]*) : ;; *) return 1 ;; esac
-  printf '%s\n' "$d"
-}
-
-# Универсальные операции над plain-text списком (порт domain_list_* из
-# lib/strategies.sh:202-243), без интерактивного TTY-вывода.
-_domain_list_prepare() {
-  local file="$1"
-  mkdir -p "$(dirname "$file")"
-  touch "$file" 2>/dev/null || true
-  sed -i '/^[[:space:]]*$/d' "$file" 2>/dev/null || true
-}
-
-# Удаление домена: grep -Fxv (точное совпадение всей строки) → tmp → mv.
-_domain_list_remove() {
-  local file="$1" domain="$2" tmp
-  [ -n "$domain" ] || return 1
-  [ -f "$file" ] || return 0
-  tmp="${file}.tmp.$$"
-  grep -Fxv -- "$domain" "$file" > "$tmp" 2>/dev/null || true
-  mv -f "$tmp" "$file" 2>/dev/null || true
-  sed -i '/^[[:space:]]*$/d' "$file" 2>/dev/null || true
-}
-
-# Добавление домена с дедупликацией (grep -Fixq — точное совпадение всей строки).
-# Возвращает 0 всегда (добавлен или уже был).
-_domain_list_add() {
-  local file="$1" domain="$2"
-  [ -n "$domain" ] || return 1
-  _domain_list_prepare "$file"
-  if grep -Fixq "$domain" "$file" 2>/dev/null; then
-    return 0
-  fi
-  echo "$domain" >> "$file"
-}
-
-# Удаление домена из TCP_Custom с очисткой per-domain стратегии в locked.tsv
-# (как custom_rkn_remove_domain в lib/strategies.sh:325-331).
-_custom_rkn_remove_domain() {
-  local domain="$1"
-  _domain_list_remove "$(custom_rkn_file)" "$domain" || return 1
-  orch_locked_clear "$domain" "tls"
-  orch_locked_clear "$domain" "http"
-  orch_locked_clear "$domain" "udp"
-}
+# Управление доменами переиспользует нормализацию, пути и операции со списками
+# из lib/strategies.sh; здесь остаётся только CGI-представление.
 
 # Маппинг имени списка (URL-параметр list) на путь файла и метаданные.
 # Аргументы: $1=list_name. Печатает "file|kind|title|desc" или возвращает 1.
@@ -749,7 +678,7 @@ api_domains_list() {
   [ -n "$file" ] || send_error "500 Internal Server Error" "Не определён путь списка"
 
   local items="" line first=1 strat max_strat
-  _domain_list_prepare "$file"
+  domain_list_prepare "$file"
   if [ "$PARAM_LIST" = "custom_rkn" ]; then
     max_strat="$(orch_max_strategy_for_profile 3)"
     if ! printf '%s' "$max_strat" | grep -Eq '^[0-9]+$' || [ "$max_strat" -le 0 ]; then
@@ -809,20 +738,18 @@ api_domains_action() {
         normalized="${normalized%"${normalized##*[![:space:]]}"}"
         [ -n "$normalized" ] || send_error "400 Bad Request" "Пустая подстрока"
       fi
-      # Дедупликация: если уже есть — вернём признак duplicate.
-      if grep -Fixq "$normalized" "$file" 2>/dev/null; then
-        send_json "200 OK" "{\"ok\":true,\"duplicate\":true}"
-      fi
-      _domain_list_add "$file" "$normalized"
-      send_json "200 OK" "{\"ok\":true,\"duplicate\":false}"
+      local add_result=""
+      domain_list_add "$file" "$normalized" "" "Домен" 1 add_result || \
+        send_error "500 Internal Server Error" "Не удалось обновить список"
+      send_json "200 OK" "{\"ok\":true,\"duplicate\":$([ "$add_result" = "duplicate" ] && echo true || echo false)}"
       ;;
     remove)
       domain="${PARAM_DOMAIN:-}"
       [ -n "$domain" ] || send_error "400 Bad Request" "Не указан домен"
       if [ "$PARAM_LIST" = "custom_rkn" ]; then
-        _custom_rkn_remove_domain "$domain"
+        custom_rkn_remove_domain "$domain"
       else
-        _domain_list_remove "$file" "$domain"
+        domain_list_remove "$file" "$domain"
       fi
       send_json "200 OK" "{\"ok\":true}"
       ;;
@@ -831,7 +758,7 @@ api_domains_action() {
       local IFS=$'\n'
       local raw="${PARAM_DOMAIN:-}"
       [ -n "$raw" ] || send_error "400 Bad Request" "Пустой импорт"
-      _domain_list_prepare "$file"
+      domain_list_prepare "$file"
       # shellcheck disable=SC2086
       set -f
       for line in $raw; do
@@ -846,11 +773,12 @@ api_domains_action() {
         else
           normalized="$line"
         fi
-        if grep -Fixq "$normalized" "$file" 2>/dev/null; then
+        local add_result=""
+        domain_list_add "$file" "$normalized" "" "Домен" 1 add_result || { skipped=$((skipped+1)); continue; }
+        if [ "$add_result" = "duplicate" ]; then
           duplicates=$((duplicates+1))
           continue
         fi
-        echo "$normalized" >> "$file"
         added=$((added+1))
       done
       set +f
@@ -859,7 +787,7 @@ api_domains_action() {
     clear)
       if [ "$PARAM_LIST" = "custom_rkn" ]; then
         # Сначала собираем домены, потом чистим их локи.
-        _domain_list_prepare "$file"
+        domain_list_prepare "$file"
         while IFS= read -r domain; do
           [ -n "$domain" ] || continue
           printf '%s' "$domain" | grep -Eq '^[[:space:]]*#' && continue
@@ -902,4 +830,3 @@ api_domains_action() {
       ;;
   esac
 }
-

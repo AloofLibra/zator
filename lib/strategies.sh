@@ -211,9 +211,37 @@ get_orchestra_locks_info() {
     fi
 }
 
-# Путь к файлу списка кастомных доменов TCP_Custom (RKN-обработка).
+# Нормализация введённого значения в чистый домен.
+# Убирает пробелы, схему, userinfo, путь, порт и крайние точки.
+z2r_normalize_domain() {
+    local d="$1"
+    d="${d#"${d%%[![:space:]]*}"}"
+    d="${d%"${d##*[![:space:]]}"}"
+    [ -z "$d" ] && return 1
+    d="$(printf '%s' "$d" | sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')"
+    d="${d#*://}"
+    d="${d##*@}"
+    d="${d%%/*}"
+    d="${d%%:*}"
+    d="${d#.}"
+    d="${d%.}"
+    [ -z "$d" ] && return 1
+    case "$d" in *[!a-z0-9.-]*) return 1 ;; esac
+    case "$d" in *[a-z0-9]*) : ;; *) return 1 ;; esac
+    printf '%s\n' "$d"
+}
+
+# Пути к доменным спискам, общие для CLI и WebUI.
 custom_rkn_file() {
     echo "/opt/zapret2/extra_strats/TCP_Custom.txt"
+}
+
+netrogat_file() {
+    echo "/opt/zapret2/lists/netrogat.txt"
+}
+
+rkn_substring_file() {
+    echo "/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt"
 }
 
 domain_list_prepare() {
@@ -235,13 +263,19 @@ domain_list_remove() {
 
 domain_list_add() {
     local file="$1" domain="$2" label="$3" item_name="${4:-Домен}"
+    local quiet="${5:-0}" result_var="${6:-}" result="added"
     [ -n "$domain" ] || return 1
     domain_list_prepare "$file"
     if grep -Fixq "$domain" "$file" 2>/dev/null; then
-        echo -e "$item_name ${yellow}$domain${plain} уже есть в $label."
+        result="duplicate"
+        [ -n "$result_var" ] && printf -v "$result_var" '%s' "$result"
+        [ "$quiet" = "1" ] || echo -e "$item_name ${yellow}$domain${plain} уже есть в $label."
         return 0
     fi
-    echo "$domain" >> "$file"
+    printf '%s\n' "$domain" >> "$file"
+    [ -n "$result_var" ] && printf -v "$result_var" '%s' "$result"
+
+    [ "$quiet" = "1" ] && return 0
 
     local action="добавлен"
     [ "$item_name" = "Подстрока" ] && action="добавлена"
@@ -369,7 +403,6 @@ manage_custom_rkn_domain() {
     fi
 
     # Нормализация: отсекаем схему (http/https), порт, путь, крайние точки и т.п.
-    # Функция z2r_normalize_domain() определена глобально в z2r.sh до подключения lib.
     if ! user_domain="$(z2r_normalize_domain "$user_domain")"; then
         echo -e "${red}Не удалось распознать домен из ввода.${plain}"
         echo -e "Укажите домен или ссылку, например: example.com или https://www.youtube.com/watch?v=..."
@@ -508,11 +541,6 @@ manage_custom_rkn_list() {
         1
 }
 
-# Путь к файлу листа исключений netrogat.txt.
-netrogat_file() {
-    echo "/opt/zapret2/lists/netrogat.txt"
-}
-
 netrogat_remove_domain() {
     domain_list_remove "$(netrogat_file)" "$1"
 }
@@ -545,10 +573,6 @@ manage_netrogat_list() {
         "Домены в netrogat.txt (лист исключений):" \
         "Домен удалён из netrogat.txt." \
         0
-}
-
-rkn_substring_file() {
-    echo "/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt"
 }
 
 rkn_substring_add_line() {
