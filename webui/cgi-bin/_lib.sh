@@ -456,69 +456,6 @@ api_wg_blob_set() {
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
 
-_fallback_current_strategy() {
-  local profile="$1"
-  local cfg="$2"
-  local begin_marker end_marker
-  if [ "$profile" = "9" ]; then
-    begin_marker="#Z2R_FALLBACK_HTTP_BEGIN"
-    end_marker="#Z2R_FALLBACK_HTTP_END"
-  else
-    begin_marker="#Z2R_FALLBACK_BEGIN"
-    end_marker="#Z2R_FALLBACK_END"
-  fi
-  awk -v begin="$begin_marker" -v end="$end_marker" '
-    $0 ~ "^[[:space:]]*" begin "$" {inblk=1; next}
-    $0 ~ "^[[:space:]]*" end "$" {inblk=0; exit}
-    inblk && $0 ~ /^--filter-tcp=/ {
-      n++
-      if ($0 ~ /^--skip[[:space:]]/) next
-      if ($0 ~ /--hostlist-domains= --/ || $0 ~ /--hostlist-domains=$/) {print n; found=1; exit}
-    }
-    END{if (!found) print 0}
-  ' "$cfg"
-}
-
-_fallback_set_strategy() {
-  local profile="$1"
-  local strategy="$2"
-  local cfg="$3"
-  local begin_marker end_marker filter_pattern
-  if [ "$profile" = "9" ]; then
-    begin_marker="#Z2R_FALLBACK_HTTP_BEGIN"
-    end_marker="#Z2R_FALLBACK_HTTP_END"
-    filter_pattern="--filter-tcp=80 --filter-l7=http"
-  else
-    begin_marker="#Z2R_FALLBACK_BEGIN"
-    end_marker="#Z2R_FALLBACK_END"
-    filter_pattern="--filter-tcp=443 --filter-l7=tls"
-  fi
-  awk -v begin="$begin_marker" -v end="$end_marker" -v target="$strategy" -v fpattern="$filter_pattern" '
-    $0 ~ "^[[:space:]]*" begin "$" {inblk=1; print; next}
-    $0 ~ "^[[:space:]]*" end "$" {inblk=0; print; next}
-    inblk && $0 ~ "^--filter-tcp=" {
-      count++
-      # Убираем --skip если есть
-      sub(/^[[:space:]]*--skip[[:space:]]+/, "")
-      # Сбрасываем все строки на none.dom
-      sub(/--hostlist-domains= --/, "--hostlist-domains=none.dom --")
-      sub(/--hostlist-domains=$/, "--hostlist-domains=none.dom")
-      # Если это целевая стратегия и target > 0 — активируем
-      if (target > 0 && count == target) {
-        sub(/--hostlist-domains=none\.dom --/, "--hostlist-domains= --")
-        sub(/--hostlist-domains=none\.dom$/, "--hostlist-domains=")
-        changed=1
-      }
-      # Если target == 0 — добавляем --skip ко всем строкам
-      if (target == 0) {
-        $0 = "--skip " $0
-      }
-    }
-    {print}
-    END{exit((target==0 || changed)?0:1)}
-  ' "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
-}
-
 _fallback_state() {
   local cfg="$1"
   if { sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg"; } | grep -q '^[[:space:]]*--skip[[:space:]]'; then
@@ -543,29 +480,13 @@ _fallback_set_state() {
 
 api_fallback_get() {
   local cfg="/opt/zapret2/config"
-  local state tls_strat http_strat tls_max http_max
-  local saved_lock_file
+  local state
 
   [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
 
   state="$(_fallback_state "$cfg")"
-  # Для профилей 8/9 (fallback) состояние стратегии хранится в locked.manual.tsv,
-  # а не в locked.tsv. Временно переключаем ORCH_LOCK_FILE для чтения.
-  saved_lock_file="$ORCH_LOCK_FILE"
-  ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
-  tls_strat="$(profile_state_display 8 tls)"
-  http_strat="$(profile_state_display 9 http)"
-  ORCH_LOCK_FILE="$saved_lock_file"
-  tls_max="$(config_profile_max_strategy 8 "$cfg")"
-  http_max="$(config_profile_max_strategy 9 "$cfg")"
 
-  send_json "200 OK" "{
-    \"state\":\"$(json_escape "$state")\",
-    \"tls_strategy\":\"$(json_escape "$tls_strat")\",
-    \"http_strategy\":\"$(json_escape "$http_strat")\",
-    \"tls_max\":${tls_max:-0},
-    \"http_max\":${http_max:-0}
-  }"
+  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\"}"
 }
 
 api_fallback_state_set() {
@@ -580,37 +501,6 @@ api_fallback_state_set() {
   esac
 
   _fallback_set_state "$cfg" "$value"
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
-}
-
-api_fallback_strategy_set() {
-  local profile="$1"
-  local strategy="$2"
-  local cfg="/opt/zapret2/config"
-  local max proto_list
-
-  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
-
-  case "$profile" in
-    8|9) ;;
-    *) send_error "400 Bad Request" "Некорректный профиль: $profile" ;;
-  esac
-
-  case "$strategy" in
-    ''|*[!0-9]*) send_error "400 Bad Request" "Некорректная стратегия: $strategy" ;;
-  esac
-
-  max="$(config_profile_max_strategy "$profile" "$cfg")"
-  if [ "$strategy" -ne 0 ] && [ "$strategy" -gt "${max:-0}" ]; then
-    send_error "400 Bad Request" "Стратегия вне диапазона (макс: $max)"
-  fi
-
-  proto_list="$(config_profile_proto_list "$profile")"
-  [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
-  profile_state_set_and_apply "$profile" "$proto_list" "$strategy" "$cfg" ||
-    send_error "500 Internal Server Error" "Не удалось сохранить стратегию"
-  telemetry_notify
-
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
 

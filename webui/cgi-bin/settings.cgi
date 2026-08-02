@@ -40,9 +40,6 @@ case "${REQUEST_METHOD:-GET}" in
       fallback_state)
         api_fallback_state_set
         ;;
-      fallback_strategy)
-        api_fallback_strategy_set "${PARAM_PROFILE:-}" "${PARAM_STRATEGY:-}"
-        ;;
       udp_games_state)
         api_udp_games_set
         ;;
