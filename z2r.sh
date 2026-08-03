@@ -230,41 +230,6 @@ if [ "$missing_libs" -ne 0 ]; then
   z2r_exec_external_installer "$@"
 fi
 
-#___Общие вспомогательные функции____
-
-# Нормализация введённого значения в чистый домен.
-# Убираем пробелы, схему (http/https/ftp), userinfo, путь, порт, крайние точки.
-# Глобальная функция: используется и в меню z2r.sh, и в lib/strategies.sh.
-# Возвращает 0 и печатает чистый домен, либо 1 (мусор/пусто).
-z2r_normalize_domain() {
-  local d="$1"
-  # обрезаем пробелы по краям
-  d="${d#"${d%%[![:space:]]*}"}"
-  d="${d%"${d##*[![:space:]]}"}"
-  [ -z "$d" ] && return 1
-  # приводим к нижнему регистру без классов tr: BusyBox tr для совместимости с OpenWRT
-  d="$(printf '%s' "$d" | sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')"
-  # убираем схему (http://, https://, ftp:// ...)
-  d="${d#*://}"
-  # убираем userinfo (всё до последнего @)
-  d="${d##*@}"
-  # убираем путь (всё после первого /)
-  d="${d%%/*}"
-  # убираем порт (всё после :)
-  d="${d%%:*}"
-  # убираем ведущую точку (.ru -> ru)
-  d="${d#.}"
-  # убираем завершающую точку (example.com. -> example.com)
-  d="${d%.}"
-  # пусто — отбрасываем
-  [ -z "$d" ] && return 1
-  # только допустимые символы: a-z 0-9 . -
-  case "$d" in *[!a-z0-9.-]*) return 1 ;; esac
-  # должен быть хотя бы один буквенно-цифровой символ
-  case "$d" in *[a-z0-9]*) : ;; *) return 1 ;; esac
-  printf '%s\n' "$d"
-}
-
 #___Сначала идут анонсы функций____
 
 # UI helpers (пауза/печать пунктов меню/совместимость старого кода)
@@ -1277,6 +1242,7 @@ webui_install_files() {
   webui_repo_fetch "index.html" "$WEBUI_WWW/index.html" || return 1
   webui_repo_fetch "styles.css" "$WEBUI_WWW/styles.css" || return 1
   webui_repo_fetch "app.js" "$WEBUI_WWW/app.js" || return 1
+  webui_repo_fetch "favicon.svg" "$WEBUI_WWW/favicon.svg" || return 1
   webui_repo_fetch "run-webui.sh" "$WEBUI_RUNNER" || return 1
   webui_repo_fetch "cgi-bin/_lib.sh" "$WEBUI_CGI/_lib.sh" || return 1
   webui_repo_fetch "cgi-bin/status.cgi" "$WEBUI_CGI/status.cgi" || return 1
@@ -1284,6 +1250,8 @@ webui_install_files() {
   webui_repo_fetch "cgi-bin/clear-lock.cgi" "$WEBUI_CGI/clear-lock.cgi" || return 1
   webui_repo_fetch "cgi-bin/service.cgi" "$WEBUI_CGI/service.cgi" || return 1
   webui_repo_fetch "cgi-bin/check.cgi" "$WEBUI_CGI/check.cgi" || return 1
+  webui_repo_fetch "cgi-bin/domains.cgi" "$WEBUI_CGI/domains.cgi" || return 1
+  webui_repo_fetch "cgi-bin/settings.cgi" "$WEBUI_CGI/settings.cgi" || return 1
 
   chmod +x "$WEBUI_RUNNER" "$WEBUI_CGI"/*.sh "$WEBUI_CGI"/*.cgi
   webui_fix_interpreters

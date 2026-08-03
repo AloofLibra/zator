@@ -4,14 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>z2r Web UI</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
   <main class="app">
     <header class="hero">
       <div class="hero-copy">
         <p class="eyebrow">zator</p>
-        <h1>z2r Web UI</h1>
+        <h1 id="brand-link" role="button" tabindex="0">
+          <img class="brand-logo" src="favicon.svg" alt="" aria-hidden="true"><span class="brand-label">z2r Web UI</span>
+        </h1>
         <p class="subtitle">Панель состояния, проверки доступности и ручной фиксации стратегий zapret2.</p>
       </div>
 
@@ -19,6 +22,8 @@
         <nav class="tabs" aria-label="Разделы">
           <button class="tab is-active" data-view="status" type="button">Статус</button>
           <button class="tab" data-view="strategies" type="button">Стратегии</button>
+          <button class="tab" data-view="domains" type="button">Домены</button>
+          <button class="tab" data-view="settings" type="button">Настройки</button>
         </nav>
 
         <label class="theme-field" for="theme-mode">
@@ -32,9 +37,7 @@
       </div>
     </header>
 
-    <section class="banner" id="banner" hidden></section>
-
-    <section class="view is-active" id="view-status">
+    <section class="view is-active is-loading" id="view-status">
       <div class="actions">
         <div class="service-control" aria-label="Управление zapret2">
           <button id="toggle-service" class="service-toggle" type="button">zapret2</button>
@@ -43,6 +46,8 @@
         <button id="refresh-status" type="button">Обновить</button>
         <button id="run-check" type="button">Проверить доступ</button>
       </div>
+
+      <div class="status-loading" aria-live="polite">Пожалуйста подождите...</div>
 
       <div class="stats-grid" id="status-cards"></div>
 
@@ -67,6 +72,176 @@
         <button id="refresh-locks" type="button">Обновить</button>
       </div>
       <div class="profile-grid" id="strategy-cards"></div>
+    </section>
+
+    <section class="view" id="view-domains">
+      <div class="actions">
+        <nav class="subtabs" aria-label="Списки доменов">
+          <button class="subtab is-active" data-subview="netrogat" type="button">Исключения</button>
+          <button class="subtab" data-subview="custom_rkn" type="button">TCP_Custom</button>
+          <button class="subtab" data-subview="substring" type="button">Подстроки</button>
+        </nav>
+        <button id="refresh-domains" type="button">Обновить</button>
+      </div>
+
+      <section class="panel" id="domains-panel">
+        <div class="panel-header">
+          <h2 id="domains-title">—</h2>
+          <span class="chip" id="domains-count"></span>
+        </div>
+        <p class="panel-desc" id="domains-desc"></p>
+
+        <form id="domain-add-form" class="settings-form">
+          <label>
+            <span id="domain-add-label">Домен</span>
+            <input type="text" id="domain-add-input" required placeholder="example.com">
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary" id="domain-add-submit">Добавить</button>
+          </div>
+        </form>
+
+        <details class="import-block">
+          <summary>Импорт списка</summary>
+          <textarea id="domain-import-input" rows="6" placeholder="по одному домену на строку"></textarea>
+          <div class="card-actions">
+            <button type="button" id="domain-import-btn">Импортировать</button>
+          </div>
+        </details>
+
+        <div class="card-actions domain-toolbar">
+          <button type="button" class="ghost" id="domain-copy-btn">Копировать всё</button>
+          <button type="button" class="ghost danger" id="domain-clear-btn">Очистить всё</button>
+        </div>
+
+        <div class="domain-empty" id="domains-empty" hidden>Список пуст.</div>
+        <ul class="domain-list" id="domain-items"></ul>
+      </section>
+    </section>
+
+    <section class="view" id="view-settings">
+      <div class="actions">
+        <button id="refresh-settings" type="button">Обновить</button>
+      </div>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>TLS Blob</h2>
+          <span class="chip" id="tls-blob-status"></span>
+        </div>
+        <p class="panel-desc">
+          Выбор TLS-блоба для стратегий обхода. Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="tls-blob-form" class="settings-form">
+          <label>
+            <span>Выберите блоб</span>
+            <select id="tls-blob-select" name="blob" required>
+              <option value="" disabled selected>Загрузка...</option>
+              <option value="fake_default_tls">fake_default_tls (встроенный)</option>
+            </select>
+          </label>
+
+          <div class="form-hint">
+            Текущий файл: <code id="current-blob-file">—</code>
+          </div>
+
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Безразборный режим (Fallback)</h2>
+          <span class="chip" id="fallback-state-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Безразборный режим позволяет обходить блокировки для всех доменов, не только из списков RKN.
+          Включите режим, затем выберите стратегию для TLS (profile 8) и HTTP (profile 9) во вкладке "Стратегии".
+        </p>
+
+        <form id="fallback-state-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="fallback-state-toggle">
+            <span>Включить безразборный режим</span>
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Игровой UDP (профиль 7)</h2>
+          <span class="chip" id="udp-games-state-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Обход игрового UDP-трафика на портах 1026–65531 (BF, FIFA/FC и похожие игры).
+          Включите режим, затем выберите стратегию для профиля 7 во вкладке «Стратегии».
+          Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="udp-games-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="udp-games-toggle">
+            <span>Включить обход игрового UDP</span>
+          </label>
+          <div class="form-hint">
+            Текущие UDP-порты: <code id="udp-games-ports-chip">—</code>
+          </div>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>WireGuard</h2>
+          <span class="chip" id="wg-state-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Стратегия WireGuard отправляет несколько фейковых пакетов инициации до
+          настоящего, чтобы сбить с толку ТСПУ/DPI. Здесь можно включить/выключить
+          стратегию, выбрать fake-пакет и количество его повторов (repeats). Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="wg-blob-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="wg-state-toggle">
+            <span>Включить стратегию WireGuard</span>
+          </label>
+
+          <label>
+            <span>Файл blob</span>
+            <select id="wg-blob-select" name="wg_blob" required>
+              <option value="" disabled selected>Загрузка...</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Количество повторов (2–99)</span>
+            <div class="number-stepper">
+              <input type="number" id="wg-repeats-input" name="wg_repeats" min="2" max="99" step="1" required>
+              <div class="stepper-buttons">
+                <button type="button" class="step-wg-repeats" data-step="1" aria-label="Увеличить повторов">↑</button>
+                <button type="button" class="step-wg-repeats" data-step="-1" aria-label="Уменьшить повторов">↓</button>
+              </div>
+            </div>
+          </label>
+
+          <div class="form-hint">
+            Текущий файл: <code id="current-wg-blob-file">—</code>
+          </div>
+
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
     </section>
   </main>
 
@@ -127,6 +302,40 @@
     </article>
   </template>
 
-  <script src="app.js"></script>
+  <template id="domain-row-template">
+    <li class="domain-row">
+      <div class="domain-row-main">
+        <span class="domain-value"></span>
+        <span class="domain-strategy chip"></span>
+        <div class="domain-actions">
+          <button type="button" class="ghost trial-btn" hidden>Подобрать</button>
+          <button type="button" class="ghost danger remove-btn" aria-label="Удалить">×</button>
+        </div>
+      </div>
+      <div class="trial-panel" hidden>
+        <div class="trial-meta">
+          <span>Стратегия</span>
+          <div class="number-stepper">
+            <input type="number" class="trial-input" min="1" step="1">
+            <div class="stepper-buttons">
+              <button type="button" class="trial-step" data-step="1" aria-label="Увеличить">↑</button>
+              <button type="button" class="trial-step" data-step="-1" aria-label="Уменьшить">↓</button>
+            </div>
+          </div>
+          <span class="trial-max"></span>
+          <span class="trial-hint">Проверьте доступ к сайту в браузере и подтвердите.</span>
+        </div>
+        <div class="card-actions">
+          <button type="button" class="primary trial-save">Сохранить</button>
+          <button type="button" class="ghost trial-next">Следующая →</button>
+          <button type="button" class="ghost trial-cancel">Отмена</button>
+        </div>
+      </div>
+    </li>
+  </template>
+
+  <div class="toast-region" id="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="app.js?v=4"></script>
 </body>
 </html>
