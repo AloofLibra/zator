@@ -518,6 +518,7 @@ button.primary.is-busy::after,
 .view {
   display: none;
   gap: 16px;
+  min-width: 0;
 }
 
 .view.is-active {
@@ -809,6 +810,21 @@ input[type="number"]::-webkit-inner-spin-button {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
+}
+
+.settings-form > label {
+  min-width: 0;
+}
+
+.settings-form select {
+  width: 100%;
+  max-width: 100%;
+}
+
+.form-hint code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .toggle-field {
