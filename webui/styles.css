@@ -248,7 +248,7 @@ h3 { font-size: 1rem; line-height: 1.25; }
   box-shadow: none;
   flex: 0 0 auto;
   min-width: unset;
-  padding: 0.55rem 0.5rem;
+  padding: 0.55rem 1rem;
   white-space: nowrap;
   border-radius: 12px;
 }
@@ -411,13 +411,11 @@ button.primary.is-busy::after,
 
 .modal-actions button { flex: 0 1 auto; min-width: 7rem; }
 
-
 .view {
   display: none;
   gap: 14px;
   min-width: 0;
 }
-
 
 .view > * { min-width: 0; }
 
@@ -767,7 +765,6 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .domain-actions button { padding-inline: 0.7rem; }
 
-
 .domain-actions .remove-btn {
   flex: 0 0 auto;
   width: 2.4rem;
@@ -857,6 +854,7 @@ input[type="number"]::-webkit-inner-spin-button {
   }
 }
 
+
 @media (max-width: 640px) {
   .app {
     width: min(100% - 12px, 1200px);
@@ -916,6 +914,43 @@ input[type="number"]::-webkit-inner-spin-button {
 
   .domain-toolbar button {
     flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    border-radius: 14px;
+  }
+
+  .tab {
+    flex: 1 1 calc(50% - 2px);
+    min-width: 0;
+    text-align: center;
+    font-size: 0.85rem;
+    padding: 0.55rem 0.3rem;
+  }
+
+  .tab.is-active {
+    box-shadow: 0 4px 12px rgba(36, 87, 214, 0.18);
+  }
+
+  .subtabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .subtab {
+    flex: 1 1 calc(33.333% - 3px);
+    min-width: 0;
+    text-align: center;
+    font-size: 0.8rem;
+    padding: 0.5rem 0.2rem;
+  }
+
+  .subtab.is-active {
+    box-shadow: 0 4px 12px rgba(36, 87, 214, 0.18);
   }
 }
 
