@@ -470,14 +470,24 @@ button.primary.is-busy::after,
 
 .panel { display: grid; gap: 12px; }
 
-.panel-header {
+.panel-header, .card-top {
+  display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
 }
 
-.panel-header > * { min-width: 0; }
-.panel-header button { flex: 0 1 auto; }
+.panel-header, .card-top > * {
+  min-width: 0;
+}
+
+.panel-header > h2, .card-top > h3 {
+  flex: 1 1 auto;
+}
+
+.panel-header button, .card-top .chip { 
+  flex: 0 1 auto; 
+}
 
 .stat-card {
   display: grid;
