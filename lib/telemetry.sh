@@ -2,7 +2,7 @@
 # Настройки z4r telemetry endpoint
 STATS_ENDPOINT="https://alooflibra.fun/z4r/telemetry"
 STATS_TOKEN="TzeiCfYn5DUIwjHJ6dPa4bSKrkFRZqts3BGWpA9l"
-STATS_CHANNEL_ID="z4r-sql-v1"
+STATS_CHANNEL_ID="z4r-sql-v2"
 
 # 2. Пути к файлам (используем простые форматы)
 CACHE_DIR="/opt/zapret2/extra_strats/cache"
@@ -99,17 +99,42 @@ send_stats() {
     my_isp=$(echo "$my_isp" | head -c 60)
     [ -z "$my_isp" ] && my_isp="Unknown"
 
-    # 2. Определяем номера стратегий
-    local s_udp=$(orch_locked_get 5 udp)
-    local s_tcp=$(orch_locked_get 1 tls)
-    local s_gv=$(orch_locked_get 2 tls)
-    local s_rkn=$(orch_locked_get 3 tls)
-    s_udp="${s_udp:-0}"
-    s_tcp="${s_tcp:-0}"
-    s_gv="${s_gv:-0}"
-    s_rkn="${s_rkn:-0}"
+    # 2. Определяем номера стратегий во всех профилях (auto передаём как 0).
+    local s_udp s_tcp s_gv s_rkn s_ds s_voice s_games s_fb_tls s_fb_http
+    s_tcp="$(profile_state_display 1 tls)"
+    s_gv="$(profile_state_display 2 tls)"
+    s_rkn="$(profile_state_display 3 tls)"
+    s_ds="$(profile_state_display 4 tls)"
+    s_udp="$(profile_state_display 5 udp)"
+    s_voice="$(profile_state_display 6 udp)"
+    s_games="$(profile_state_display 7 udp)"
+    s_fb_tls="$(profile_state_display 8 tls)"
+    s_fb_http="$(profile_state_display 9 http)"
+    local strategy_var
+    for strategy_var in s_udp s_tcp s_gv s_rkn s_ds s_voice s_games s_fb_tls s_fb_http; do
+        [ "${!strategy_var}" = "auto" ] && printf -v "$strategy_var" '%s' 0
+    done
 
-    # 3. Отправка в z4r telemetry endpoint (Тихий режим, в фоне &)
+    # 3. Платформа и наличие установленного WebUI.
+    local router_os="unknown"
+    if [ -d /jffs ] || uname -a 2>/dev/null | grep -qi merlin; then
+        router_os="merlin"
+    elif grep -Eqi 'netcraze' /proc/version /bin/ndmc 2>/dev/null; then
+        router_os="netcraze"
+    elif command -v ndmc >/dev/null 2>&1 || grep -Eqi 'keenetic' /proc/version 2>/dev/null; then
+        router_os="keenetic"
+    elif [ -f /etc/os-release ]; then
+        router_os="$(sed -n 's/^ID=//p' /etc/os-release | head -n1 | tr -d '\"' | tr '[:upper:]' '[:lower:]')"
+    elif [ -f /usr/lib/os-release ]; then
+        router_os="$(sed -n 's/^ID=//p' /usr/lib/os-release | head -n1 | tr -d '\"' | tr '[:upper:]' '[:lower:]')"
+    elif [ -f /opt/etc/entware_release ] || [ -f /etc/entware_release ]; then
+        router_os="entware"
+    fi
+    [ -n "$router_os" ] || router_os="unknown"
+    local webui=0
+    [ -x /opt/zapret2/webui/run-webui.sh ] && webui=1
+
+    # 4. Отправка в z4r telemetry endpoint (Тихий режим, в фоне &)
     curl -sL --max-time 10 \
         -d "token=$STATS_TOKEN" \
         -d "uuid=$tel_uuid" \
@@ -118,6 +143,13 @@ send_stats() {
         -d "tcp=$s_tcp" \
         -d "gv=$s_gv" \
         -d "rkn=$s_rkn" \
+        -d "ds_tls=$s_ds" \
+        -d "voice_udp=$s_voice" \
+        -d "games_udp=$s_games" \
+        -d "fb_tls=$s_fb_tls" \
+        -d "fb_http=$s_fb_http" \
+        -d "os=$router_os" \
+        -d "webui=$webui" \
         "$STATS_ENDPOINT" > /dev/null 2>&1 &
 }
 # ---- /Telemetry module integration ----
