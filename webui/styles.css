@@ -451,6 +451,7 @@ button.primary.is-busy::after,
 #view-status.is-loading .status-loading { display: grid; }
 
 .actions {
+  display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
   gap: 10px;
@@ -715,6 +716,7 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .domain-toolbar {
+  display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
@@ -947,6 +949,7 @@ input[type="number"]::-webkit-inner-spin-button {
   }
 
   .subtabs {
+    display: flex;
     flex-wrap: wrap;
     overflow-x: visible;
   }
