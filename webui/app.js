@@ -641,13 +641,19 @@ function renderSettings() {
 
   const settings = state.tlsBlobSettings;
 
-  statusChip.textContent = settings.current_mode;
+
+  const modeText = settings.current_mode === 'fake_default_tls' ? 'default' : settings.current_mode;
+  statusChip.textContent = modeText;
   statusChip.className = 'chip';
   if (settings.current_mode === 'maxru') {
     statusChip.classList.add('is-ok');
   }
 
-  currentFile.textContent = settings.current_blob || '—';
+
+  const effectiveBlob = settings.current_mode === 'fake_default_tls'
+    ? 'fake_default_tls'
+    : (settings.current_blob || '');
+  currentFile.textContent = effectiveBlob || '—';
 
   select.innerHTML = '<option value="fake_default_tls">fake_default_tls (встроенный)</option>';
 
@@ -656,18 +662,18 @@ function renderSettings() {
       const option = document.createElement('option');
       option.value = blob;
       option.textContent = blob;
-      if (blob === settings.current_blob) {
+      if (blob === effectiveBlob) {
         option.selected = true;
       }
       select.appendChild(option);
     });
   }
 
-  if (settings.current_blob && settings.current_blob !== 'fake_default_tls') {
-    select.value = settings.current_blob;
+  if (effectiveBlob) {
+    select.value = effectiveBlob;
   }
 
-  select.dataset.saved = settings.current_blob || 'fake_default_tls';
+  select.dataset.saved = effectiveBlob || 'fake_default_tls';
   updateTlsBlobSubmit();
   if (select.dataset.bound !== '1') {
     select.addEventListener('change', updateTlsBlobSubmit);
@@ -1123,7 +1129,7 @@ function renderDomainList(name) {
   const countEl = document.getElementById('domains-count');
   if (countEl) {
     const n = Array.isArray(data.items) ? data.items.length : 0;
-    countEl.textContent = n > 0 ? `${n}` : '';
+    countEl.textContent = String(n);
     countEl.className = 'chip';
     if (n > 0) countEl.classList.add('is-ok');
   }
