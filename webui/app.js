@@ -433,9 +433,21 @@ function renderStatus() {
     const node = profileTemplate.content.firstElementChild.cloneNode(true);
     node.querySelector('h3').textContent = profile.label;
     node.querySelector('.desc').textContent = profile.description;
-    node.querySelector('.current-lock').textContent = profile.current_lock || '0';
+    renderCurrentLock(node.querySelector('.current-lock'), profile.current_lock);
     statusProfiles.appendChild(node);
   });
+}
+
+function renderCurrentLock(el, value) {
+  if (!el) return;
+  const lock = String(value ?? '0');
+  el.classList.remove('bad');
+  if (lock === '0') {
+    el.textContent = '0 (выключено)';
+    el.classList.add('bad');
+  } else {
+    el.textContent = lock;
+  }
 }
 
 const FALLBACK_CHECK_HINT = 'Безразборный режим: быстрая проверка неприменима (применяется ко всем доменам).';
@@ -467,7 +479,7 @@ function renderStrategies() {
     node.querySelector('h3').textContent = profile.label;
     node.querySelector('.desc').textContent = profile.description;
     node.querySelector('.chip').textContent = `Профиль ${profile.profile}`;
-    node.querySelector('.current-lock').textContent = profile.current_lock || '0';
+    renderCurrentLock(node.querySelector('.current-lock'), profile.current_lock);
     node.querySelector('.max-lock').textContent = String(profile.max_strategy);
 
     const input = node.querySelector('input');
