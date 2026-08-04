@@ -1515,7 +1515,7 @@ Enter (без цифр) - переустановка/обновление zapret
 '"${Fcyan}"'001.'"${yellow}"' CDN тест (test.sh)
 '"${Fcyan}"'01.'"${yellow}"' Проверить доступность сервисов (Тест не точен)
 '"${Fcyan}"'1.'"${yellow}"' Фиксация стратегии профиля/безразборного блока. Текущие: '"${plain}"'[ '"${strategies_status}"' ]'"${yellow}"' (fallback TLS: '"${plain}"'['"$(fallback_strategy_text)"']'"${yellow}"', HTTP: '"${plain}"'['"$(fallback_http_strategy_text)"']'"${yellow}"')
-'"${Fcyan}"'2.'"${yellow}"' Стоп/старт zapret2, 22 - рестарт (сейчас: '"$(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}")"')
+'"${Fcyan}"'2.'"${yellow}"' Стоп/старт zapret2, '"${Fcyan}"'22'"${yellow}"' - рестарт (сейчас: '"$(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}")"')
 '"${Fcyan}"'3.'"${yellow}"' Запуск blockcheck2 и сохранение SUMMARY
 '"${Fcyan}"'4.'"${yellow}"' Удалить zapret2
 '"${Fcyan}"'5.'"${yellow}"' Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
