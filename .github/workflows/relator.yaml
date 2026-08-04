@@ -22,4 +22,4 @@ jobs:
           tg-chat-id: ${{ vars.TELEGRAM_CHAT_ID }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           join-input-with-list: "1"
-          telegram-message-thread-id: ${{ vars.TELEGRAM_THREAD_ID }}
+          tg-message-thread-id: ${{ vars.TELEGRAM_THREAD_ID }}
