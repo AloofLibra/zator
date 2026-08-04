@@ -1,0 +1,25 @@
+name: Relator
+
+on:
+  issues:
+    types: [opened, labeled, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  issues: read
+  pull-requests: read
+
+jobs:
+  notify:
+    name: "Send Telegram notification for new issue or opened pull request"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram notification for new issue or opened pull request
+        uses: reagento/relator@4b1531359edba1228db0906e8931b0da2aef69cd
+        with:
+          tg-bot-token: ${{ secrets.TELEGRAM_TOKEN }}
+          tg-chat-id: ${{ vars.TELEGRAM_CHAT_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          join-input-with-list: "1"
+          telegram-message-thread-id: ${{ vars.TELEGRAM_THREAD_ID }}
