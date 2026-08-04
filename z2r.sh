@@ -1776,17 +1776,6 @@ remove_zapret
 echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
 version_select
 
-#Запрос на установку web-ssh
-read -re -p $'\033[33mАктивировать доступ в меню через браузер (~3мб места)? 1 - Да, Enter - нет\033[0m\n' ttyd_answer
-case "$ttyd_answer" in
-	"1")
-		webui_install
-	;;
-	*)
-		echo "Пропуск (пере)установки web-терминала"
-	;;
-esac 
- 
 #Скачивание, распаковка архива zapret2 и его удаление
 zapret_get
 
@@ -1800,6 +1789,17 @@ if [ ! -s "$ORCH_LUA_LOCKED" ]; then
     echo -e "${red}Повторная загрузка locked.lua не удалась.${plain}"
   fi
 fi
+
+#Запрос на установку web-ssh
+read -re -p $'\033[33mАктивировать доступ в меню через браузер (~3мб места)? 1 - Да, Enter - нет\033[0m\n' ttyd_answer
+case "$ttyd_answer" in
+	"1")
+		webui_install
+	;;
+	*)
+		echo "Пропуск (пере)установки web-терминала"
+	;;
+esac 
 
 #Для Keenetic и merlin
 if [[ "$OSystem" == "entware" ]]; then
