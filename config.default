@@ -153,7 +153,7 @@ NFQWS2_OPT="
 #Z2R_AUTO_STANDARD_BEGIN
 #Z2R_AUTO_STANDARD_1_BEGIN
 #Стратегии для YT
---qnum 300 --filter-tcp=443 --filter-l7=tls
+--filter-tcp=443 --filter-l7=tls
 --hostlist=/opt/zapret2/extra_strats/TCP_YT_list.txt
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
@@ -390,36 +390,11 @@ NFQWS2_OPT="
 
 #Z2R_AUTO_BEGIN
 #Z2R_AUTO_MODE=0
-  #Авторотация TCP/HTTP. По умолчанию выключена через --skip.
-
-#Z2R_AUTO_1_BEGIN
---skip --qnum 300 --filter-tcp=443 --filter-l7=tls
---hostlist=/opt/zapret2/extra_strats/TCP_YT_list.txt
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
---out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=1:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zapret2/lua/strategy-validator.sh
---import=z2r_tcp_tls_common
-#Z2R_AUTO_1_END
-
---new
-
-#Z2R_AUTO_2_BEGIN
---skip --filter-tcp=443 --filter-l7=tls
---hostlist-domains=googlevideo.com
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
---out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=2:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zapret2/lua/strategy-validator.sh
---import=z2r_tcp_tls_common
-#Z2R_AUTO_2_END
-
---new
+#Z2R_AUTO_FALLBACK_WAS=0
+  #Авторотация TCP/HTTP.
 
 #Z2R_AUTO_3_BEGIN
 --skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --filter-l7=tls
---hostlist=/opt/zapret2/extra_strats/TCP_RKN_list.txt
---hostlist=/opt/zapret2/extra_strats/TCP_Custom.txt
 --hostlist-exclude=/opt/zapret2/extra_strats/TCP_Discord.txt
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
@@ -470,34 +445,12 @@ NFQWS2_OPT="
 
 --new
 
-#Z2R_AUTO_8_BEGIN
---skip --filter-tcp=443 --filter-l7=tls
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
---out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=8:allow_nohost=1:route_key=3:route_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3
---import=z2r_tcp_tls_common
-#Z2R_AUTO_8_END
-
---new
-
-#Z2R_AUTO_3S_BEGIN
---skip --filter-tcp=443 --filter-l7=tls
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
---out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=3:allow_nohost=1:include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3
---import=z2r_tcp_tls_common
-#Z2R_AUTO_3S_END
-
---new
-
 #Z2R_AUTO_9_BEGIN
 --skip --filter-tcp=80 --filter-l7=http
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
 --payload=http_req
 --out-range=-n19
---lua-desync=circular_quality:key=9:allow_nohost=1:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3
+--lua-desync=circular_quality:key=9:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3
 --lua-desync=http_hostcase:spell=hoSt:strategy=1 --lua-desync=http_domcase:strategy=1
 --lua-desync=multisplit:pos=method+2,host+1,midsld:strategy=2
 --lua-desync=multidisorder:pos=method+2,host+1,midsld:strategy=3
@@ -508,7 +461,6 @@ NFQWS2_OPT="
 --lua-desync=fake:blob=stun_fake:tcp_ts=-1000:repeats=2:strategy=8 --lua-desync=multisplit:pos=sld+1:seqovl=1:strategy=8
 #Z2R_AUTO_9_END
 #Z2R_AUTO_END
-
 "
 
 

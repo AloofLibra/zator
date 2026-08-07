@@ -75,14 +75,13 @@ grep -q 'lua_cutoff(ctx)' "$REPO_DIR/orchestra/locked.lua" || fail "non-matching
 grep -q '^function fakemultidisorder(ctx, desync)' "$REPO_DIR/orchestra/locked.lua" || fail "fakemultidisorder is not bundled into locked.lua"
 grep -q '^function fakemultisplit(ctx, desync)' "$REPO_DIR/orchestra/locked.lua" || fail "fakemultisplit is not bundled into locked.lua"
 grep -q 'file_stat = stat(path)' "$REPO_DIR/orchestra/locked.lua" || fail "substring list changes are not checked by the nfqws2 C stat function"
-grep -q 'circular_locked:key=3:.*include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default" || fail "substring list is not wired into RKN strategies"
-[ "$(grep -c 'include_substrings=' "$REPO_DIR/config.default")" -eq 2 ] || fail "standard and auto substring profiles are not paired"
-grep -q 'circular_quality:key=3:.*include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default" || fail "auto substring profile lost include routing"
-[ "$(grep -c 'route_key=3:route_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default")" -eq 2 ] || fail "standard and auto fallback routes are not paired"
-grep -q 'circular_quality:key=8:.*route_key=3:route_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default" || fail "auto fallback lost substring routing"
+grep -q 'circular_locked:key=3:.*include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default" || fail "substring list is not wired into the standard RKN router"
 grep -q 'include_substrings auto counterpart must cut off non-matching host' "$REPO_DIR/tests/provisional_tcp_success.lua" || fail "auto substring routing regression is missing"
 grep -q 'allow_nohost route must use route_key' "$REPO_DIR/tests/provisional_tcp_success.lua" || fail "auto fallback routing regression is missing"
 [ -f "$REPO_DIR/extra_strats/TCP/RKN/Domains_By_Substring.txt" ] || fail "substring list source is missing"
+
+nfqws2_opt="$(sed -n '/^NFQWS2_OPT="/,/^"$/p' "$REPO_DIR/config.default")"
+assert_not_contains "$nfqws2_opt" '(^|[[:space:]])--qnum([=[:space:]]|$)' "NFQWS2_OPT must not contain an in-block --qnum"
 
 for runtime_file in \
   lua/strategy-lock-manager.lua \
@@ -120,10 +119,7 @@ auto_pair_block() {
 }
 
 auto_pair_signature() {
-  auto_pair_block "$1" "$2" "$3" | sed -E \
-    -e '/^[[:space:]]*#/d' \
-    -e 's/^--skip[[:space:]]+//' \
-    -e '/--lua-desync=(circular_locked|rst_guard_locked|circular_quality):key=/c\--ENGINE'
+  auto_pair_block "$1" "$2" "$3" | sed -E 's/^--skip[[:space:]]+//'
 }
 
 auto_pair_state() {
@@ -151,23 +147,41 @@ profile_max_snapshot() {
   done
 }
 
-AUTO_IDS="1 2 3 4 8 3S 9"
-[ "$(grep -Ec '^#Z2R_AUTO_STANDARD_(1|2|3|4|8|3S|9)_BEGIN$' "$CFG")" -eq 7 ] || fail "standard TCP/HTTP auto-pair coverage is incomplete"
-[ "$(grep -Ec '^#Z2R_AUTO_(1|2|3|4|8|3S|9)_BEGIN$' "$CFG")" -eq 7 ] || fail "automatic TCP/HTTP pair coverage is incomplete"
+STANDARD_IDS="$(config_auto_pair_ids "$CFG" standard | paste -sd ' ' -)"
+AUTO_IDS="$(config_auto_pair_ids "$CFG" | paste -sd ' ' -)"
+[ "$STANDARD_IDS" = "1 2 3 4 8 3S 9" ] || fail "standard TCP/HTTP profile markers changed"
+[ "$AUTO_IDS" = "3 4 9" ] || fail "automatic profile set must be exactly 3, 4, 9"
+for marker in Z2R_AUTO_STANDARD_1 Z2R_AUTO_9; do
+  BAD_LAYOUT_CFG="$TMP_DIR/bad-${marker}.conf"
+  cp "$CFG" "$BAD_LAYOUT_CFG"
+  sed -i "/^#${marker}_BEGIN$/d; /^#${marker}_END$/d" "$BAD_LAYOUT_CFG"
+  sum_before="$(file_sha "$BAD_LAYOUT_CFG")"
+  if config_set_auto_mode "$BAD_LAYOUT_CFG" 1; then
+    fail "auto mode accepted missing marker pair $marker"
+  fi
+  [ "$(file_sha "$BAD_LAYOUT_CFG")" = "$sum_before" ] || fail "auto mode mutated invalid layout $marker"
+done
 for id in $AUTO_IDS; do
-  expected_key="$id"
-  [ "$id" = "3S" ] && expected_key=3
   [ "$(grep -c "^#Z2R_AUTO_STANDARD_${id}_BEGIN$" "$CFG")" -eq 1 ] || fail "missing standard auto pair $id"
   [ "$(grep -c "^#Z2R_AUTO_${id}_BEGIN$" "$CFG")" -eq 1 ] || fail "missing automatic pair $id"
-  assert_contains "$(auto_pair_block "$CFG" STANDARD_ "$id")" "circular_locked:key=${expected_key}([^0-9]|$)" "standard profile $id changed logical key"
-  assert_contains "$(auto_pair_block "$CFG" "" "$id")" "circular_quality:key=${expected_key}([^0-9]|$)" "auto profile $id changed logical key"
-  [ "$(auto_pair_signature "$CFG" STANDARD_ "$id")" = "$(auto_pair_signature "$CFG" "" "$id")" ] || fail "standard and auto profile $id differ outside the engine"
+  assert_contains "$(auto_pair_block "$CFG" STANDARD_ "$id")" "circular_locked:key=${id}([^0-9]|$)" "standard profile $id changed logical key"
+  assert_contains "$(auto_pair_block "$CFG" "" "$id")" "circular_quality:key=${id}([^0-9]|$)" "auto profile $id changed logical key"
 done
+assert_not_contains "$(auto_pair_block "$CFG" "" 3)" '^--hostlist=' "AUTO_3 must not inherit standard RKN hostlists"
+assert_not_contains "$(auto_pair_block "$CFG" "" 9)" 'circular_quality:key=9:.*allow_nohost' "AUTO_9 must not use allow_nohost"
 
 strategy_menu="$(sed -n '/^strategies_submenu()/,/^}/p' "$REPO_DIR/lib/submenus.sh")"
 for menu_id in 1 2 3 4 5 6 7 8 9 10; do
   [ "$(printf '%s\n' "$strategy_menu" | grep -Ec "submenu_item \"[[:space:]]*${menu_id}\"[[:space:]]")" -eq 1 ] || fail "strategy menu item $menu_id changed numbering"
 done
+assert_contains "$strategy_menu" 'if \[ "\$auto_enabled" = "1" \]' "strategy menu does not hide manual TCP actions in auto mode"
+assert_contains "$strategy_menu" '1\|2\|3\|4\|8\|9\)' "strategy menu does not guard manual TCP choices in auto mode"
+for menu_id in 5 6 7; do
+  assert_contains "$strategy_menu" "submenu_item \"[[:space:]]*${menu_id}\"" "UDP strategy menu item $menu_id is unavailable in auto mode"
+done
+fallback_toggle="$(sed -n '/^toggle_fallback_mode()/,/^}/p' "$REPO_DIR/lib/actions.sh")"
+assert_contains "$fallback_toggle" 'config_mode_text auto_mode' "fallback menu action is not guarded in auto mode"
+assert_contains "$fallback_toggle" 'return 0' "fallback menu action does not stop in auto mode"
 
 for mapping in '1 tls http' '2 tls' '3 tls' '4 tls' '5 udp' '6 udp' '7 udp' '8 tls' '9 http'; do
   set -- $mapping
@@ -175,29 +189,32 @@ for mapping in '1 tls http' '2 tls' '3 tls' '4 tls' '5 udp' '6 udp' '7 udp' '8 t
 done
 
 udp_before="$(auto_udp_snapshot "$CFG")"
+unpaired_content_before="$(for id in 1 2 8 3S; do auto_pair_signature "$CFG" STANDARD_ "$id"; done)"
 profile_max_before="$(profile_max_snapshot "$CFG")"
 [ "$(config_mode_text fallback "$CFG")" = "выключен" ] || fail "fallback must be disabled by default"
 [ "$(config_mode_text auto_mode "$CFG")" = "выключен" ] || fail "auto mode must be disabled by default"
 for id in 1 2 3 4 3S; do
   [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = active ] || fail "standard profile $id must be active by default"
-  [ "$(auto_pair_state "$CFG" "" "$id")" = skipped ] || fail "auto profile $id must be skipped by default"
 done
 for id in 8 9; do
   [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = skipped ] || fail "standard fallback $id must be skipped by default"
-  [ "$(auto_pair_state "$CFG" "" "$id")" = skipped ] || fail "auto fallback $id must be skipped by default"
+done
+for id in $AUTO_IDS; do
+  [ "$(auto_pair_state "$CFG" "" "$id")" = skipped ] || fail "auto profile $id must be skipped by default"
 done
 auto_assert_no_double_skip "$CFG"
 
 config_set_auto_mode "$CFG" 1 || fail "auto mode could not be enabled"
 [ "$(config_mode_text auto_mode "$CFG")" = "включен" ] || fail "enabled auto mode is not detected"
-for id in 1 2 3 4 3S; do
+[ "$(config_mode_text fallback "$CFG")" = "недоступен" ] || fail "fallback must be unavailable in auto mode"
+for id in $STANDARD_IDS; do
   [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = skipped ] || fail "standard profile $id remained active in auto mode"
+done
+for id in $AUTO_IDS; do
   [ "$(auto_pair_state "$CFG" "" "$id")" = active ] || fail "auto profile $id was not enabled"
 done
-for id in 8 9; do
-  [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = skipped ] || fail "standard fallback $id became active"
-  [ "$(auto_pair_state "$CFG" "" "$id")" = skipped ] || fail "auto mode enabled fallback $id without permission"
-done
+[ "$(for id in 1 2 8 3S; do auto_pair_signature "$CFG" STANDARD_ "$id"; done)" = "$unpaired_content_before" ] || fail "auto mode changed unpaired standard profile content"
+[ "$(auto_udp_snapshot "$CFG")" = "$udp_before" ] || fail "auto mode changed UDP/QUIC/voice/game profiles"
 auto_assert_no_double_skip "$CFG"
 
 sum_before="$(file_sha "$CFG")"
@@ -211,20 +228,38 @@ cp "$CFG" "$AUTO_OLD_CFG"
 sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_NEW_CFG"
 backup_smart_apply_flags "$AUTO_OLD_CFG" "$AUTO_NEW_CFG"
 [ "$(config_mode_text auto_mode "$AUTO_NEW_CFG")" = "включен" ] || fail "smart restore did not preserve auto mode"
-[ "$(config_mode_text fallback "$AUTO_NEW_CFG")" = "выключен" ] || fail "smart restore enabled fallback while preserving auto mode"
-
-backup_smart_set_fallback "$CFG" 1
-[ "$(config_mode_text fallback "$CFG")" = "включен" ] || fail "fallback could not be enabled in auto mode"
+config_set_auto_mode "$AUTO_NEW_CFG" 0 || fail "smart-restored auto mode could not be disabled"
 for id in 8 9; do
-  [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = skipped ] || fail "standard fallback $id activated in auto mode"
-  [ "$(auto_pair_state "$CFG" "" "$id")" = active ] || fail "auto fallback $id did not follow fallback toggle"
+  [ "$(auto_pair_state "$AUTO_NEW_CFG" STANDARD_ "$id")" = skipped ] || fail "smart restore lost disabled fallback state for $id"
 done
-auto_assert_no_double_skip "$CFG"
+
+AUTO_ON_OLD_CFG="$TMP_DIR/auto-on-old.conf"
+AUTO_ON_NEW_CFG="$TMP_DIR/auto-on-new.conf"
+sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_ON_OLD_CFG"
+backup_smart_set_fallback "$AUTO_ON_OLD_CFG" 1
+config_set_auto_mode "$AUTO_ON_OLD_CFG" 1 || fail "smart restore setup could not enable auto mode"
+sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_ON_NEW_CFG"
+backup_smart_apply_flags "$AUTO_ON_OLD_CFG" "$AUTO_ON_NEW_CFG"
+[ "$(config_mode_text auto_mode "$AUTO_ON_NEW_CFG")" = "включен" ] || fail "smart restore lost auto mode with saved fallback"
+config_set_auto_mode "$AUTO_ON_NEW_CFG" 0 || fail "smart-restored saved fallback could not leave auto mode"
+for id in 8 9; do
+  [ "$(auto_pair_state "$AUTO_ON_NEW_CFG" STANDARD_ "$id")" = active ] || fail "smart restore lost enabled fallback state for $id"
+done
+
+sum_before="$(file_sha "$CFG")"
+backup_smart_set_fallback "$CFG" 1
+sum_after="$(file_sha "$CFG")"
+[ "$sum_before" = "$sum_after" ] || fail "fallback setter must be a no-op in auto mode"
 
 config_set_auto_mode "$CFG" 0 || fail "auto mode could not be disabled"
 [ "$(config_mode_text auto_mode "$CFG")" = "выключен" ] || fail "disabled auto mode is not detected"
-for id in 1 2 3 4 3S 8 9; do
+for id in 1 2 3 4 3S; do
   [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = active ] || fail "standard profile $id was not restored"
+done
+for id in 8 9; do
+  [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = skipped ] || fail "disabled fallback state was not restored for $id"
+done
+for id in $AUTO_IDS; do
   [ "$(auto_pair_state "$CFG" "" "$id")" = skipped ] || fail "auto profile $id remained active"
 done
 auto_assert_no_double_skip "$CFG"
@@ -232,13 +267,46 @@ sum_before="$(file_sha "$CFG")"
 config_set_auto_mode "$CFG" 0
 sum_after="$(file_sha "$CFG")"
 [ "$sum_before" = "$sum_after" ] || fail "disabling auto mode is not idempotent"
+
+backup_smart_set_fallback "$CFG" 1
+[ "$(config_mode_text fallback "$CFG")" = "включен" ] || fail "fallback could not be enabled"
+for id in 8 9; do
+  [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = active ] || fail "standard fallback $id was not enabled"
+done
+
+config_set_auto_mode "$CFG" 1 || fail "auto mode could not be re-enabled"
+for id in $STANDARD_IDS; do
+  [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = skipped ] || fail "standard profile $id remained active after re-enabling auto mode"
+done
+for id in $AUTO_IDS; do
+  [ "$(auto_pair_state "$CFG" "" "$id")" = active ] || fail "auto profile $id was not re-enabled"
+done
+sum_before="$(file_sha "$CFG")"
+backup_smart_set_fallback "$CFG" 0
+sum_after="$(file_sha "$CFG")"
+[ "$sum_before" = "$sum_after" ] || fail "fallback setter changed saved state in auto mode"
+
+config_set_auto_mode "$CFG" 0 || fail "auto mode could not be disabled after saved fallback test"
+for id in $STANDARD_IDS; do
+  [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = active ] || fail "enabled fallback state was not restored for standard profile $id"
+done
+for id in $AUTO_IDS; do
+  [ "$(auto_pair_state "$CFG" "" "$id")" = skipped ] || fail "auto profile $id remained active after saved fallback test"
+done
+
 backup_smart_set_fallback "$CFG" 0
 for id in 8 9; do
   [ "$(auto_pair_state "$CFG" STANDARD_ "$id")" = skipped ] || fail "standard fallback $id was not disabled"
-  [ "$(auto_pair_state "$CFG" "" "$id")" = skipped ] || fail "disabled auto fallback $id changed unexpectedly"
 done
 [ "$(auto_udp_snapshot "$CFG")" = "$udp_before" ] || fail "auto-mode toggle changed UDP/QUIC/voice/game profiles"
 [ "$(profile_max_snapshot "$CFG")" = "$profile_max_before" ] || fail "auto-mode blocks changed logical profile numbering"
+
+PORT_CFG="$TMP_DIR/ports.conf"
+sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$PORT_CFG"
+config_set_auto_mode "$PORT_CFG" 1 || fail "port routing test could not enable auto mode"
+ports_set_rkn_filter "$PORT_CFG" "12345"
+assert_contains "$(auto_pair_block "$PORT_CFG" STANDARD_ 3)" '^--skip --filter-tcp=12345,80,443,' "RKN port setter did not update skipped standard profile 3"
+assert_contains "$(auto_pair_block "$PORT_CFG" "" 3)" '^--filter-tcp=12345,80,443,' "RKN port setter did not update active AUTO_3"
 
 [ "$(profile_state_get 3 tls)" = "auto" ] || fail "missing state must be auto"
 

@@ -515,6 +515,10 @@ toggle_hostlist_mode() {
 }
 
 toggle_fallback_mode() {
+  if [ "$(config_mode_text auto_mode)" = "включен" ]; then
+    echo -e "${yellow}Безразборный режим недоступен при авторотации TCP/HTTP.${plain}"
+    return 0
+  fi
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
     if [ "$(config_mode_text fallback "$cfg")" = "выключен" ]; then
@@ -529,42 +533,39 @@ toggle_fallback_mode() {
 config_set_auto_mode() {
   local cfg="$1"
   local enable="$2"
-  local id standard_block auto_block
+  local id standard_ids auto_ids fallback_on
 
   [ -f "$cfg" ] || return 1
-  [ "$(grep -c '^#Z2R_AUTO_STANDARD_BEGIN$' "$cfg")" -eq 1 ] || return 1
-  [ "$(grep -c '^#Z2R_AUTO_STANDARD_END$' "$cfg")" -eq 1 ] || return 1
-  [ "$(grep -c '^#Z2R_AUTO_BEGIN$' "$cfg")" -eq 1 ] || return 1
-  [ "$(grep -c '^#Z2R_AUTO_END$' "$cfg")" -eq 1 ] || return 1
-  for id in 1 2 3 4 8 3S 9; do
-    [ "$(grep -c "^#Z2R_AUTO_STANDARD_${id}_BEGIN$" "$cfg")" -eq 1 ] || return 1
-    [ "$(grep -c "^#Z2R_AUTO_STANDARD_${id}_END$" "$cfg")" -eq 1 ] || return 1
-    [ "$(grep -c "^#Z2R_AUTO_${id}_BEGIN$" "$cfg")" -eq 1 ] || return 1
-    [ "$(grep -c "^#Z2R_AUTO_${id}_END$" "$cfg")" -eq 1 ] || return 1
-  done
+  [ "$enable" = "0" ] || [ "$enable" = "1" ] || return 1
+  config_auto_layout_valid "$cfg" || return 1
+  standard_ids="$(config_auto_pair_ids "$cfg" standard)" || return 1
+  auto_ids="$(config_auto_pair_ids "$cfg")" || return 1
   [ "$enable" = "1" ] && grep -q '^#Z2R_AUTO_MODE=1$' "$cfg" && return 0
   [ "$enable" = "0" ] && grep -q '^#Z2R_AUTO_MODE=0$' "$cfg" && return 0
 
   if [ "$enable" = "1" ]; then
-    for id in 1 2 3 4 8 3S 9; do
-      standard_block="$(sed -n "/^#Z2R_AUTO_STANDARD_${id}_BEGIN$/,/^#Z2R_AUTO_STANDARD_${id}_END$/p" "$cfg")"
+    fallback_on=0
+    [ "$(config_mode_text fallback "$cfg")" = "включен" ] && fallback_on=1
+    sed -i "s/^#Z2R_AUTO_FALLBACK_WAS=[01]$/#Z2R_AUTO_FALLBACK_WAS=$fallback_on/" "$cfg"
+    for id in $auto_ids; do
       sed -i "/^#Z2R_AUTO_${id}_BEGIN$/,/^#Z2R_AUTO_${id}_END$/ s/^--skip[[:space:]]\+//" "$cfg"
-      if printf '%s\n' "$standard_block" | grep -q '^[[:space:]]*--skip[[:space:]].*--filter-tcp='; then
-        sed -i "/^#Z2R_AUTO_${id}_BEGIN$/,/^#Z2R_AUTO_${id}_END$/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
-      fi
+    done
+    for id in $standard_ids; do
       sed -i "/^#Z2R_AUTO_STANDARD_${id}_BEGIN$/,/^#Z2R_AUTO_STANDARD_${id}_END$/ s/^--skip[[:space:]]\+//" "$cfg"
       sed -i "/^#Z2R_AUTO_STANDARD_${id}_BEGIN$/,/^#Z2R_AUTO_STANDARD_${id}_END$/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
     done
     sed -i 's/^#Z2R_AUTO_MODE=0$/#Z2R_AUTO_MODE=1/' "$cfg"
   else
-    for id in 1 2 3 4 8 3S 9; do
-      auto_block="$(sed -n "/^#Z2R_AUTO_${id}_BEGIN$/,/^#Z2R_AUTO_${id}_END$/p" "$cfg")"
-      sed -i "/^#Z2R_AUTO_STANDARD_${id}_BEGIN$/,/^#Z2R_AUTO_STANDARD_${id}_END$/ s/^--skip[[:space:]]\+//" "$cfg"
-      if printf '%s\n' "$auto_block" | grep -q '^[[:space:]]*--skip[[:space:]].*--filter-tcp='; then
-        sed -i "/^#Z2R_AUTO_STANDARD_${id}_BEGIN$/,/^#Z2R_AUTO_STANDARD_${id}_END$/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
-      fi
+    fallback_on="$(sed -n 's/^#Z2R_AUTO_FALLBACK_WAS=\([01]\)$/\1/p' "$cfg")"
+    for id in $auto_ids; do
       sed -i "/^#Z2R_AUTO_${id}_BEGIN$/,/^#Z2R_AUTO_${id}_END$/ s/^--skip[[:space:]]\+//" "$cfg"
       sed -i "/^#Z2R_AUTO_${id}_BEGIN$/,/^#Z2R_AUTO_${id}_END$/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
+    done
+    for id in $standard_ids; do
+      sed -i "/^#Z2R_AUTO_STANDARD_${id}_BEGIN$/,/^#Z2R_AUTO_STANDARD_${id}_END$/ s/^--skip[[:space:]]\+//" "$cfg"
+      if { [ "$id" = "8" ] || [ "$id" = "9" ]; } && [ "$fallback_on" = "0" ]; then
+        sed -i "/^#Z2R_AUTO_STANDARD_${id}_BEGIN$/,/^#Z2R_AUTO_STANDARD_${id}_END$/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
+      fi
     done
     sed -i 's/^#Z2R_AUTO_MODE=1$/#Z2R_AUTO_MODE=0/' "$cfg"
   fi
@@ -589,22 +590,10 @@ toggle_auto_mode() {
   # Сначала проверяем оба конфига, чтобы не оставить их в разных режимах.
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
-    [ "$(grep -c '^#Z2R_AUTO_STANDARD_BEGIN$' "$cfg")" -eq 1 ] &&
-    [ "$(grep -c '^#Z2R_AUTO_STANDARD_END$' "$cfg")" -eq 1 ] &&
-    [ "$(grep -c '^#Z2R_AUTO_BEGIN$' "$cfg")" -eq 1 ] &&
-    [ "$(grep -c '^#Z2R_AUTO_END$' "$cfg")" -eq 1 ] || {
+    config_auto_layout_valid "$cfg" || {
       echo -e "${red}В $cfg не найдены маркеры авторежима.${plain}"
       return 1
     }
-    for id in 1 2 3 4 8 3S 9; do
-      [ "$(grep -c "^#Z2R_AUTO_STANDARD_${id}_BEGIN$" "$cfg")" -eq 1 ] &&
-      [ "$(grep -c "^#Z2R_AUTO_STANDARD_${id}_END$" "$cfg")" -eq 1 ] &&
-      [ "$(grep -c "^#Z2R_AUTO_${id}_BEGIN$" "$cfg")" -eq 1 ] &&
-      [ "$(grep -c "^#Z2R_AUTO_${id}_END$" "$cfg")" -eq 1 ] || {
-        echo -e "${red}В $cfg не найдена пара блоков авторежима $id.${plain}"
-        return 1
-      }
-    done
   done
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
@@ -746,13 +735,14 @@ ports_validate() {
 # Базовые порты (от якоря 80 и правее) берутся прямо из NFQWS2_PORTS_TCP — без констант.
 ports_set_rkn_filter() {
   local cfg="$1" user="$2"
-  local tcp_line rkn_ports
+  local tcp_line rkn_ports marker
   tcp_line="$(config_get_var "$cfg" NFQWS2_PORTS_TCP)"
   ports_split "$tcp_line" "80"
   rkn_ports="$(ports_join "$user" "$_PORTS_BASE")"
-  # Диапазон от комментария RKN до ближайшего --new; внутри него меняем
-  # единственную строку --filter-tcp=... --filter-l7=tls.
-  sed -i "/#Стратегии для RKN/,/^[[:space:]]*--new[[:space:]]*\$/ s/^--filter-tcp=.*--filter-l7=tls[[:space:]]*\$/--filter-tcp=${rkn_ports} --filter-l7=tls/" "$cfg"
+  for marker in Z2R_AUTO_STANDARD_3 Z2R_AUTO_3; do
+    sed -i "/^#${marker}_BEGIN$/,/^#${marker}_END$/ s/^--filter-tcp=.*--filter-l7=tls[[:space:]]*\$/--filter-tcp=${rkn_ports} --filter-l7=tls/" "$cfg"
+    sed -i "/^#${marker}_BEGIN$/,/^#${marker}_END$/ s/^--skip --filter-tcp=.*--filter-l7=tls[[:space:]]*\$/--skip --filter-tcp=${rkn_ports} --filter-l7=tls/" "$cfg"
+  done
 }
 
 # Добавление пользовательских портов (tcp|udp).
@@ -1258,12 +1248,9 @@ backup_smart_apply_blobs() {
 # Повторяет логическое ядро toggle_fallback_mode(), но для одного cfg.
 backup_smart_set_fallback() {
   local cfg="$1" want_on="$2"
-  local tls_begin tls_end http_begin http_end
+  local tls_begin="" tls_end="" http_begin http_end
   if grep -q '^#Z2R_AUTO_MODE=1$' "$cfg"; then
-    tls_begin="#Z2R_AUTO_8_BEGIN"
-    tls_end="#Z2R_AUTO_8_END"
-    http_begin="#Z2R_AUTO_9_BEGIN"
-    http_end="#Z2R_AUTO_9_END"
+    return 0
   else
     tls_begin="#Z2R_FALLBACK_BEGIN"
     tls_end="#Z2R_FALLBACK_END"
@@ -1271,12 +1258,12 @@ backup_smart_set_fallback() {
     http_end="#Z2R_FALLBACK_HTTP_END"
   fi
   if [ "$want_on" = "1" ]; then
-    sed -i "/$tls_begin/,/$tls_end/ s/^[[:space:]]*--skip[[:space:]]\+//" "$cfg"
+    [ -z "$tls_begin" ] || sed -i "/$tls_begin/,/$tls_end/ s/^[[:space:]]*--skip[[:space:]]\+//" "$cfg"
     sed -i "/$http_begin/,/$http_end/ s/^[[:space:]]*--skip[[:space:]]\+//" "$cfg"
   else
-    sed -i "/$tls_begin/,/$tls_end/ s/^[[:space:]]*--skip[[:space:]]\+//" "$cfg"
+    [ -z "$tls_begin" ] || sed -i "/$tls_begin/,/$tls_end/ s/^[[:space:]]*--skip[[:space:]]\+//" "$cfg"
     sed -i "/$http_begin/,/$http_end/ s/^[[:space:]]*--skip[[:space:]]\+//" "$cfg"
-    sed -i "/$tls_begin/,/$tls_end/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
+    [ -z "$tls_begin" ] || sed -i "/$tls_begin/,/$tls_end/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
     sed -i "/$http_begin/,/$http_end/ { /^--.*filter-tcp=/ s/^/--skip /; }" "$cfg"
   fi
 }
@@ -1396,7 +1383,10 @@ backup_smart_apply_flags() {
   s_old="$(config_mode_text auto_mode "$old_cfg")"
   s_new="$(config_mode_text auto_mode "$new_cfg")"
   if [ "$s_old" != "неизвестно" ] && [ "$s_old" != "$s_new" ]; then
-    if [ "$s_old" = "включен" ]; then config_set_auto_mode "$new_cfg" 1
+    if [ "$s_old" = "включен" ]; then
+      config_set_auto_mode "$new_cfg" 1
+      v_old="$(sed -n 's/^#Z2R_AUTO_FALLBACK_WAS=\([01]\)$/\1/p' "$old_cfg")"
+      [ -z "$v_old" ] || sed -i "s/^#Z2R_AUTO_FALLBACK_WAS=[01]$/#Z2R_AUTO_FALLBACK_WAS=$v_old/" "$new_cfg"
     else config_set_auto_mode "$new_cfg" 0; fi
   fi
 

@@ -17,10 +17,11 @@ strategies_submenu() {
     p9_max="$(orch_max_strategy_for_profile 9)"
     # Состояние безразборного режима (fallback): если выключен,
     # пункты 8/9 (Fallback TLS/HTTP) становятся недоступными.
-    local fb_state fb_disabled auto_state
+    local fb_state fb_disabled auto_state auto_enabled
     fb_state="$(config_mode_text fallback)"
     [ "$fb_state" = "выключен" ] && fb_disabled=1 || fb_disabled=0
     auto_state="$(config_mode_text auto_mode)"
+    [ "$auto_state" = "включен" ] && auto_enabled=1 || auto_enabled=0
     # Состояние обхода UDP на 1026-65531 (пункт 10): если выключен,
     # пункт 7 (UDP Games) становится недоступным.
     local games_state games_disabled
@@ -33,10 +34,14 @@ strategies_submenu() {
     echo -e "  Текущие стратегии [${strategies_status}]"
     echo -e 
 
-    submenu_item "	1" "Профиль 1: TCP 80/443 (YouTube) [${p1_max:-0}]" "tls" "$STRATEGY_STATE_YT_TLS"
-    submenu_item "	2" "Профиль 2: TCP 80/443 (Googlevideo) [${p2_max:-0}]" "tls" "$STRATEGY_STATE_GV_TLS"
-    submenu_item "	3" "Профиль 3: TCP 80/443 (RKN) [${p3_max:-0}]" "tls" "$STRATEGY_STATE_RKN_TLS"
-    submenu_item "	4" "Профиль 4: TCP 80/443 (Discord) [${p4_max:-0}]" "tls" "$STRATEGY_STATE_DS_TLS"
+    if [ "$auto_enabled" = "1" ]; then
+      echo -e "${Fcyan}	1-4.${plain} ${red}Ручной выбор TCP-стратегий недоступен при авторотации${plain}"
+    else
+      submenu_item "	1" "Профиль 1: TCP 80/443 (YouTube) [${p1_max:-0}]" "tls" "$STRATEGY_STATE_YT_TLS"
+      submenu_item "	2" "Профиль 2: TCP 80/443 (Googlevideo) [${p2_max:-0}]" "tls" "$STRATEGY_STATE_GV_TLS"
+      submenu_item "	3" "Профиль 3: TCP 80/443 (RKN) [${p3_max:-0}]" "tls" "$STRATEGY_STATE_RKN_TLS"
+      submenu_item "	4" "Профиль 4: TCP 80/443 (Discord) [${p4_max:-0}]" "tls" "$STRATEGY_STATE_DS_TLS"
+    fi
     submenu_item "	5" "Профиль 5: UDP 443 (YouTube QUIC) [${p5_max:-0}]" "udp" "$STRATEGY_STATE_YT_QUIC_UDP"
     submenu_item "	6" "Профиль 6: UDP Voice (Discord/STUN) [${p6_max:-0}]" "udp" "$STRATEGY_STATE_VOICE_UDP"
     if [ "$games_disabled" = "1" ]; then
@@ -44,7 +49,9 @@ strategies_submenu() {
     else
       submenu_item "	7" "Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]" "udp" "$STRATEGY_STATE_GAMES_UDP"
     fi
-    if [ "$fb_disabled" = "1" ]; then
+    if [ "$auto_enabled" = "1" ]; then
+      echo -e "${Fcyan}	8-9.${plain} ${red}Ручной выбор fallback недоступен при авторотации${plain}"
+    elif [ "$fb_disabled" = "1" ]; then
       echo -e "${Fcyan}	8.${plain} ${red}Fallback TLS (безразборный блок)${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
       echo -e "${Fcyan}	9.${plain} ${red}Fallback HTTP (безразборный блок) [${p9_max:-0}]${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
     else
@@ -56,6 +63,16 @@ strategies_submenu() {
     echo ""
 
     read -re -p "Ваш выбор: " ans
+
+    if [ "$auto_enabled" = "1" ]; then
+      case "$ans" in
+        1|2|3|4|8|9)
+          echo -e "${yellow}Ручной выбор TCP/HTTP-стратегий недоступен при авторотации.${plain}"
+          pause_enter
+          continue
+          ;;
+      esac
+    fi
 
     case "$ans" in
       "1")

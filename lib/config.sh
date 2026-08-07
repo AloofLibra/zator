@@ -58,6 +58,43 @@ config_sed_ereg() {
   fi
 }
 
+# Пары стандартного и автоматического блоков, фактически присутствующие в config.
+config_auto_pair_ids() {
+  local cfg id ids found mode auto_begin auto_end
+  cfg="$(config_get_file "$1")" || return 1
+  mode="${2:-paired}"
+
+  [ "$(grep -c '^#Z2R_AUTO_STANDARD_BEGIN$' "$cfg")" -eq 1 ] || return 1
+  [ "$(grep -c '^#Z2R_AUTO_STANDARD_END$' "$cfg")" -eq 1 ] || return 1
+  [ "$(grep -c '^#Z2R_AUTO_BEGIN$' "$cfg")" -eq 1 ] || return 1
+  [ "$(grep -c '^#Z2R_AUTO_END$' "$cfg")" -eq 1 ] || return 1
+
+  ids="$(sed -n 's/^#Z2R_AUTO_STANDARD_\([[:alnum:]]\+\)_BEGIN$/\1/p' "$cfg")"
+  for id in $ids; do
+    [ "$(grep -c "^#Z2R_AUTO_STANDARD_${id}_BEGIN$" "$cfg")" -eq 1 ] || return 1
+    [ "$(grep -c "^#Z2R_AUTO_STANDARD_${id}_END$" "$cfg")" -eq 1 ] || return 1
+    if [ "$mode" != "standard" ]; then
+      auto_begin="$(grep -c "^#Z2R_AUTO_${id}_BEGIN$" "$cfg")"
+      auto_end="$(grep -c "^#Z2R_AUTO_${id}_END$" "$cfg")"
+      [ "$auto_begin" -eq 0 ] && [ "$auto_end" -eq 0 ] && continue
+      [ "$auto_begin" -eq 1 ] && [ "$auto_end" -eq 1 ] || return 1
+    fi
+    printf '%s\n' "$id"
+    found=1
+  done
+  [ "$found" = "1" ]
+}
+
+config_auto_layout_valid() {
+  local cfg standard_ids auto_ids
+  cfg="$(config_get_file "$1")" || return 1
+  standard_ids="$(config_auto_pair_ids "$cfg" standard)" || return 1
+  auto_ids="$(config_auto_pair_ids "$cfg")" || return 1
+  [ "$(printf '%s\n' "$standard_ids" | tr '\n' ' ')" = "1 2 3 4 8 3S 9 " ] || return 1
+  [ "$(printf '%s\n' "$auto_ids" | tr '\n' ' ')" = "3 4 9 " ] || return 1
+  [ "$(grep -c '^#Z2R_AUTO_FALLBACK_WAS=[01]$' "$cfg")" -eq 1 ]
+}
+
 # Определяет Linux-имя WAN интерфейса по default route.
 # На Keenetic это может быть ppp0, eth*, nwg*, wwan0 и т.п.
 config_keenetic_detect_default_iface() {
@@ -186,7 +223,8 @@ config_mode_text() {
     fallback)
       local fallback_blocks
       if grep -q '^#Z2R_AUTO_MODE=1$' "$cfg"; then
-        fallback_blocks="$(sed -n '/#Z2R_AUTO_8_BEGIN/,/#Z2R_AUTO_8_END/p' "$cfg"; sed -n '/#Z2R_AUTO_9_BEGIN/,/#Z2R_AUTO_9_END/p' "$cfg")"
+        echo "недоступен"
+        return
       else
         fallback_blocks="$(sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg")"
       fi
