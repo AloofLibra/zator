@@ -1,11 +1,11 @@
 -- Combined failure detector - extends standard detector with default page detection
 -- Uses standard_failure_detector for RST/retransmission/redirect detection
--- Adds: HTTP status code validation (only 2xx is success)
+-- Adds: HTTP status validation (any syntactically valid status proves transport success)
 -- Adds: default page detection for HTTP (Apache/Nginx default pages)
 -- Adds: DPI stub detection (fake 404 pages with wrong server names)
 -- Adds: Block page detection in first 16KB
 
--- Lua 5.1 compatibility (winws2 uses Lua 5.1 without bit32 module)
+-- Lua 5.1 compatibility
 if not bit32 then
     bit32 = {}
     function bit32.band(a, b)
@@ -170,7 +170,79 @@ local function check_block_page(payload)
     return false
 end
 
--- Check HTTP status code - only 2xx is success
+-- Check HTTP/2 frame-level failures (GOAWAY / RST_STREAM with error)
+-- We can't cheaply decode HPACK-compressed HEADERS frames in Lua to read a
+-- ':status' pseudo-header, so this does NOT detect "HTTP/2 200 vs 404" the
+-- way check_http_status() does for HTTP/1.x. But h2 responses never start
+-- with the literal text "HTTP/1.1", so without this, an h2 (ALPN h2 over
+-- TLS - the default for most modern HTTPS sites) connection got ZERO
+-- benefit from the HTTP status/content checks below. Frame type + error
+-- code needs no HPACK and still catches the two most common explicit h2
+-- failure signals: server tearing down the connection (GOAWAY) or a
+-- specific stream (RST_STREAM) with a non-zero error code.
+-- HTTP/2 frame header (RFC 7540 4.1): 3 bytes length, 1 byte type,
+-- 1 byte flags, 4 bytes stream id (top bit reserved) = 9 bytes total.
+local H2_FRAME_HEADER_LEN = 9
+local H2_FRAME_TYPE_RST_STREAM = 0x3
+local H2_FRAME_TYPE_GOAWAY = 0x7
+
+-- Read a 4-byte big-endian error code starting at absolute byte position
+-- `pos` in payload. Returns nil (not 0) if any byte is out of bounds, so a
+-- truncated buffer never gets silently coerced into error_code == 0 and
+-- mistaken for "no error".
+local function read_u32be(payload, pos)
+    local b1, b2, b3, b4 = string.byte(payload, pos), string.byte(payload, pos + 1),
+                           string.byte(payload, pos + 2), string.byte(payload, pos + 3)
+    if not (b1 and b2 and b3 and b4) then return nil end
+    return (b1 * 16777216) + (b2 * 65536) + (b3 * 256) + b4
+end
+
+local function check_http2_frame_failure(payload)
+    if not payload or #payload < H2_FRAME_HEADER_LEN then return false, nil end
+
+    local len = #payload
+    local offset = 1
+
+    for _ = 1, 8 do
+        if offset + H2_FRAME_HEADER_LEN - 1 > len then break end
+
+        local l1, l2, l3 = string.byte(payload, offset), string.byte(payload, offset + 1), string.byte(payload, offset + 2)
+        local frame_len = l1 * 65536 + l2 * 256 + l3
+        local frame_type = string.byte(payload, offset + 3)
+        local frame_payload_start = offset + H2_FRAME_HEADER_LEN
+
+        -- GOAWAY payload: 4 bytes last-stream-id, then 4 bytes error code.
+        -- Error code starts 4 bytes into the frame payload, so it needs
+        -- bytes [frame_payload_start+4 .. frame_payload_start+7] present.
+        -- frame_len >= 8 guards against a malformed/truncated GOAWAY that
+        -- declares a shorter payload than 8 bytes - without this check, a
+        -- short frame_len followed by another frame right after it would
+        -- have that next frame's header bytes misread as this GOAWAY's
+        -- error code (frame_type==0x3 check below is correctly guarded by
+        -- frame_len==4 already; this makes the GOAWAY check consistent).
+        if frame_type == H2_FRAME_TYPE_GOAWAY and frame_len >= 8 and frame_payload_start + 7 <= len then
+            local error_code = read_u32be(payload, frame_payload_start + 4)
+            if error_code and error_code ~= 0 then
+                return true, "GOAWAY", error_code
+            end
+        end
+
+        -- RST_STREAM payload: exactly 4 bytes, the error code.
+        if frame_type == H2_FRAME_TYPE_RST_STREAM and frame_len == 4 and frame_payload_start + 3 <= len then
+            local error_code = read_u32be(payload, frame_payload_start)
+            if error_code and error_code ~= 0 then
+                return true, "RST_STREAM", error_code
+            end
+        end
+
+        offset = frame_payload_start + frame_len
+    end
+
+    return false, nil
+end
+
+-- A syntactically valid HTTP response proves TCP/TLS transport. Status codes
+-- are application semantics, not desync failures (including 3xx/4xx/5xx).
 local function check_http_status(payload)
     if not payload or #payload < 12 then return false, nil end
 
@@ -191,12 +263,8 @@ local function check_http_status(payload)
         return false, nil
     end
 
-    -- Only 2xx is success
-    if status_code >= 200 and status_code < 300 then
-        return false, status_code  -- Not failure, success
-    else
-        return true, status_code  -- Failure: not 2xx
-    end
+    if status_code < 100 or status_code > 599 then return false, nil end
+    return false, status_code
 end
 
 -- ==================== UDP Protocol Validation ====================
@@ -335,62 +403,143 @@ end
 
 -- Check TLS Alert - indicates TLS handshake failure
 -- TLS Alert record: ContentType=0x15, Version, Length, AlertLevel, AlertDescription
+--
+-- A single incoming packet can contain more than one TLS record (e.g. a
+-- trailing ChangeCipherSpec followed by an Alert, or several coalesced
+-- records after Nagle/segmentation). Checking only byte 1 misses an Alert
+-- that isn't the very first record in the buffer, so we walk the record
+-- chain using the standard 5-byte TLS record header (type, ver_major,
+-- ver_minor, len_hi, len_lo) and inspect every record we can fully see.
 local function check_tls_alert(payload)
     if not payload or #payload < 7 then return false, nil end
 
-    local content_type = string.byte(payload, 1)
+    local len = #payload
+    local offset = 1
 
-    -- 0x15 = TLS Alert record
-    if content_type ~= 0x15 then
-        return false, nil
-    end
+    -- Cap iterations defensively; a real TLS buffer won't have more than a
+    -- handful of coalesced records.
+    for _ = 1, 16 do
+        if offset + 4 > len then break end
 
-    -- Verify TLS version (bytes 2-3)
-    local version_major = string.byte(payload, 2)
-    local version_minor = string.byte(payload, 3)
-    if version_major ~= 0x03 or version_minor < 0x00 or version_minor > 0x04 then
-        return false, nil
-    end
+        local content_type = string.byte(payload, offset)
+        local version_major = string.byte(payload, offset + 1)
+        local version_minor = string.byte(payload, offset + 2)
+        local len_hi = string.byte(payload, offset + 3)
+        local len_lo = string.byte(payload, offset + 4)
 
-    -- Get alert level and description if available
-    if #payload >= 7 then
-        local alert_level = string.byte(payload, 6)  -- 1=warning, 2=fatal
-        local alert_desc = string.byte(payload, 7)
-        return true, alert_level, alert_desc
-    end
-
-    return true, nil, nil
-end
-
--- Combined failure detector
--- Calls standard_failure_detector first, then adds HTTP/TLS status and content checks
--- Also detects connection stalls (no response after N outgoing packets)
-function combined_failure_detector(desync, crec)
-    if crec.nocheck then return false end
-
-    -- First, call standard failure detector for RST/retrans/redirect
-    if standard_failure_detector(desync, crec) then
-        return true
-    end
-
-    -- ==================== Connection Stall Detection ====================
-    -- For TCP: if we sent multiple packets but got no response, it's likely blocked
-    -- This catches "silent drop" DPI that doesn't send RST
-    if desync.dis.tcp and desync.outgoing and desync.track then
-        -- Track outgoing packets with payload (actual data, not just ACKs)
-        if desync.dis.payload and #desync.dis.payload > 0 then
-            crec.tcp_out_with_payload = (crec.tcp_out_with_payload or 0) + 1
+        -- Sanity check: must look like a real TLS record header, otherwise
+        -- stop walking (we've likely run into non-TLS bytes / app data we
+        -- can't parse further, e.g. already-encrypted application data).
+        if version_major ~= 0x03 or version_minor < 0x00 or version_minor > 0x04 then
+            break
         end
 
-        -- Stall threshold: 3 outgoing packets with payload, 0 incoming data
-        local stall_out_threshold = tonumber(desync.arg.stall_out) or 3
-        local tcp_in_count = crec.tcp_in_count or 0
+        local record_len = len_hi * 256 + len_lo
 
-        if crec.tcp_out_with_payload and crec.tcp_out_with_payload >= stall_out_threshold and tcp_in_count == 0 then
-            if not crec.stall_detected then
-                crec.stall_detected = true
-                DLOG("combined_failure_detector: CONNECTION STALL out=" .. crec.tcp_out_with_payload .. " in=" .. tcp_in_count .. " (failure)")
-                return true
+        if content_type == 0x15 then
+            -- Alert record found. Grab level/description if this record's
+            -- body is actually present in our buffer.
+            if offset + 6 <= len then
+                local alert_level = string.byte(payload, offset + 5)
+                local alert_desc = string.byte(payload, offset + 6)
+                return true, alert_level, alert_desc
+            end
+            return true, nil, nil
+        end
+
+        -- Not an alert - only known content types are worth walking past
+        -- (change_cipher_spec=20, alert=21, handshake=22, application_data=23).
+        if content_type < 20 or content_type > 23 then
+            break
+        end
+
+        offset = offset + 5 + record_len
+    end
+
+    return false, nil
+end
+
+-- ==================== Shared stall-baseline tracking ====================
+-- Both this file's connection-stall check and silent-drop-detector.lua's
+-- silent_drop_detector need the same "measure since last incoming progress"
+-- algorithm. It lives here (silent-drop-detector.lua already documents that
+-- it loads after combined-detector.lua) so both call one implementation
+-- instead of maintaining two hand-copied versions that can quietly drift
+-- apart. crec fields are still stored under the same names either caller
+-- used before this refactor - only the *implementation* is now shared.
+--
+-- base_in_field/base_out_field: crec field names for this tracker's baseline
+-- out_count/in_count: current absolute counters (never reset, only grow)
+-- Returns out_since: outgoing-count delta relative to the last time in_count
+-- grew (i.e. "how much have we sent since we last heard anything back").
+--
+-- NOTE: this used to also return in_since = in_count - baseline_in, intended
+-- to let callers tolerate "a little" incoming progress (in_since <= some
+-- threshold) rather than requiring exactly zero. That value is mathematically
+-- always 0: the baseline is snapped to exactly match in_count the instant
+-- in_count grows (see the update below), so by construction in_since is 0
+-- immediately after every update, on every call, regardless of in_count's
+-- history. Both call sites' "in_since <= tcp_in" / "in_since == 0" checks
+-- were therefore tautologies - always true - and the tcp_in/threshold
+-- parameter they appeared to gate on had no actual effect. Removed rather
+-- than kept as dead code that looks like a real tolerance check.
+function stall_baseline_update(crec, base_in_field, base_out_field, out_count, in_count)
+    if not crec[base_in_field] or in_count > crec[base_in_field] then
+        crec[base_in_field] = in_count
+        crec[base_out_field] = out_count
+    end
+    return out_count - (crec[base_out_field] or 0)
+end
+
+-- Rate-limits re-firing of a stall/silent-drop detector: fires at most once
+-- per `threshold` additional outgoing packets, so a persistent stall doesn't
+-- report FAILURE on every single packet once past the threshold.
+-- last_fire_field: crec field name tracking the out_count at last fire.
+function stall_baseline_should_refire(crec, last_fire_field, out_count, threshold)
+    local last = crec[last_fire_field] or 0
+    if out_count >= last + threshold then
+        crec[last_fire_field] = out_count
+        return true
+    end
+    return false
+end
+
+-- ==================== Connection Stall Detection ====================
+-- For TCP: if we sent multiple packets but got no response since the last
+-- bit of incoming progress, it's likely blocked. Catches "silent drop" DPI
+-- that doesn't send RST.
+--
+-- NOTE: this used to require tcp_in_count == 0, which meant the very first
+-- incoming data packet permanently disarmed this check for the rest of the
+-- connection - a stall that begins later (server replies a little, then DPI
+-- cuts the connection) was never caught. We now track a baseline snapshot
+-- taken at the last point incoming data increased, so a stall is measured
+-- relative to "since we last heard back", and can re-trigger if the
+-- connection stalls again after resuming.
+local function check_connection_stall(desync, crec)
+    if desync.dis.tcp and desync.outgoing and desync.track then
+        -- TCP soft success proves that the peer made substantial progress.
+        -- Do not turn normal post-response traffic into a synthetic timeout;
+        -- hard failures are still checked by the surrounding detector.
+        if not crec.provisional_success then
+            -- Track outgoing packets with payload (actual data, not just ACKs)
+            if desync.dis.payload and #desync.dis.payload > 0 then
+                crec.tcp_out_with_payload = (crec.tcp_out_with_payload or 0) + 1
+            end
+
+            local stall_out_threshold = tonumber(desync.arg.stall_out) or 3
+            local tcp_in_count = crec.tcp_in_count or 0
+            local out_with_payload = crec.tcp_out_with_payload or 0
+
+            local out_since = stall_baseline_update(
+                crec, "stall_base_in", "stall_base_out", out_with_payload, tcp_in_count)
+
+            if out_since >= stall_out_threshold then
+                if stall_baseline_should_refire(crec, "last_stall_out", out_with_payload, stall_out_threshold) then
+                    DLOG("combined_failure_detector: CONNECTION STALL out=" .. out_with_payload ..
+                         " in=" .. tcp_in_count .. " (since_progress out=" .. out_since .. ", failure)")
+                    return true
+                end
             end
         end
     end
@@ -402,9 +551,13 @@ function combined_failure_detector(desync, crec)
         end
     end
 
-    -- ==================== Extended RST Detection ====================
-    -- Detect RST even beyond standard inseq range (for TLS handshake failures)
-    -- DPI often sends RST after Client Hello, which may have seq > inseq
+    return false
+end
+
+-- ==================== Extended RST Detection ====================
+-- Detect RST even beyond standard inseq range (for TLS handshake failures)
+-- DPI often sends RST after Client Hello, which may have seq > inseq
+local function check_extended_rst(desync, crec)
     if desync.dis.tcp and not desync.outgoing and desync.track then
         if bitand(desync.dis.tcp.th_flags, TH_RST) ~= 0 then
             local seq = pos_get(desync, 's')
@@ -417,25 +570,33 @@ function combined_failure_detector(desync, crec)
             end
         end
     end
+    return false
+end
 
-    -- Additional checks for responses only (incoming packets)
-    -- We only check incoming responses, NOT outgoing requests
-    if not desync.dis.tcp or not desync.track then
-        return false
+-- A client RST after receiving TCP data can be the browser abort path for a
+-- broken TLS handshake. This deliberately ignores FIN and any already
+-- validated connection, so normal successful connection close stays benign.
+local function check_early_client_tls_abort(desync, crec)
+    if not desync.dis.tcp or not desync.outgoing or not desync.track then return false end
+    if crec.validated_success or crec.client_tls_abort_recorded then return false end
+    if (crec.tcp_in_count or 0) < 1 then return false end
+
+    if bitand(desync.dis.tcp.th_flags or 0, TH_RST) ~= 0 then
+        crec.client_tls_abort_recorded = true
+        DLOG("combined_failure_detector: early client RST after TCP progress (failure)")
+        return true
     end
+    return false
+end
 
-    -- Only check incoming (response) packets
-    if desync.outgoing then
-        return false
-    end
-
-    local payload = desync.dis.payload
-    if not payload or #payload < 7 then
-        return false
-    end
-
+-- ==================== TCP response content checks ====================
+-- Runs once per incoming payload: TLS Alert, HTTP/2 frame errors, HTTP/1.x
+-- status code, then (only once enough bytes are buffered) the content-marker
+-- checks (DPI stub / block page / default page). Each sub-check is guarded
+-- by its own "checked once" crec flag so repeat calls on the same connection
+-- don't re-log or re-fire after the first verdict.
+local function check_tcp_response_content_failure(payload, crec)
     -- Check TLS Alert - indicates TLS handshake failure (DPI interference)
-    -- Only check once per connection
     if not crec.tls_alert_checked then
         local is_alert, alert_level, alert_desc = check_tls_alert(payload)
         if is_alert then
@@ -451,17 +612,32 @@ function combined_failure_detector(desync, crec)
         return false
     end
 
-    -- Check HTTP status code - only 2xx is success
-    -- Only check once per connection
+    -- Check HTTP/2 frame-level failures (GOAWAY / RST_STREAM with error code)
+    -- HTTP/2 responses never match the HTTP/1.x "HTTP/1.1 ..." text check
+    -- below, so without this, h2 connections (most modern HTTPS traffic)
+    -- got zero benefit from any of the status/content checks in this
+    -- function. This doesn't replace the HTTP/1.x check - it runs in
+    -- addition, since a given payload will only ever match one or the other.
+    if not crec.http2_checked then
+        local is_h2_failure, h2_kind, h2_err = check_http2_frame_failure(payload)
+        if is_h2_failure then
+            crec.http2_checked = true
+            DLOG("combined_failure_detector: HTTP/2 " .. h2_kind .. " error=" .. tostring(h2_err) .. " (failure)")
+            return true
+        end
+    end
+
+    -- Any valid HTTP status is transport success; block-page checks below
+    -- still take priority on the same payload.
     if not crec.http_status_checked then
         local is_failure, status_code = check_http_status(payload)
         if status_code then
             crec.http_status_checked = true
             if is_failure then
-                DLOG("combined_failure_detector: HTTP STATUS " .. status_code .. " (not 2xx = failure)")
+                DLOG("combined_failure_detector: HTTP STATUS " .. status_code .. " (failure)")
                 return true
             else
-                DLOG("combined_failure_detector: HTTP STATUS " .. status_code .. " (2xx = ok)")
+                DLOG("combined_failure_detector: HTTP STATUS " .. status_code .. " (transport ok)")
             end
         end
     end
@@ -506,6 +682,210 @@ function combined_failure_detector(desync, crec)
     return false
 end
 
+-- Combined failure detector
+-- Calls standard_failure_detector first, then adds HTTP/TLS status and content checks
+-- Also detects connection stalls (no response after N outgoing packets)
+function combined_failure_detector(desync, crec)
+    if crec.nocheck then return false end
+
+    -- First, call standard failure detector for RST/retrans/redirect
+    if standard_failure_detector(desync, crec) then
+        return true
+    end
+
+    if check_early_client_tls_abort(desync, crec) then
+        return true
+    end
+
+    if check_connection_stall(desync, crec) then
+        return true
+    end
+
+    if check_extended_rst(desync, crec) then
+        return true
+    end
+
+    -- Additional checks for responses only (incoming packets)
+    -- We only check incoming responses, NOT outgoing requests
+    if not desync.dis.tcp or not desync.track then
+        return false
+    end
+
+    -- Only check incoming (response) packets
+    if desync.outgoing then
+        return false
+    end
+
+    local payload = desync.dis.payload
+    if not payload or #payload < 7 then
+        return false
+    end
+
+    return check_tcp_response_content_failure(payload, crec)
+end
+
+-- ==================== TCP success/failure content checks ====================
+-- Returns nil ("no verdict yet - keep checking") or a decided true/false.
+-- Order matters: TLS Alert / HTTP2 / HTTP status / content markers are
+-- checked before the "soft success" byte/packet thresholds, so an explicit
+-- error signal always wins over merely "we got some bytes back".
+local function check_tcp_success(desync, crec)
+    if desync.outgoing or not desync.dis.tcp or not desync.track then
+        return nil
+    end
+
+    local payload = desync.dis.payload
+
+    -- Check TLS Alert FIRST - if we get TLS Alert, this is NOT a success
+    if payload and #payload >= 7 then
+        local is_alert, alert_level, alert_desc = check_tls_alert(payload)
+        if is_alert then
+            crec.tls_alert_detected = true
+            local level_str = alert_level == 2 and "FATAL" or (alert_level == 1 and "WARNING" or "UNKNOWN")
+            DLOG("combined_success_detector: TLS ALERT " .. level_str .. " desc=" .. tostring(alert_desc) .. " - NOT SUCCESS")
+            return false
+        end
+    end
+
+    -- Check HTTP/2 frame-level failures - if GOAWAY/RST_STREAM with
+    -- error, this is NOT a success (mirrors the HTTP/1.x check below,
+    -- but for h2 responses which never match "HTTP/1.1 ..." text)
+    if payload and #payload >= 9 then
+        local is_h2_failure, h2_kind, h2_err = check_http2_frame_failure(payload)
+        if is_h2_failure then
+            crec.http2_failure_detected = true
+            DLOG("combined_success_detector: HTTP/2 " .. h2_kind .. " error=" .. tostring(h2_err) .. " - NOT SUCCESS")
+            return false
+        end
+    end
+
+    -- Check for DPI stub markers - if found, NOT a success
+    if payload and #payload >= 50 then
+        local is_stub, marker = check_dpi_stub(payload)
+        if is_stub then
+            crec.dpi_stub_detected = true
+            DLOG("combined_success_detector: DPI STUB (" .. marker .. ") - NOT SUCCESS")
+            return false
+        end
+
+        local is_block, block_marker = check_block_page(payload)
+        if is_block then
+            crec.block_page_detected = true
+            DLOG("combined_success_detector: BLOCK PAGE (" .. block_marker .. ") - NOT SUCCESS")
+            return false
+        end
+    end
+
+    -- A valid HTTP response is a validated transport success, after the
+    -- content checks above have ruled out known DPI/block responses.
+    if payload and #payload >= 12 then
+        local _, status_code = check_http_status(payload)
+        if status_code then
+            crec.http_status_validated = true
+            crec.validated_success = true
+            DLOG("combined_success_detector: HTTP STATUS " .. status_code .. " - SUCCESS")
+            return true
+        end
+    end
+
+    -- Soft success: prefer bytes threshold, fallback to packet count
+    if payload and #payload > 0 then
+        local in_threshold = tonumber(desync.arg.soft_success_in) or 3
+        local bytes_threshold = tonumber(desync.arg.soft_success_bytes)
+        if bytes_threshold == nil then bytes_threshold = 65536 end
+
+        crec.tcp_soft_in_count = (crec.tcp_soft_in_count or 0) + 1
+        crec.tcp_soft_in_bytes = (crec.tcp_soft_in_bytes or 0) + #payload
+
+        if bytes_threshold > 0 and crec.tcp_soft_in_bytes >= bytes_threshold then
+            DLOG("combined_success_detector: TCP SOFT SUCCESS bytes=" .. crec.tcp_soft_in_bytes)
+            -- TCP progress alone is not terminal: keep failure detectors active
+            -- for a later stall, RST, or block response.
+            if not crec.provisional_success then
+                crec.provisional_success = true
+                return true
+            end
+            return nil
+        end
+
+        if in_threshold > 0 and crec.tcp_soft_in_count >= in_threshold then
+            DLOG("combined_success_detector: TCP SOFT SUCCESS in=" .. crec.tcp_soft_in_count)
+            if not crec.provisional_success then
+                crec.provisional_success = true
+                return true
+            end
+            return nil
+        end
+    end
+
+    return nil
+end
+
+-- ==================== UDP success/failure content checks ====================
+-- Returns nil ("no verdict yet") or a decided true/false, same convention
+-- as check_tcp_success above.
+local function check_udp_success(desync, crec)
+    if desync.outgoing or not desync.dis.udp then
+        return nil
+    end
+
+    local payload = desync.dis.payload
+
+    -- Check for UDP anomalies first
+    if not crec.udp_anomaly_checked then
+        local is_anomaly, anomaly_type = check_udp_anomaly(payload)
+        if is_anomaly then
+            crec.udp_anomaly_checked = true
+            DLOG("combined_success_detector: UDP ANOMALY (" .. tostring(anomaly_type) .. ") - NOT SUCCESS")
+            return false
+        end
+    end
+
+    -- Try to validate protocol-specific response
+    if payload and #payload >= 8 and not crec.udp_protocol_validated then
+        -- Check STUN response
+        local is_stun, stun_type = check_stun_response(payload)
+        if is_stun then
+            crec.udp_protocol_validated = true
+            crec.validated_success = true
+            DLOG("combined_success_detector: STUN VALID (" .. tostring(stun_type) .. ") - SUCCESS")
+            crec.nocheck = true
+            return true
+        elseif stun_type == "STUN_ERROR" then
+            crec.udp_protocol_validated = true
+            DLOG("combined_success_detector: STUN ERROR - NOT SUCCESS")
+            return false
+        end
+
+        -- Check QUIC response
+        local is_quic, quic_type = check_quic_response(payload)
+        if is_quic then
+            crec.udp_protocol_validated = true
+            crec.validated_success = true
+            DLOG("combined_success_detector: QUIC VALID (" .. tostring(quic_type) .. ") - SUCCESS")
+            crec.nocheck = true
+            return true
+        elseif quic_type == "QUIC_VERSION_NEG" then
+            -- Version negotiation is not a success
+            crec.udp_protocol_validated = true
+            DLOG("combined_success_detector: QUIC VERSION_NEG - NOT SUCCESS")
+            return false
+        end
+
+        -- Check Discord response
+        local is_discord, discord_type = check_discord_response(payload)
+        if is_discord then
+            crec.udp_protocol_validated = true
+            crec.validated_success = true
+            DLOG("combined_success_detector: DISCORD VALID (" .. tostring(discord_type) .. ") - SUCCESS")
+            crec.nocheck = true
+            return true
+        end
+    end
+
+    return nil
+end
+
 -- Combined success detector
 -- FIRST checks for failures (TLS Alert, HTTP errors, block pages)
 -- For UDP: validates protocol-specific responses (STUN, QUIC, Discord)
@@ -514,128 +894,19 @@ end
 function combined_success_detector(desync, crec)
     if crec.nocheck then return false end
 
-    -- ==================== TCP Checks ====================
-    if not desync.outgoing and desync.dis.tcp and desync.track then
-        local payload = desync.dis.payload
+    local tcp_verdict = check_tcp_success(desync, crec)
+    if tcp_verdict ~= nil then return tcp_verdict end
 
-        -- Check TLS Alert FIRST - if we get TLS Alert, this is NOT a success
-        if payload and #payload >= 7 then
-            local is_alert, alert_level, alert_desc = check_tls_alert(payload)
-            if is_alert then
-                -- Mark as failure, not success
-                crec.tls_alert_detected = true
-                local level_str = alert_level == 2 and "FATAL" or (alert_level == 1 and "WARNING" or "UNKNOWN")
-                DLOG("combined_success_detector: TLS ALERT " .. level_str .. " desc=" .. tostring(alert_desc) .. " - NOT SUCCESS")
-                return false  -- Do not mark as success
-            end
-        end
+    local udp_verdict = check_udp_success(desync, crec)
+    if udp_verdict ~= nil then return udp_verdict end
 
-        -- Check HTTP status - if non-2xx, this is NOT a success
-        if payload and #payload >= 12 then
-            local is_failure, status_code = check_http_status(payload)
-            if status_code and is_failure then
-                crec.http_failure_detected = true
-                DLOG("combined_success_detector: HTTP STATUS " .. status_code .. " - NOT SUCCESS")
-                return false
-            end
-        end
-
-        -- Check for DPI stub markers - if found, NOT a success
-        if payload and #payload >= 50 then
-            local is_stub, marker = check_dpi_stub(payload)
-            if is_stub then
-                crec.dpi_stub_detected = true
-                DLOG("combined_success_detector: DPI STUB (" .. marker .. ") - NOT SUCCESS")
-                return false
-            end
-
-            local is_block, marker = check_block_page(payload)
-            if is_block then
-                crec.block_page_detected = true
-                DLOG("combined_success_detector: BLOCK PAGE (" .. marker .. ") - NOT SUCCESS")
-                return false
-            end
-        end
-
-        -- Soft success: prefer bytes threshold, fallback to packet count
-        if payload and #payload > 0 then
-            local in_threshold = tonumber(desync.arg.soft_success_in) or 3
-            local bytes_threshold = tonumber(desync.arg.soft_success_bytes)
-            if bytes_threshold == nil then bytes_threshold = 65536 end
-
-            crec.tcp_soft_in_count = (crec.tcp_soft_in_count or 0) + 1
-            crec.tcp_soft_in_bytes = (crec.tcp_soft_in_bytes or 0) + #payload
-
-            if bytes_threshold > 0 and crec.tcp_soft_in_bytes >= bytes_threshold then
-                DLOG("combined_success_detector: TCP SOFT SUCCESS bytes=" .. crec.tcp_soft_in_bytes)
-                crec.nocheck = true
-                return true
-            end
-
-            if in_threshold > 0 and crec.tcp_soft_in_count >= in_threshold then
-                DLOG("combined_success_detector: TCP SOFT SUCCESS in=" .. crec.tcp_soft_in_count)
-                crec.nocheck = true
-                return true
-            end
-        end
+    -- No failure indicators found - delegate to standard success detector.
+    -- This can promote an earlier soft TCP result without adding another test.
+    local is_success = standard_success_detector(desync, crec)
+    if is_success then
+        crec.validated_success = true
     end
-
-    -- ==================== UDP Checks ====================
-    if not desync.outgoing and desync.dis.udp then
-        local payload = desync.dis.payload
-
-        -- Check for UDP anomalies first
-        if not crec.udp_anomaly_checked then
-            local is_anomaly, anomaly_type = check_udp_anomaly(payload)
-            if is_anomaly then
-                crec.udp_anomaly_checked = true
-                DLOG("combined_success_detector: UDP ANOMALY (" .. tostring(anomaly_type) .. ") - NOT SUCCESS")
-                return false
-            end
-        end
-
-        -- Try to validate protocol-specific response
-        if payload and #payload >= 8 and not crec.udp_protocol_validated then
-            -- Check STUN response
-            local is_stun, stun_type = check_stun_response(payload)
-            if is_stun then
-                crec.udp_protocol_validated = true
-                DLOG("combined_success_detector: STUN VALID (" .. tostring(stun_type) .. ") - SUCCESS")
-                crec.nocheck = true
-                return true  -- Immediate success
-            elseif stun_type == "STUN_ERROR" then
-                crec.udp_protocol_validated = true
-                DLOG("combined_success_detector: STUN ERROR - NOT SUCCESS")
-                return false
-            end
-
-            -- Check QUIC response
-            local is_quic, quic_type = check_quic_response(payload)
-            if is_quic then
-                crec.udp_protocol_validated = true
-                DLOG("combined_success_detector: QUIC VALID (" .. tostring(quic_type) .. ") - SUCCESS")
-                crec.nocheck = true
-                return true  -- Immediate success
-            elseif quic_type == "QUIC_VERSION_NEG" then
-                -- Version negotiation is not a success
-                crec.udp_protocol_validated = true
-                DLOG("combined_success_detector: QUIC VERSION_NEG - NOT SUCCESS")
-                return false
-            end
-
-            -- Check Discord response
-            local is_discord, discord_type = check_discord_response(payload)
-            if is_discord then
-                crec.udp_protocol_validated = true
-                DLOG("combined_success_detector: DISCORD VALID (" .. tostring(discord_type) .. ") - SUCCESS")
-                crec.nocheck = true
-                return true  -- Immediate success
-            end
-        end
-    end
-
-    -- No failure indicators found - delegate to standard success detector
-    return standard_success_detector(desync, crec)
+    return is_success
 end
 
 -- ==================== UDP-Specific Detectors ====================
@@ -836,20 +1107,24 @@ function udp_aggressive_failure_detector(desync, crec)
         return true
     end
 
-    -- Only check on outgoing packets (when we're sending)
-    if not desync.outgoing or not desync.dis.udp then
+    if not desync.dis.udp then
+        return false
+    end
+
+    -- Track incoming packets independently of whatever success detector
+    -- this failure detector happens to be paired with (it used to rely on
+    -- udp_protocol_success_detector incrementing the same crec field as a
+    -- side effect - if configured with a different success_detector, that
+    -- never happened and in_count below was always 0, misclassifying every
+    -- connection with real incoming traffic as a failure).
+    if not desync.outgoing then
+        crec.udp_in_count = (crec.udp_in_count or 0) + 1
         return false
     end
 
     -- Get packet counts
     local out_count = pos_get(desync, 'n') or 0  -- outgoing packet number
     local in_count = crec.udp_in_count or 0
-
-    -- Track incoming packets
-    if not desync.outgoing then
-        crec.udp_in_count = (crec.udp_in_count or 0) + 1
-        return false
-    end
 
     -- Aggressive threshold: 2 outgoing with 0 incoming = failure
     -- This is much faster than standard udp_out=5
@@ -895,6 +1170,7 @@ function udp_protocol_success_detector(desync, crec)
         local is_stun, stun_type = check_stun_response(payload)
         if is_stun then
             DLOG("udp_protocol_success_detector: STUN (" .. tostring(stun_type) .. ") - SUCCESS")
+            crec.validated_success = true
             crec.nocheck = true
             return true
         elseif stun_type == "STUN_ERROR" then
@@ -906,6 +1182,7 @@ function udp_protocol_success_detector(desync, crec)
         local is_quic, quic_type = check_quic_response(payload)
         if is_quic then
             DLOG("udp_protocol_success_detector: QUIC (" .. tostring(quic_type) .. ") - SUCCESS")
+            crec.validated_success = true
             crec.nocheck = true
             return true
         elseif quic_type == "QUIC_VERSION_NEG" then
@@ -917,6 +1194,7 @@ function udp_protocol_success_detector(desync, crec)
         local is_discord, discord_type = check_discord_response(payload)
         if is_discord then
             DLOG("udp_protocol_success_detector: DISCORD (" .. tostring(discord_type) .. ") - SUCCESS")
+            crec.validated_success = true
             crec.nocheck = true
             return true
         end
@@ -926,6 +1204,7 @@ function udp_protocol_success_detector(desync, crec)
     local in_threshold = tonumber(desync.arg.udp_in) or 1
     if crec.udp_in_count >= in_threshold then
         DLOG("udp_protocol_success_detector: GENERIC UDP in=" .. crec.udp_in_count .. " - SUCCESS")
+        crec.validated_success = true
         crec.nocheck = true
         return true
     end
@@ -933,7 +1212,7 @@ function udp_protocol_success_detector(desync, crec)
     return false
 end
 
--- ==================== Quality-Based Circular Strategy Selection ====================
+-- ==================== Quality-Based Circular Orchestrator ====================
 -- Uses strategy-lock-manager.lua for quality tracking and locking
 -- slm_* functions handle: normalize, record, get_best, should_lock, get_locked, reset, get_stats
 -- Alternative to standard circular that tracks success per strategy
@@ -961,6 +1240,189 @@ end
 --    with lock_rate success rate, LOCK on that strategy (skip strategy 1/pass)
 -- 5. Locked strategy is always used until reset
 
+-- Counts the distinct strategy= tags declared across desync.plan and caches
+-- the result on hrec (computed once per host, not per packet). Also
+-- validates that strategy numbers start at 1 and have no gaps.
+--
+-- Previously this used `n ~= #uniq` to detect gaps, where uniq is a table
+-- keyed by strategy number (e.g. uniq[1]=true, uniq[2]=true, uniq[4]=true
+-- if strategy 3 is missing). Lua's # operator on a table with non-sequential
+-- integer keys is explicitly unspecified by the reference manual - it can
+-- return any "border" and is free to differ across Lua versions/table
+-- history even for the same logical contents. An explicit loop that checks
+-- every index from 1 to n is the only safe way to detect a gap.
+local function count_strategies(hrec, plan)
+    if hrec.ctstrategy then return end
+
+    local uniq = {}
+    local n = 0
+    for i, instance in pairs(plan) do
+        if instance.arg.strategy then
+            local strat_n = tonumber(instance.arg.strategy)
+            if not strat_n or strat_n < 1 then
+                error("circular_quality: strategy number '" .. tostring(instance.arg.strategy) .. "' is invalid")
+            end
+            uniq[strat_n] = true
+        end
+    end
+    for i, v in pairs(uniq) do
+        n = n + 1
+    end
+    for i = 1, n do
+        if not uniq[i] then
+            error("circular_quality: strategies numbers must start from 1 and increment. gaps are not allowed.")
+        end
+    end
+    hrec.ctstrategy = n
+end
+
+-- Logs a strategy switch to a small rotating RAM-disk file (last 3 entries).
+-- Hoisted out of circular_quality (which runs per-packet) so this closure
+-- isn't reallocated on every packet even when no switch happened - only the
+-- rare "strategy actually changed" path calls it.
+local function log_strategy_switch(desync, from_strat, to_strat)
+    local path = "/tmp/strategy_switches.log"
+
+    local askey = desync.arg and desync.arg.key or desync.func_instance or "unknown"
+    local host = (desync.track and desync.track.hostname) or "unknown"
+    local ts = os.date("%Y-%m-%d %H:%M:%S")
+    local line = string.format("%s\tprofile=%s\thost=%s\t%s->%s\n", ts, askey, host, tostring(from_strat), tostring(to_strat))
+
+    local existing = {}
+    local f = io.open(path, "r")
+    if f then
+        for l in f:lines() do
+            if l and l ~= "" then
+                table.insert(existing, l)
+            end
+        end
+        f:close()
+    end
+
+    local tmp_path = path .. ".tmp"
+    local out = io.open(tmp_path, "w")
+    if not out then return end
+    local start = math.max(#existing - 1, 1)
+    for i = start, #existing do
+        out:write(existing[i], "\n")
+    end
+    out:write(line)
+    out:close()
+    if not os.rename(tmp_path, path) then
+        os.remove(tmp_path)
+    end
+end
+
+-- Optional asynchronous TLS validator. Packet handling only writes/reads
+-- small files and starts the configured worker in the background; curl runs
+-- exclusively in strategy-validator.sh.
+local VALIDATOR_REQUEST_PREFIX = "/tmp/z2r-strategy-validation/request."
+local VALIDATOR_RESULT_PREFIX = "/tmp/z2r-strategy-validation/result."
+local validator_seq = 0
+
+local function validator_token(value)
+    return type(value) == "string" and #value > 0 and #value <= 253 and
+           value:match("^[A-Za-z0-9_.%-]+$") ~= nil
+end
+
+local function validator_hostname(value)
+    return validator_token(value) and value:match("^[A-Za-z0-9]") and
+           value:match("[A-Za-z0-9]$") and not value:find("..", 1, true)
+end
+
+local function validator_path(value)
+    return type(value) == "string" and value:match("^/[A-Za-z0-9_./%-]+$") and
+           not value:find("..", 1, true) and value or nil
+end
+
+local function validator_clear(hrec)
+    hrec.validator_pending = nil
+end
+
+local function validator_poll(hrec, desync, hostkey)
+    local pending = hrec.validator_pending
+    if not pending then return end
+
+    local now = os.time()
+    local result_path = VALIDATOR_RESULT_PREFIX .. pending.id
+    local f = io.open(result_path, "r")
+    if not f then
+        if now >= pending.deadline then
+            DLOG("circular_quality: validator timeout id=" .. pending.id .. " host=" .. pending.hostkey)
+            os.remove(VALIDATOR_REQUEST_PREFIX .. pending.id)
+            os.remove(VALIDATOR_RESULT_PREFIX .. pending.id)
+            validator_clear(hrec)
+        end
+        return
+    end
+    local line = f:read("*l")
+    f:close()
+    os.remove(result_path)
+
+    local id, status, askey, result_host, strategy
+    if line then
+        id, status, askey, result_host, strategy = line:match("^(%d+)\t([A-Z]+)\t([A-Za-z0-9_.%-]+)\t([A-Za-z0-9_.%-]+)\t(%d+)$")
+    end
+    strategy = tonumber(strategy)
+    if id ~= pending.id or askey ~= pending.askey or result_host ~= pending.hostkey or strategy ~= pending.strategy then
+        DLOG("circular_quality: validator invalid result id=" .. pending.id)
+        validator_clear(hrec)
+        return
+    end
+    validator_clear(hrec)
+
+    local slm_askey = pending.slm_askey
+
+    if status == "OK" then
+        if slm_commit_auto_lock(slm_askey, hostkey, strategy, "validator") then
+            hrec.nstrategy = strategy
+            DLOG("circular_quality: validator OK " .. hostkey .. " -> strategy " .. strategy)
+        end
+    elseif status == "FAIL" then
+        DLOG("circular_quality: validator FAIL " .. hostkey .. " strategy " .. strategy)
+        slm_reset(slm_askey, hostkey)
+        slm_preload_blocked(slm_askey, hostkey, { strategy })
+        local next_strategy = strategy
+        for _ = 1, hrec.ctstrategy do
+            next_strategy = (next_strategy % hrec.ctstrategy) + 1
+            if not slm_is_blocked(slm_askey, hostkey, next_strategy) then break end
+        end
+        hrec.nstrategy = next_strategy
+    else
+        DLOG("circular_quality: validator " .. status .. " id=" .. id .. ", retry allowed")
+    end
+end
+
+local function validator_enqueue(hrec, desync, hostkey, strategy)
+    local worker = validator_path(desync.arg.validator)
+    local hostname = hrec.validator_hostname or (desync.track and desync.track.hostname)
+    local slm_askey = desync.arg.key or "default"
+    local askey = tostring(slm_askey)
+    if not worker or hrec.validator_pending or not validator_token(askey) or
+       not validator_token(hostkey) or not validator_hostname(hostname) then return false end
+
+    validator_seq = validator_seq + 1
+    local id = tostring(os.time()) .. string.format("%06d", validator_seq % 1000000)
+    local request_path = VALIDATOR_REQUEST_PREFIX .. id
+    local tmp_path = request_path .. ".tmp"
+    local f = io.open(tmp_path, "w")
+    if not f then return false end
+    f:write(id, "\t", askey, "\t", hostkey, "\t", tostring(strategy), "\t", hostname, "\n")
+    f:close()
+    if not os.rename(tmp_path, request_path) then
+        os.remove(tmp_path)
+        return false
+    end
+
+    hrec.validator_pending = {
+        id = id, askey = askey, hostkey = hostkey, strategy = strategy,
+        slm_askey = slm_askey,
+        deadline = os.time() + 30,
+    }
+    DLOG("circular_quality: validator request id=" .. id .. " host=" .. hostkey .. " strategy=" .. strategy)
+    return true
+end
+
 function circular_quality(ctx, desync)
     -- Skip if we're in replay mode (desync.plan is empty after orchestrate())
     -- During replay, C code re-invokes the profile but execution plan is already consumed
@@ -979,39 +1441,54 @@ function circular_quality(ctx, desync)
         return VERDICT_PASS
     end
 
-    local function count_strategies(hrec)
-        if not hrec.ctstrategy then
-            local uniq={}
-            local n=0
-            for i,instance in pairs(desync.plan) do
-                if instance.arg.strategy then
-                    n = tonumber(instance.arg.strategy)
-                    if not n or n<1 then
-                        error("circular_quality: strategy number '"..tostring(instance.arg.strategy).."' is invalid")
-                    end
-                    uniq[tonumber(instance.arg.strategy)] = true
-                end
-            end
-            n=0
-            for i,v in pairs(uniq) do
-                n=n+1
-            end
-            if n~=#uniq then
-                error("circular_quality: strategies numbers must start from 1 and increment. gaps are not allowed.")
-            end
-            hrec.ctstrategy = n
-        end
-    end
-
-    if not desync.track then
+    -- These gates deliberately reuse circular_locked's helpers. config.default
+    -- loads locked.lua first, so auto and manual counterparts stay equivalent.
+    local allow_nohost = desync_allow_nohost(desync)
+    if not desync.track and not allow_nohost then
         DLOG_ERR("circular_quality: conntrack is missing but required")
         return
     end
 
-    local hrec = automate_host_record(desync)
+    local hostname = desync_hostname(desync)
+    if hostname and hostname ~= "" then
+        hostname = string.lower(hostname:gsub("%.$", ""))
+    else
+        hostname = nil
+    end
+
+    local route_substrings = desync.arg and desync.arg.route_substrings
+    local route_key = desync.arg and desync.arg.route_key
+    if route_substrings and route_key and substring_hostlist_matches_desync(desync, route_substrings, hostname) then
+        desync.arg.key = tostring(route_key)
+        DLOG("circular_quality: substring routed to profile=" .. desync.arg.key .. " host=" .. tostring(hostname))
+    end
+    if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, hostname) then
+        DLOG("circular_quality: excluded by hostlist host=" .. tostring(hostname))
+        return VERDICT_PASS
+    end
+    local include_substrings = desync.arg and desync.arg.include_substrings
+    if include_substrings and not substring_hostlist_matches_desync(desync, include_substrings, hostname) then
+        DLOG("circular_quality: no substring match host=" .. tostring(hostname))
+        lua_cutoff(ctx)
+        return VERDICT_PASS
+    end
+
+    local hrec = desync.track and automate_host_record(desync)
     if not hrec then
-        DLOG("circular_quality: passing with no tampering")
-        return
+        if allow_nohost then
+            hrec = {}
+            DLOG("circular_quality: allow_nohost enabled, using local record")
+        else
+            DLOG("circular_quality: passing with no tampering")
+            return
+        end
+    end
+
+    -- Conntrack can retain the host record after hostname is absent from a
+    -- later packet. Preserve only the observed hostname, never a grouped key.
+    local observed_hostname = desync.track and desync.track.hostname or hostname
+    if validator_hostname(observed_hostname) then
+        hrec.validator_hostname = observed_hostname
     end
 
     -- Get hostkey for quality tracking (normalized via slm_normalize_hostkey)
@@ -1023,10 +1500,12 @@ function circular_quality(ctx, desync)
         hostkey = _G[desync.arg.hostkey](desync)
     else
         -- Check if this hostname should be kept full (not NLD-cut)
-        local full_hostname = desync.track and desync.track.hostname
+        local full_hostname = desync.track and desync.track.hostname or hostname
         if full_hostname and slm_should_keep_full_hostname(full_hostname) then
             hostkey = slm_normalize_hostkey(full_hostname)
             DLOG("circular_quality: keeping full hostname (special): " .. (hostkey or "?"))
+        elseif not desync.track and hostname then
+            hostkey = slm_normalize_hostkey(hostname)
         else
             hostkey = standard_hostkey(desync)
         end
@@ -1039,7 +1518,7 @@ function circular_quality(ctx, desync)
     hostkey = slm_normalize_hostkey(hostkey) or hostkey
 
     -- Count strategies from desync.plan (already populated by orchestrate() at function start)
-    count_strategies(hrec)
+    count_strategies(hrec, desync.plan)
     if hrec.ctstrategy==0 then
         error("circular_quality: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
     end
@@ -1049,6 +1528,11 @@ function circular_quality(ctx, desync)
     if not hrec.nstrategy then
         DLOG("circular_quality: start from strategy 1")
         hrec.nstrategy = 1
+    end
+
+    local validator_enabled = validator_path(desync.arg.validator) ~= nil
+    if validator_enabled then
+        validator_poll(hrec, desync, hostkey)
     end
 
     -- Initialize detectors ONCE (used for both locked and unlocked)
@@ -1122,7 +1606,7 @@ function circular_quality(ctx, desync)
                     end
                 end
 
-            elseif is_success and not crec.locked_success_recorded then
+            elseif is_success and (not crec.provisional_success or crec.validated_success) and not crec.locked_success_recorded and not crec.locked_failure_recorded then
                 crec.locked_success_recorded = true
                 -- Success resets fail counter
                 if hrec.locked_fail_count and hrec.locked_fail_count > 0 then
@@ -1150,6 +1634,16 @@ function circular_quality(ctx, desync)
                 if qrec and qrec.strategy_successes and qrec.strategy_successes[hrec.nstrategy] then
                     qrec.strategy_successes[hrec.nstrategy] = math.max(0, qrec.strategy_successes[hrec.nstrategy] - 1)
                 end
+                -- Also roll back the test-count increment from the earlier
+                -- slm_record_result(...,true) call - the slm_record_result(...,false)
+                -- call below will add exactly one fresh test/failure entry, so this
+                -- override should net to +1 test total for this connection, not +2.
+                if qrec and qrec.strategy_tests and qrec.strategy_tests[hrec.nstrategy] then
+                    qrec.strategy_tests[hrec.nstrategy] = math.max(0, qrec.strategy_tests[hrec.nstrategy] - 1)
+                end
+                if qrec and qrec.total_tests then
+                    qrec.total_tests = math.max(0, qrec.total_tests - 1)
+                end
                 crec.quality_success_recorded = nil
             end
 
@@ -1176,51 +1670,42 @@ function circular_quality(ctx, desync)
             end
 
         -- Success detected and no failure
-        elseif is_success and not crec.quality_success_recorded and not crec.quality_failure_recorded then
-            crec.quality_success_recorded = true
-            slm_record_result(desync.arg.key, hostkey, hrec.nstrategy, true)
-            automate_failure_counter_reset(hrec)
-
-            -- Check if we should lock now
-            local should_lock_now, lock_strat = slm_should_lock(desync.arg.key, hostkey, desync.arg)
-            if should_lock_now then
-                DLOG("circular_quality: LOCKED on strategy " .. lock_strat .. " [" .. slm_get_stats(desync.arg.key, hostkey) .. "]")
-                hrec.nstrategy = lock_strat
+        elseif is_success and not crec.quality_failure_recorded then
+            if not crec.quality_success_recorded then
+                crec.quality_success_recorded = true
+                slm_record_result(desync.arg.key, hostkey, hrec.nstrategy, true)
             end
-        end
-    end
 
-    DLOG("circular_quality: current strategy " .. hrec.nstrategy)
-    -- Log strategy switches to RAM file (last 3 entries)
-    local function log_strategy_switch(desync, from_strat, to_strat)
-        local path = "/tmp/strategy_switches.log"
-
-        local askey = desync.arg and desync.arg.key or desync.func_instance or "unknown"
-        local host = (desync.track and desync.track.hostname) or "unknown"
-        local ts = os.date("%Y-%m-%d %H:%M:%S")
-        local line = string.format("%s\tprofile=%s\thost=%s\t%s->%s\n", ts, askey, host, tostring(from_strat), tostring(to_strat))
-
-        local existing = {}
-        local f = io.open(path, "r")
-        if f then
-            for l in f:lines() do
-                if l and l ~= "" then
-                    table.insert(existing, l)
+            -- Soft TCP progress contributes one learning result, but only a
+            -- validated (or non-provisional) success can reset and auto-lock.
+            if (not crec.provisional_success or crec.validated_success) and not crec.quality_success_finalized then
+                crec.quality_success_finalized = true
+                automate_failure_counter_reset(hrec)
+                if not validator_enabled then
+                    local should_lock_now, lock_strat = slm_should_lock(desync.arg.key, hostkey, desync.arg)
+                    if should_lock_now then
+                        DLOG("circular_quality: LOCKED on strategy " .. lock_strat .. " [" .. slm_get_stats(desync.arg.key, hostkey) .. "]")
+                        hrec.nstrategy = lock_strat
+                    end
                 end
             end
-            f:close()
-        end
 
-        local out = io.open(path, "w")
-        if not out then return end
-        local start = math.max(#existing - 1, 1)
-        for i = start, #existing do
-            out:write(existing[i], "\n")
+            -- A provisional success is sufficient to ask for external proof:
+            -- its one quality test can already make an established strategy a
+            -- candidate, but it never commits the lock before validator OK.
+            if validator_enabled and not hrec.validator_pending and not crec.quality_validator_checked then
+                local eligible, candidate = slm_should_lock(desync.arg.key, hostkey, desync.arg)
+                crec.quality_validator_checked = true
+                if eligible and candidate == hrec.nstrategy then
+                    validator_enqueue(hrec, desync, hostkey, candidate)
+                end
+            end
         end
-        out:write(line)
-        out:close()
     end
 
+    DLOG("circular_quality: current strategy " .. hrec.nstrategy ..
+         " profile=" .. (desync.arg.key or "default") .. " host=" .. (hostkey or "?"))
+    -- Log strategy switches to RAM file (last 3 entries)
     if hrec._last_strategy and hrec._last_strategy ~= hrec.nstrategy then
         log_strategy_switch(desync, hrec._last_strategy, hrec.nstrategy)
     end

@@ -80,7 +80,9 @@ local function load_exclude_hostlist(path)
   return hosts
 end
 
-local function hostlist_has_host(path, host)
+-- These three helpers are also used by circular_quality.  Keep their
+-- hostname and per-connection cache semantics in one place.
+function hostlist_has_host(path, host)
   if not path or path == "" or not host or host == "" then return false end
   host = string.lower(tostring(host):gsub("%.+$", ""))
   local hosts = load_exclude_hostlist(path)
@@ -148,7 +150,7 @@ function substring_hostlist_matches(path, host)
   return false
 end
 
-local function substring_hostlist_matches_desync(desync, path, host)
+function substring_hostlist_matches_desync(desync, path, host)
   local lua_state = desync.track and desync.track.lua_state
   if not lua_state then return substring_hostlist_matches(path, host) end
   lua_state.substring_hostlists = lua_state.substring_hostlists or {}
@@ -192,12 +194,12 @@ local function desync_proto(desync)
   return "tls"
 end
 
-local function desync_allow_nohost(desync)
+function desync_allow_nohost(desync)
   local allow_nohost = desync.arg and desync.arg.allow_nohost
   return allow_nohost == "1" or allow_nohost == 1 or allow_nohost == true
 end
 
-local function desync_hostname(desync)
+function desync_hostname(desync)
   if desync.hostname then return tostring(desync.hostname) end
   if desync.host then return tostring(desync.host) end
   if desync.track and desync.track.hostname then return tostring(desync.track.hostname) end

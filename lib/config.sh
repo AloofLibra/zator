@@ -184,10 +184,25 @@ config_mode_text() {
       fi
       ;;
     fallback)
-      if { sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg"; } | grep -q '^[[:space:]]*--skip[[:space:]]'; then
+      local fallback_blocks
+      if grep -q '^#Z2R_AUTO_MODE=1$' "$cfg"; then
+        fallback_blocks="$(sed -n '/#Z2R_AUTO_8_BEGIN/,/#Z2R_AUTO_8_END/p' "$cfg"; sed -n '/#Z2R_AUTO_9_BEGIN/,/#Z2R_AUTO_9_END/p' "$cfg")"
+      else
+        fallback_blocks="$(sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg")"
+      fi
+      if printf '%s\n' "$fallback_blocks" | grep -q '^[[:space:]]*--skip[[:space:]]'; then
         echo "выключен"
-      elif sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg" | grep -q '^[[:space:]]*--filter-tcp=443\([[:space:]].*\)\?$'; then
+      elif printf '%s\n' "$fallback_blocks" | grep -q '^[[:space:]]*--filter-tcp='; then
         echo "включен"
+      else
+        echo "неизвестно"
+      fi
+      ;;
+    auto_mode)
+      if grep -q '^#Z2R_AUTO_MODE=1$' "$cfg"; then
+        echo "включен"
+      elif grep -q '^#Z2R_AUTO_MODE=0$' "$cfg"; then
+        echo "выключен"
       else
         echo "неизвестно"
       fi

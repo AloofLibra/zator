@@ -17,9 +17,10 @@ strategies_submenu() {
     p9_max="$(orch_max_strategy_for_profile 9)"
     # Состояние безразборного режима (fallback): если выключен,
     # пункты 8/9 (Fallback TLS/HTTP) становятся недоступными.
-    local fb_state fb_disabled
+    local fb_state fb_disabled auto_state
     fb_state="$(config_mode_text fallback)"
     [ "$fb_state" = "выключен" ] && fb_disabled=1 || fb_disabled=0
+    auto_state="$(config_mode_text auto_mode)"
     # Состояние обхода UDP на 1026-65531 (пункт 10): если выключен,
     # пункт 7 (UDP Games) становится недоступным.
     local games_state games_disabled
@@ -50,6 +51,7 @@ strategies_submenu() {
       submenu_item "	8" "Fallback TLS (безразборный блок)" "" "$STRATEGY_STATE_FB_TLS"
       submenu_item "	9" "Fallback HTTP (безразборный блок) [${p9_max:-0}]" "" "$STRATEGY_STATE_FB_HTTP"
     fi
+    submenu_item "	10" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "	0" "Назад"
     echo ""
 
@@ -103,6 +105,10 @@ strategies_submenu() {
         else
           fallback_http_profile_try
         fi
+        ;;
+      "10")
+        toggle_auto_mode
+        pause_enter
         ;;
       "0"|"")
         return

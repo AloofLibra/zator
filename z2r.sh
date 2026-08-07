@@ -376,6 +376,13 @@ cleanup_zapret2_init_dirs() {
 ORCH_DIR="/opt/zapret2/extra_strats/cache/orchestra"
 ORCH_LUA_LOCKED="/opt/zapret2/lua/locked.lua"
 RST_GUARD_LUA="/opt/zapret2/lua/rst-guard.lua"
+CIRCULAR_DETECTOR_LUA="/opt/zapret2/lua/combined-detector.lua"
+SILENT_DROP_DETECTOR_LUA="/opt/zapret2/lua/silent-drop-detector.lua"
+STRATEGY_LOCK_MANAGER_LUA="/opt/zapret2/lua/strategy-lock-manager.lua"
+STRATEGY_VALIDATOR_WORKER="/opt/zapret2/lua/strategy-validator.sh"
+STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
+STRATEGY_VALIDATOR_ENTWARE_INIT="/opt/etc/init.d/S93z2r-strategy-validator"
+STRATEGY_VALIDATOR_SYSTEMD_UNIT="/etc/systemd/system/z2r-strategy-validator.service"
 
 locked_lua_update_from_repo() {
   local tmp="${ORCH_LUA_LOCKED}.tmp"
@@ -403,6 +410,85 @@ rst_guard_lua_update_from_repo() {
   echo -e "${green}rst-guard.lua обновлен из репозитория.${plain}"
 }
 
+circular_runtime_update_from_repo() {
+  mkdir -p /opt/zapret2/lua
+  z2r_download_project_file "$CIRCULAR_DETECTOR_LUA" "lua/combined-detector.lua" || return 1
+  z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
+  z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
+  z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
+  chmod +x "$STRATEGY_VALIDATOR_WORKER"
+}
+
+strategy_validator_install_service() {
+  local validator_path="/opt/bin:/opt/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  if ! PATH="$validator_path" command -v curl >/dev/null 2>&1; then
+    echo -e "${red}Для strategy-validator нужен curl.${plain}"
+    return 1
+  fi
+
+  case "$OSystem" in
+    WRT)
+      z2r_download_project_file "$STRATEGY_VALIDATOR_OPENWRT_INIT" "init.d/openwrt/z2r-strategy-validator" || return 1
+      chmod +x "$STRATEGY_VALIDATOR_OPENWRT_INIT"
+      "$STRATEGY_VALIDATOR_OPENWRT_INIT" enable 2>/dev/null || true
+      "$STRATEGY_VALIDATOR_OPENWRT_INIT" restart 2>/dev/null || "$STRATEGY_VALIDATOR_OPENWRT_INIT" start 2>/dev/null || return 1
+      ;;
+    entware)
+      z2r_download_project_file "$STRATEGY_VALIDATOR_ENTWARE_INIT" "Entware/z2r-strategy-validator" || return 1
+      chmod +x "$STRATEGY_VALIDATOR_ENTWARE_INIT"
+      "$STRATEGY_VALIDATOR_ENTWARE_INIT" restart 2>/dev/null || "$STRATEGY_VALIDATOR_ENTWARE_INIT" start 2>/dev/null || return 1
+      ;;
+    VPS)
+      if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /etc/systemd/system ]; then
+        echo -e "${red}Для strategy-validator на этой VPS нужен systemd.${plain}"
+        return 1
+      fi
+      cat > "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" <<'EOF'
+[Unit]
+Description=z2r strategy validation worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'mkdir -p /tmp/z2r-strategy-validation && user=$(/bin/sed -n "s/^WS_USER=//p" /opt/zapret2/config | /usr/bin/head -n1); [ -n "$user" ] || user=nobody; /bin/chown "$user" /tmp/z2r-strategy-validation && /bin/chmod 700 /tmp/z2r-strategy-validation'
+ExecStart=/opt/zapret2/lua/strategy-validator.sh --daemon
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      systemctl daemon-reload
+      systemctl enable z2r-strategy-validator.service
+      systemctl restart z2r-strategy-validator.service
+      ;;
+  esac
+}
+
+strategy_validator_remove_service() {
+  case "$OSystem" in
+    WRT)
+      [ -f "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || return 0
+      "$STRATEGY_VALIDATOR_OPENWRT_INIT" stop 2>/dev/null || true
+      "$STRATEGY_VALIDATOR_OPENWRT_INIT" disable 2>/dev/null || true
+      rm -f "$STRATEGY_VALIDATOR_OPENWRT_INIT"
+      ;;
+    entware)
+      [ -f "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || return 0
+      "$STRATEGY_VALIDATOR_ENTWARE_INIT" stop 2>/dev/null || true
+      rm -f "$STRATEGY_VALIDATOR_ENTWARE_INIT"
+      ;;
+    VPS)
+      if command -v systemctl >/dev/null 2>&1 && [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; then
+        systemctl disable --now z2r-strategy-validator.service >/dev/null 2>&1 || true
+        rm -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
+}
+
 # Проверяем locked.lua, при отсутствии пробуем скачать из репозитория
 if [ -f /opt/zapret2/config ]; then
   if [ ! -s "$ORCH_LUA_LOCKED" ]; then
@@ -412,6 +498,11 @@ if [ -f /opt/zapret2/config ]; then
   if [ ! -s "$RST_GUARD_LUA" ]; then
     echo "Не найден rst-guard.lua. Пытаюсь скачать из репозитория..."
     rst_guard_lua_update_from_repo || true
+  fi
+  if [ ! -s "$CIRCULAR_DETECTOR_LUA" ] || [ ! -s "$SILENT_DROP_DETECTOR_LUA" ] || \
+     [ ! -s "$STRATEGY_LOCK_MANAGER_LUA" ] || [ ! -s "$STRATEGY_VALIDATOR_WORKER" ]; then
+    echo "Не найдены Lua-модули circular. Пытаюсь скачать из репозитория..."
+    circular_runtime_update_from_repo || true
   fi
 fi
 
@@ -788,6 +879,8 @@ get_repo() {
   chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
   locked_lua_update_from_repo || true
   rst_guard_lua_update_from_repo || true
+  circular_runtime_update_from_repo || return 1
+  strategy_validator_install_service || return 1
   for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt netrogat.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
     z2r_download_project_file "/opt/zapret2/lists/$listfile" "lists/$listfile" || return 1
   done
@@ -856,6 +949,7 @@ remove_zapret() {
  if [ -d "/opt/zapret2" ]; then
      echo "Удаляем папку zapret2"
      webui_remove >/dev/null 2>&1 || true
+     strategy_validator_remove_service
      rm -rf /opt/zapret2
  else
      echo "Папка zapret2 не существует."
@@ -1614,6 +1708,8 @@ Enter (без цифр) - переустановка/обновление zapret
   "5")
     backup_helper_ask_and_create
     locked_lua_update_from_repo
+    circular_runtime_update_from_repo
+    strategy_validator_install_service
     mkdir -p /opt/zapret2/extra_strats/cache/orchestra
     chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
     menu_action_update_config_reset

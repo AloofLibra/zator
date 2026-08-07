@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+QUEUE_DIR=/tmp/z2r-strategy-validation
+WORKER=/opt/zapret2/lua/strategy-validator.sh
+
+start_service() {
+    mkdir -p "$QUEUE_DIR"
+    chown nobody:nogroup "$QUEUE_DIR" 2>/dev/null || chown nobody:nobody "$QUEUE_DIR" 2>/dev/null
+    chmod 700 "$QUEUE_DIR"
+    procd_open_instance
+    procd_set_param command "$WORKER" --daemon
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+}

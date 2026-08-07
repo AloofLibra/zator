@@ -430,16 +430,11 @@ local function slm_get_quality_record(askey, hostkey)
     return SLM_QUALITY[askey][hostkey]
 end
 
-local function slm_save_auto_locked()
-    local f = io.open(SLM_AUTO_LOCKED_PATH, "w")
-    if not f then
-        if DLOG then
-            DLOG("slm_quality: failed to write auto locks to " .. SLM_AUTO_LOCKED_PATH)
-        end
-        -- Fallback to /tmp if persistent path is unavailable.
-        f = io.open("/tmp/auto_locked.tsv", "w")
-        if not f then return end
-    end
+-- Serializes the whole SLM_AUTO_LOCKED table to `path`. Returns true on
+-- success, false if the file couldn't be opened for writing.
+local function slm_write_auto_locked_to(path)
+    local f = io.open(path, "w")
+    if not f then return false end
     for askey, hosts in pairs(SLM_AUTO_LOCKED) do
         if type(hosts) == "table" then
             for host, strat in pairs(hosts) do
@@ -450,6 +445,35 @@ local function slm_save_auto_locked()
         end
     end
     f:close()
+    return true
+end
+
+-- Writes the auto-locked table out atomically: the full table is first
+-- written to a temp file, then renamed over the real path in one step.
+-- os.rename on the same filesystem is atomic, so a reader (or a process
+-- crash) never observes a half-written file - it sees either the complete
+-- old version or the complete new version, never a truncated one.
+-- Falls back to /tmp (also written atomically) if the persistent path's
+-- directory isn't writable at all.
+local function slm_save_auto_locked()
+    local tmp_path = SLM_AUTO_LOCKED_PATH .. ".tmp"
+    if slm_write_auto_locked_to(tmp_path) and os.rename(tmp_path, SLM_AUTO_LOCKED_PATH) then
+        return
+    end
+
+    if DLOG then
+        DLOG("slm_quality: failed to write auto locks to " .. SLM_AUTO_LOCKED_PATH)
+    end
+    os.remove(tmp_path)
+
+    -- Fallback to /tmp if the persistent path is unavailable.
+    local fallback_tmp = "/tmp/auto_locked.tsv.tmp"
+    local fallback_path = "/tmp/auto_locked.tsv"
+    if slm_write_auto_locked_to(fallback_tmp) then
+        if not os.rename(fallback_tmp, fallback_path) then
+            os.remove(fallback_tmp)
+        end
+    end
 end
 
 local function slm_set_auto_locked(askey, hostkey, strategy_id)
@@ -468,6 +492,29 @@ local function slm_clear_auto_locked(askey, hostkey)
         hosts[hostkey] = nil
         slm_save_auto_locked()
     end
+end
+
+--- Commits an automatic lock and persists it in auto_locked.tsv.
+--- Unlike slm_set_locked, this never creates a user/manual lock.
+function slm_commit_auto_lock(askey, hostkey, strategy_id, reason)
+    if not hostkey or not strategy_id then return false end
+    askey = askey or "default"
+
+    local key = slm_normalize_hostkey(hostkey)
+    if not key or slm_is_blocked(askey, key, strategy_id) then return false end
+
+    local qrec = slm_get_quality_record(askey, key)
+    if qrec.is_user_lock then return false end
+
+    qrec.locked_strategy = strategy_id
+    qrec.lock_reason = reason or "auto"
+    qrec.is_user_lock = false
+    slm_set_auto_locked(askey, key, strategy_id)
+    if DLOG then
+        DLOG("slm_commit_auto_lock: [" .. askey .. "] " .. key .. " -> strat=" .. strategy_id ..
+             " reason=" .. qrec.lock_reason)
+    end
+    return true
 end
 
 --- Записать результат теста стратегии
@@ -537,7 +584,19 @@ function slm_get_best(askey, hostkey, skip_strategy)
     local best_successes = 0
     local best_tests = 0
 
-    for strat_id, successes in pairs(qrec.strategy_successes) do
+    -- Collect and sort strategy ids first so iteration order (and therefore
+    -- any tie-break between equally-good strategies) is deterministic.
+    -- Plain pairs() order over a Lua table is unspecified and can vary
+    -- between runs/reloads even for identical data, which previously made
+    -- "best strategy" picks non-reproducible on ties.
+    local strat_ids = {}
+    for strat_id in pairs(qrec.strategy_successes) do
+        strat_ids[#strat_ids + 1] = strat_id
+    end
+    table.sort(strat_ids)
+
+    for _, strat_id in ipairs(strat_ids) do
+        local successes = qrec.strategy_successes[strat_id]
         -- Skip strategy (e.g., 1 = pass - it's not a real bypass strategy)
         if skip_strategy and strat_id == skip_strategy then
             if DLOG then
@@ -622,16 +681,26 @@ function slm_should_lock(askey, hostkey, desync_arg)
     -- Check if best strategy meets lock criteria
     local success_rate = best_tests > 0 and (best_successes / best_tests) or 0
 
+    -- Require the WINNING strategy itself to have at least min_tests
+    -- attempts, not just the host's total_tests summed across every
+    -- strategy that was ever tried. Otherwise, with several strategies
+    -- rotating, total_tests can reach the threshold while the strategy
+    -- that happens to be "best" so far only has 1-2 tests of its own -
+    -- locking onto it prematurely based on a short lucky streak instead of
+    -- a statistically meaningful sample.
+    if best_tests < min_tests then
+        return false, nil
+    end
+
     if best_successes >= min_successes and success_rate >= min_rate then
-        qrec.locked_strategy = best_id
-        qrec.lock_reason = string.format("successes=%d tests=%d rate=%.0f%%",
-                                         best_successes, best_tests, success_rate * 100)
-        if DLOG then
-            DLOG("slm_quality: LOCK [" .. askey .. "] " .. key .. " -> strat=" .. best_id ..
-                 " (" .. qrec.lock_reason .. ")")
+        local reason = string.format("successes=%d tests=%d rate=%.0f%%",
+                                     best_successes, best_tests, success_rate * 100)
+        if desync_arg and desync_arg.validator then
+            return true, best_id
         end
-        slm_set_auto_locked(askey, key, best_id)
-        return true, best_id
+        if slm_commit_auto_lock(askey, key, best_id, reason) then
+            return true, best_id
+        end
     end
 
     return false, nil
