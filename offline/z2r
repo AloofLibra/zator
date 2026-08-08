@@ -1,0 +1,115 @@
+#!/bin/sh
+
+set -e
+
+INSTALL_DIR="/opt"
+LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+
+fail() {
+    echo "Ошибка: $*" >&2
+    exit 1
+}
+
+launcher_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+
+# После первой установки команда z2r продолжает работать как обычный launcher.
+if [ ! -d "$launcher_dir/payload" ] || [ ! -d "$launcher_dir/vendor" ]; then
+    [ -f "$INSTALL_DIR/z2r.sh" ] || fail "не найден $INSTALL_DIR/z2r.sh"
+    command -v bash >/dev/null 2>&1 || fail "bash не найден"
+    [ -t 0 ] && exec bash "$INSTALL_DIR/z2r.sh" "$@"
+    exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/tty
+fi
+
+BUNDLE_DIR="$launcher_dir"
+PAYLOAD_DIR="$BUNDLE_DIR/payload"
+VENDOR_DIR="$BUNDLE_DIR/vendor"
+
+verify_bundle() {
+    manifest="$BUNDLE_DIR/MANIFEST.cksum"
+    [ -s "$manifest" ] || fail "в архиве отсутствует MANIFEST.cksum"
+    command -v cksum >/dev/null 2>&1 || fail "для проверки архива требуется cksum"
+    while read -r expected_crc expected_size rel; do
+        case "$rel" in
+            payload/*|vendor/*) ;;
+            *) fail "некорректный путь в MANIFEST.cksum: $rel" ;;
+        esac
+        case "$rel" in
+            /*|../*|*/../*|*/..) fail "небезопасный путь в MANIFEST.cksum: $rel" ;;
+        esac
+        [ -f "$BUNDLE_DIR/$rel" ] || fail "в архиве отсутствует $rel"
+        actual=$(cksum "$BUNDLE_DIR/$rel") || fail "не удалось проверить $rel"
+        set -- $actual
+        [ "$1" = "$expected_crc" ] && [ "$2" = "$expected_size" ] || \
+            fail "контрольная сумма не совпадает: $rel"
+    done < "$manifest"
+}
+
+verify_bundle
+
+[ -f "$PAYLOAD_DIR/z2r.sh" ] || fail "в архиве отсутствует payload/z2r.sh"
+[ -f "$PAYLOAD_DIR/orchestra/locked.lua" ] || fail "в архиве отсутствует payload/orchestra/locked.lua"
+for file in $LIB_FILES; do
+    [ -f "$PAYLOAD_DIR/lib/$file" ] || fail "в архиве отсутствует payload/lib/$file"
+done
+
+ZAPRET2_VERSION=""
+archive_count=0
+for file in "$VENDOR_DIR"/zapret2-v*.tar.gz; do
+    [ -f "$file" ] || continue
+    name=${file##*/}
+    case "$name" in
+        zapret2-v*-openwrt-embedded.tar.gz)
+            version=${name#zapret2-v}
+            version=${version%-openwrt-embedded.tar.gz}
+            ;;
+        zapret2-v*.tar.gz)
+            version=${name#zapret2-v}
+            version=${version%.tar.gz}
+            ;;
+        *) continue ;;
+    esac
+    printf '%s\n' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)*$' || \
+        fail "некорректная версия zapret2 в имени $name"
+    if [ -n "$ZAPRET2_VERSION" ] && [ "$version" != "$ZAPRET2_VERSION" ]; then
+        fail "в vendor найдены разные версии zapret2"
+    fi
+    ZAPRET2_VERSION="$version"
+    archive_count=$((archive_count + 1))
+done
+[ "$archive_count" -gt 0 ] || fail "в vendor отсутствует release-архив zapret2"
+[ "$archive_count" -le 2 ] || fail "в vendor найдено слишком много release-архивов zapret2"
+
+if [ -d /opt/bin ]; then
+    BIN_PATH="/opt/bin/z2r"
+elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+    BIN_PATH="/usr/local/bin/z2r"
+elif [ -d /usr/bin ] && [ -w /usr/bin ]; then
+    BIN_PATH="/usr/bin/z2r"
+else
+    fail "не найдено подходящее место для установки команды z2r"
+fi
+
+command -v bash >/dev/null 2>&1 || fail "bash не найден; установите bash до запуска архивной установки"
+
+mkdir -p \
+    "$INSTALL_DIR/zapret2/z2r_lib" \
+    "$INSTALL_DIR/zapret2/extra_strats/cache/orchestra" \
+    "$INSTALL_DIR/zapret2/lua"
+
+cp -f "$launcher_dir/z2r" "$BIN_PATH"
+cp -f "$PAYLOAD_DIR/z2r.sh" "$INSTALL_DIR/z2r.sh"
+for file in $LIB_FILES; do
+    cp -f "$PAYLOAD_DIR/lib/$file" "$INSTALL_DIR/zapret2/z2r_lib/$file"
+done
+cp -f "$PAYLOAD_DIR/orchestra/locked.lua" "$INSTALL_DIR/zapret2/lua/locked.lua"
+
+chmod +x "$BIN_PATH" "$INSTALL_DIR/z2r.sh"
+echo "Компоненты z2r установлены из архива."
+
+export Z2R_OFFLINE=1
+export Z2R_PROJECT_DIR="$PAYLOAD_DIR"
+export ZAPRET2_ARCHIVE_DIR="$VENDOR_DIR"
+export ZAPRET2_VERSION
+
+[ -t 0 ] && exec bash "$INSTALL_DIR/z2r.sh" "$@"
+exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/tty

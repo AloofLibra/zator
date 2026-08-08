@@ -32,6 +32,7 @@ Bcyan='\033[46m'
 
 z2r_github_commit_date() {
   local path="$1" timeout="${2:-10}"
+  [ "${Z2R_OFFLINE:-0}" != "1" ] || return 0
   curl -s --max-time "$timeout" "https://api.github.com/repos/AloofLibra/zator/commits?path=${path}&per_page=1" \
     | grep '"date"' | head -n1 | cut -d'"' -f4
 }
@@ -46,6 +47,7 @@ ZAPRET2_RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 z2r_mirror_url() {
   printf '%s/%s?h=%s' "$Z2R_PROJECT_MIRROR_BASE" "$1" "$Z2R_BRANCH"
@@ -72,6 +74,22 @@ z2r_download_project_file() {
   local tmp="${dest}.tmp.$$"
   local primary="${Z2R_PROJECT_RAW_BASE}/${rel}"
   local mirror
+
+  if [ -n "${Z2R_PROJECT_DIR:-}" ]; then
+    case "$rel" in
+      /*|../*|*/../*|*/..) return 1 ;;
+    esac
+    if [ -f "$Z2R_PROJECT_DIR/$rel" ]; then
+      mkdir -p "$(dirname "$dest")"
+      cp -f "$Z2R_PROJECT_DIR/$rel" "$tmp" || return 1
+      mv -f "$tmp" "$dest"
+      return 0
+    fi
+    if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
+      echo -e "${red}В архиве отсутствует файл проекта: $rel${plain}" >&2
+      return 1
+    fi
+  fi
 
   mirror="$(z2r_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
@@ -113,6 +131,11 @@ z2r_download_upstream_file() {
   local tmp="${dest}.tmp.$$"
   local primary="${ZAPRET2_UPSTREAM_RAW_BASE}/${rel}"
   local mirror
+
+  if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
+    echo -e "${red}В установленном zapret2 отсутствует upstream-файл: $rel${plain}" >&2
+    return 1
+  fi
 
   mirror="$(z2r_upstream_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
@@ -201,6 +224,11 @@ z2r_exec_external_installer() {
   local mirror
   local tmp="/tmp/z2r_installer_$$"
 
+  if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
+    echo "Ошибка: в архиве отсутствуют дочерние библиотеки z2r."
+    exit 1
+  fi
+
   mirror="$(z2r_mirror_url "z2r")"
   if z2r_fetch_url_to_file "$tmp" "$Z2R_INSTALLER_URL" || z2r_fetch_url_to_file "$tmp" "$mirror"; then
     exec sh "$tmp" "$@"
@@ -218,7 +246,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 # Проверяем наличие всех нужных lib-файлов, иначе запускаем внешний скрипт
 missing_libs=0
 LIB_DIR="$SCRIPT_DIR/zapret2/z2r_lib"
-for lib in ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh; do
+for lib in $Z2R_LIB_FILES; do
   if [ ! -f "$LIB_DIR/$lib" ]; then
     missing_libs=1
     break
@@ -234,47 +262,47 @@ fi
 
 # UI helpers (пауза/печать пунктов меню/совместимость старого кода)
 # Функции: pause_enter, submenu_item, exit_to_menu
-source "$SCRIPT_DIR/zapret2/z2r_lib/ui.sh" 
+source "$LIB_DIR/ui.sh"
 
 # Определение провайдера/города + ручная установка/сброс кэша
 # Функции: provider_init_once, provider_force_redetect, provider_set_manual_menu
 # (внутр.: _detect_api_simple)
-source "$SCRIPT_DIR/zapret2/z2r_lib/provider.sh" 
+source "$LIB_DIR/provider.sh"
 
 # Телеметрия (вкл/выкл один раз + отправка статистики в Google Forms)
 # Функции: init_telemetry, send_stats
-source "$SCRIPT_DIR/zapret2/z2r_lib/telemetry.sh" 
+source "$LIB_DIR/telemetry.sh"
 
 # Общий API для чтения и правки /opt/zapret2/config
-source "$SCRIPT_DIR/zapret2/z2r_lib/config.sh"
+source "$LIB_DIR/config.sh"
 
 # Общий API ручных локов стратегий
-source "$SCRIPT_DIR/zapret2/z2r_lib/orchestra_state.sh"
+source "$LIB_DIR/orchestra_state.sh"
 
 # База подсказок по стратегиям (скачивание + вывод подсказки по провайдеру)
 # Функции: update_recommendations, show_hint
-source "$SCRIPT_DIR/zapret2/z2r_lib/recommendations.sh" 
+source "$LIB_DIR/recommendations.sh"
 
 # Проверка доступности ресурсов/сети (TLS 1.2/1.3) + получение домена кластера youtube (googlevideo)
 # Функции: get_yt_cluster_domain, check_access, check_access_list
-source "$SCRIPT_DIR/zapret2/z2r_lib/netcheck.sh"
+source "$LIB_DIR/netcheck.sh"
 
 # “Premium” пункты 777/999 и их вспомогательные эффекты (рандом, спиннер, титулы)
 # Функции: rand_from_list, spinner_for_seconds, premium_get_or_set_title, zefeer_premium_777, zefeer_space_999
-source "$SCRIPT_DIR/zapret2/z2r_lib/premium.sh" 
+source "$LIB_DIR/premium.sh"
 
 # Логика стратегий: статус, lock-файлы, быстрый подбор
 # Функции: get_current_strategies_info, orch_profile_try, Strats_Tryer
-source "$SCRIPT_DIR/zapret2/z2r_lib/strategies.sh" 
+source "$LIB_DIR/strategies.sh"
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
-source "$SCRIPT_DIR/zapret2/z2r_lib/submenus.sh" 
+source "$LIB_DIR/submenus.sh"
 
 # Действия меню (бэкапы/сбросы/переключатели)
 # Функции: backup_strats, menu_action_update_config_reset,
 #          menu_action_toggle_fwtype, menu_action_toggle_udp_range, menu_action_set_tls_blob
-source "$SCRIPT_DIR/zapret2/z2r_lib/actions.sh" 
+source "$LIB_DIR/actions.sh"
 
 keenetic_policy_ndmc_is_supported() {
   local output
@@ -359,6 +387,41 @@ set_zapret2_init() {
     ZAPRET2_INIT="/opt/zapret2/init.d/sysv/zapret2"
   fi
   export ZAPRET2_INIT
+}
+
+z2r_archive_preflight() {
+  local required_archive
+
+  [ "${Z2R_OFFLINE:-0}" = "1" ] || return 0
+  [ -n "${Z2R_PROJECT_DIR:-}" ] && [ -d "$Z2R_PROJECT_DIR" ] || {
+    echo -e "${red}Не найден payload проекта из установочного архива.${plain}"
+    return 1
+  }
+  [ -n "${ZAPRET2_ARCHIVE_DIR:-}" ] && [ -d "$ZAPRET2_ARCHIVE_DIR" ] || {
+    echo -e "${red}Не найден каталог vendor из установочного архива.${plain}"
+    return 1
+  }
+  if [ "$OSystem" = "WRT" ]; then
+    required_archive="$ZAPRET2_ARCHIVE_DIR/zapret2-v$ZAPRET2_VERSION-openwrt-embedded.tar.gz"
+  else
+    required_archive="$ZAPRET2_ARCHIVE_DIR/zapret2-v$ZAPRET2_VERSION.tar.gz"
+  fi
+  [ -f "$required_archive" ] || {
+    echo -e "${red}Для этой платформы в bundle отсутствует $(basename "$required_archive").${plain}"
+    return 1
+  }
+  if ! z2r_validate_tar_archive "$required_archive"; then
+    echo -e "${red}Архив $(basename "$required_archive") повреждён или содержит небезопасные пути.${plain}"
+    return 1
+  fi
+  grep -Fx "zapret2-v$ZAPRET2_VERSION/install_bin.sh" < <(tar -tzf "$required_archive") >/dev/null || {
+    echo -e "${red}В $(basename "$required_archive") отсутствует install_bin.sh.${plain}"
+    return 1
+  }
+  grep -Fx "zapret2-v$ZAPRET2_VERSION/install_easy.sh" < <(tar -tzf "$required_archive") >/dev/null || {
+    echo -e "${red}В $(basename "$required_archive") отсутствует install_easy.sh.${plain}"
+    return 1
+  }
 }
 
 cleanup_zapret2_init_dirs() {
@@ -871,11 +934,22 @@ run_cdn_test() {
 }
 
 #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг
+z2r_install_runtime_libs_from_archive() {
+  local lib
+
+  [ "${Z2R_OFFLINE:-0}" = "1" ] || return 0
+  mkdir -p /opt/zapret2/z2r_lib
+  for lib in $Z2R_LIB_FILES; do
+    z2r_download_project_file "/opt/zapret2/z2r_lib/$lib" "lib/$lib" || return 1
+  done
+}
+
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
 
   mkdir -p /opt/zapret2/lists /opt/zapret2/extra_strats /opt/zapret2/extra_strats/cache /opt/zapret2/files/fake
   mkdir -p /opt/zapret2/extra_strats/cache/orchestra
+  z2r_install_runtime_libs_from_archive || return 1
   chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
   locked_lua_update_from_repo || true
   rst_guard_lua_update_from_repo || true
@@ -973,6 +1047,15 @@ remove_zapret() {
 
 #Запрос желаемой версии zapret2
 version_select() {
+   if [ -n "${ZAPRET2_VERSION:-}" ]; then
+    if ! printf '%s\n' "$ZAPRET2_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+      echo -e "${red}Некорректная версия zapret2 из архива: $ZAPRET2_VERSION${plain}"
+      return 1
+    fi
+    VER="$ZAPRET2_VERSION"
+    echo -e "${green}Из архива выбрана версия zapret2: $VER${plain}"
+    return 0
+   fi
    while true; do
 	read -re -p $'\033[0;32mВведите желаемую версию zapret2 (Enter для новейшей версии): \033[0m' VER
     # Если пустой ввод — берем значение по умолчанию
@@ -1023,6 +1106,21 @@ version_select() {
 done
 }
 
+z2r_validate_tar_archive() {
+ local archive="$1"
+ local entry
+
+ if ! tar -tzf "$archive" >/dev/null 2>&1; then
+  return 1
+ fi
+ while IFS= read -r entry; do
+  case "$entry" in
+   /*|../*|*/../*|*/..) return 1 ;;
+  esac
+ done < <(tar -tzf "$archive")
+ return 0
+}
+
 #Скачивание, распаковка архива zapret2, очистка от ненуных бинарей
 zapret_get() {
  local archive
@@ -1035,9 +1133,22 @@ zapret_get() {
  fi
 
  archive="/tmp/z2r_${tarfile}_$$"
- if ! z2r_download_zapret2_release "$archive" "$VER" "$tarfile"; then
+ if [ -n "${ZAPRET2_ARCHIVE_DIR:-}" ]; then
+     local bundled_archive="$ZAPRET2_ARCHIVE_DIR/$tarfile"
+     if [ ! -f "$bundled_archive" ]; then
+         echo -e "${red}В установочном архиве нет подходящей зависимости: $tarfile.${plain}"
+         echo -e "${yellow}Для этой платформы требуется файл $bundled_archive${plain}"
+         return 1
+     fi
+     cp -f "$bundled_archive" "$archive" || return 1
+ elif ! z2r_download_zapret2_release "$archive" "$VER" "$tarfile"; then
      echo -e "${red}Не удалось скачать архив zapret2 $tarfile.${plain}"
      echo -e "${yellow}Если есть зеркало release-архивов, задайте ZAPRET2_RELEASE_MIRROR_BASE с базовым URL вида https://mirror/path.${plain}"
+     rm -f "$archive"
+     return 1
+ fi
+ if ! z2r_validate_tar_archive "$archive"; then
+     echo -e "${red}Архив zapret2 повреждён или содержит небезопасные пути: $tarfile.${plain}"
      rm -f "$archive"
      return 1
  fi
@@ -1825,10 +1936,14 @@ esac
 
 detect_os
 set_zapret2_init
+z2r_archive_preflight
 
 #Инфа о времени обновления скрпта
-commit_date="$(z2r_github_commit_date z2r.sh 30)"
-if [[ -z "$commit_date" ]]; then
+if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
+    echo -e "${yellow}zator запущен из локального установочного архива.${plain}"
+else
+ commit_date="$(z2r_github_commit_date z2r.sh 30)"
+ if [[ -z "$commit_date" ]]; then
     echo -e "${red}Не был получен доступ к api.github.com (таймаут 30 сек). Возможны проблемы при установке.${plain}"
 	if [ "$hardware" = "keenetic" ]; then
 		echo "Добавляем ip с от DNS 1.1.1.1 к api.github.com и пытаемся снова"
@@ -1837,6 +1952,7 @@ if [[ -z "$commit_date" ]]; then
 	fi
 else
     echo -e "${yellow}zeefeer обновлен (UTC +0): $commit_date ${plain}"
+ fi
 fi
 
 #Выполнение общего для всех ОС кода с ответвлениями под ОС
@@ -1869,7 +1985,11 @@ cd /tmp
 remove_zapret
 
 #Запрос желаемой версии zapret2
-echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
+if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
+ echo -e "${yellow}Конфиг будет установлен из локального архива.${plain}"
+else
+ echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
+fi
 version_select
 
 #Скачивание, распаковка архива zapret2 и его удаление
