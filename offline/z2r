@@ -25,22 +25,20 @@ PAYLOAD_DIR="$BUNDLE_DIR/payload"
 VENDOR_DIR="$BUNDLE_DIR/vendor"
 
 verify_bundle() {
-    manifest="$BUNDLE_DIR/MANIFEST.cksum"
-    [ -s "$manifest" ] || fail "в архиве отсутствует MANIFEST.cksum"
-    command -v cksum >/dev/null 2>&1 || fail "для проверки архива требуется cksum"
-    while read -r expected_crc expected_size rel; do
+    manifest="$BUNDLE_DIR/MANIFEST.files"
+    [ -s "$manifest" ] || fail "в архиве отсутствует MANIFEST.files"
+    while read -r expected_size rel; do
         case "$rel" in
             payload/*|vendor/*) ;;
-            *) fail "некорректный путь в MANIFEST.cksum: $rel" ;;
+            *) fail "некорректный путь в MANIFEST.files: $rel" ;;
         esac
         case "$rel" in
-            /*|../*|*/../*|*/..) fail "небезопасный путь в MANIFEST.cksum: $rel" ;;
+            /*|../*|*/../*|*/..) fail "небезопасный путь в MANIFEST.files: $rel" ;;
         esac
         [ -f "$BUNDLE_DIR/$rel" ] || fail "в архиве отсутствует $rel"
-        actual=$(cksum "$BUNDLE_DIR/$rel") || fail "не удалось проверить $rel"
-        set -- $actual
-        [ "$1" = "$expected_crc" ] && [ "$2" = "$expected_size" ] || \
-            fail "контрольная сумма не совпадает: $rel"
+        actual_size=$(wc -c < "$BUNDLE_DIR/$rel" | tr -d '[:space:]') || \
+            fail "не удалось проверить $rel"
+        [ "$actual_size" = "$expected_size" ] || fail "размер файла не совпадает: $rel"
     done < "$manifest"
 }
 

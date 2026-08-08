@@ -151,8 +151,6 @@ esac
   fail "--zapret2 не соответствует --platform $platform"
 [ "$want_openwrt" -eq 1 ] || [ -z "$openwrt_archive" ] || \
   fail "--zapret2-openwrt не соответствует --platform $platform"
-command -v cksum >/dev/null 2>&1 || fail "для сборки требуется cksum"
-
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/zator-offline.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
 download_dir="$work_dir/downloads"
@@ -233,8 +231,9 @@ chmod +x "$bundle_dir/z2r" "$payload_dir/z2r.sh"
 (
   cd "$bundle_dir"
   find payload vendor -type f -print | LC_ALL=C sort | while IFS= read -r file; do
-    cksum "$file"
-  done > MANIFEST.cksum
+    size="$(wc -c < "$file" | tr -d '[:space:]')"
+    printf '%s %s\n' "$size" "$file"
+  done > MANIFEST.files
 )
 
 if [ -z "$output" ]; then
