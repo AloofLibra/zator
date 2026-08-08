@@ -21,7 +21,13 @@ SLM_TESTING = SLM_TESTING or {}
 
 -- Auto-locked strategies (persisted to disk, auto-learned only)
 SLM_AUTO_LOCKED = SLM_AUTO_LOCKED or {}
-local SLM_AUTO_LOCKED_PATH = "/opt/zapret2/extra_strats/cache/orchestra/auto_locked.tsv"
+-- Рабочий файл часто меняется, поэтому держим его в tmpfs. Копия в /opt
+-- нужна только для восстановления после перезапуска и обновляется с паузой,
+-- чтобы не изнашивать flash-накопитель роутера частыми мелкими записями.
+local SLM_AUTO_LOCKED_PATH = "/tmp/auto_locked.tsv"
+local SLM_AUTO_LOCKED_BACKUP_PATH = "/opt/zapret2/extra_strats/cache/orchestra/auto_locked.tsv"
+local SLM_AUTO_LOCKED_BACKUP_INTERVAL = 1800
+local SLM_AUTO_LOCKED_LAST_BACKUP = 0
 
 -- ==================== SEPARATE SUBDOMAINS ====================
 -- Domains that should NOT be grouped by NLD (need separate strategies)
@@ -448,30 +454,36 @@ local function slm_write_auto_locked_to(path)
     return true
 end
 
--- Writes the auto-locked table out atomically: the full table is first
--- written to a temp file, then renamed over the real path in one step.
--- os.rename on the same filesystem is atomic, so a reader (or a process
--- crash) never observes a half-written file - it sees either the complete
--- old version or the complete new version, never a truncated one.
--- Falls back to /tmp (also written atomically) if the persistent path's
--- directory isn't writable at all.
-local function slm_save_auto_locked()
-    local tmp_path = SLM_AUTO_LOCKED_PATH .. ".tmp"
-    if slm_write_auto_locked_to(tmp_path) and os.rename(tmp_path, SLM_AUTO_LOCKED_PATH) then
-        return
-    end
-
-    if DLOG then
-        DLOG("slm_quality: failed to write auto locks to " .. SLM_AUTO_LOCKED_PATH)
+-- Atomically replaces `path`, so readers never see a partially written TSV.
+local function slm_write_auto_locked_atomic(path)
+    local tmp_path = path .. ".tmp"
+    if slm_write_auto_locked_to(tmp_path) and os.rename(tmp_path, path) then
+        return true
     end
     os.remove(tmp_path)
+    return false
+end
 
-    -- Fallback to /tmp if the persistent path is unavailable.
-    local fallback_tmp = "/tmp/auto_locked.tsv.tmp"
-    local fallback_path = "/tmp/auto_locked.tsv"
-    if slm_write_auto_locked_to(fallback_tmp) then
-        if not os.rename(fallback_tmp, fallback_path) then
-            os.remove(fallback_tmp)
+-- The active state is updated on every change in /tmp. The persistent copy is
+-- refreshed at most once per interval (the first change after startup is
+-- backed up immediately). If /tmp is unexpectedly unavailable, save directly
+-- to the persistent copy so the new state is not lost completely.
+local function slm_save_auto_locked()
+    local active_saved = slm_write_auto_locked_atomic(SLM_AUTO_LOCKED_PATH)
+    if not active_saved and DLOG then
+        DLOG("slm_quality: failed to write active auto locks to " .. SLM_AUTO_LOCKED_PATH)
+    end
+
+    local now = os.time()
+    local backup_due = SLM_AUTO_LOCKED_LAST_BACKUP == 0 or
+        now < SLM_AUTO_LOCKED_LAST_BACKUP or
+        now - SLM_AUTO_LOCKED_LAST_BACKUP >= SLM_AUTO_LOCKED_BACKUP_INTERVAL
+
+    if not active_saved or backup_due then
+        if slm_write_auto_locked_atomic(SLM_AUTO_LOCKED_BACKUP_PATH) then
+            SLM_AUTO_LOCKED_LAST_BACKUP = now
+        elseif DLOG then
+            DLOG("slm_quality: failed to back up auto locks to " .. SLM_AUTO_LOCKED_BACKUP_PATH)
         end
     end
 end
@@ -481,6 +493,7 @@ local function slm_set_auto_locked(askey, hostkey, strategy_id)
     if not SLM_AUTO_LOCKED[askey] then
         SLM_AUTO_LOCKED[askey] = {}
     end
+    if SLM_AUTO_LOCKED[askey][hostkey] == strategy_id then return end
     SLM_AUTO_LOCKED[askey][hostkey] = strategy_id
     slm_save_auto_locked()
 end
@@ -905,7 +918,17 @@ local function slm_load_auto_locked()
     if SLM_AUTO_LOCKED._loaded then return end
     SLM_AUTO_LOCKED._loaded = true
 
-    local f = io.open(SLM_AUTO_LOCKED_PATH, "r")
+    -- Normally reuse the current /tmp state (it may already have been created
+    -- by another nfqws2 process). After reboot /tmp is empty, so restore from
+    -- the persistent backup and immediately recreate the active file.
+    local source_path = SLM_AUTO_LOCKED_PATH
+    local f = io.open(source_path, "r")
+    local restored_from_backup = false
+    if not f then
+        source_path = SLM_AUTO_LOCKED_BACKUP_PATH
+        f = io.open(source_path, "r")
+        restored_from_backup = f ~= nil
+    end
     if not f then return end
     for line in f:lines() do
         if line and line ~= "" then
@@ -926,6 +949,10 @@ local function slm_load_auto_locked()
         end
     end
     f:close()
+
+    if restored_from_backup and not slm_write_auto_locked_atomic(SLM_AUTO_LOCKED_PATH) and DLOG then
+        DLOG("slm_quality: failed to restore active auto locks to " .. SLM_AUTO_LOCKED_PATH)
+    end
 end
 
 --- Предзагрузка заблокированных стратегий для хоста
