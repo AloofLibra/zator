@@ -93,6 +93,29 @@ validate_tar() {
     fail "в $archive отсутствует install_easy.sh"
 }
 
+strip_windows_binaries() {
+  local archive="$1" version="$2" base strip_root win_dir listing
+  base="$(basename -- "$archive")"
+  strip_root="$work_dir/strip-$base"
+  rm -rf "$strip_root"
+  mkdir -p "$strip_root"
+  listing="$(tar -tzf "$archive" 2>/dev/null || true)"
+  case "$listing" in
+    *"zapret2-v${version}/binaries/windows-"*) ;;
+    *)
+      rm -rf "$strip_root"
+      return 0
+      ;;
+  esac
+  tar -xzf "$archive" -C "$strip_root" || fail "не удалось распаковать $archive для удаления windows-бинарников"
+  for win_dir in "$strip_root"/zapret2-v"$version"/binaries/windows-*; do
+    [ -e "$win_dir" ] || continue
+    rm -rf "$win_dir"
+  done
+  tar -czf "$archive" -C "$strip_root" "zapret2-v$version" || fail "не удалось пересобрать $archive без windows-бинарников"
+  rm -rf "$strip_root"
+}
+
 project_tree_is_valid() {
   local root="$1" dir file
 
@@ -264,9 +287,11 @@ fi
 
 if [ -n "$zapret2_archive" ]; then
   validate_tar "$zapret2_archive" "$version"
+  strip_windows_binaries "$zapret2_archive" "$version"
 fi
 if [ -n "$openwrt_archive" ]; then
   validate_tar "$openwrt_archive" "$version"
+  strip_windows_binaries "$openwrt_archive" "$version"
 fi
 
 bundle_name="zator-offline-$version"
