@@ -145,7 +145,8 @@ local mock_locked = nil
 local mock_failure = false
 local mock_validated = false
 
-G.orchestrate = function() end
+local orchestrate_calls = 0
+G.orchestrate = function() orchestrate_calls = orchestrate_calls + 1 end
 G.automate_host_record = function(desync) return desync._hrec end
 G.automate_conn_record = function(desync) return desync._crec end
 G.standard_hostkey = function() return "test.example" end
@@ -165,6 +166,13 @@ G.test_provisional_success = function(_, crec)
     if mock_validated then crec.validated_success = true end
     return true
 end
+
+local empty_ack = {
+    outgoing = false,
+    dis = { tcp = { th_flags = 0 }, payload = "" },
+}
+circular_quality(nil, empty_ack)
+assert(orchestrate_calls == 0, "empty non-RST TCP packets must bypass orchestration")
 
 -- Auto counterparts of fallback/substrings blocks must retain circular_locked
 -- routing: they are not catch-all and route matching no-host traffic to key 3.

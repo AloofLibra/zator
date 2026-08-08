@@ -397,7 +397,7 @@ NFQWS2_OPT="
 --skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --filter-l7=tls
 --hostlist-exclude=/opt/zapret2/extra_strats/TCP_Discord.txt
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
+--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
 --out-range=-s34228
 --in-range=-s32768 --lua-desync=circular_quality:key=3:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zapret2/lua/strategy-validator.sh
 --import=z2r_tcp_tls_common
@@ -408,7 +408,7 @@ NFQWS2_OPT="
 #Z2R_AUTO_4_BEGIN
 --skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --hostlist=/opt/zapret2/extra_strats/TCP_Discord.txt
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
+--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
 --out-range=-s34228
 --in-range=-s32768 --lua-desync=circular_quality:key=4:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zapret2/lua/strategy-validator.sh
 --in-range=x
@@ -448,9 +448,11 @@ NFQWS2_OPT="
 #Z2R_AUTO_9_BEGIN
 --skip --filter-tcp=80 --filter-l7=http
 --hostlist-exclude=/opt/zapret2/lists/netrogat.txt
---payload=http_req
+--payload=http_req,empty
 --out-range=-n19
---lua-desync=circular_quality:key=9:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3
+--in-range=-s32768 --lua-desync=circular_quality:key=9:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3
+--in-range=x
+--payload=http_req
 --lua-desync=http_hostcase:spell=hoSt:strategy=1 --lua-desync=http_domcase:strategy=1
 --lua-desync=multisplit:pos=method+2,host+1,midsld:strategy=2
 --lua-desync=multidisorder:pos=method+2,host+1,midsld:strategy=3

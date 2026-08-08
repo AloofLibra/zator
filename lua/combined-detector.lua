@@ -1431,6 +1431,17 @@ function circular_quality(ctx, desync)
         return VERDICT_PASS
     end
 
+    -- AUTO profiles also pass payload_type=empty so an incoming TCP RST can
+    -- reach the failure detector.  Empty ACK/SYN/FIN packets are common and
+    -- carry no quality signal; reject them before orchestrate() to avoid doing
+    -- the full strategy-plan work for every acknowledgement.
+    local tcp = desync.dis and desync.dis.tcp
+    local payload = desync.dis and desync.dis.payload
+    if tcp and (not payload or #payload == 0)
+        and bitand(tcp.th_flags or 0, TH_RST) == 0 then
+        return VERDICT_PASS
+    end
+
     -- CRITICAL: Take over execution FIRST! This populates desync.plan from C code
     -- Without this call, desync.plan is nil and we can't orchestrate strategies
     orchestrate(ctx, desync)
