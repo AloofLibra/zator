@@ -30,10 +30,53 @@ Bpink='\033[45m'
 Bcyan='\033[46m'
 
 
+if [ "${1:-}" = "--source" ]; then
+  SOURCE_URL="${2:-}"
+  if [ -z "$SOURCE_URL" ]; then
+    echo "Ошибка: после --source нужен GitHub URL вида https://github.com/owner/repo/tree/ref" >&2
+    exit 2
+  fi
+  SOURCE_URL="${SOURCE_URL%/}"
+
+  case "$SOURCE_URL" in
+    https://github.com/*/*/tree/*) ;;
+    *)
+      echo "Ошибка: --source принимает GitHub URL вида https://github.com/owner/repo/tree/ref" >&2
+      exit 2
+      ;;
+  esac
+
+  SOURCE_PATH="${SOURCE_URL#https://github.com/}"
+  SOURCE_OWNER="${SOURCE_PATH%%/*}"
+  SOURCE_PATH="${SOURCE_PATH#*/}"
+  SOURCE_REPO="${SOURCE_PATH%%/*}"
+  SOURCE_REF="${SOURCE_PATH#*/tree/}"
+
+  case "$SOURCE_OWNER/$SOURCE_REPO" in
+    */|/*|*/*[!A-Za-z0-9_.-]*|*[!A-Za-z0-9_.-]*/*)
+      echo "Ошибка: неверный owner или repo в --source" >&2
+      exit 2
+      ;;
+  esac
+  case "$SOURCE_REF" in
+    ''|*'?'*|*'#'*|*[[:space:]]*)
+      echo "Ошибка: неверный ref в --source" >&2
+      exit 2
+      ;;
+  esac
+
+  Z2R_REPOSITORY="${SOURCE_OWNER}/${SOURCE_REPO}"
+  Z2R_BRANCH="$SOURCE_REF"
+  Z2R_PROJECT_RAW_BASE="https://raw.githubusercontent.com/${Z2R_REPOSITORY}/${Z2R_BRANCH}"
+  export Z2R_REPOSITORY Z2R_BRANCH Z2R_PROJECT_RAW_BASE
+  shift 2
+fi
+
 z2r_github_commit_date() {
   local path="$1" timeout="${2:-10}"
   [ "${Z2R_OFFLINE:-0}" != "1" ] || return 0
-  curl -s --max-time "$timeout" "https://api.github.com/repos/AloofLibra/zator/commits?path=${path}&per_page=1" \
+  local repository="${Z2R_REPOSITORY:-AloofLibra/zator}"
+  curl -s --max-time "$timeout" "https://api.github.com/repos/${repository}/commits?path=${path}&sha=${Z2R_BRANCH}&per_page=1" \
     | grep '"date"' | head -n1 | cut -d'"' -f4
 }
 
