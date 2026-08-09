@@ -237,7 +237,7 @@ function updateTlsBlobSubmit() {
   const submit = form.querySelector('button[type="submit"]');
   if (!submit) return;
   const saved = select.dataset.saved || '';
-  submit.disabled = select.value === saved;
+  submit.disabled = !select.value || select.value === saved;
 }
 
 function updateWgFieldsState() {
@@ -641,39 +641,57 @@ function renderSettings() {
 
   const settings = state.tlsBlobSettings;
 
+  const mode = settings.current_mode || '';
+  const isBuiltin = mode === 'fake_default_tls';
 
-  const modeText = settings.current_mode === 'fake_default_tls' ? 'default' : settings.current_mode;
-  statusChip.textContent = modeText;
+  const maxruFile = settings.current_blob || '';
+
+
+  let statusText;
+  if (mode === 'fake_default_tls') {
+    statusText = 'default';
+  } else {
+    statusText = mode || 'не определён';
+  }
+  statusChip.textContent = statusText;
   statusChip.className = 'chip';
-  if (settings.current_mode === 'maxru') {
+  if (mode === 'maxru') {
     statusChip.classList.add('is-ok');
   }
 
+  currentFile.textContent = (!isBuiltin && maxruFile) ? maxruFile : '—';
 
-  const effectiveBlob = settings.current_mode === 'fake_default_tls'
-    ? 'fake_default_tls'
-    : (settings.current_blob || '');
-  currentFile.textContent = effectiveBlob || '—';
+  const listedBlobs = Array.isArray(settings.available_blobs) ? settings.available_blobs : [];
+  const blobs = (maxruFile && !listedBlobs.includes(maxruFile))
+    ? [maxruFile, ...listedBlobs]
+    : listedBlobs;
 
-  select.innerHTML = '<option value="fake_default_tls">fake_default_tls (встроенный)</option>';
+  select.innerHTML = '';
 
-  if (Array.isArray(settings.available_blobs)) {
-    settings.available_blobs.forEach(blob => {
-      const option = document.createElement('option');
-      option.value = blob;
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  if (!isBuiltin && maxruFile) {
+    placeholder.textContent = maxruFile + ' (текущий) — выберите файл';
+  } else {
+    placeholder.textContent = 'fake_default_tls(default) — выберите файл';
+  }
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  select.appendChild(placeholder);
+
+  blobs.forEach(blob => {
+    const option = document.createElement('option');
+    option.value = blob;
+    if (!isBuiltin && blob === maxruFile) {
+      option.textContent = blob + ' (текущий)';
+      option.disabled = true;
+    } else {
       option.textContent = blob;
-      if (blob === effectiveBlob) {
-        option.selected = true;
-      }
-      select.appendChild(option);
-    });
-  }
+    }
+    select.appendChild(option);
+  });
 
-  if (effectiveBlob) {
-    select.value = effectiveBlob;
-  }
-
-  select.dataset.saved = effectiveBlob || 'fake_default_tls';
+  select.dataset.saved = maxruFile;
   updateTlsBlobSubmit();
   if (select.dataset.bound !== '1') {
     select.addEventListener('change', updateTlsBlobSubmit);
@@ -692,6 +710,10 @@ async function refreshTlsBlobSettings() {
 }
 
 async function applyTlsBlob(blob) {
+  if (!blob || blob === 'fake_default_tls') {
+    showToast('Выберите файл блоба. Возврат на встроенный блоб недоступен.', 'error');
+    return;
+  }
   try {
     const payload = await api('/cgi-bin/settings.cgi', {
       method: 'POST',
