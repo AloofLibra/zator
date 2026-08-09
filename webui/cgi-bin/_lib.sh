@@ -38,7 +38,14 @@ telemetry_notify() {
 }
 
 json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\n/\\n/g'
+  printf '%s' "$1" | awk 'BEGIN{ORS=""}
+  {
+    gsub(/\\/, "\\\\")
+    gsub(/"/, "\\\"")
+    gsub(/\r/, "")
+    if (NR>1) printf "\\n"
+    printf "%s", $0
+  }'
 }
 
 send_json() {
@@ -364,10 +371,12 @@ api_tls_blob_set() {
   local sed_ereg prefix
 
   case "$blob" in
-    fake_default_tls)
-      ;;
     tls_*.bin|custom_tls.bin)
       [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
+      ;;
+    fake_default_tls)
+
+      send_error "400 Bad Request" "Возврат на встроенный блоб недоступен"
       ;;
     *)
       send_error "400 Bad Request" "Некорректное значение блоба: $blob"
@@ -383,12 +392,8 @@ api_tls_blob_set() {
     send_error "500 Internal Server Error" "Строка --blob=maxru не найдена в конфиге"
   fi
 
-  if [ "$blob" = "fake_default_tls" ]; then
-    sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)maxru#\1fake_default_tls#g; }' "$cfg"
-  else
-    sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
-    sed -i $sed_ereg "s#(${prefix})[^[:space:]]+#\\1${blob}#g" "$cfg"
-  fi
+  sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
+  sed -i $sed_ereg "s#(${prefix})[^[:space:]]+#\\1${blob}#g" "$cfg"
 
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
@@ -652,8 +657,18 @@ _domains_resolve_list() {
         "Кастомные домены под RKN-стратегию. Для каждого можно зафиксировать номер стратегии."
       ;;
     substring)
-      printf '%s|%s|%s|%s' "$(rkn_substring_file)" "substring" "Подстроки (TCP_RKN_domains_by_substring)" \
-        "Подстроки имени домена для RKN. Без нормализации — как есть."
+      # Длинное описание собираем отдельно через %b (интерпретирует \n), чтобы
+      # в редакторе строка была читаемой, а в WebUI отображалась с переносами.
+      # Контракт полей: file|kind|title|desc — desc не должен содержать '|'.
+      local desc
+      desc="$(printf '%b' \
+        "Подстроки имени домена для RKN. Без нормализации — как есть.\n" \
+        "Добавьте часть имени домена, и все домены с таким текстом будут обрабатываться стратегией РКН.\n" \
+        "Например, если добавить cdn, стратегия РКН будет применяться к:\n" \
+        "cdn-1.mysite.com, mycdn.com и другим доменам, в названии которых есть cdn.\n" \
+        "Примеры корректного ввода: cdn, media, static, assets")"
+      printf '%s|%s|%s|%s' "$(rkn_substring_file)" "substring" \
+        "Подстроки (TCP_RKN_domains_by_substring)" "$desc"
       ;;
     *)
       return 1
