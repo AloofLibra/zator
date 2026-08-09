@@ -125,7 +125,7 @@ all_profiles_json() {
   printf ','
   profile_json 2 "Googlevideo" "Видео-домены YouTube"
   printf ','
-  profile_json 3 "Blocked Sites" "Основные блокировки сайтов"
+  profile_json 3 "RKN Лист" "Основные блокировки сайтов"
   printf ','
   profile_json 4 "Discord TCP" "TCP профиль Discord"
   printf ','
