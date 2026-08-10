@@ -281,7 +281,7 @@ config_mode_text() {
 }
 
 menu_config_snapshot() {
-  local cfg_text="$1"
+  local cfg="$1"
 
   MENU_FWTYPE="неизвестно"
   MENU_FLOWOFFLOAD="неизвестно"
@@ -292,62 +292,99 @@ menu_config_snapshot() {
   MENU_UDP_GAMES="Неизвестно"
   MENU_PORTS="дефолт"
 
-  [ -n "$cfg_text" ] || return 0
+  [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
 
   local fwtype flowoffload mode_filter auto_mode has_skip has_filter_tcp
-  local has_tls_maxru has_tls_default blob_file ports_tcp ports_udp has_rst
-  has_skip=0 has_filter_tcp=0 has_tls_maxru=0 has_tls_default=0 blob_file=""
-  has_rst=0
-  fwtype="" flowoffload="" mode_filter="" auto_mode=0 ports_tcp="" ports_udp=""
+  local has_tls_maxru has_tls_default has_rst blob_file udp_games ports
+  fwtype="" flowoffload="" mode_filter=""
+  udp_games="" ports=""
+  auto_mode=0 has_skip=0 has_filter_tcp=0 has_tls_maxru=0 has_tls_default=0 has_rst=0 blob_file=""
 
-  eval "$(printf '%s' "$cfg_text" | awk '
-    {
-      sub(/\r$/, "")
-    }
+  local _k _v _tmp
+  _tmp="/tmp/z2r_menu_cfg_$$"
+  awk '
+    { sub(/\r$/, "") }
     /^[[:space:]]*FWTYPE=/ {
-      v = $0; sub(/^[[:space:]]*FWTYPE=/, "", v); print "fwtype=" v
+      v = $0; sub(/^[[:space:]]*FWTYPE=/, "", v)
+      print "_fwtype=" v
     }
     /^[[:space:]]*FLOWOFFLOAD=/ {
-      v = $0; sub(/^[[:space:]]*FLOWOFFLOAD=/, "", v); print "flowoffload=" v
+      v = $0; sub(/^[[:space:]]*FLOWOFFLOAD=/, "", v)
+      print "_flowoffload=" v
     }
     /^[[:space:]]*MODE_FILTER=/ {
-      v = $0; sub(/^[[:space:]]*MODE_FILTER=/, "", v); print "mode_filter=" v
+      v = $0; sub(/^[[:space:]]*MODE_FILTER=/, "", v)
+      print "_mode_filter=" v
     }
-    /^#Z2R_AUTO_MODE=1[[:space:]]*$/ { print "auto_mode=1" }
-    /NFQWS2_PORTS_TCP=/ {
-      if (match($0, /NFQWS2_PORTS_TCP=[^ \t]*/)) {
-        v = substr($0, RSTART + length("NFQWS2_PORTS_TCP="), RLENGTH - length("NFQWS2_PORTS_TCP="))
-        print "ports_tcp=" v
-      }
+    /^[[:space:]]*NFQWS2_PORTS_TCP=/ {
+      v = $0; sub(/^[[:space:]]*NFQWS2_PORTS_TCP=/, "", v)
+      ports_tcp = v
     }
-    /NFQWS2_PORTS_UDP=/ {
-      if (match($0, /NFQWS2_PORTS_UDP=[^ \t]*/)) {
-        v = substr($0, RSTART + length("NFQWS2_PORTS_UDP="), RLENGTH - length("NFQWS2_PORTS_UDP="))
-        print "ports_udp=" v
-      }
+    /^[[:space:]]*NFQWS2_PORTS_UDP=/ {
+      v = $0; sub(/^[[:space:]]*NFQWS2_PORTS_UDP=/, "", v)
+      ports_udp = v
     }
-    /^[[:space:]]*#Z2R_FALLBACK_BEGIN[[:space:]]*$/ { in_fb_tls = 1 }
-    /^[[:space:]]*#Z2R_FALLBACK_END[[:space:]]*$/ { in_fb_tls = 0 }
-    /^[[:space:]]*#Z2R_FALLBACK_HTTP_BEGIN[[:space:]]*$/ { in_fb_http = 1 }
-    /^[[:space:]]*#Z2R_FALLBACK_HTTP_END[[:space:]]*$/ { in_fb_http = 0 }
+    /^#Z2R_AUTO_MODE=1[[:space:]]*$/ { print "_auto_mode=1" }
+    /^[[:space:]]*#Z2R_FALLBACK_BEGIN[[:space:]]*$/      { in_fb = 1 }
+    /^[[:space:]]*#Z2R_FALLBACK_END[[:space:]]*$/        { in_fb = 0 }
+    /^[[:space:]]*#Z2R_FALLBACK_HTTP_BEGIN[[:space:]]*$/ { in_fb = 1 }
+    /^[[:space:]]*#Z2R_FALLBACK_HTTP_END[[:space:]]*$/   { in_fb = 0 }
     {
-      if (in_fb_tls || in_fb_http) {
-        if ($0 ~ /^[[:space:]]*--skip([[:space:]]|$)/) print "has_skip=1"
-        if ($0 ~ /^[[:space:]]*--filter-tcp=/) print "has_filter_tcp=1"
+      if (in_fb) {
+        if ($0 ~ /^[[:space:]]*--skip([[:space:]]|$)/) print "_has_skip=1"
+        if ($0 ~ /^[[:space:]]*--filter-tcp=/) print "_has_filter_tcp=1"
       }
-      if ($0 ~ /--lua-desync=/ && $0 ~ /blob=maxru/ && $0 !~ /strategy=26/) print "has_tls_maxru=1"
-      if ($0 ~ /--lua-desync=/ && $0 ~ /blob=fake_default_tls/ && $0 !~ /strategy=26/) print "has_tls_default=1"
-      if ($0 ~ /--lua-desync=rst_guard_locked:key=/) print "has_rst=1"
-      if (blob_done == 0 && $0 ~ /--blob=maxru:@\/opt\/zapret2\/files\/fake\//) {
-        if (match($0, /--blob=maxru:@\/opt\/zapret2\/files\/fake\/[^[:space:]]+/)) {
-          prefix = "--blob=maxru:@/opt/zapret2/files/fake/"
-          bf = substr($0, RSTART + length(prefix), RLENGTH - length(prefix))
-          print "blob_file=" bf
-          blob_done = 1
-        }
+      if ($0 ~ /--lua-desync=/ && $0 ~ /blob=maxru/ && $0 !~ /strategy=26/) print "_has_tls_maxru=1"
+      if ($0 ~ /--lua-desync=/ && $0 ~ /blob=fake_default_tls/ && $0 !~ /strategy=26/) print "_has_tls_default=1"
+      if ($0 ~ /--lua-desync=rst_guard_locked:key=/) print "_has_rst=1"
+      if (blob_done == 0 && match($0, /--blob=maxru:@\/opt\/zapret2\/files\/fake\/[^[:space:]]+/)) {
+        p = "--blob=maxru:@/opt/zapret2/files/fake/"
+        print "_blob_file=" substr($0, RSTART + length(p), RLENGTH - length(p))
+        blob_done = 1
       }
     }
-  ')"
+    END {
+      if (ports_udp == "") out_udp = "Неизвестно"
+      else {
+        udp_re = "(^|,)1026-65531(,|$)"
+        if (ports_udp ~ udp_re) out_udp = "Включен"
+        else out_udp = "Выключен"
+      }
+      n = 0
+      for (idx = 1; idx <= 2; idx++) {
+        if (idx == 1) { line = ports_tcp; anchor = "80" }
+        else          { line = ports_udp; anchor = "443" }
+        u = ""; started = 0
+        nc = split(line, tk, ",")
+        for (i = 1; i <= nc; i++) {
+          if (!started && tk[i] == anchor) started = 1
+          if (!started && tk[i] != "") u = (u == "" ? u : u ",") tk[i]
+        }
+        if (u != "") { nu = split(u, dummy, ","); n += nu }
+      }
+      out_ports = (n > 0 ? "добавлено портов: " n : "дефолт")
+      print "_udp_games=" out_udp
+      print "_ports=" out_ports
+    }
+  ' "$cfg" > "$_tmp"
+
+  while IFS='=' read -r _k _v; do
+    case "$_k" in
+      _fwtype) fwtype="$_v" ;;
+      _flowoffload) flowoffload="$_v" ;;
+      _mode_filter) mode_filter="$_v" ;;
+      _auto_mode) auto_mode="$_v" ;;
+      _has_skip) has_skip="$_v" ;;
+      _has_filter_tcp) has_filter_tcp="$_v" ;;
+      _has_tls_maxru) has_tls_maxru="$_v" ;;
+      _has_tls_default) has_tls_default="$_v" ;;
+      _has_rst) has_rst="$_v" ;;
+      _blob_file) blob_file="$_v" ;;
+      _udp_games) udp_games="$_v" ;;
+      _ports) ports="$_v" ;;
+    esac
+  done < "$_tmp"
+  rm -f "$_tmp"
 
   MENU_FWTYPE="$fwtype"
   MENU_FLOWOFFLOAD="$flowoffload"
@@ -383,38 +420,8 @@ menu_config_snapshot() {
 
   [ "$has_rst" = "1" ] && MENU_RST_GUARD="включен"
 
-  _menu_snapshot_udp_games "$ports_udp"
-  _menu_snapshot_ports "$ports_tcp" "$ports_udp"
-}
-
-_menu_snapshot_udp_games() {
-  local udp="$1"
-  if printf '%s' "$udp" | grep -Eq '(^|,)1026-65531(,|$)'; then
-    MENU_UDP_GAMES="Включен"
-  elif [ -n "$udp" ]; then
-    MENU_UDP_GAMES="Выключен"
-  fi
-}
-
-_menu_snapshot_ports() {
-  local tcp="$1" udp="$2"
-  local n=0 user line anchor arr tok started
-  for pair in "$tcp:80" "$udp:443"; do
-    line="${pair%:*}"; anchor="${pair##*:}"
-    user=""; started=0
-    IFS=',' read -ra arr <<< "$line"
-    for tok in "${arr[@]}"; do
-      [ "$started" -eq 0 ] && [ "$tok" = "$anchor" ] && started=1
-      if [ "$started" -eq 0 ] && [ -n "$tok" ]; then
-        user="${user:+$user,}$tok"
-      fi
-    done
-    if [ -n "$user" ]; then
-      IFS=',' read -ra arr <<< "$user"
-      n=$((n + ${#arr[@]}))
-    fi
-  done
-  [ "$n" -gt 0 ] && MENU_PORTS="добавлено портов: $n"
+  [ -n "$udp_games" ] && MENU_UDP_GAMES="$udp_games"
+  [ -n "$ports" ] && MENU_PORTS="$ports"
 }
 
 config_profile_max_strategy() {
