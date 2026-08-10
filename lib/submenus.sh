@@ -37,12 +37,12 @@ strategies_submenu() {
     if [ "$auto_enabled" = "1" ]; then
       echo -e "${Fcyan}	1-4.${plain} ${red}Ручной выбор TCP-стратегий недоступен при авторотации${plain}"
     else
-      submenu_item "	1" "Профиль 1: TCP 80/443 (YouTube) [${p1_max:-0}]" "tls" "$STRATEGY_STATE_YT_TLS"
-      submenu_item "	2" "Профиль 2: TCP 80/443 (Googlevideo) [${p2_max:-0}]" "tls" "$STRATEGY_STATE_GV_TLS"
-      submenu_item "	3" "Профиль 3: TCP 80/443 (RKN) [${p3_max:-0}]" "tls" "$STRATEGY_STATE_RKN_TLS"
-      submenu_item "	4" "Профиль 4: TCP 80/443 (Discord) [${p4_max:-0}]" "tls" "$STRATEGY_STATE_DS_TLS"
+      submenu_item "	1" "Профиль 1: TCP 443 (YouTube) [${p1_max:-0}]" "tls" "$STRATEGY_STATE_YT_TLS"
+      submenu_item "	2" "Профиль 2: TCP 443 (Googlevideo) [${p2_max:-0}]" "tls" "$STRATEGY_STATE_GV_TLS"
+      submenu_item "	3" "Профиль 3: TCP 443 (RKN) [${p3_max:-0}]" "tls" "$STRATEGY_STATE_RKN_TLS"
+      submenu_item "	4" "Профиль 4: TCP 443 (Discord) [${p4_max:-0}]" "tls" "$STRATEGY_STATE_DS_TLS"
     fi
-    submenu_item "	5" "Профиль 5: UDP 443 (YouTube QUIC) [${p5_max:-0}]" "udp" "$STRATEGY_STATE_YT_QUIC_UDP"
+    submenu_item "	5" "Профиль 5: UDP 443 (QUIC) [${p5_max:-0}]" "udp" "$STRATEGY_STATE_YT_QUIC_UDP"
     submenu_item "	6" "Профиль 6: UDP Voice (Discord/STUN) [${p6_max:-0}]" "udp" "$STRATEGY_STATE_VOICE_UDP"
     if [ "$games_disabled" = "1" ]; then
       echo -e "${Fcyan}	7.${plain} ${red}Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]${plain} ${red}[выключен — включите обход UDP, п.10]${plain}"
@@ -67,7 +67,7 @@ strategies_submenu() {
     if [ "$auto_enabled" = "1" ]; then
       case "$ans" in
         1|2|3|4|8|9)
-          echo -e "${yellow}Ручной выбор TCP/HTTP-стратегий недоступен при авторотации.${plain}"
+          echo -e "${yellow}Ручной выбор TCP-стратегий недоступен при авторотации.${plain}"
           pause_enter
           continue
           ;;
@@ -76,20 +76,20 @@ strategies_submenu() {
 
     case "$ans" in
       "1")
-        orch_profile_try "1" "Профиль 1: TCP 80/443 (YouTube)" "tls http" "https://www.youtube.com/"
+        orch_profile_try "1" "Профиль 1: TCP 443 (YouTube)" "tls http" "https://www.youtube.com/"
         ;;
       "2")
-        orch_profile_try "2" "Профиль 2: TCP 80/443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
+        orch_profile_try "2" "Профиль 2: TCP 443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
         ;;
       "3")
-        orch_profile_try "3" "Профиль 3: TCP 80/443 (RKN)" "tls" "https://meduza.io"
+        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://meduza.io"
         ;;
       "4")
-        orch_profile_try "4" "Профиль 4: TCP 80/443 (Discord)" "tls" "https://discord.com/"
+        orch_profile_try "4" "Профиль 4: TCP 443 (Discord)" "tls" "https://discord.com/"
         ;;
       "5")
         echo -e "${yellow}Проверьте работоспособность в браузере.${plain}"
-        orch_profile_try "5" "Профиль 5: UDP 443 (YouTube QUIC)" "udp" ""
+        orch_profile_try "5" "Профиль 5: UDP 443 (QUIC)" "udp" ""
         ;;
       "6")
         echo -e "${yellow}Проверьте работоспособность в приложении.${plain}"
