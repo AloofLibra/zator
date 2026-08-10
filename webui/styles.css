@@ -471,7 +471,7 @@ button.primary.is-busy::after,
 
 .panel { display: grid; gap: 12px; }
 
-.panel-desc {
+#domains-desc {
   white-space: pre-wrap;
   line-height: 1.45;
 }

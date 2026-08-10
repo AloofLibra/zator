@@ -18,6 +18,11 @@ Primary entrypoint:
 
 - `z2r.sh`: main script for install, update, environment detection, config deployment, menu actions, and strategy lock lifecycle.
 
+External launcher:
+
+- [`AloofLibra/z4r:z2r`](https://github.com/AloofLibra/z4r/blob/z2r/z2r) is the POSIX `sh` bootstrap/update launcher distributed to users. It lives in a separate repository and installs the persistent `z2r` command, downloads this repository's `zator` branch into the `/opt` runtime layout (including `z2r.sh`, `lib/`, and orchestra files), then runs `/opt/z2r.sh`.
+- Changes to download paths, branch names, deployed library or orchestra filenames, install layout, and bootstrap/update behavior must be checked for compatibility with this external launcher. If the launcher also needs a change, note that explicitly because it cannot be updated from this workspace.
+
 Secondary helper scripts:
 
 - `z4r_test.sh`

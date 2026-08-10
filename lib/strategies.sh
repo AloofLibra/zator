@@ -706,22 +706,22 @@ Strats_Tryer() {
     "1")
       #вывод подсказки
       show_hint "UDP"
-      orch_profile_try "5" "Профиль 5: UDP 443 (YouTube QUIC)" "udp" ""
+      orch_profile_try "5" "Профиль 5: UDP 443 (QUIC)" "udp" ""
       ;;
     "2")
       #вывод подсказки
       show_hint "TCP"
-      orch_profile_try "1" "Профиль 1: TCP 80/443 (YouTube)" "tls http" "https://www.youtube.com/"
+      orch_profile_try "1" "Профиль 1: TCP 443 (YouTube)" "tls http" "https://www.youtube.com/"
       ;;
     "3")
       #вывод подсказки
       show_hint "GV"
-      orch_profile_try "2" "Профиль 2: TCP 80/443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
+      orch_profile_try "2" "Профиль 2: TCP 443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
       ;;
     "4")
       #вывод подсказки
       show_hint "RKN"
-      orch_profile_try "3" "Профиль 3: TCP 80/443 (RKN)" "tls" "https://meduza.io"
+      orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://meduza.io"
       ;;
     *)
       manage_custom_rkn_domain "$mode_domain"

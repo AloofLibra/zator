@@ -419,9 +419,61 @@ _menu_snapshot_ports() {
 
 config_profile_max_strategy() {
   local profile="$1"
-  local cfg
+  local cfg keyed_max
   cfg="$(config_get_file "$2")" || { echo 0; return 0; }
 
+  # Профиль задаётся логическим key=N, а не позицией блока между --new.
+  # Порядок блоков может меняться (в том числе в локальных конфигах и авто-режиме),
+  # поэтому сначала ищем стратегии в блоках с нужным ключом.
+  keyed_max="$(awk -v pid="$profile" '
+      function scan_strategies(line) {
+          while (match(line, /strategy=[0-9]+/)) {
+              num=substr(line, RSTART+9, RLENGTH-9)+0
+              if (in_template && num>tplmax[tpl]) tplmax[tpl]=num
+              if (!in_template && active && num>max) max=num
+              line=substr(line, RSTART+RLENGTH)
+          }
+      }
+      BEGIN {
+          inopt=0
+          in_template=0
+          active=0
+          tpl=""
+          max=0
+          key_re="--lua-desync=(circular_locked|circular_quality|rst_guard_locked):key=" pid "([^0-9]|$)"
+      }
+      /^NFQWS2_OPT="/ {inopt=1}
+      inopt {
+          if ($0 ~ /^--template=/) {
+              in_template=1
+              active=0
+              tpl=$0
+              sub(/^--template=/, "", tpl)
+              sub(/[[:space:]].*$/, "", tpl)
+          } else if ($0 ~ /^[[:space:]]*--new[[:space:]]*$/) {
+              in_template=0
+              active=0
+              tpl=""
+          } else if (!in_template && $0 ~ key_re) {
+              active=1
+          }
+          if (!in_template && active && $0 ~ /^--import([=[:space:]]|$)/) {
+              imp=$0
+              sub(/^--import[=[:space:]]+/, "", imp)
+              sub(/[[:space:]].*$/, "", imp)
+              if (tplmax[imp]>max) max=tplmax[imp]
+          }
+          scan_strategies($0)
+          if ($0 ~ /^"$/) exit
+      }
+      END {print max}
+  ' "$cfg")"
+  if [ -n "$keyed_max" ] && [ "$keyed_max" -gt 0 ]; then
+    echo "$keyed_max"
+    return 0
+  fi
+
+  # Совместимость со старыми конфигами без логических key=N.
   if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
     local begin_marker end_marker fallback_max
     if [ "$profile" = "9" ]; then
