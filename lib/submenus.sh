@@ -4,30 +4,23 @@
 #функция меню "1. Сменить стратегии"
 strategies_submenu() {
   while true; do
-    local strategies_status
+    clear -x
+    local strategies_status cfg
     get_orchestra_locks_info strategies_status
-    local p1_max p2_max p3_max p4_max p5_max p6_max p7_max p9_max
-    p1_max="$(orch_max_strategy_for_profile 1)"
-    p2_max="$(orch_max_strategy_for_profile 2)"
-    p3_max="$(orch_max_strategy_for_profile 3)"
-    p4_max="$(orch_max_strategy_for_profile 4)"
-    p5_max="$(orch_max_strategy_for_profile 5)"
-    p6_max="$(orch_max_strategy_for_profile 6)"
-    p7_max="$(orch_max_strategy_for_profile 7)"
-    p9_max="$(orch_max_strategy_for_profile 9)"
+    cfg="$(config_get_file 2>/dev/null)" || cfg=""
+    menu_config_snapshot "$cfg"
     # Состояние безразборного режима (fallback): если выключен,
     # пункты 8/9 (Fallback TLS/HTTP) становятся недоступными.
     local fb_state fb_disabled auto_state auto_enabled
-    fb_state="$(config_mode_text fallback)"
+    fb_state="$MENU_FALLBACK"
     [ "$fb_state" = "выключен" ] && fb_disabled=1 || fb_disabled=0
-    auto_state="$(config_mode_text auto_mode)"
+    auto_state="$MENU_AUTO_MODE"
     [ "$auto_state" = "включен" ] && auto_enabled=1 || auto_enabled=0
     # Состояние обхода UDP на 1026-65531 (пункт 10): если выключен,
     # пункт 7 (UDP Games) становится недоступным.
     local games_state games_disabled
-    games_state="$(config_mode_text udp_games)"
+    games_state="$MENU_UDP_GAMES"
     [ "$games_state" = "Выключен" ] && games_disabled=1 || games_disabled=0
-    clear -x
 
     echo -e "${cyan}--- Управление стратегиями ---${plain}"
     echo -e "${yellow}Выбор стратегии профиля (0 или Enter для выхода)${plain}"
@@ -37,26 +30,26 @@ strategies_submenu() {
     if [ "$auto_enabled" = "1" ]; then
       echo -e "${Fcyan}	1-4.${plain} ${red}Ручной выбор TCP-стратегий недоступен при авторотации${plain}"
     else
-      submenu_item "	1" "Профиль 1: TCP 443 (YouTube) [${p1_max:-0}]" "tls" "$STRATEGY_STATE_YT_TLS"
-      submenu_item "	2" "Профиль 2: TCP 443 (Googlevideo) [${p2_max:-0}]" "tls" "$STRATEGY_STATE_GV_TLS"
-      submenu_item "	3" "Профиль 3: TCP 443 (RKN) [${p3_max:-0}]" "tls" "$STRATEGY_STATE_RKN_TLS"
-      submenu_item "	4" "Профиль 4: TCP 443 (Discord) [${p4_max:-0}]" "tls" "$STRATEGY_STATE_DS_TLS"
+      submenu_item "	1" "Профиль 1: TCP 443 (YouTube) [${MENU_PROFILE_MAX_1:-0}]" "tls" "$STRATEGY_STATE_YT_TLS"
+      submenu_item "	2" "Профиль 2: TCP 443 (Googlevideo) [${MENU_PROFILE_MAX_2:-0}]" "tls" "$STRATEGY_STATE_GV_TLS"
+      submenu_item "	3" "Профиль 3: TCP 443 (RKN) [${MENU_PROFILE_MAX_3:-0}]" "tls" "$STRATEGY_STATE_RKN_TLS"
+      submenu_item "	4" "Профиль 4: TCP 443 (Discord) [${MENU_PROFILE_MAX_4:-0}]" "tls" "$STRATEGY_STATE_DS_TLS"
     fi
-    submenu_item "	5" "Профиль 5: UDP 443 (QUIC) [${p5_max:-0}]" "udp" "$STRATEGY_STATE_YT_QUIC_UDP"
-    submenu_item "	6" "Профиль 6: UDP Voice (Discord/STUN) [${p6_max:-0}]" "udp" "$STRATEGY_STATE_VOICE_UDP"
+    submenu_item "	5" "Профиль 5: UDP 443 (QUIC) [${MENU_PROFILE_MAX_5:-0}]" "udp" "$STRATEGY_STATE_YT_QUIC_UDP"
+    submenu_item "	6" "Профиль 6: UDP Voice (Discord/STUN) [${MENU_PROFILE_MAX_6:-0}]" "udp" "$STRATEGY_STATE_VOICE_UDP"
     if [ "$games_disabled" = "1" ]; then
-      echo -e "${Fcyan}	7.${plain} ${red}Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]${plain} ${red}[выключен — включите обход UDP, п.10]${plain}"
+      echo -e "${Fcyan}	7.${plain} ${red}Профиль 7: UDP Games (1026-65531) [${MENU_PROFILE_MAX_7:-0}]${plain} ${red}[выключен — включите обход UDP, п.10]${plain}"
     else
-      submenu_item "	7" "Профиль 7: UDP Games (1026-65531) [${p7_max:-0}]" "udp" "$STRATEGY_STATE_GAMES_UDP"
+      submenu_item "	7" "Профиль 7: UDP Games (1026-65531) [${MENU_PROFILE_MAX_7:-0}]" "udp" "$STRATEGY_STATE_GAMES_UDP"
     fi
     if [ "$auto_enabled" = "1" ]; then
       echo -e "${Fcyan}	8-9.${plain} ${red}Ручной выбор fallback недоступен при авторотации${plain}"
     elif [ "$fb_disabled" = "1" ]; then
       echo -e "${Fcyan}	8.${plain} ${red}Fallback TLS (безразборный блок)${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
-      echo -e "${Fcyan}	9.${plain} ${red}Fallback HTTP (безразборный блок) [${p9_max:-0}]${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
+      echo -e "${Fcyan}	9.${plain} ${red}Fallback HTTP (безразборный блок) [${MENU_PROFILE_MAX_9:-0}]${plain} ${red}[выключен — включите безразборный режим, п.13]${plain}"
     else
       submenu_item "	8" "Fallback TLS (безразборный блок)" "" "$STRATEGY_STATE_FB_TLS"
-      submenu_item "	9" "Fallback HTTP (безразборный блок) [${p9_max:-0}]" "" "$STRATEGY_STATE_FB_HTTP"
+      submenu_item "	9" "Fallback HTTP (безразборный блок) [${MENU_PROFILE_MAX_9:-0}]" "" "$STRATEGY_STATE_FB_HTTP"
     fi
     submenu_item "	10" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "	0" "Назад"

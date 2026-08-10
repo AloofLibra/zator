@@ -287,10 +287,20 @@ menu_config_snapshot() {
   MENU_FLOWOFFLOAD="неизвестно"
   MENU_HOSTLIST="неизвестно"
   MENU_FALLBACK="неизвестно"
+  MENU_AUTO_MODE="неизвестно"
   MENU_TLS_BLOB="неизвестно"
   MENU_RST_GUARD="выключен"
   MENU_UDP_GAMES="Неизвестно"
   MENU_PORTS="дефолт"
+  MENU_PROFILE_MAX_1=0
+  MENU_PROFILE_MAX_2=0
+  MENU_PROFILE_MAX_3=0
+  MENU_PROFILE_MAX_4=0
+  MENU_PROFILE_MAX_5=0
+  MENU_PROFILE_MAX_6=0
+  MENU_PROFILE_MAX_7=0
+  MENU_PROFILE_MAX_8=0
+  MENU_PROFILE_MAX_9=0
 
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
 
@@ -298,11 +308,29 @@ menu_config_snapshot() {
   local has_tls_maxru has_tls_default has_rst blob_file udp_games ports
   fwtype="" flowoffload="" mode_filter=""
   udp_games="" ports=""
-  auto_mode=0 has_skip=0 has_filter_tcp=0 has_tls_maxru=0 has_tls_default=0 has_rst=0 blob_file=""
+  auto_mode="" has_skip=0 has_filter_tcp=0 has_tls_maxru=0 has_tls_default=0 has_rst=0 blob_file=""
 
-  local _k _v _tmp
+  local _k _v _tmp _profile
   _tmp="/tmp/z2r_menu_cfg_$$"
   awk '
+    function scan_strategies(line, num) {
+      while (match(line, /strategy=[0-9]+/)) {
+        num = substr(line, RSTART + 9, RLENGTH - 9) + 0
+        if (in_template && num > tplmax[tpl]) tplmax[tpl] = num
+        if (!in_template && key_active && num > keymax[key_active]) keymax[key_active] = num
+        if (!in_template && pos_active && prof <= 9 && num > posmax[prof]) posmax[prof] = num
+        if (!in_template && fb_profile && num > fbmax[fb_profile]) fbmax[fb_profile] = num
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+    function import_template(line, imp) {
+      imp = line
+      sub(/^--import[=[:space:]]+/, "", imp)
+      sub(/[[:space:]].*$/, "", imp)
+      if (key_active && tplmax[imp] > keymax[key_active]) keymax[key_active] = tplmax[imp]
+      if (pos_active && prof <= 9 && tplmax[imp] > posmax[prof]) posmax[prof] = tplmax[imp]
+      if (fb_profile && tplmax[imp] > fbmax[fb_profile]) fbmax[fb_profile] = tplmax[imp]
+    }
     { sub(/\r$/, "") }
     /^[[:space:]]*FWTYPE=/ {
       v = $0; sub(/^[[:space:]]*FWTYPE=/, "", v)
@@ -324,11 +352,14 @@ menu_config_snapshot() {
       v = $0; sub(/^[[:space:]]*NFQWS2_PORTS_UDP=/, "", v)
       ports_udp = v
     }
-    /^#Z2R_AUTO_MODE=1[[:space:]]*$/ { print "_auto_mode=1" }
-    /^[[:space:]]*#Z2R_FALLBACK_BEGIN[[:space:]]*$/      { in_fb = 1 }
-    /^[[:space:]]*#Z2R_FALLBACK_END[[:space:]]*$/        { in_fb = 0 }
-    /^[[:space:]]*#Z2R_FALLBACK_HTTP_BEGIN[[:space:]]*$/ { in_fb = 1 }
-    /^[[:space:]]*#Z2R_FALLBACK_HTTP_END[[:space:]]*$/   { in_fb = 0 }
+    /^#Z2R_AUTO_MODE=[01][[:space:]]*$/ {
+      v = $0; sub(/^#Z2R_AUTO_MODE=/, "", v)
+      print "_auto_mode=" v
+    }
+    /^[[:space:]]*#Z2R_FALLBACK_BEGIN[[:space:]]*$/      { in_fb = 1; fb_profile = 8 }
+    /^[[:space:]]*#Z2R_FALLBACK_END[[:space:]]*$/        { in_fb = 0; fb_profile = 0 }
+    /^[[:space:]]*#Z2R_FALLBACK_HTTP_BEGIN[[:space:]]*$/ { in_fb = 1; fb_profile = 9 }
+    /^[[:space:]]*#Z2R_FALLBACK_HTTP_END[[:space:]]*$/   { in_fb = 0; fb_profile = 0 }
     {
       if (in_fb) {
         if ($0 ~ /^[[:space:]]*--skip([[:space:]]|$)/) print "_has_skip=1"
@@ -341,6 +372,38 @@ menu_config_snapshot() {
         p = "--blob=maxru:@/opt/zapret2/files/fake/"
         print "_blob_file=" substr($0, RSTART + length(p), RLENGTH - length(p))
         blob_done = 1
+      }
+
+      if ($0 ~ /^NFQWS2_OPT="/) inopt = 1
+      if (inopt) {
+        if ($0 ~ /^--template=/) {
+          in_template = 1
+          key_active = 0
+          pos_active = 0
+          tpl = $0
+          sub(/^--template=/, "", tpl)
+          sub(/[[:space:]].*$/, "", tpl)
+        } else if ($0 ~ /^[[:space:]]*--new[[:space:]]*$/) {
+          in_template = 0
+          key_active = 0
+          pos_active = 0
+          tpl = ""
+        } else if (!in_template) {
+          if (!pos_active && $0 ~ /^--/ && $0 !~ /^--new/ &&
+              $0 !~ /^--lua-init/ && $0 !~ /^--blob=/ && $0 !~ /^--reasm-disable/) {
+            prof++
+            pos_active = 1
+          }
+          if (match($0, /--lua-desync=(circular_locked|circular_quality|rst_guard_locked):key=[0-9]+/)) {
+            key_active = substr($0, RSTART, RLENGTH)
+            sub(/^.*:key=/, "", key_active)
+            key_active += 0
+            if (key_active < 1 || key_active > 9) key_active = 0
+          }
+          if ($0 ~ /^--import([=[:space:]]|$)/) import_template($0)
+        }
+        scan_strategies($0)
+        if ($0 ~ /^"$/) inopt = 0
       }
     }
     END {
@@ -365,6 +428,12 @@ menu_config_snapshot() {
       out_ports = (n > 0 ? "добавлено портов: " n : "дефолт")
       print "_udp_games=" out_udp
       print "_ports=" out_ports
+      for (pid = 1; pid <= 9; pid++) {
+        value = keymax[pid] + 0
+        if (!value && (pid == 8 || pid == 9)) value = fbmax[pid] + 0
+        if (!value) value = posmax[pid] + 0
+        print "_profile_max_" pid "=" value
+      }
     }
   ' "$cfg" > "$_tmp"
 
@@ -382,6 +451,10 @@ menu_config_snapshot() {
       _blob_file) blob_file="$_v" ;;
       _udp_games) udp_games="$_v" ;;
       _ports) ports="$_v" ;;
+      _profile_max_[1-9])
+        _profile="${_k#_profile_max_}"
+        printf -v "MENU_PROFILE_MAX_${_profile}" '%s' "$_v"
+        ;;
     esac
   done < "$_tmp"
   rm -f "$_tmp"
@@ -392,6 +465,11 @@ menu_config_snapshot() {
   case "$mode_filter" in
     autohostlist) MENU_HOSTLIST="авто" ;;
     hostlist) MENU_HOSTLIST="по листам" ;;
+  esac
+
+  case "$auto_mode" in
+    1) MENU_AUTO_MODE="включен" ;;
+    0) MENU_AUTO_MODE="выключен" ;;
   esac
 
   if [ "$auto_mode" = "1" ]; then

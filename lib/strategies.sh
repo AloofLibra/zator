@@ -75,7 +75,7 @@ orch_profile_try() {
 
     echo "$title"
     echo "Текущее состояние: $current_state"
-    read -re -p "Введите номер стратегии (0 - отключить профиль, Enter - без изменений): " start_strat
+    read -re -p "Введите номер стратегии 1-${max_strat} (0 - отключить профиль, Enter - без изменений): " start_strat
     if [ -z "$start_strat" ]; then
         echo "Без изменений."
         return
@@ -161,7 +161,7 @@ orch_profile_try() {
 get_orchestra_locks_info() {
     local output_var="${1:-}"
     local profile_state_file orch_lock_file
-    profile_state_file="$(profile_state_file)"
+    profile_state_file="$PROFILE_STATE_FILE"
     orch_lock_file="$ORCH_LOCK_FILE"
 
     local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http"
@@ -169,66 +169,36 @@ get_orchestra_locks_info() {
     stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
     orch_line="$(_orchestra_multi_state "$orch_lock_file" "$_pairs")"
 
-    local yt_tls gv_tls rkn_tls ds_tls yt_quic_udp voice_udp games_udp fb_tls fb_http
-    local i=0 s_vals o_vals
+    local s_vals o_vals
     IFS=$'\t' read -ra s_vals <<< "$stored_line"
     IFS=$'\t' read -ra o_vals <<< "$orch_line"
-    local keys=("yt_tls" "gv_tls" "rkn_tls" "ds_tls" "yt_quic_udp" "voice_udp" "games_udp" "fb_tls" "fb_http")
-    local key sval oval eff
-    for key in "${keys[@]}"; do
-        sval="${s_vals[i]:-auto}"
-        oval="${o_vals[i]:-auto}"
-        if [ "$sval" != "auto" ]; then
-            eff="$(_orchestra_normalize "$sval")"
-        else
-            eff="$(_orchestra_normalize "$oval")"
-        fi
-        case "$key" in
-            yt_tls) yt_tls="$eff" ;;
-            gv_tls) gv_tls="$eff" ;;
-            rkn_tls) rkn_tls="$eff" ;;
-            ds_tls) ds_tls="$eff" ;;
-            yt_quic_udp) yt_quic_udp="$eff" ;;
-            voice_udp) voice_udp="$eff" ;;
-            games_udp) games_udp="$eff" ;;
-            fb_tls) fb_tls="$eff" ;;
-            fb_http) fb_http="$eff" ;;
+    local labels=("YT_TLS" "GV_TLS" "RKN_TLS" "DS_TLS" "YT_QUIC_UDP" "VOICE_UDP" "GAMES_UDP" "FB_TLS" "FB_HTTP")
+    local state_vars=("STRATEGY_STATE_YT_TLS" "STRATEGY_STATE_GV_TLS" "STRATEGY_STATE_RKN_TLS" "STRATEGY_STATE_DS_TLS" "STRATEGY_STATE_YT_QUIC_UDP" "STRATEGY_STATE_VOICE_UDP" "STRATEGY_STATE_GAMES_UDP" "STRATEGY_STATE_FB_TLS" "STRATEGY_STATE_FB_HTTP")
+    local i raw eff colored rendered=""
+    for ((i = 0; i < ${#labels[@]}; i++)); do
+        raw="${s_vals[i]:-auto}"
+        [ "$raw" = "auto" ] && raw="${o_vals[i]:-auto}"
+        case "$raw" in
+            ""|auto)
+                eff="auto"
+                printf -v colored "%b" "${gray}auto${plain}"
+                ;;
+            0|skip)
+                eff="0"
+                printf -v colored "%b" "${red}0${plain}"
+                ;;
+            *[!0-9]*|0*)
+                eff="auto"
+                printf -v colored "%b" "${gray}auto${plain}"
+                ;;
+            *)
+                eff="$raw"
+                printf -v colored "%b" "${Fcyan}${eff}${plain}"
+                ;;
         esac
-        i=$((i + 1))
+        printf -v "${state_vars[i]}" "%s" "$eff"
+        rendered="${rendered}${rendered:+ }${labels[i]}=${colored}"
     done
-
-    STRATEGY_STATE_YT_TLS="$yt_tls"
-    STRATEGY_STATE_GV_TLS="$gv_tls"
-    STRATEGY_STATE_RKN_TLS="$rkn_tls"
-    STRATEGY_STATE_DS_TLS="$ds_tls"
-    STRATEGY_STATE_YT_QUIC_UDP="$yt_quic_udp"
-    STRATEGY_STATE_VOICE_UDP="$voice_udp"
-    STRATEGY_STATE_GAMES_UDP="$games_udp"
-    STRATEGY_STATE_FB_TLS="$fb_tls"
-    STRATEGY_STATE_FB_HTTP="$fb_http"
-
-    local v rendered
-    fmt_status_num() {
-        v="${1:-auto}"
-        if [ "$v" = "auto" ]; then
-            printf "%b" "${gray}auto${plain}"
-        elif [ "$v" = "0" ]; then
-            printf "%b" "${red}0${plain}"
-        else
-            printf "%b" "${Fcyan}${v}${plain}"
-        fi
-    }
-
-    printf -v rendered "YT_TLS=%s GV_TLS=%s RKN_TLS=%s DS_TLS=%s YT_QUIC_UDP=%s VOICE_UDP=%s GAMES_UDP=%s FB_TLS=%s FB_HTTP=%s" \
-        "$(fmt_status_num "$yt_tls")" \
-        "$(fmt_status_num "$gv_tls")" \
-        "$(fmt_status_num "$rkn_tls")" \
-        "$(fmt_status_num "$ds_tls")" \
-        "$(fmt_status_num "$yt_quic_udp")" \
-        "$(fmt_status_num "$voice_udp")" \
-        "$(fmt_status_num "$games_udp")" \
-        "$(fmt_status_num "$fb_tls")" \
-        "$(fmt_status_num "$fb_http")"
 
     if [ -n "$output_var" ]; then
         printf -v "$output_var" "%s" "$rendered"
@@ -267,20 +237,6 @@ _orchestra_multi_state() {
             print out
         }
     ' "$file"
-}
-
-_orchestra_normalize() {
-    case "$1" in
-        ""|"auto") echo "auto" ;;
-        "0"|"skip") echo "0" ;;
-        *)
-            if printf '%s' "$1" | grep -Eq '^[1-9][0-9]*$'; then
-                echo "$1"
-            else
-                echo "auto"
-            fi
-            ;;
-    esac
 }
 
 # Нормализация введённого значения в чистый домен.
