@@ -591,30 +591,6 @@ fallback_http_strategy_text() {
   _fallback_strategy_text "9" "http"
 }
 
-set_fallback_strategy() {
-  local file="/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
-  local tmp="${file}.tmp"
-  if type check_access >/dev/null 2>&1; then
-    check_access "https://5fd8bdae.nip.io/1MB.bin"
-  fi
-  read -re -p "Введите номер стратегии для безразборного блока: " strategy_num
-  mkdir -p /opt/zapret2/extra_strats/cache/orchestra
-  if [ -z "$strategy_num" ]; then
-    echo "Ввод пустой, ничего не изменено"
-  elif ! echo "$strategy_num" | grep -Eq '^[0-9]+$'; then
-    echo -e "${red}Некорректный номер стратегии.${plain}"
-  else
-    if [ -f "$file" ]; then
-      awk -F '\t' '$1!="8" || $2!="tls"' "$file" > "$tmp"
-    else
-      : > "$tmp"
-    fi
-    printf "8\ttls\t%s\n" "$strategy_num" >> "$tmp"
-    mv "$tmp" "$file"
-    echo -e "${green}Стратегия $strategy_num закреплена для безразборного блока.${plain}"
-  fi
-}
-
 _fallback_profile_try() {
   local profile="$1" title="$2" proto="$3" test_url="$4"
   local prev_lock_file="${ORCH_LOCK_FILE:-/opt/zapret2/extra_strats/cache/orchestra/locked.tsv}"
@@ -1688,6 +1664,9 @@ get_menu() {
   while true; do
   	local strategies_status
     strategies_status=$(get_orchestra_locks_info)
+    local _cfg_file
+    _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
+    menu_config_snapshot "$_cfg_file"
 	TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
       TITLE_MENU_LINE="\n${pink}Титул:${plain} $(cat "$PREMIUM_TITLE_FILE")${yellow}\n"
@@ -1726,17 +1705,17 @@ Enter (без цифр) - переустановка/обновление zapret
 '"${Fcyan}"'5.'"${yellow}"' Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
 '"${Fcyan}"'6.'"${yellow}"' Управление доменами
 '"${Fcyan}"'7.'"${yellow}"' Открыть в редакторе config (Установит nano редактор ~250kb)
-'"${Fcyan}"'9.'"${yellow}"' Переключатель zapret2 на nftables/iptables (На всё жать Enter). Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: '"${plain}"'['"$(config_mode_text fwtype)"']'"${yellow}"'
-'"${Fcyan}"'10.'"${yellow}"' (Де)активировать обход UDP на 1026-65531 портах (BF6, Fifa и т.п.). Сейчас: '"${plain}"'['"$(config_mode_text udp_games)"']'"${yellow}"'
-'"${Fcyan}"'11.'"${yellow}"' Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: '"${plain}"'['"$(config_mode_text flowoffload)"']'"${yellow}"'
-'"${Fcyan}"'12.'"${yellow}"' Режим фильтра hostlist/autohostlist. Сейчас: '"${plain}"'['"$(config_mode_text hostlist)"']'"${yellow}"'
-'"${Fcyan}"'13.'"${yellow}"' Безразборный режим (fallback). Сейчас: '"${plain}"'['"$(config_mode_text fallback)"']'"${yellow}"'
+'"${Fcyan}"'9.'"${yellow}"' Переключатель zapret2 на nftables/iptables (На всё жать Enter). Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: '"${plain}"'['"$MENU_FWTYPE"']'"${yellow}"'
+'"${Fcyan}"'10.'"${yellow}"' (Де)активировать обход UDP на 1026-65531 портах (BF6, Fifa и т.п.). Сейчас: '"${plain}"'['"$MENU_UDP_GAMES"']'"${yellow}"'
+'"${Fcyan}"'11.'"${yellow}"' Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: '"${plain}"'['"$MENU_FLOWOFFLOAD"']'"${yellow}"'
+'"${Fcyan}"'12.'"${yellow}"' Режим фильтра hostlist/autohostlist. Сейчас: '"${plain}"'['"$MENU_HOSTLIST"']'"${yellow}"'
+'"${Fcyan}"'13.'"${yellow}"' Безразборный режим (fallback). Сейчас: '"${plain}"'['"$MENU_FALLBACK"']'"${yellow}"'
 '"${Fcyan}"'14.'"${yellow}"' Активировать доступ в меню через браузер (~3мб места)
 '"${Fcyan}"'15.'"${yellow}"' Провайдер
-'"${Fcyan}"'16.'"${yellow}"' Сменить TLS blob (--blob=maxru). Сейчас: '"${plain}"'['"$(config_mode_text tls_blob_menu)"']'"${yellow}"'
-'"${Fcyan}"'18.'"${yellow}"' Защита от RST-инъекций. (BETA) Сейчас: '"${plain}"'['"$(config_mode_text rst_guard)"']'"${yellow}"'
+'"${Fcyan}"'16.'"${yellow}"' Сменить TLS blob (--blob=maxru). Сейчас: '"${plain}"'['"$MENU_TLS_BLOB"']'"${yellow}"'
+'"${Fcyan}"'18.'"${yellow}"' Защита от RST-инъекций. (BETA) Сейчас: '"${plain}"'['"$MENU_RST_GUARD"']'"${yellow}"'
 '"${Fcyan}"'19.'"${yellow}"' Дополнительные настройки
-'"${Fcyan}"'20.'"${yellow}"' Управление портами NFQWS2 (TCP/UDP). Сейчас: '"${plain}"'['"$(ports_menu_status)"']'"${yellow}"'
+'"${Fcyan}"'20.'"${yellow}"' Управление портами NFQWS2 (TCP/UDP). Сейчас: '"${plain}"'['"$MENU_PORTS"']'"${yellow}"'
 '"${Fcyan}"'21.'"${yellow}"' Управление бэкапами (создание/восстановление/удаление архивов)
 '"${Fcyan}"'777.'"${yellow}"' Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)\033[0m'
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"

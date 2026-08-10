@@ -160,17 +160,42 @@ orch_profile_try() {
 
 get_orchestra_locks_info() {
     local output_var="${1:-}"
-    local yt_tls="" gv_tls="" rkn_tls="" ds_tls="" yt_quic_udp="" voice_udp="" games_udp="" fb_tls="" fb_http=""
-    local v="" rendered=""
-    yt_tls="$(profile_state_display 1 tls)"
-    gv_tls="$(profile_state_display 2 tls)"
-    rkn_tls="$(profile_state_display 3 tls)"
-    ds_tls="$(profile_state_display 4 tls)"
-    yt_quic_udp="$(profile_state_display 5 udp)"
-    voice_udp="$(profile_state_display 6 udp)"
-    games_udp="$(profile_state_display 7 udp)"
-    fb_tls="$(profile_state_display 8 tls)"
-    fb_http="$(profile_state_display 9 http)"
+    local profile_state_file orch_lock_file
+    profile_state_file="$(profile_state_file)"
+    orch_lock_file="$ORCH_LOCK_FILE"
+
+    local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http"
+    local stored_line orch_line
+    stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
+    orch_line="$(_orchestra_multi_state "$orch_lock_file" "$_pairs")"
+
+    local yt_tls gv_tls rkn_tls ds_tls yt_quic_udp voice_udp games_udp fb_tls fb_http
+    local i=0 s_vals o_vals
+    IFS=$'\t' read -ra s_vals <<< "$stored_line"
+    IFS=$'\t' read -ra o_vals <<< "$orch_line"
+    local keys=("yt_tls" "gv_tls" "rkn_tls" "ds_tls" "yt_quic_udp" "voice_udp" "games_udp" "fb_tls" "fb_http")
+    local key sval oval eff
+    for key in "${keys[@]}"; do
+        sval="${s_vals[i]:-auto}"
+        oval="${o_vals[i]:-auto}"
+        if [ "$sval" != "auto" ]; then
+            eff="$(_orchestra_normalize "$sval")"
+        else
+            eff="$(_orchestra_normalize "$oval")"
+        fi
+        case "$key" in
+            yt_tls) yt_tls="$eff" ;;
+            gv_tls) gv_tls="$eff" ;;
+            rkn_tls) rkn_tls="$eff" ;;
+            ds_tls) ds_tls="$eff" ;;
+            yt_quic_udp) yt_quic_udp="$eff" ;;
+            voice_udp) voice_udp="$eff" ;;
+            games_udp) games_udp="$eff" ;;
+            fb_tls) fb_tls="$eff" ;;
+            fb_http) fb_http="$eff" ;;
+        esac
+        i=$((i + 1))
+    done
 
     STRATEGY_STATE_YT_TLS="$yt_tls"
     STRATEGY_STATE_GV_TLS="$gv_tls"
@@ -182,6 +207,7 @@ get_orchestra_locks_info() {
     STRATEGY_STATE_FB_TLS="$fb_tls"
     STRATEGY_STATE_FB_HTTP="$fb_http"
 
+    local v rendered
     fmt_status_num() {
         v="${1:-auto}"
         if [ "$v" = "auto" ]; then
@@ -209,6 +235,52 @@ get_orchestra_locks_info() {
     else
         printf "%s" "$rendered"
     fi
+}
+
+_orchestra_multi_state() {
+    local file="$1" pairs="$2"
+    if [ -z "$file" ] || [ ! -f "$file" ]; then
+        printf 'auto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\n'
+        return 0
+    fi
+    awk -v pairs="$pairs" '
+        BEGIN {
+            FS = "[ \t]+"
+            n = split(pairs, P, "|")
+            for (i = 1; i <= n; i++) {
+                split(P[i], kv, ":")
+                PR[i] = kv[1]; PROTO[i] = kv[2]
+                R[i] = "auto"
+            }
+        }
+        /^[[:space:]]*#/ || NF == 0 { next }
+        {
+            for (i = 1; i <= n; i++) {
+                if (R[i] != "auto") continue
+                if ($1 == PR[i] && $2 == PROTO[i] && NF >= 3) { R[i] = $3 }
+                else if ($1 == PR[i] && NF == 2 && PROTO[i] == "tls") { R[i] = $2 }
+            }
+        }
+        END {
+            out = ""
+            for (i = 1; i <= n; i++) out = out R[i] (i < n ? "\t" : "")
+            print out
+        }
+    ' "$file"
+}
+
+_orchestra_normalize() {
+    case "$1" in
+        ""|"auto") echo "auto" ;;
+        "0"|"skip") echo "0" ;;
+        *)
+            if printf '%s' "$1" | grep -Eq '^[1-9][0-9]*$'; then
+                echo "$1"
+            else
+                echo "auto"
+            fi
+            ;;
+    esac
 }
 
 # Нормализация введённого значения в чистый домен.

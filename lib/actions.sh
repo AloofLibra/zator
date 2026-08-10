@@ -1499,7 +1499,6 @@ menu_action_backup_restore() {
     archive="$preset_archive"
     if [ ! -f "$archive" ]; then
       echo -e "${red}Архив не найден: $archive${plain}"
-      pause_enter
       return 1
     fi
     echo -e "${yellow}Восстановление из архива: $(basename "$archive")${plain}"
@@ -1540,7 +1539,6 @@ menu_action_backup_restore() {
         ;;
       0|"")
         echo -e "${yellow}Восстановление отменено.${plain}"
-        pause_enter
         return 0
         ;;
       *)
@@ -1555,14 +1553,12 @@ menu_action_backup_restore() {
   rm -rf "$restore_dir"
   if ! mkdir -p "$restore_dir"; then
     echo -e "${red}Не удалось создать временную директорию.${plain}"
-    pause_enter
     return 1
   fi
 
   if ! tar -xf "$archive" -C "$restore_dir" 2>/dev/null; then
     rm -rf "$restore_dir"
     echo -e "${red}Не удалось распаковать архив: $(basename "$archive")${plain}"
-    pause_enter
     return 1
   fi
 
@@ -1574,7 +1570,6 @@ menu_action_backup_restore() {
       echo ""
       echo -e "${red}Восстановление прервано: отсутствуют blob-файлы.${plain}"
       echo -e "${yellow}Установите недостающие blob-файлы или обновите проект перед восстановлением.${plain}"
-      pause_enter
       return 1
     fi
   fi
@@ -1594,7 +1589,6 @@ menu_action_backup_restore() {
       else
         rm -rf "$restore_dir"
         echo -e "${red}Ошибка восстановления config.${plain}"
-        pause_enter
         return 1
       fi
     else
@@ -1606,7 +1600,6 @@ menu_action_backup_restore() {
     # идёт по совпадению имён и переносит только существующие на устройстве файлы.
     if ! menu_action_backup_restore_smart "$restore_dir/config" /opt/zapret2/config; then
       rm -rf "$restore_dir"
-      pause_enter
       return 1
     fi
   else
@@ -1625,7 +1618,6 @@ menu_action_backup_restore() {
     if ! cp -f "$src" "$dst"; then
       rm -rf "$restore_dir" "$tmp_list"
       echo -e "${red}Ошибка восстановления $rel.${plain}"
-      pause_enter
       return 1
     fi
   done < "$tmp_list"
@@ -1641,7 +1633,6 @@ menu_action_backup_restore() {
   fi
 
   echo -e "${green}Восстановление завершено.${plain}"
-  pause_enter
   return 0
 }
 

@@ -582,6 +582,7 @@ backup_submenu() {
         ;;
       "2")
         menu_action_backup_restore "" "$block_full" || true
+        pause_enter
         ;;
       "3")
         menu_action_backup_delete || true
