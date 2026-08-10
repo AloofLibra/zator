@@ -84,7 +84,7 @@ Normal flow:
 The project now has three interacting layers:
 
 - Shell/menu layer: deploys files, edits config, starts/stops services, and writes manual strategy locks.
-- WebUI layer: uses the same shell helpers as the menu to read status, restart services, run checks, and write locks.
+- WebUI layer: uses the same shell helpers as the menu to read status, restart services, run checks, and write locks. Now includes fallback (безразборный режим) management for TLS (profile 8) and HTTP (profile 9) strategies.
 - Lua lock layer: applies automatic and manual strategy locks at runtime.
 
 Important practical consequence:
@@ -92,6 +92,7 @@ Important practical consequence:
 - many changes that look "config-only" also affect shell menu actions
 - many changes that look "shell-only" are actually constrained by Lua profile numbering and `strategy=N` semantics
 - WebUI endpoints and menu code share `lib/config.sh` and `lib/orchestra_state.sh`; keep behavior centralized there when possible
+- WebUI fallback functions (`_fallback_*` in `webui/cgi-bin/_lib.sh`) are local copies of CLI logic from `lib/actions.sh` (`backup_smart_set_fallback`) and must stay in sync
 
 ## High-Risk Areas
 
@@ -105,6 +106,7 @@ Important practical consequence:
 - Strategy lock files under `/opt/zapret2/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
 - `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs. Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
+- Fallback (безразборный режим) functions in `webui/cgi-bin/_lib.sh` (`_fallback_state`, `_fallback_set_state`) are local copies of CLI logic. Changes to `lib/actions.sh` (`backup_smart_set_fallback`) or `config.default` fallback blocks (`#Z2R_FALLBACK_BEGIN`/`#Z2R_FALLBACK_END`, `#Z2R_FALLBACK_HTTP_BEGIN`/`#Z2R_FALLBACK_HTTP_END`) require updating WebUI copies. Strategy selection for fallback profiles 8/9 goes through the shared `set-lock.cgi` → `api_set_lock()` path (writes `locked.manual.tsv`); the former `fallback_strategy` API and `_fallback_current_strategy`/`_fallback_set_strategy` helpers were removed as unused.
 
 ## Editing Guidelines
 
@@ -161,6 +163,14 @@ For WebUI issues:
 - `webui/app.js`
 - `lib/config.sh`
 - `lib/orchestra_state.sh`
+
+For fallback (безразборный режим) issues:
+
+- `webui/cgi-bin/_lib.sh` (functions `_fallback_*`)
+- `webui/app.js` (functions `renderFallbackSettings`, `refreshFallbackSettings`, `applyFallbackState`)
+- `webui/index.html` (fallback panel UI)
+- `lib/actions.sh` (`backup_smart_set_fallback`, `toggle_fallback_mode`)
+- `config.default` (fallback blocks `#Z2R_FALLBACK_*`)
 
 For blockcheck2 issues:
 
