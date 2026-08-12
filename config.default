@@ -111,7 +111,7 @@ NFQWS2_OPT="
 --lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=2:nodrop:strategy=4 --lua-desync=fakeddisorder:pos=sniext+4:tcp_ts=-1000:strategy=4
 --lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=2:nodrop:strategy=5 --lua-desync=fakeddisorder:pos=midsld:tcp_ts=-1000:strategy=5
 --lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=1,2,3:nodrop:strategy=6 --lua-desync=fakeddisorder:pos=sniext+1:tcp_ts=-1000:strategy=6
---lua-desync=fake:blob=stun_fake:tcp_ts=-1000:badsum:strategy=7 --lua-desync=fake:blob=maxru:tcp_ts=-1000:badsum:tls_mod=sni=msn.com:strategy=7
+--lua-desync=fake:blob=stun_fake:tcp_ts=-1000:badsum:strategy=7 --lua-desync=fake:blob=maxru:tcp_ts=-1000:badsum:strategy=7
 --lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=2:nodrop:strategy=8 --lua-desync=fakeddisorder:pos=midsld:tcp_ts=-1000:strategy=8
 --lua-desync=fake:blob=blob_rdp:tcp_ts=-1000:strategy=9 --lua-desync=multidisorder:pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1:strategy=9
 --lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=2:nodrop:strategy=10 --lua-desync=fakeddisorder:pos=midsld:tcp_ts=-1000:strategy=10
