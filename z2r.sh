@@ -271,30 +271,69 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 # при set -e. Идемпотентна: при повторном запуске no-op.
 z2r_migrate_to_zator() {
   mkdir -p "$ZATOR_ROOT" 2>/dev/null || return 0
-  local sub src dst
-  for sub in z2r_lib lua webui extra_strats lists files; do
+  local sub src dst f
+
+  for sub in z2r_lib webui; do
     src="$ZAPRET2_ROOT/$sub"
     dst="$ZATOR_ROOT/$sub"
     [ -e "$src" ] || continue
     if [ ! -e "$dst" ]; then
-      # Перенос ещё не выполнен — перемещаем каталог целиком.
       mv "$src" "$dst" 2>/dev/null || true
-    elif [ "$sub" = "z2r_lib" ] || [ "$sub" = "lua" ] || [ "$sub" = "webui" ]; then
-      # Кодовые каталоги: перенос уже выполнен — удаляем дубль-источник
-      # (может появиться после повторого запуска внешнего лаунчера).
+    else
       rm -rf "$src" 2>/dev/null || true
     fi
   done
 
-  # Переписываем пути переместённых поддеревьев в живом config/config.default.
-  # Намеренно НЕ трогаем config, config.default, init.d, nfq2, install_prereq.sh,
-  # blockcheck2* — только lua/files/fake/extra_strats/lists.
+  # Данные пользователя: если новый каталог уже создан (лаунчером/обновлением),
+  # содержимое старого переносим поверх (кэш оркестра с локами), затем удаляем.
+  for sub in extra_strats lists; do
+    src="$ZAPRET2_ROOT/$sub"
+    dst="$ZATOR_ROOT/$sub"
+    [ -e "$src" ] || continue
+    if [ ! -e "$dst" ]; then
+      mv "$src" "$dst" 2>/dev/null || true
+    else
+      cp -a "$src/." "$dst/" 2>/dev/null || true
+      rm -rf "$src" 2>/dev/null || true
+    fi
+  done
+
+  # /opt/zapret2/lua — СМЕШАННЫЙ каталог: вместе с нашими модулями там лежат
+  # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
+  # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
+  # каталог и чужие файлы не трогаем.
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua strategy-validator.sh; do
+    src="$ZAPRET2_ROOT/lua/$f"
+    [ -f "$src" ] || continue
+    if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
+      mkdir -p "$ZATOR_ROOT/lua" 2>/dev/null
+      mv "$src" "$ZATOR_ROOT/lua/$f" 2>/dev/null || true
+    else
+      rm -f "$src" 2>/dev/null || true
+    fi
+  done
+
+  # Fake-файлы: переносим только files/fake, остальное в files/ — zapret2.
+  src="$ZAPRET2_ROOT/files/fake"
+  if [ -e "$src" ] && [ ! -e "$ZATOR_ROOT/files/fake" ]; then
+    mkdir -p "$ZATOR_ROOT/files" 2>/dev/null
+    mv "$src" "$ZATOR_ROOT/files/fake" 2>/dev/null || true
+  fi
+
+  # Пути в живом config/config.default: заменяем ТОЛЬКО ссылки на наши файлы
+  # и поддеревья. Ссылки вида /opt/zapret2/lua/zapret-*.lua (файлы самого
+  # zapret2) не трогаем. Без grep-предфильтра: BRE-альтернация "\|" не
+  # поддерживается BusyBox grep; sed с отсутствующими совпадениями безопасен.
   local cfg
   for cfg in "$ZAPRET2_ROOT/config" "$ZAPRET2_ROOT/config.default"; do
     [ -f "$cfg" ] || continue
-    grep -q "opt/zapret2/\(lua\|files/fake\|extra_strats\|lists\)" "$cfg" 2>/dev/null || continue
     sed -i \
-      -e 's#/opt/zapret2/lua#/opt/zator/lua#g' \
+      -e 's#/opt/zapret2/lua/locked.lua#/opt/zator/lua/locked.lua#g' \
+      -e 's#/opt/zapret2/lua/rst-guard.lua#/opt/zator/lua/rst-guard.lua#g' \
+      -e 's#/opt/zapret2/lua/strategy-lock-manager.lua#/opt/zator/lua/strategy-lock-manager.lua#g' \
+      -e 's#/opt/zapret2/lua/combined-detector.lua#/opt/zator/lua/combined-detector.lua#g' \
+      -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
+      -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
       -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
       -e 's#/opt/zapret2/extra_strats#/opt/zator/extra_strats#g' \
       -e 's#/opt/zapret2/lists#/opt/zator/lists#g' \
