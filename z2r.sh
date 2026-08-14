@@ -65,16 +65,27 @@ z2r_mirror_url() {
 z2r_fetch_url_to_file() {
   local dest="$1"
   local url="$2"
+  local attempt
 
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$dest" "$url"
-    return $?
-  fi
-  if command -v wget >/dev/null 2>&1; then
-    wget -qO "$dest" "$url"
-    return $?
-  fi
-  return 127
+  # До 3 попыток с таймаутом на соединение
+  for attempt in 1 2 3; do
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsSL --connect-timeout 10 -o "$dest" "$url"; then
+        return 0
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if wget -q -T 10 -O "$dest" "$url"; then
+        return 0
+      fi
+    else
+      return 127
+    fi
+    rm -f "$dest"
+    if [ "$attempt" -lt 3 ]; then
+      sleep 2
+    fi
+  done
+  return 1
 }
 
 z2r_download_project_file() {
@@ -1864,12 +1875,14 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "5")
     backup_helper_ask_and_create
-    locked_lua_update_from_repo
-    circular_runtime_update_from_repo
-    strategy_validator_install_service
+    # Сетевые сбои не должны ронять меню (set -e): модули не критичны,
+    # прежние версии продолжают работать.
+    locked_lua_update_from_repo || echo -e "${yellow}locked.lua не обновлён (сеть недоступна).${plain}"
+    circular_runtime_update_from_repo || echo -e "${yellow}Lua-модули circular не обновлены (сеть недоступна).${plain}"
+    strategy_validator_install_service || true
     mkdir -p "$ORCH_DIR"
     chmod 777 "$ORCH_DIR" 2>/dev/null || true
-    menu_action_update_config_reset
+    menu_action_update_config_reset || true
     backup_update_offer_restore
     pause_enter
     ;;

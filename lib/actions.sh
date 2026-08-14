@@ -77,7 +77,13 @@ menu_action_update_config_reset() {
         /opt/zator/files/fake/tls_clienthello_6a.bin \
         /opt/zator/files/fake/tls_clienthello_4pda_to.bin
 
-  get_repo
+  # При сетевом сбое get_repo вернёт 1: отменяем сброс конфига и возвращаем
+  # сервис обратно, иначе zapret2 останется остановленным на полуобновлённом состоянии.
+  if ! get_repo; then
+    echo -e "${red}Не удалось обновить компоненты (сеть). Операция отменена.${plain}"
+    "$ZAPRET2_INIT" start >/dev/null 2>&1 || true
+    return 1
+  fi
 
   if [ ! -f /opt/zator/files/fake/custom_tls.bin ]; then
     mkdir -p /opt/zator/files/fake
