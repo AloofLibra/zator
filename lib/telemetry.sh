@@ -16,7 +16,11 @@ telemetry_save_config() {
 
     echo "tel_enabled=$enabled" > "$TELEMETRY_CFG"
     echo "tel_uuid=$uuid" >> "$TELEMETRY_CFG"
-    [ -n "$channel_id" ] && echo "tel_channel_id=$channel_id" >> "$TELEMETRY_CFG"
+    # Пустой channel_id не должен делать возврат функции ненулевым (set -e в z2r.sh).
+    if [ -n "$channel_id" ]; then
+        echo "tel_channel_id=$channel_id" >> "$TELEMETRY_CFG"
+    fi
+    return 0
 }
 
 # Функция инициализации (Спрашивает пользователя один раз)

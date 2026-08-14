@@ -499,10 +499,18 @@ menu_config_snapshot() {
       ;;
   esac
 
-  [ "$has_rst" = "1" ] && MENU_RST_GUARD="включен"
-
-  [ -n "$udp_games" ] && MENU_UDP_GAMES="$udp_games"
-  [ -n "$ports" ] && MENU_PORTS="$ports"
+  # Присвоения через if, а не [ ... ] &&: пустые значения не должны отдавать
+  # из функции ненулевой статус (вызывается как инструкция под set -e в z2r.sh).
+  if [ "$has_rst" = "1" ]; then
+    MENU_RST_GUARD="включен"
+  fi
+  if [ -n "$udp_games" ]; then
+    MENU_UDP_GAMES="$udp_games"
+  fi
+  if [ -n "$ports" ]; then
+    MENU_PORTS="$ports"
+  fi
+  return 0
 }
 
 config_profile_max_strategy() {
