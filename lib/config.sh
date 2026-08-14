@@ -187,7 +187,7 @@ config_tls_blob_menu_value() {
     fake_default_tls) echo "default"; return ;;
     mixed) echo "mixed"; return ;;
   esac
-  blob_file="$(sed -n -E 's#.*--blob=maxru:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  blob_file="$(sed -n -E 's#.*--blob=maxru:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p' "$cfg" | head -n1)"
   [ -n "$blob_file" ] && echo "$blob_file" || echo "неизвестно"
 }
 
@@ -368,9 +368,12 @@ menu_config_snapshot() {
       if ($0 ~ /--lua-desync=/ && $0 ~ /blob=maxru/ && $0 !~ /strategy=26/) print "_has_tls_maxru=1"
       if ($0 ~ /--lua-desync=/ && $0 ~ /blob=fake_default_tls/ && $0 !~ /strategy=26/) print "_has_tls_default=1"
       if ($0 ~ /--lua-desync=rst_guard_locked:key=/) print "_has_rst=1"
-      if (blob_done == 0 && match($0, /--blob=maxru:@\/opt\/zapret2\/files\/fake\/[^[:space:]]+/)) {
-        p = "--blob=maxru:@/opt/zapret2/files/fake/"
-        print "_blob_file=" substr($0, RSTART + length(p), RLENGTH - length(p))
+      if (blob_done == 0 && match($0, /--blob=maxru:@\/opt\/(zapret2|zator)\/files\/fake\/[^[:space:]]+/)) {
+        # Имя файла извлекаем независимо от корня (zapret2|zator).
+        bs = $0
+        sub(/^.*--blob=maxru:@\/opt\/(zapret2|zator)\/files\/fake\//, "", bs)
+        sub(/[[:space:]].*$/, "", bs)
+        print "_blob_file=" bs
         blob_done = 1
       }
 

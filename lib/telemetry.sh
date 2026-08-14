@@ -5,8 +5,8 @@ STATS_TOKEN="TzeiCfYn5DUIwjHJ6dPa4bSKrkFRZqts3BGWpA9l"
 STATS_CHANNEL_ID="z4r-sql-v2"
 
 # 2. Пути к файлам (используем простые форматы)
-CACHE_DIR="/opt/zapret2/extra_strats/cache"
-TELEMETRY_CFG="/opt/zapret2/z2r_lib/telemetry.config"
+CACHE_DIR="/opt/zator/extra_strats/cache"
+TELEMETRY_CFG="/opt/zator/z2r_lib/telemetry.config"
 PROVIDER_TXT="$CACHE_DIR/provider.txt"
 
 telemetry_save_config() {
@@ -132,7 +132,7 @@ send_stats() {
     fi
     [ -n "$router_os" ] || router_os="unknown"
     local webui=0
-    [ -x /opt/zapret2/webui/run-webui.sh ] && webui=1
+    [ -x /opt/zator/webui/run-webui.sh ] && webui=1
 
     # 4. Отправка в z4r telemetry endpoint (Тихий режим, в фоне &)
     curl -sL --max-time 10 \

@@ -236,7 +236,7 @@
 --payload=tls_client_hello --lua-desync=syndata:blob=tls4:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:strategy=235
 --payload=tls_client_hello --lua-desync=syndata:blob=tls4:tcp_ack=-66000:tcp_ts_up:strategy=236
 --payload=tls_client_hello --lua-desync=syndata:blob=syn_packet:strategy=237
---blob=tls_hcaptcha_com:@/opt/zapret2/files/fake/tls_hcaptcha_com.bin --payload=tls_client_hello --lua-desync=fake:blob=tls_hcaptcha_com:repeats=6:tcp_ack=-66000:tcp_ts_up:strategy=HCAPTCHA-TLS12-IN13-1
---blob=tls_hcaptcha_com:@/opt/zapret2/files/fake/tls_hcaptcha_com.bin --payload=tls_client_hello --lua-desync=fake:blob=tls_hcaptcha_com:ip_ttl=3:ip6_ttl=3:strategy=HCAPTCHA-TLS12-IN13-2
---blob=tls13_hcaptcha:@/opt/zapret2/files/fake/tls13_hcaptcha.bin --payload=tls_client_hello --lua-desync=fake:blob=tls13_hcaptcha:repeats=6:tcp_ack=-66000:tcp_ts_up:strategy=HCAPTCHA-TLS13-1
---blob=tls13_hcaptcha:@/opt/zapret2/files/fake/tls13_hcaptcha.bin --payload=tls_client_hello --lua-desync=fake:blob=tls13_hcaptcha:ip_ttl=3:ip6_ttl=3:strategy=HCAPTCHA-TLS13-2
+--blob=tls_hcaptcha_com:@/opt/zator/files/fake/tls_hcaptcha_com.bin --payload=tls_client_hello --lua-desync=fake:blob=tls_hcaptcha_com:repeats=6:tcp_ack=-66000:tcp_ts_up:strategy=HCAPTCHA-TLS12-IN13-1
+--blob=tls_hcaptcha_com:@/opt/zator/files/fake/tls_hcaptcha_com.bin --payload=tls_client_hello --lua-desync=fake:blob=tls_hcaptcha_com:ip_ttl=3:ip6_ttl=3:strategy=HCAPTCHA-TLS12-IN13-2
+--blob=tls13_hcaptcha:@/opt/zator/files/fake/tls13_hcaptcha.bin --payload=tls_client_hello --lua-desync=fake:blob=tls13_hcaptcha:repeats=6:tcp_ack=-66000:tcp_ts_up:strategy=HCAPTCHA-TLS13-1
+--blob=tls13_hcaptcha:@/opt/zator/files/fake/tls13_hcaptcha.bin --payload=tls_client_hello --lua-desync=fake:blob=tls13_hcaptcha:ip_ttl=3:ip6_ttl=3:strategy=HCAPTCHA-TLS13-2

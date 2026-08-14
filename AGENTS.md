@@ -33,26 +33,52 @@ Secondary helper scripts:
 
 This project is no longer centered on `/opt/zapret`. The active target layout is `/opt/zapret2`.
 
+The project now uses **two runtime roots** (defined in `z2r.sh` as env-overridable
+`ZAPRET2_ROOT="${ZAPRET2_ROOT:-/opt/zapret2}"` and `ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"`):
+
+- `$ZAPRET2_ROOT` (`/opt/zapret2`) — **zapret2-native**, recreated on every zapret2
+  update. Holds upstream binaries (`nfq2/`, `tpws2/`), `install_easy.sh`,
+  `install_bin.sh`, `install_prereq.sh`, `uninstall_easy.sh`, `common/`, `init.d/`,
+  `blockcheck2.sh`, `blockcheck2.d/z4r/`, the deployed `keenetic-policy.sh` hook, and
+  crucially **`config` and `config.default`**.
+- `$ZATOR_ROOT` (`/opt/zator`) — **zator-owned content**, NOT touched by zapret2
+  updates. Holds `z2r_lib/`, `lua/`, `webui/`, `extra_strats/` (incl.
+  `cache/orchestra/`, `cache/webui`, `cache/provider.txt`, `cache/recommendations.txt`),
+  `lists/`, `files/fake/`.
+
+Splitting the roots means a zapret2 update (`rm -rf $ZAPRET2_ROOT` in `zapret_get`/
+`remove_zapret`) no longer destroys zator content (strategy locks, cache, webui, lua).
+
+`z2r.sh` runs `z2r_migrate_to_zator()` at startup (before sourcing libs): it moves any
+zator-owned subtree still lingering under `/opt/zapret2` into `/opt/zator` and rewrites
+the corresponding paths in the live `config`/`config.default`. This keeps existing user
+installs and the external launcher (which still first-deploys libs to
+`/opt/zapret2/z2r_lib`) compatible. `LIB_DIR` resolves to `$ZATOR_ROOT/z2r_lib` with a
+fallback to `$ZAPRET2_ROOT/z2r_lib`.
+
 Most runtime logic assumes these absolute paths:
 
-- `/opt/zapret2/config`
-- `/opt/zapret2/config.default`
-- `/opt/zapret2/extra_strats/...`
-- `/opt/zapret2/extra_strats/cache/orchestra/...`
-- `/opt/zapret2/lists/...`
-- `/opt/zapret2/files/fake/...`
-- `/opt/zapret2/lua/...`
-- `/opt/zapret2/init.d/...`
-- `/opt/zapret2/webui/...`
-- `/opt/zapret2/z2r_lib/...`
+- `$ZAPRET2_ROOT/config`, `$ZAPRET2_ROOT/config.default`
+- `$ZAPRET2_ROOT/init.d/...`, `$ZAPRET2_ROOT/blockcheck2.sh`, `$ZAPRET2_ROOT/blockcheck2.d/z4r/...`
+- `$ZATOR_ROOT/extra_strats/...` and `$ZATOR_ROOT/extra_strats/cache/orchestra/...`
+- `$ZATOR_ROOT/lists/...`
+- `$ZATOR_ROOT/files/fake/...`
+- `$ZATOR_ROOT/lua/...`
+- `$ZATOR_ROOT/webui/...`
+- `$ZATOR_ROOT/z2r_lib/...`
+
+> `config.default` is read by `nfqws2` literally (no shell expansion), so its
+> `--lua-init`/`--blob`/`--hostlist` paths are absolute `/opt/zator/...` literals.
 
 Normal flow:
 
 1. `z2r.sh` detects OS and hardware.
-2. It installs or refreshes upstream `zapret2`.
-3. It deploys this repository's assets into `/opt/zapret2`.
-4. It installs the custom config, extra strategy files, lists, fake payloads, Lua scripts, blockcheck inputs, WebUI files, and orchestra state files.
-5. It manages `zapret2`, WebUI, blockcheck summaries, and manual strategy locks through an interactive menu.
+2. It migrates any legacy zator content from `/opt/zapret2` into `/opt/zator`.
+3. It installs or refreshes upstream `zapret2` (only under `$ZAPRET2_ROOT`).
+4. It deploys this repository's zator assets into `/opt/zator` and the config +
+   `keenetic-policy.sh` into `/opt/zapret2`.
+5. It installs the custom config, extra strategy files, lists, fake payloads, Lua scripts, blockcheck inputs, WebUI files, and orchestra state files.
+6. It manages `zapret2`, WebUI, blockcheck summaries, and manual strategy locks through an interactive menu.
 
 ## Layout
 
@@ -102,13 +128,13 @@ Important practical consequence:
 ## High-Risk Areas
 
 - `config.default` is structurally coupled to shell code. Menu actions and strategy helpers depend on exact markers, profile ordering, and recognizable patterns such as `--lua-desync=...strategy=N`.
-- `config.default` loads `/opt/zapret2/lua/locked.lua` and `/opt/zapret2/lua/rst-guard.lua`; deployed Lua filenames and config `--lua-init` lines must stay in sync.
+- `config.default` loads `/opt/zator/lua/locked.lua` and `/opt/zator/lua/rst-guard.lua`; deployed Lua filenames and config `--lua-init` lines must stay in sync.
 - `lib/actions.sh` uses targeted `sed`/`awk` replacements against `/opt/zapret2/config`. Small wording changes in config blocks can silently break toggles.
 - `lib/strategies.sh` derives max strategy counts from config content. If profile structure changes, strategy menus can go out of sync.
 - `lib/config.sh` is shared by the menu and WebUI. Changes to mode detection or profile counting can affect both surfaces.
 - `lib/orchestra_state.sh` reads and writes `locked.tsv`; `z2r.sh` also temporarily switches `ORCH_LOCK_FILE` to `locked.manual.tsv`.
 - `z2r.sh` performs destructive operations on target machines, including removing or rebuilding `/opt/zapret2`.
-- Strategy lock files under `/opt/zapret2/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
+- Strategy lock files under `/opt/zator/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
 - `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs. Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
 - Fallback (безразборный режим) functions in `webui/cgi-bin/_lib.sh` (`_fallback_state`, `_fallback_set_state`) are local copies of CLI logic. Changes to `lib/actions.sh` (`backup_smart_set_fallback`) or `config.default` fallback blocks (`#Z2R_FALLBACK_BEGIN`/`#Z2R_FALLBACK_END`, `#Z2R_FALLBACK_HTTP_BEGIN`/`#Z2R_FALLBACK_HTTP_END`) require updating WebUI copies. Strategy selection for fallback profiles 8/9 goes through the shared `set-lock.cgi` → `api_set_lock()` path (writes `locked.manual.tsv`); the former `fallback_strategy` API and `_fallback_current_strategy`/`_fallback_set_strategy` helpers were removed as unused.

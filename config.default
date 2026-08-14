@@ -82,24 +82,24 @@ NFQWS2_UDP_PKT_IN=3
 # <HOSTLIST_NOAUTO> appends ipset/zapret-hosts-auto.txt as normal list
 NFQWS2_OPT="
 
---lua-init=@/opt/zapret2/lua/locked.lua
---lua-init=@/opt/zapret2/lua/rst-guard.lua
---lua-init=@/opt/zapret2/lua/strategy-lock-manager.lua
---lua-init=@/opt/zapret2/lua/combined-detector.lua
---lua-init=@/opt/zapret2/lua/silent-drop-detector.lua
---blob=maxru:@/opt/zapret2/files/fake/tls_clienthello_max_ru.bin
---blob=google_www:@/opt/zapret2/files/fake/tls_clienthello_www_google_com.bin
---blob=tls4:@/opt/zapret2/files/fake/tls_clienthello_4.bin
---blob=custom:@/opt/zapret2/files/fake/custom_tls.bin
---blob=tls5:@/opt/zapret2/files/fake/tls_clienthello_5.bin
---blob=quic_google:@/opt/zapret2/files/fake/quic_initial_www_google_com.bin
---blob=quic5:@/opt/zapret2/files/fake/quic_5.bin
---blob=discord_fake:@/opt/zapret2/files/fake/quic_initial_dbankcloud_ru.bin
---blob=stun_fake:@/opt/zapret2/files/fake/stun.bin
---blob=blob_rdp:@/opt/zapret2/files/fake/rdp.bin
---blob=fakewgblob:@/opt/zapret2/files/fake/wg_initial_fake_1.bin
---blob=discord_udp_1:@/opt/zapret2/files/fake/discord_udp_1.bin
---blob=discord_udp_2:@/opt/zapret2/files/fake/discord_udp_2.bin
+--lua-init=@/opt/zator/lua/locked.lua
+--lua-init=@/opt/zator/lua/rst-guard.lua
+--lua-init=@/opt/zator/lua/strategy-lock-manager.lua
+--lua-init=@/opt/zator/lua/combined-detector.lua
+--lua-init=@/opt/zator/lua/silent-drop-detector.lua
+--blob=maxru:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
+--blob=google_www:@/opt/zator/files/fake/tls_clienthello_www_google_com.bin
+--blob=tls4:@/opt/zator/files/fake/tls_clienthello_4.bin
+--blob=custom:@/opt/zator/files/fake/custom_tls.bin
+--blob=tls5:@/opt/zator/files/fake/tls_clienthello_5.bin
+--blob=quic_google:@/opt/zator/files/fake/quic_initial_www_google_com.bin
+--blob=quic5:@/opt/zator/files/fake/quic_5.bin
+--blob=discord_fake:@/opt/zator/files/fake/quic_initial_dbankcloud_ru.bin
+--blob=stun_fake:@/opt/zator/files/fake/stun.bin
+--blob=blob_rdp:@/opt/zator/files/fake/rdp.bin
+--blob=fakewgblob:@/opt/zator/files/fake/wg_initial_fake_1.bin
+--blob=discord_udp_1:@/opt/zator/files/fake/discord_udp_1.bin
+--blob=discord_udp_2:@/opt/zator/files/fake/discord_udp_2.bin
 # Общий TCP TLS шаблон на базе блока YT. Содержит range/payload для lua-desync.
 --template=z2r_tcp_tls_common
 --out-range=-s34228
@@ -155,8 +155,8 @@ NFQWS2_OPT="
 #Z2R_AUTO_STANDARD_1_BEGIN
 #Стратегии для YT
 --filter-tcp=443 --filter-l7=tls
---hostlist=/opt/zapret2/extra_strats/TCP_YT_list.txt
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist=/opt/zator/extra_strats/TCP_YT_list.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
 --in-range=-s32768 --lua-desync=circular_locked:key=1
@@ -169,7 +169,7 @@ NFQWS2_OPT="
 #Z2R_AUTO_STANDARD_2_BEGIN
 --filter-tcp=443 --filter-l7=tls
 --hostlist-domains=googlevideo.com
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
 --in-range=-s32768 --lua-desync=circular_locked:key=2
@@ -183,10 +183,10 @@ NFQWS2_OPT="
 #Z2R_AUTO_STANDARD_3_BEGIN
   #Стратегии для RKN
 --filter-tcp=443,2053,2083,2087,2096,8443 --filter-l7=tls
---hostlist=/opt/zapret2/extra_strats/TCP_RKN_list.txt
---hostlist=/opt/zapret2/extra_strats/TCP_Custom.txt
---hostlist-exclude=/opt/zapret2/extra_strats/TCP_Discord.txt
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist=/opt/zator/extra_strats/TCP_RKN_list.txt
+--hostlist=/opt/zator/extra_strats/TCP_Custom.txt
+--hostlist-exclude=/opt/zator/extra_strats/TCP_Discord.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
 --in-range=-s32768 --lua-desync=circular_locked:key=3
@@ -197,8 +197,8 @@ NFQWS2_OPT="
 
 #Отдельные стратегии для TCP_Discord
 #Z2R_AUTO_STANDARD_4_BEGIN
---filter-tcp=80,443,2053,2083,2087,2096,8443 --hostlist=/opt/zapret2/extra_strats/TCP_Discord.txt
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--filter-tcp=80,443,2053,2083,2087,2096,8443 --hostlist=/opt/zator/extra_strats/TCP_Discord.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
 --in-range=-s32768 --lua-desync=circular_locked:key=4
@@ -238,10 +238,10 @@ NFQWS2_OPT="
 
 #Стратегии для UDP_YT
 --filter-udp=443 
---hostlist=/opt/zapret2/extra_strats/UDP_YT_list.txt
---hostlist=/opt/zapret2/extra_strats/TCP_RKN_list.txt
---hostlist=/opt/zapret2/extra_strats/TCP_Custom.txt
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist=/opt/zator/extra_strats/UDP_YT_list.txt
+--hostlist=/opt/zator/extra_strats/TCP_RKN_list.txt
+--hostlist=/opt/zator/extra_strats/TCP_Custom.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --in-range=-d100
 --out-range=-d100
 --lua-desync=circular_locked:key=5:proto=udp
@@ -285,7 +285,7 @@ NFQWS2_OPT="
 #Стратегии для голосовой связи. В первую очередь Discord, но может ещё для чего поможет
 --filter-udp=443,2053,2083,2087,2096,8443,50000-50099,1400,3478-3481,5349,19294-19344
 --filter-l7=discord,stun
---lua-desync=circular_locked:key=6:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zapret2/lists/netrogat.txt
+--lua-desync=circular_locked:key=6:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt
 --payload=discord_ip_discovery,stun
 --lua-desync=fake:blob=stun_fake:repeats=3:strategy=1 --lua-desync=fake:blob=discord_fake:repeats=3:strategy=1
 --lua-desync=fake:blob=discord_udp_1:repeats=10:out_range=-d8:strategy=2 --lua-desync=fake:blob=discord_udp_2:repeats=2:out_range=-d8:strategy=2
@@ -324,7 +324,7 @@ NFQWS2_OPT="
 
 #Стратегии для игрового UDP. Широкий диапазон портов для BF, FIFA/FC и похожих игр
 --skip --filter-udp=1026-65531
---lua-desync=circular_locked:key=7:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zapret2/lists/netrogat.txt
+--lua-desync=circular_locked:key=7:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt
 --lua-desync=fake:blob=quic_google:repeats=10:out_range=-n2:strategy=1
 --lua-desync=fake:blob=discord_udp_1:repeats=3:out_range=-d3:strategy=2
 --lua-desync=fake:blob=0x00:repeats=4:out_range=-d4:strategy=3
@@ -352,10 +352,10 @@ NFQWS2_OPT="
 #Z2R_AUTO_STANDARD_8_BEGIN
   #Безразборный блок (fallback).
 --skip --filter-tcp=443 --filter-l7=tls
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=8:allow_nohost=1:route_key=3:route_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt
+--in-range=-s32768 --lua-desync=circular_locked:key=8:allow_nohost=1:route_key=3:route_substrings=/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_STANDARD_8_END
   #Z2R_FALLBACK_END
@@ -365,10 +365,10 @@ NFQWS2_OPT="
   # Lua-маршрутизатор: домены с нужной подстрокой передаются в блок стратегий RKN.
 #Z2R_AUTO_STANDARD_3S_BEGIN
 --filter-tcp=443 --filter-l7=tls
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=3:allow_nohost=1:include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt
+--in-range=-s32768 --lua-desync=circular_locked:key=3:allow_nohost=1:include_substrings=/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_STANDARD_3S_END
 
@@ -378,7 +378,7 @@ NFQWS2_OPT="
 #Z2R_AUTO_STANDARD_9_BEGIN
   #HTTP-часть безразборного блока (fallback). Отдельный профиль и отдельный подбор стратегий.
 --skip --filter-tcp=80 --filter-l7=http
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=http_req
 --out-range=-n19
 --lua-desync=circular_locked:key=9:allow_nohost=1
@@ -418,22 +418,22 @@ NFQWS2_OPT="
 
 #Z2R_AUTO_3_BEGIN
 --skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --filter-l7=tls
---hostlist-exclude=/opt/zapret2/extra_strats/TCP_Discord.txt
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist-exclude=/opt/zator/extra_strats/TCP_Discord.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=3:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zapret2/lua/strategy-validator.sh
+--in-range=-s32768 --lua-desync=circular_quality:key=3:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zator/lua/strategy-validator.sh
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_3_END
 
 --new
 
 #Z2R_AUTO_4_BEGIN
---skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --hostlist=/opt/zapret2/extra_strats/TCP_Discord.txt
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --hostlist=/opt/zator/extra_strats/TCP_Discord.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=4:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zapret2/lua/strategy-validator.sh
+--in-range=-s32768 --lua-desync=circular_quality:key=4:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zator/lua/strategy-validator.sh
 --in-range=x
 --payload=tls_client_hello,discord_ip_discovery
 --lua-desync=fake:blob=fake_default_tls:tcp_ts=-1000:repeats=2:strategy=1 --lua-desync=multisplit:pos=1,midsld:strategy=1
@@ -470,7 +470,7 @@ NFQWS2_OPT="
 
 #Z2R_AUTO_9_BEGIN
 --skip --filter-tcp=80 --filter-l7=http
---hostlist-exclude=/opt/zapret2/lists/netrogat.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=http_req,empty
 --out-range=-n19
 --in-range=-s32768 --lua-desync=circular_quality:key=9:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3

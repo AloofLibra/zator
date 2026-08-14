@@ -1,5 +1,5 @@
-local LOCKED_PATH = "/opt/zapret2/extra_strats/cache/orchestra/locked.tsv"
-local LOCKED_MANUAL_PATH = "/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
+local LOCKED_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.tsv"
+local LOCKED_MANUAL_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.manual.tsv"
 local last_load = 0
 local cache_ttl = 2
 local LOCKED_TLS = {}

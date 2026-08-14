@@ -5,7 +5,7 @@ set -eu
 PATH="/opt/bin:/opt/sbin:$PATH"
 export PATH
 
-WEBUI_ROOT="/opt/zapret2/webui"
+WEBUI_ROOT="/opt/zator/webui"
 WEBUI_WWW="$WEBUI_ROOT/www"
 WEBUI_RUN="$WEBUI_ROOT/run"
 PID_FILE="$WEBUI_RUN/webui.pid"

@@ -67,21 +67,21 @@ menu_action_update_config_reset() {
   "$ZAPRET2_INIT" stop
 
   rm -f /opt/zapret2/init.d/{sysv,openwrt}/custom.d/{50-discord-media,50-stun4all}
-  rm -rf /opt/zapret2/lists /opt/zapret2/extra_strats
+  rm -rf /opt/zator/lists /opt/zator/extra_strats
 
-  rm -f /opt/zapret2/files/fake/http_fake_MS.bin \
-        /opt/zapret2/files/fake/quic_{1..7}.bin \
-        /opt/zapret2/files/fake/syn_packet.bin \
-        /opt/zapret2/files/fake/tls_clienthello_{1..18}.bin \
-        /opt/zapret2/files/fake/tls_clienthello_2n.bin \
-        /opt/zapret2/files/fake/tls_clienthello_6a.bin \
-        /opt/zapret2/files/fake/tls_clienthello_4pda_to.bin
+  rm -f /opt/zator/files/fake/http_fake_MS.bin \
+        /opt/zator/files/fake/quic_{1..7}.bin \
+        /opt/zator/files/fake/syn_packet.bin \
+        /opt/zator/files/fake/tls_clienthello_{1..18}.bin \
+        /opt/zator/files/fake/tls_clienthello_2n.bin \
+        /opt/zator/files/fake/tls_clienthello_6a.bin \
+        /opt/zator/files/fake/tls_clienthello_4pda_to.bin
 
   get_repo
 
-  if [ ! -f /opt/zapret2/files/fake/custom_tls.bin ]; then
-    mkdir -p /opt/zapret2/files/fake
-    if ! z2r_download_project_file /opt/zapret2/files/fake/custom_tls.bin "fake/custom_tls.bin"; then
+  if [ ! -f /opt/zator/files/fake/custom_tls.bin ]; then
+    mkdir -p /opt/zator/files/fake
+    if ! z2r_download_project_file /opt/zator/files/fake/custom_tls.bin "fake/custom_tls.bin"; then
       echo -e "${yellow}Не удалось скачать custom_tls.bin: нет curl/wget.${plain}"
     fi
   fi
@@ -191,8 +191,8 @@ menu_action_toggle_reasm_disable() {
 
 menu_action_set_tls_blob() {
   local cfg="/opt/zapret2/config"
-  local fake_dir="/opt/zapret2/files/fake"
-  local prefix="--blob=maxru:@/opt/zapret2/files/fake/"
+  local fake_dir="/opt/zator/files/fake"
+  local prefix="--blob=maxru:@/opt/zator/files/fake/"
   local sed_ereg="-E"
   local current_blob=""
   local current_mode=""
@@ -234,7 +234,7 @@ menu_action_set_tls_blob() {
     return 1
   fi
 
-  current_blob="$(sed -n -E 's#.*--blob=maxru:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  current_blob="$(sed -n -E 's#.*--blob=maxru:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p' "$cfg" | head -n1)"
   [ -z "$current_blob" ] && current_blob="не найден в конфиге"
   current_mode="$(config_tls_blob_mode_value "$cfg")"
   case "$current_mode" in
@@ -279,18 +279,18 @@ menu_action_set_tls_blob() {
 
   selected_blob="${blobs[$((choice-2))]}"
 
-  if ! grep -q -- "--blob=maxru:@/opt/zapret2/files/fake/" "$cfg"; then
-    echo -e "${red}Строка --blob=maxru:@/opt/zapret2/files/fake/... не найдена в $cfg${plain}"
+  if ! grep -qE -- "--blob=maxru:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
+    echo -e "${red}Строка --blob=maxru:@.../files/fake/... не найдена в $cfg${plain}"
     pause_enter
     return 1
   fi
 
   if [ "$sed_ereg" = "-E" ]; then
     sed -i -E '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
-    sed -i -E "s#(${prefix})[^[:space:]]+#\\1${selected_blob}#g" "$cfg"
+    sed -i -E "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${selected_blob}#g" "$cfg"
   else
     sed -i -r '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
-    sed -i -r "s#(${prefix})[^[:space:]]+#\\1${selected_blob}#g" "$cfg"
+    sed -i -r "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${selected_blob}#g" "$cfg"
   fi
   echo -e "${green}Обновлено: --blob=maxru -> ${selected_blob}${plain}"
   echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы применить изменения.${plain}"
@@ -385,8 +385,8 @@ menu_action_wg_repeats() {
 # Показывает только файлы вида wg_initial_fake_* и позволяет выбрать по номеру.
 menu_action_set_wg_blob() {
   local cfg
-  local fake_dir="/opt/zapret2/files/fake"
-  local prefix="--blob=fakewgblob:@/opt/zapret2/files/fake/"
+  local fake_dir="/opt/zator/files/fake"
+  local prefix="--blob=fakewgblob:@/opt/zator/files/fake/"
   local sed_ereg="-E"
   local current_blob=""
   local blobs=()
@@ -408,7 +408,7 @@ menu_action_set_wg_blob() {
 
   sed_ereg="$(config_sed_ereg)"
 
-  if ! grep -q -- "--blob=fakewgblob:@/opt/zapret2/files/fake/" "$cfg"; then
+  if ! grep -qE -- "--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
     echo -e "${red}В конфиге не найдено объявление --blob=fakewgblob:@...${plain}"
     echo -e "${yellow}Обновите конфиг через пункт 5 главного меню, чтобы появились настройки WireGuard.${plain}"
     pause_enter
@@ -432,7 +432,7 @@ menu_action_set_wg_blob() {
     return 1
   fi
 
-  current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p' "$cfg" | head -n1)"
   [ -z "$current_blob" ] && current_blob="не найден в конфиге"
 
   echo -e "${yellow}Текущий blob для WireGuard: ${plain}${current_blob}"
@@ -459,9 +459,9 @@ menu_action_set_wg_blob() {
   selected_blob="${blobs[$((choice-1))]}"
 
   if [ "$sed_ereg" = "-E" ]; then
-    sed -i -E "s#(${prefix})[^[:space:]]+#\\1${selected_blob}#g" "$cfg"
+    sed -i -E "s#--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${selected_blob}#g" "$cfg"
   else
-    sed -i -r "s#(${prefix})[^[:space:]]+#\\1${selected_blob}#g" "$cfg"
+    sed -i -r "s#--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${selected_blob}#g" "$cfg"
   fi
   echo -e "${green}Обновлено: --blob=fakewgblob -> ${selected_blob}${plain}"
   echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
@@ -620,7 +620,7 @@ toggle_rst_guard_mode() {
   local cfg="/opt/zapret2/config"
   local enable=1
 
-  if type rst_guard_lua_update_from_repo >/dev/null 2>&1 && [ ! -s /opt/zapret2/lua/rst-guard.lua ]; then
+  if type rst_guard_lua_update_from_repo >/dev/null 2>&1 && [ ! -s /opt/zator/lua/rst-guard.lua ]; then
     rst_guard_lua_update_from_repo || true
   fi
 
@@ -1014,7 +1014,7 @@ menu_action_backup_create() {
   z2r_backup_state_files > "$tmp_list"
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
-    src="/opt/zapret2/$rel"
+    src="/opt/zator/$rel"
     [ -f "$src" ] || continue
     mkdir -p "$stage/$(dirname "$rel")"
     if ! cp -f "$src" "$stage/$rel"; then
@@ -1128,14 +1128,15 @@ backup_check_blobs() {
 
   tmp_pairs="/tmp/z4r_blob_pairs_$$"
   missing=0
-  # Извлекаем пары "ИМЯ ФАЙЛ" из строк --blob=NAME:@/opt/zapret2/files/fake/FILE
-  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$cfg" \
+  # Извлекаем пары "ИМЯ ФАЙЛ" из строк --blob=NAME:@/opt/.../files/fake/FILE
+  # (path-agnostic: zapret2|zator — старый/новый корень).
+  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/[^/][^/]*/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$cfg" \
     | sort -u > "$tmp_pairs"
 
   while read -r name file; do
     [ -n "$name" ] || continue
     [ -n "$file" ] || continue
-    if [ ! -f "/opt/zapret2/files/fake/$file" ]; then
+    if [ ! -f "/opt/zator/files/fake/$file" ]; then
       echo -e "${red}Blob ${name}: файл ${file} отсутствует на устройстве.${plain}"
       missing=1
     fi
@@ -1182,7 +1183,7 @@ backup_smart_apply_ports() {
 
 # Синхронизация blob-файлов по совпадению имён + синхронизация режима maxru.
 # Блоб прописывается в конфиге в ДВУХ местах (см. menu_action_set_tls_blob):
-#   1. Декларация: --blob=maxru:@/opt/zapret2/files/fake/ФАЙЛ
+#   1. Декларация: --blob=maxru:@/opt/zator/files/fake/ФАЙЛ
 #   2. Ссылки в стратегиях: blob=fake_default_tls ↔ blob=maxru в --lua-desync=
 # Шаг 1: переносятся декларации для имён, есть и в старом, и в новом (файл
 #   должен физически существовать на устройстве). Новые блобы не затрагиваются.
@@ -1199,8 +1200,10 @@ backup_smart_apply_blobs() {
   tmp_new="/tmp/z4r_smart_new_$$"
 
   # --- Шаг 1: перенос деклараций --blob=NAME:@.../FILE по совпадению имён ---
-  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$old_cfg" | sort -u > "$tmp_old"
-  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$new_cfg" | sort -u > "$tmp_new"
+  # path-agnostic (zapret2|zator): старый бэкап может содержать старый корень,
+  # новый живой конфиг — новый. Совпадение по [^/][^/]* портабельно в BRE/ERE.
+  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/[^/][^/]*/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$old_cfg" | sort -u > "$tmp_old"
+  sed -n 's#.*--blob=\([a-zA-Z0-9_]*\):@/opt/[^/][^/]*/files/fake/\([^[:space:]]*\).*#\1 \2#p' "$new_cfg" | sort -u > "$tmp_new"
 
   while read -r name oldfile; do
     [ -n "$name" ] || continue
@@ -1208,12 +1211,13 @@ backup_smart_apply_blobs() {
     # Только имена, присутствующие в новом конфиге.
     grep -q "^${name} " "$tmp_new" || continue
     # Не ломаем конфиг: переносим только существующие на устройстве файлы.
-    [ -f "/opt/zapret2/files/fake/$oldfile" ] || continue
+    [ -f "/opt/zator/files/fake/$oldfile" ] || continue
     # Текущий файл этого блоба в новом конфиге.
-    newfile="$(sed -n "s#.*--blob=${name}:@/opt/zapret2/files/fake/\([^[:space:]]*\).*#\1#p" "$new_cfg" | head -n1)"
+    newfile="$(sed -n "s#.*--blob=${name}:@/opt/[^/][^/]*/files/fake/\([^[:space:]]*\).*#\1#p" "$new_cfg" | head -n1)"
     [ "$newfile" = "$oldfile" ] && continue
     # Замена пути файла для данного имени блоба (строка объявления).
-    sed -i $ereg "s#(--blob=${name}:@/opt/zapret2/files/fake/)[^[:space:]]+#\\1${oldfile}#g" "$new_cfg"
+    # \1 сохраняет канонический префикс нового конфига (/@/opt/zator/files/fake/).
+    sed -i $ereg "s#(--blob=${name}:@/opt/[^/][^/]*/files/fake/)[^[:space:]]+#\\1${oldfile}#g" "$new_cfg"
   done < "$tmp_old"
 
   rm -f "$tmp_old" "$tmp_new"
@@ -1341,10 +1345,10 @@ backup_smart_set_hostlist() {
   local cfg="$1" want_auto="$2"
   if [ "$want_auto" = "1" ]; then
     sed -i 's/^MODE_FILTER=hostlist/MODE_FILTER=autohostlist/' "$cfg"
-    sed -i 's#\(--hostlist=/opt/zapret2/extra_strats/TCP_RKN_list\.txt\)#\1 <HOSTLIST>#g' "$cfg"
+    sed -i -E 's#(--hostlist=/opt/(zapret2|zator)/extra_strats/TCP_RKN_list\.txt)#\1 <HOSTLIST>#g' "$cfg"
   else
     sed -i 's/^MODE_FILTER=autohostlist/MODE_FILTER=hostlist/' "$cfg"
-    sed -i 's#\(--hostlist=/opt/zapret2/extra_strats/TCP_RKN_list\.txt\) <HOSTLIST>#\1#g' "$cfg"
+    sed -i -E 's#(--hostlist=/opt/(zapret2|zator)/extra_strats/TCP_RKN_list\.txt) <HOSTLIST>#\1#g' "$cfg"
   fi
 }
 
@@ -1613,7 +1617,7 @@ menu_action_backup_restore() {
     [ -n "$rel" ] || continue
     src="$restore_dir/$rel"
     [ -f "$src" ] || continue
-    dst="/opt/zapret2/$rel"
+    dst="/opt/zator/$rel"
     mkdir -p "$(dirname "$dst")"
     if ! cp -f "$src" "$dst"; then
       rm -rf "$restore_dir" "$tmp_list"
