@@ -93,7 +93,6 @@ z2r_download_project_file() {
   local rel="$2"
   local tmp="${dest}.tmp.$$"
   local primary="${Z2R_PROJECT_RAW_BASE}/${rel}"
-  local mirror
 
   if [ -n "${Z2R_PROJECT_DIR:-}" ]; then
     case "$rel" in
@@ -118,11 +117,13 @@ z2r_download_project_file() {
     mv -f "$tmp" "$dest"
     return 0
   fi
-  echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало.${plain}" >&2
-  rm -f "$tmp"
-  if z2r_fetch_url_to_file "$tmp" "$mirror"; then
-    mv -f "$tmp" "$dest"
-    return 0
+  if [ -n "${Z2R_PROJECT_MIRROR_BASE:-}" ]; then
+    echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало.${plain}" >&2
+    rm -f "$tmp"
+    if z2r_fetch_url_to_file "$tmp" "$mirror"; then
+      mv -f "$tmp" "$dest"
+      return 0
+    fi
   fi
   rm -f "$tmp"
   return 1
@@ -1750,7 +1751,7 @@ webui_submenu() {
     read -re -p "Ваш выбор: " webui_answer
     case "$webui_answer" in
       "1")
-        webui_install
+        webui_install || echo -e "${red}Установка/запуск Web UI не удался.${plain}"
         pause_enter
         ;;
       "2")
@@ -1758,7 +1759,7 @@ webui_submenu() {
         pause_enter
         ;;
       "3")
-        webui_remove
+        webui_remove || true
         pause_enter
         ;;
       "0"|"")
