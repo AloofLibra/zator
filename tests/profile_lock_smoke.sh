@@ -392,4 +392,29 @@ if profile_apply_all "$CFG" >/dev/null 2>&1; then
 fi
 ORCH_LOCK_FILE="$saved_orch_lock_file"
 
+# --- Дата изменения config (# Last modified) для главного меню ---
+grep -q '^# Last modified: ' "$REPO_DIR/config.default" \
+  || fail "config.default lost its Last modified header"
+stamp="$(config_last_modified "$REPO_DIR/config.default")"
+assert_contains "$stamp" '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} UTC$' \
+  "Last modified stamp has unexpected format: $stamp"
+
+menu_config_snapshot "$CFG"
+[ "$MENU_CONFIG_DATE" = "$(config_last_modified "$CFG")" ] \
+  || fail "menu_config_snapshot did not fill MENU_CONFIG_DATE from config"
+
+no_hdr_cfg="$TMP_DIR/no-header.cfg"
+sed '/^# Last modified: /d' "$CFG" > "$no_hdr_cfg"
+[ "$(config_last_modified "$no_hdr_cfg")" = "Неизвестно" ] \
+  || fail "config_last_modified must return Неизвестно without header"
+menu_config_snapshot "$no_hdr_cfg"
+[ "$MENU_CONFIG_DATE" = "Неизвестно" ] \
+  || fail "menu_config_snapshot must default MENU_CONFIG_DATE without header"
+menu_config_snapshot "$TMP_DIR/missing-$$.cfg"
+[ "$MENU_CONFIG_DATE" = "Неизвестно" ] \
+  || fail "menu_config_snapshot must default MENU_CONFIG_DATE for missing file"
+
+grep -qF 'Версия config файла от: ${plain}${MENU_CONFIG_DATE}' "$REPO_DIR/z2r.sh" \
+  || fail "main menu does not show config file date"
+
 echo "profile_lock smoke ok"

@@ -1844,6 +1844,7 @@ ${plain}
 ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
+Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
 ${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
 Enter (без цифр) - переустановка/обновление zapret2

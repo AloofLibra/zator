@@ -235,7 +235,8 @@ bash tests/profile_lock_smoke.sh
 - проверяет повторное применение состояния к свежему `config`;
 - проверяет `RKN`, `Discord TCP`, `VOICE UDP`, fallback TLS;
 - проверяет, что `VOICE_UDP=0` убирает voice-порты из `NFQWS2_PORTS_UDP`;
-- проверяет идемпотентность `profile_apply_all`.
+- проверяет идемпотентность `profile_apply_all`;
+- проверяет чтение даты изменения config (`# Last modified`) для главного меню (`config_last_modified`, `MENU_CONFIG_DATE`).
 
 Успешный результат:
 

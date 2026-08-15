@@ -280,6 +280,12 @@ config_mode_text() {
   esac
 }
 
+config_last_modified() {
+  local header
+  header="$(sed -n 's/^# Last modified:[[:space:]]*//p' "$1" 2>/dev/null | head -n1 | tr -d '\r')"
+  printf '%s\n' "${header:-Неизвестно}"
+}
+
 menu_config_snapshot() {
   local cfg="$1"
 
@@ -292,6 +298,7 @@ menu_config_snapshot() {
   MENU_RST_GUARD="выключен"
   MENU_UDP_GAMES="Неизвестно"
   MENU_PORTS="дефолт"
+  MENU_CONFIG_DATE="Неизвестно"
   MENU_PROFILE_MAX_1=0
   MENU_PROFILE_MAX_2=0
   MENU_PROFILE_MAX_3=0
@@ -303,6 +310,8 @@ menu_config_snapshot() {
   MENU_PROFILE_MAX_9=0
 
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
+
+  MENU_CONFIG_DATE="$(config_last_modified "$cfg")"
 
   local fwtype flowoffload mode_filter auto_mode has_skip has_filter_tcp
   local has_tls_maxru has_tls_default has_rst blob_file udp_games ports
