@@ -1137,6 +1137,23 @@ remove_zapret() {
  fi
 }
 
+# Полное удаление zator-контента ($ZATOR_ROOT): Web-панель, lua, листы,
+# фиксы стратегий, кэш оркестра. Бэкапы НЕ трогаем — они в /opt/zator_backup.
+# Точки отказа обработаны: функция не роняет вызывающий код под set -e.
+zator_remove() {
+  if [ ! -d "$ZATOR_ROOT" ]; then
+    echo -e "${yellow}Каталог zator не существует: $ZATOR_ROOT${plain}"
+    return 0
+  fi
+  strategy_validator_remove_service || true
+  webui_remove || true
+  if ! rm -rf "$ZATOR_ROOT" 2>/dev/null; then
+    echo -e "${red}Не удалось полностью удалить $ZATOR_ROOT${plain}"
+    return 1
+  fi
+  echo -e "${green}Каталог zator удалён: $ZATOR_ROOT${plain}"
+}
+
 #Запрос желаемой версии zapret2
 version_select() {
    if [ -n "${ZAPRET2_VERSION:-}" ]; then
@@ -1854,7 +1871,7 @@ ${Fcyan}01.${yellow} Проверить доступность сервисов 
 ${Fcyan}1.${yellow} Фиксация стратегии профиля/безразборного блока. Текущие: ${plain}[ ${strategies_status} ]${yellow} (fallback TLS: ${plain}[$(fallback_strategy_text)]${yellow}, HTTP: ${plain}[$(fallback_http_strategy_text)]${yellow})
 ${Fcyan}2.${yellow} Стоп/старт zapret2, ${Fcyan}22${yellow} - рестарт (сейчас: $(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}"))
 ${Fcyan}3.${yellow} Запуск blockcheck2 и сохранение SUMMARY
-${Fcyan}4.${yellow} Удалить zapret2
+${Fcyan}4.${yellow} Удаление zator и zapret2 ${Fcyan} 44.${yellow} Удаление zapret2
 ${Fcyan}5.${yellow} Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
 ${Fcyan}6.${yellow} Управление доменами
 ${Fcyan}7.${yellow} Открыть в редакторе config (Установит nano редактор ~250kb)
@@ -1933,12 +1950,29 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "4")
-    echo -e "${yellow}Внимание! Это приведёт к полному удалению zapret2.${plain}"
+    echo -e "${yellow}Внимание! Это приведёт к полному удалению zator и zapret2.${plain}"
+    read -re -p $'\033[33mВы действительно хотите удалить zator и zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
+    case "$del_confirm" in
+      "5")
+        backup_helper_ask_and_create
+        remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
+        zator_remove || echo -e "${red}Удаление zator завершилось с ошибкой.${plain}"
+        echo -e "${yellow}Удаление zator и zapret2 завершено${plain}"
+        ;;
+      *)
+        echo -e "${green}Удаление отменено.${plain}"
+        ;;
+    esac
+    pause_enter
+    ;;
+
+  "44")
+    echo -e "${yellow}Внимание! Это удалит только zapret2 (каталог zator и его данные останутся).${plain}"
     read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
-        remove_zapret
+        remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
         echo -e "${yellow}zapret2 удалён${plain}"
         ;;
       *)

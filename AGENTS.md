@@ -266,6 +266,26 @@ bash tests/webui_smoke.sh
 webui smoke ok
 ```
 
+```bash
+bash tests/uninstall_smoke.sh
+```
+
+Тест удаления (пункты меню 4 = zator + zapret2 и 44 = только zapret2, функция
+`zator_remove` в `z2r.sh`), тоже только во временной директории в `/tmp`:
+
+- не пишет в `/opt` (`ZATOR_ROOT` переопределяется на временную папку);
+- проверяет инварианты меню: 4 вызывает `remove_zapret` + `zator_remove`,
+  44 — только `remove_zapret`, вызовы обёрнуты в `|| echo`;
+- проверяет `zator_remove`: штатное удаление (каталог снесён, сервисы
+  validator/Web-панель остановлены), отсутствие каталога, сбой `rm` (мок)
+  с локализацией под `set -e`.
+
+Успешный результат:
+
+```text
+uninstall smoke ok
+```
+
 ## Local Inspection Notes
 
 - The repository content is largely Russian UTF-8 text. On Windows PowerShell it may display as mojibake if the console encoding is not UTF-8.
