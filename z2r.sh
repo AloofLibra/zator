@@ -1871,7 +1871,7 @@ ${Fcyan}01.${yellow} Проверить доступность сервисов 
 ${Fcyan}1.${yellow} Фиксация стратегии профиля/безразборного блока. Текущие: ${plain}[ ${strategies_status} ]${yellow} (fallback TLS: ${plain}[$(fallback_strategy_text)]${yellow}, HTTP: ${plain}[$(fallback_http_strategy_text)]${yellow})
 ${Fcyan}2.${yellow} Стоп/старт zapret2, ${Fcyan}22${yellow} - рестарт (сейчас: $(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}"))
 ${Fcyan}3.${yellow} Запуск blockcheck2 и сохранение SUMMARY
-${Fcyan}4.${yellow} Удаление zator и zapret2 ${Fcyan} 44.${yellow} Удаление zapret2
+${Fcyan}4.${yellow} Удаление zator и zapret2, ${Fcyan} 44.${yellow} Удаление zapret2
 ${Fcyan}5.${yellow} Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
 ${Fcyan}6.${yellow} Управление доменами
 ${Fcyan}7.${yellow} Открыть в редакторе config (Установит nano редактор ~250kb)
