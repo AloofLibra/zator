@@ -97,7 +97,7 @@ NFQWS2_OPT="
 --blob=discord_fake:@/opt/zator/files/fake/quic_initial_dbankcloud_ru.bin
 --blob=stun_fake:@/opt/zator/files/fake/stun.bin
 --blob=blob_rdp:@/opt/zator/files/fake/rdp.bin
---blob=fakewgblob:@/opt/zator/files/fake/wg_initial_fake_1.bin
+--blob=fakewgblob:@/opt/zator/files/fake/wg_initial_fake_2.bin
 --blob=discord_udp_1:@/opt/zator/files/fake/discord_udp_1.bin
 --blob=discord_udp_2:@/opt/zator/files/fake/discord_udp_2.bin
 # Общий TCP TLS шаблон на базе блока YT. Содержит range/payload для lua-desync.
