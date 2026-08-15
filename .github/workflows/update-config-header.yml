@@ -1,0 +1,81 @@
+name: Auto Update Config Timestamp
+
+on:
+  push:
+    paths:
+      - 'config.default'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: config-timestamp-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update-header:
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event.head_commit.message != null &&
+      !contains(
+        github.event.head_commit.message,
+        'auto: update timestamp in config.default'
+      )
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Update timestamp header
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          HEADER="# Last modified: $TIMESTAMP"
+
+          if [ ! -f config.default ]; then
+            echo "::error::config.default not found"
+            exit 1
+          fi
+
+          FIRST_LINE=$(head -n 1 config.default || true)
+
+          if [[ "$FIRST_LINE" =~ ^#\ Last\ modified: ]]; then
+            sed -i "1s|.*|$HEADER|" config.default
+          else
+            {
+              printf '%s\n' "$HEADER"
+              cat config.default
+            } > config.default.tmp
+
+            mv config.default.tmp config.default
+          fi
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- config.default; then
+            echo "config.default has no changes"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add config.default
+
+          git commit \
+            -m "auto: update timestamp in config.default [skip ci]"
+
+      - name: Push changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push origin "HEAD:${GITHUB_REF_NAME}"

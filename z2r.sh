@@ -1122,18 +1122,19 @@ remove_zapret() {
  if [[ "$OSystem" == "entware" ]]; then
  	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/ndm/netfilter.d/000-zapret.sh /opt/etc/init.d/S00fix
  fi
- read -re -p $'\033[33mУдалить функционал доступа в меню через браузер (web-ssh)? Enter - Да, 1 - нет\033[0m\n' ttyd_answer_del
- case "$ttyd_answer_del" in
-     "1")
-         echo "Пропущено"
-     ;;
-     *)
- 		apk del ttyd 2>/dev/null || true
- 		opkg remove ttyd 2>/dev/null || true
- 		rm -f /usr/bin/ttyd
- 		echo "Процесс удаления завершён"
-     ;;
-  esac
+
+ if [ -d "$WEBUI_ROOT" ]; then
+     read -re -p $'\033[33mУдалить Web-панель управления (webui)? Enter - Да, 1 - нет\033[0m\n' webui_answer_del
+     case "$webui_answer_del" in
+         "1")
+             echo "Пропущено"
+         ;;
+         *)
+             webui_remove || true
+             echo "Процесс удаления завершён"
+         ;;
+     esac
+ fi
 }
 
 #Запрос желаемой версии zapret2
@@ -1682,6 +1683,15 @@ webui_stop_service() {
   esac
 }
 
+webui_restart() {
+  webui_stop_service || true
+  if ! webui_start_service; then
+    echo -e "${red}Не удалось запустить Web UI после перезапуска.${plain}"
+    return 1
+  fi
+  echo -e "${green}Web UI перезапущен.${plain}"
+}
+
 webui_status_text() {
   if [ -x "$WEBUI_RUNNER" ]; then
     "$WEBUI_RUNNER" status 2>/dev/null || echo "stopped:none:${WEBUI_PORT}"
@@ -1733,19 +1743,30 @@ webui_remove() {
       fi
       ;;
   esac
-  rm -rf "$WEBUI_ROOT"
+  rm -rf "$WEBUI_ROOT" 2>/dev/null || echo -e "${red}Не удалось полностью удалить $WEBUI_ROOT${plain}"
   echo -e "${green}Web UI удалён.${plain}"
 }
 
 webui_submenu() {
+  local status_line webui_running
   while true; do
     clear -x
+    status_line="$(webui_status_text)"
+    webui_running=0
+    case "$status_line" in
+      running:*) webui_running=1 ;;
+    esac
     echo -e "${cyan}--- Web UI ---${plain}"
-    echo -e "${yellow}Состояние: ${plain}$(webui_status_text)"
+    echo -e "${yellow}Состояние: ${plain}${status_line}"
     echo ""
     submenu_item "1" "Установить/обновить Web UI"
     submenu_item "2" "Показать статус и URL"
-    submenu_item "3" "Удалить Web UI"
+    if [ "$webui_running" = "1" ]; then
+      submenu_item "3" "Перезапустить Web UI"
+      submenu_item "4" "Удалить Web UI"
+    else
+      submenu_item "3" "Удалить Web UI"
+    fi
     submenu_item "0" "Назад"
     echo ""
     read -re -p "Ваш выбор: " webui_answer
@@ -1759,8 +1780,21 @@ webui_submenu() {
         pause_enter
         ;;
       "3")
-        webui_remove || true
+        if [ "$webui_running" = "1" ]; then
+          webui_restart || echo -e "${red}Перезапуск Web UI не удался.${plain}"
+          webui_show_status || true
+        else
+          webui_remove || true
+        fi
         pause_enter
+        ;;
+      "4")
+        if [ "$webui_running" = "1" ]; then
+          webui_remove || true
+        else
+          echo -e "${yellow}Неверный ввод.${plain}"
+          sleep 1
+        fi
         ;;
       "0"|"")
         return
@@ -1828,7 +1862,7 @@ ${Fcyan}10.${yellow} (Де)активировать обход UDP на 1026-655
 ${Fcyan}11.${yellow} Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: ${plain}[${MENU_FLOWOFFLOAD}]${yellow}
 ${Fcyan}12.${yellow} Режим фильтра hostlist/autohostlist. Сейчас: ${plain}[${MENU_HOSTLIST}]${yellow}
 ${Fcyan}13.${yellow} Безразборный режим (fallback). Сейчас: ${plain}[${MENU_FALLBACK}]${yellow}
-${Fcyan}14.${yellow} Активировать доступ в меню через браузер (~3мб места)
+${Fcyan}14.${yellow} Web-панель управления (установка/обновление, ~3МБ места)
 ${Fcyan}15.${yellow} Провайдер
 ${Fcyan}16.${yellow} Сменить TLS blob (--blob=maxru). Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
 ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас: ${plain}[${MENU_RST_GUARD}]${yellow}
@@ -2105,16 +2139,15 @@ if [ ! -s "$ORCH_LUA_LOCKED" ]; then
   fi
 fi
 
-#Запрос на установку web-ssh
-read -re -p $'\033[33mАктивировать доступ в меню через браузер (~3мб места)? 1 - Да, Enter - нет\033[0m\n' ttyd_answer
-case "$ttyd_answer" in
+read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
+case "$webui_answer" in
 	"1")
 		webui_install
 	;;
 	*)
-		echo "Пропуск (пере)установки web-терминала"
+		echo "Пропуск (пере)установки Web-панели"
 	;;
-esac 
+esac
 
 #Для Keenetic и merlin
 if [[ "$OSystem" == "entware" ]]; then

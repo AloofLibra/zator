@@ -243,6 +243,28 @@ bash tests/profile_lock_smoke.sh
 profile_lock smoke ok
 ```
 
+```bash
+bash tests/webui_smoke.sh
+```
+
+Тест Web-панели (Web UI) в `z2r.sh`, тоже только во временной директории в `/tmp`:
+
+- не пишет в `/opt`, не запускает настоящий web-сервер;
+- извлекает `webui_*` функции из `z2r.sh` (объявлены от колонки 0) и гоняет их с моками
+  (`clear`, раннер `run-webui.sh`, перехватывающий `rm`);
+- имитирует точки поломок (падение запуска/остановки/удаления, отсутствующий раннер)
+  и проверяет, что сбои локализованы: `set -e` не роняет вызывающий код,
+  пользователь видит сообщение об ошибке;
+- проверяет терминологию («Web-панель управления», отсутствие web-ssh/ttyd/web-терминал)
+  и то, что промпт удаления Web-панели стоит под guard'ом `[ -d "$WEBUI_ROOT" ]`;
+- проверяет, что пункт «Перезапустить Web UI» в подменю показывается только при running.
+
+Успешный результат:
+
+```text
+webui smoke ok
+```
+
 ## Local Inspection Notes
 
 - The repository content is largely Russian UTF-8 text. On Windows PowerShell it may display as mojibake if the console encoding is not UTF-8.
