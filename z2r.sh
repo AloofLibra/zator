@@ -1621,10 +1621,10 @@ EOF
 PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 case "$1" in
-  start) bash @ZATOR_ROOT@/webui/run-webui.sh start ;;
-  stop) bash @ZATOR_ROOT@/webui/run-webui.sh stop ;;
-  restart) bash @ZATOR_ROOT@/webui/run-webui.sh restart ;;
-  status) bash @ZATOR_ROOT@/webui/run-webui.sh status ;;
+  start)   sh @ZATOR_ROOT@/webui/run-webui.sh start >/dev/null 2>&1 & ;;
+  stop)    sh @ZATOR_ROOT@/webui/run-webui.sh stop ;;
+  restart) sh @ZATOR_ROOT@/webui/run-webui.sh restart ;;
+  status)  sh @ZATOR_ROOT@/webui/run-webui.sh status ;;
   *) echo "usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
 EOF
