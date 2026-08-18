@@ -49,6 +49,15 @@ ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
 Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
+# Два корня установки:
+#   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
+#                  пересоздаётся при обновлении zapret2.
+#   ZATOR_ROOT   — zator-контент (z2r_lib, lua, webui, extra_strats, lists, files/fake),
+#                  НЕ затрагивается обновлением zapret2.
+# Оба переопределяемы через env (как URL-переменные выше).
+ZAPRET2_ROOT="${ZAPRET2_ROOT:-/opt/zapret2}"
+ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+
 z2r_mirror_url() {
   printf '%s/%s?h=%s' "$Z2R_PROJECT_MIRROR_BASE" "$1" "$Z2R_BRANCH"
 }
@@ -56,16 +65,27 @@ z2r_mirror_url() {
 z2r_fetch_url_to_file() {
   local dest="$1"
   local url="$2"
+  local attempt
 
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$dest" "$url"
-    return $?
-  fi
-  if command -v wget >/dev/null 2>&1; then
-    wget -qO "$dest" "$url"
-    return $?
-  fi
-  return 127
+  # До 3 попыток с таймаутом на соединение
+  for attempt in 1 2 3; do
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsSL --connect-timeout 10 -o "$dest" "$url"; then
+        return 0
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if wget -q -T 10 -O "$dest" "$url"; then
+        return 0
+      fi
+    else
+      return 127
+    fi
+    rm -f "$dest"
+    if [ "$attempt" -lt 3 ]; then
+      sleep 2
+    fi
+  done
+  return 1
 }
 
 z2r_download_project_file() {
@@ -73,7 +93,6 @@ z2r_download_project_file() {
   local rel="$2"
   local tmp="${dest}.tmp.$$"
   local primary="${Z2R_PROJECT_RAW_BASE}/${rel}"
-  local mirror
 
   if [ -n "${Z2R_PROJECT_DIR:-}" ]; then
     case "$rel" in
@@ -98,11 +117,13 @@ z2r_download_project_file() {
     mv -f "$tmp" "$dest"
     return 0
   fi
-  echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало.${plain}" >&2
-  rm -f "$tmp"
-  if z2r_fetch_url_to_file "$tmp" "$mirror"; then
-    mv -f "$tmp" "$dest"
-    return 0
+  if [ -n "${Z2R_PROJECT_MIRROR_BASE:-}" ]; then
+    echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало.${plain}" >&2
+    rm -f "$tmp"
+    if z2r_fetch_url_to_file "$tmp" "$mirror"; then
+      mv -f "$tmp" "$dest"
+      return 0
+    fi
   fi
   rm -f "$tmp"
   return 1
@@ -243,9 +264,96 @@ z2r_exec_external_installer() {
 #Определяем путь скрипта, подгружаем функции
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 
+# --- Миграция zator-контента из $ZAPRET2_ROOT в $ZATOR_ROOT ---
+# Исторически весь zator-контент (z2r_lib, lua, webui, extra_strats, lists, files/fake)
+# жил внутри /opt/zapret2 и уничтожался при каждом обновлении zapret2 (rm -rf).
+# Теперь он переносится в отдельный каталог $ZATOR_ROOT и более не трогается
+# при обновлении zapret2. Функция не имеет зависимостей от lib/ и безопасна
+# при set -e. Идемпотентна: при повторном запуске no-op.
+z2r_migrate_to_zator() {
+  mkdir -p "$ZATOR_ROOT" 2>/dev/null || return 0
+  local sub src dst f
+
+  for sub in z2r_lib webui; do
+    src="$ZAPRET2_ROOT/$sub"
+    dst="$ZATOR_ROOT/$sub"
+    [ -e "$src" ] || continue
+    if [ ! -e "$dst" ]; then
+      mv "$src" "$dst" 2>/dev/null || true
+    else
+      rm -rf "$src" 2>/dev/null || true
+    fi
+  done
+
+  # Данные пользователя: если новый каталог уже создан (лаунчером/обновлением),
+  # содержимое старого переносим поверх (кэш оркестра с локами), затем удаляем.
+  for sub in extra_strats lists; do
+    src="$ZAPRET2_ROOT/$sub"
+    dst="$ZATOR_ROOT/$sub"
+    [ -e "$src" ] || continue
+    if [ ! -e "$dst" ]; then
+      mv "$src" "$dst" 2>/dev/null || true
+    else
+      cp -a "$src/." "$dst/" 2>/dev/null || true
+      rm -rf "$src" 2>/dev/null || true
+    fi
+  done
+
+  # /opt/zapret2/lua — СМЕШАННЫЙ каталог: вместе с нашими модулями там лежат
+  # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
+  # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
+  # каталог и чужие файлы не трогаем.
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua strategy-validator.sh; do
+    src="$ZAPRET2_ROOT/lua/$f"
+    [ -f "$src" ] || continue
+    if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
+      mkdir -p "$ZATOR_ROOT/lua" 2>/dev/null
+      mv "$src" "$ZATOR_ROOT/lua/$f" 2>/dev/null || true
+    else
+      rm -f "$src" 2>/dev/null || true
+    fi
+  done
+
+  # Fake-файлы: переносим только files/fake, остальное в files/ — zapret2.
+  src="$ZAPRET2_ROOT/files/fake"
+  if [ -e "$src" ] && [ ! -e "$ZATOR_ROOT/files/fake" ]; then
+    mkdir -p "$ZATOR_ROOT/files" 2>/dev/null
+    mv "$src" "$ZATOR_ROOT/files/fake" 2>/dev/null || true
+  fi
+
+  # Пути в живом config/config.default: заменяем ТОЛЬКО ссылки на наши файлы
+  # и поддеревья. Ссылки вида /opt/zapret2/lua/zapret-*.lua (файлы самого
+  # zapret2) не трогаем. Без grep-предфильтра: BRE-альтернация "\|" не
+  # поддерживается BusyBox grep; sed с отсутствующими совпадениями безопасен.
+  local cfg
+  for cfg in "$ZAPRET2_ROOT/config" "$ZAPRET2_ROOT/config.default"; do
+    [ -f "$cfg" ] || continue
+    sed -i \
+      -e 's#/opt/zapret2/lua/locked.lua#/opt/zator/lua/locked.lua#g' \
+      -e 's#/opt/zapret2/lua/rst-guard.lua#/opt/zator/lua/rst-guard.lua#g' \
+      -e 's#/opt/zapret2/lua/strategy-lock-manager.lua#/opt/zator/lua/strategy-lock-manager.lua#g' \
+      -e 's#/opt/zapret2/lua/combined-detector.lua#/opt/zator/lua/combined-detector.lua#g' \
+      -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
+      -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
+      -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
+      -e 's#/opt/zapret2/extra_strats#/opt/zator/extra_strats#g' \
+      -e 's#/opt/zapret2/lists#/opt/zator/lists#g' \
+      "$cfg" 2>/dev/null || true
+  done
+  return 0
+}
+
+z2r_migrate_to_zator
+
 # Проверяем наличие всех нужных lib-файлов, иначе запускаем внешний скрипт
 missing_libs=0
-LIB_DIR="$SCRIPT_DIR/zapret2/z2r_lib"
+# Предпочитаем $ZATOR_ROOT/z2r_lib (новое расположение), fallback на
+# $ZAPRET2_ROOT/z2r_lib (legacy/сразу после первой установки внешним лаунчером).
+if [ -f "$ZATOR_ROOT/z2r_lib/orchestra_state.sh" ]; then
+  LIB_DIR="$ZATOR_ROOT/z2r_lib"
+else
+  LIB_DIR="$ZAPRET2_ROOT/z2r_lib"
+fi
 for lib in $Z2R_LIB_FILES; do
   if [ ! -f "$LIB_DIR/$lib" ]; then
     missing_libs=1
@@ -273,7 +381,7 @@ source "$LIB_DIR/provider.sh"
 # Функции: init_telemetry, send_stats
 source "$LIB_DIR/telemetry.sh"
 
-# Общий API для чтения и правки /opt/zapret2/config
+# Общий API для чтения и правки $ZAPRET2_ROOT/config
 source "$LIB_DIR/config.sh"
 
 # Общий API ручных локов стратегий
@@ -381,10 +489,10 @@ Enter - выход
 
 
 set_zapret2_init() {
-  if [ "$OSystem" = "WRT" ] && [ -f "/opt/zapret2/init.d/openwrt/zapret2" ]; then
-    ZAPRET2_INIT="/opt/zapret2/init.d/openwrt/zapret2"
+  if [ "$OSystem" = "WRT" ] && [ -f "$ZAPRET2_ROOT/init.d/openwrt/zapret2" ]; then
+    ZAPRET2_INIT="$ZAPRET2_ROOT/init.d/openwrt/zapret2"
   else
-    ZAPRET2_INIT="/opt/zapret2/init.d/sysv/zapret2"
+    ZAPRET2_INIT="$ZAPRET2_ROOT/init.d/sysv/zapret2"
   fi
   export ZAPRET2_INIT
 }
@@ -425,7 +533,7 @@ z2r_archive_preflight() {
 }
 
 cleanup_zapret2_init_dirs() {
-  local init_dir="/opt/zapret2/init.d"
+  local init_dir="$ZAPRET2_ROOT/init.d"
 
   [ -d "$init_dir" ] || return 0
 
@@ -436,13 +544,13 @@ cleanup_zapret2_init_dirs() {
   fi
 }
 
-ORCH_DIR="/opt/zapret2/extra_strats/cache/orchestra"
-ORCH_LUA_LOCKED="/opt/zapret2/lua/locked.lua"
-RST_GUARD_LUA="/opt/zapret2/lua/rst-guard.lua"
-CIRCULAR_DETECTOR_LUA="/opt/zapret2/lua/combined-detector.lua"
-SILENT_DROP_DETECTOR_LUA="/opt/zapret2/lua/silent-drop-detector.lua"
-STRATEGY_LOCK_MANAGER_LUA="/opt/zapret2/lua/strategy-lock-manager.lua"
-STRATEGY_VALIDATOR_WORKER="/opt/zapret2/lua/strategy-validator.sh"
+ORCH_DIR="$ZATOR_ROOT/extra_strats/cache/orchestra"
+ORCH_LUA_LOCKED="$ZATOR_ROOT/lua/locked.lua"
+RST_GUARD_LUA="$ZATOR_ROOT/lua/rst-guard.lua"
+CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
+SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
+STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
+STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
 STRATEGY_VALIDATOR_ENTWARE_INIT="/opt/etc/init.d/S93z2r-strategy-validator"
 STRATEGY_VALIDATOR_SYSTEMD_UNIT="/etc/systemd/system/z2r-strategy-validator.service"
@@ -474,7 +582,7 @@ rst_guard_lua_update_from_repo() {
 }
 
 circular_runtime_update_from_repo() {
-  mkdir -p /opt/zapret2/lua
+  mkdir -p "$ZATOR_ROOT/lua"
   z2r_download_project_file "$CIRCULAR_DETECTOR_LUA" "lua/combined-detector.lua" || return 1
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
@@ -514,14 +622,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=/bin/sh -c 'mkdir -p /tmp/z2r-strategy-validation && user=$(/bin/sed -n "s/^WS_USER=//p" /opt/zapret2/config | /usr/bin/head -n1); [ -n "$user" ] || user=nobody; /bin/chown "$user" /tmp/z2r-strategy-validation && /bin/chmod 700 /tmp/z2r-strategy-validation'
-ExecStart=/opt/zapret2/lua/strategy-validator.sh --daemon
+ExecStartPre=/bin/sh -c 'mkdir -p /tmp/z2r-strategy-validation && user=$(/bin/sed -n "s/^WS_USER=//p" @ZAPRET2_ROOT@/config | /usr/bin/head -n1); [ -n "$user" ] || user=nobody; /bin/chown "$user" /tmp/z2r-strategy-validation && /bin/chmod 700 /tmp/z2r-strategy-validation'
+ExecStart=@ZATOR_ROOT@/lua/strategy-validator.sh --daemon
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
 EOF
+      sed -i \
+        -e "s#@ZAPRET2_ROOT@#$ZAPRET2_ROOT#g" \
+        -e "s#@ZATOR_ROOT@#$ZATOR_ROOT#g" \
+        "$STRATEGY_VALIDATOR_SYSTEMD_UNIT"
       systemctl daemon-reload
       systemctl enable z2r-strategy-validator.service
       systemctl restart z2r-strategy-validator.service
@@ -553,7 +665,7 @@ strategy_validator_remove_service() {
 }
 
 # Проверяем locked.lua, при отсутствии пробуем скачать из репозитория
-if [ -f /opt/zapret2/config ]; then
+if [ -f "$ZAPRET2_ROOT/config" ]; then
   if [ ! -s "$ORCH_LUA_LOCKED" ]; then
     echo "Не найден locked.lua. Пытаюсь скачать из репозитория..."
     locked_lua_update_from_repo || true
@@ -571,7 +683,7 @@ fi
 
 _fallback_strategy_text() {
   local profile="$1" proto="$2"
-  local file="/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
+  local file="$ORCH_DIR/locked.manual.tsv"
   if [ -f "$file" ]; then
     local val
     val="$(awk -F '\t' -v p="$profile" -v pr="$proto" '$1==p && $2==pr && $3 ~ /^[0-9]+$/ {print $3; exit}' "$file")"
@@ -593,8 +705,8 @@ fallback_http_strategy_text() {
 
 _fallback_profile_try() {
   local profile="$1" title="$2" proto="$3" test_url="$4"
-  local prev_lock_file="${ORCH_LOCK_FILE:-/opt/zapret2/extra_strats/cache/orchestra/locked.tsv}"
-  ORCH_LOCK_FILE="/opt/zapret2/extra_strats/cache/orchestra/locked.manual.tsv"
+  local prev_lock_file="${ORCH_LOCK_FILE:-$ORCH_DIR/locked.tsv}"
+  ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
   orch_profile_try "$profile" "$title" "$proto" "$test_url"
   ORCH_LOCK_FILE="$prev_lock_file"
 }
@@ -608,12 +720,12 @@ fallback_http_profile_try() {
 }
 
 change_user() {
-   if /opt/zapret2/nfq2/nfqws2 --dry-run --user="nobody" 2>&1 | grep -q "queue"; then
+   if "$ZAPRET2_ROOT/nfq2/nfqws2" --dry-run --user="nobody" 2>&1 | grep -q "queue"; then
     echo "WS_USER=nobody"
-	sed -i 's/^#\(WS_USER=nobody\)/\1/' /opt/zapret2/config.default
-   elif /opt/zapret2/nfq2/nfqws2 --dry-run --user="$(head -n1 /etc/passwd | cut -d: -f1)" 2>&1 | grep -q "queue"; then
+	sed -i 's/^#\(WS_USER=nobody\)/\1/' "$ZAPRET2_ROOT/config.default"
+   elif "$ZAPRET2_ROOT/nfq2/nfqws2" --dry-run --user="$(head -n1 /etc/passwd | cut -d: -f1)" 2>&1 | grep -q "queue"; then
     echo "WS_USER=$(head -n1 /etc/passwd | cut -d: -f1)"
-    sed -i "s/^#WS_USER=nobody$/WS_USER=$(head -n1 /etc/passwd | cut -d: -f1)/" "/opt/zapret2/config.default"
+    sed -i "s/^#WS_USER=nobody$/WS_USER=$(head -n1 /etc/passwd | cut -d: -f1)/" "$ZAPRET2_ROOT/config.default"
    else
     echo -e "${yellow}WS_USER не подошёл. Скорее всего будут проблемы. Если что - пишите в саппорт${plain}"
    fi
@@ -633,12 +745,12 @@ ensure_nfqws2_stopped() {
 }
 
 blockcheck2_run_summary() {
-  local blockcheck_path="/opt/zapret2/blockcheck2.sh"
+  local blockcheck_path="$ZAPRET2_ROOT/blockcheck2.sh"
   local test_name="z4r"
   local default_target="static.rutracker.cc/templates/v1/min/4e695e8ea9cf5a1dcc7aed231b887c51.lib.min.js"
   local test_target="${Z2R_BLOCKCHECK2_DOMAINS:-$default_target}"
   local log_dir="/tmp/zapret2/cache/blockcheck2"
-  local provider_file="/opt/zapret2/extra_strats/cache/provider.txt"
+  local provider_file="$ZATOR_ROOT/extra_strats/cache/provider.txt"
   local provider_label="" provider_sanitized="" ts=""
   local log_file="" summary_file="" summary_public=""
   local uuid_suffix=""
@@ -672,11 +784,11 @@ blockcheck2_run_summary() {
   uuid_suffix="$(blockcheck2_get_uuid)"
   log_file="$log_dir/blockcheck2_${provider_sanitized}_${ts}_${uuid_suffix}.log"
   summary_file="$log_dir/blockcheck2_${provider_sanitized}_${ts}_${uuid_suffix}.summary"
-  summary_public="/opt/zapret2/blockcheck2_summary.txt"
+  summary_public="$ZAPRET2_ROOT/blockcheck2_summary.txt"
 
   echo -e "${yellow}Запускаю blockcheck2 TEST=$test_name для $test_target...${plain}"
   start_ts="$(date +%s)"
-  CURL_HTTPS_GET=1 BATCH=1 TEST="$test_name" DOMAINS="$test_target" ENABLE_HTTP=0 ENABLE_HTTPS_TLS12=1 ENABLE_HTTPS_TLS13=1 ENABLE_HTTP3=0 BC2_PROGRESS_FILE="$progress_file" ZAPRET_BASE=/opt/zapret2 "$blockcheck_path" >"$log_file" 2>&1 &
+  CURL_HTTPS_GET=1 BATCH=1 TEST="$test_name" DOMAINS="$test_target" ENABLE_HTTP=0 ENABLE_HTTPS_TLS12=1 ENABLE_HTTPS_TLS13=1 ENABLE_HTTP3=0 BC2_PROGRESS_FILE="$progress_file" ZAPRET_BASE="$ZAPRET2_ROOT" "$blockcheck_path" >"$log_file" 2>&1 &
   pid=$!
   if [ "$pid" -gt 0 ]; then
     local spin='|/-\' idx=0 pct=0 elapsed=0 elapsed_fmt="" overrun_notice=0
@@ -748,7 +860,7 @@ blockcheck2_run_summary() {
 }
 
 blockcheck2_prepare_z4r_test() {
-  local test_dir="/opt/zapret2/blockcheck2.d/z4r"
+  local test_dir="$ZAPRET2_ROOT/blockcheck2.d/z4r"
   local src_dir="$SCRIPT_DIR/blockcheck2.d/z4r"
   local file dest
 
@@ -914,111 +1026,132 @@ z2r_install_runtime_libs_from_archive() {
   local lib
 
   [ "${Z2R_OFFLINE:-0}" = "1" ] || return 0
-  mkdir -p /opt/zapret2/z2r_lib
+  mkdir -p "$ZATOR_ROOT/z2r_lib"
   for lib in $Z2R_LIB_FILES; do
-    z2r_download_project_file "/opt/zapret2/z2r_lib/$lib" "lib/$lib" || return 1
+    z2r_download_project_file "$ZATOR_ROOT/z2r_lib/$lib" "lib/$lib" || return 1
   done
 }
 
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
 
-  mkdir -p /opt/zapret2/lists /opt/zapret2/extra_strats /opt/zapret2/extra_strats/cache /opt/zapret2/files/fake
-  mkdir -p /opt/zapret2/extra_strats/cache/orchestra
+  # zator-контент разворачивается в $ZATOR_ROOT (не затрагивается обновлением zapret2).
+  mkdir -p "$ZATOR_ROOT/lists" "$ZATOR_ROOT/extra_strats" "$ZATOR_ROOT/extra_strats/cache" "$ZATOR_ROOT/files/fake"
+  mkdir -p "$ORCH_DIR"
   z2r_install_runtime_libs_from_archive || return 1
-  chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
+  chmod 777 "$ORCH_DIR" 2>/dev/null || true
   locked_lua_update_from_repo || true
   rst_guard_lua_update_from_repo || true
   circular_runtime_update_from_repo || return 1
   strategy_validator_install_service || return 1
   for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt netrogat.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
-    z2r_download_project_file "/opt/zapret2/lists/$listfile" "lists/$listfile" || return 1
+    z2r_download_project_file "$ZATOR_ROOT/lists/$listfile" "lists/$listfile" || return 1
   done
   z2r_download_project_file "$fake_archive" "fake_files.tar.gz" || return 1
-  tar -xzf "$fake_archive" -C /opt/zapret2/files/fake || {
+  tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
     rm -f "$fake_archive"
     return 1
   }
   rm -f "$fake_archive"
-  z2r_download_project_file /opt/zapret2/extra_strats/UDP_YT_list.txt "extra_strats/UDP/YT/List.txt" || return 1
-  z2r_download_project_file /opt/zapret2/extra_strats/TCP_RKN_list.txt "extra_strats/TCP/RKN/List.txt" || return 1
-  z2r_download_project_file /opt/zapret2/extra_strats/TCP_Custom.txt "extra_strats/TCP/RKN/Custom.txt" || return 1
-  z2r_download_project_file /opt/zapret2/extra_strats/TCP_YT_list.txt "extra_strats/TCP/YT/List.txt" || return 1
-  z2r_download_project_file /opt/zapret2/extra_strats/TCP_Discord.txt "extra_strats/TCP/RKN/Discord.txt" || return 1
+  z2r_download_project_file "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
+  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
+  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || return 1
+  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt" || return 1
+  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt" || return 1
   blockcheck2_prepare_z4r_test || return 1
-  if [ ! -f /opt/zapret2/files/fake/custom_tls.bin ]; then
-    mkdir -p /opt/zapret2/files/fake
-    if ! z2r_download_project_file /opt/zapret2/files/fake/custom_tls.bin "fake/custom_tls.bin"; then
+  if [ ! -f "$ZATOR_ROOT/files/fake/custom_tls.bin" ]; then
+    mkdir -p "$ZATOR_ROOT/files/fake"
+    if ! z2r_download_project_file "$ZATOR_ROOT/files/fake/custom_tls.bin" "fake/custom_tls.bin"; then
       echo -e "${yellow}Не удалось скачать custom_tls.bin: нет curl/wget.${plain}"
     fi
   fi
-  touch /opt/zapret2/lists/autohostlist.txt
+  touch "$ZATOR_ROOT/lists/autohostlist.txt"
   if [ -d /opt/extra_strats ]; then
-    rm -rf /opt/zapret2/extra_strats
-    mv /opt/extra_strats /opt/zapret2/
+    rm -rf "$ZATOR_ROOT/extra_strats"
+    mv /opt/extra_strats "$ZATOR_ROOT/"
     echo "Востановление настроек подбора из резерва выполнено."
   fi
-  if [ ! -f /opt/zapret2/extra_strats/TCP_Custom.txt ]; then
-    mkdir -p /opt/zapret2/extra_strats
-    z2r_download_project_file /opt/zapret2/extra_strats/TCP_Custom.txt "extra_strats/TCP/RKN/Custom.txt" || touch /opt/zapret2/extra_strats/TCP_Custom.txt
+  if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ]; then
+    mkdir -p "$ZATOR_ROOT/extra_strats"
+    z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
   fi
-  if [ ! -f /opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt ]; then
-    mkdir -p /opt/zapret2/extra_strats
-    z2r_download_project_file /opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt "extra_strats/TCP/RKN/Domains_By_Substring.txt" || touch /opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt
+  if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" ]; then
+    mkdir -p "$ZATOR_ROOT/extra_strats"
+    z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" "extra_strats/TCP/RKN/Domains_By_Substring.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt"
   fi
   if [ -f "/opt/netrogat.txt" ]; then
-    mv -f /opt/netrogat.txt /opt/zapret2/lists/netrogat.txt
+    mv -f /opt/netrogat.txt "$ZATOR_ROOT/lists/netrogat.txt"
     echo "Востановление листа исключений выполнено."
   fi
-  #Копирование нашего конфига на замену стандартному
- z2r_download_project_file /opt/zapret2/config.default "config.default" || return 1
+  # config.default и keenetic-policy.sh — zapret2-native, остаются в $ZAPRET2_ROOT.
+ z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default" || return 1
   if [ "$hardware" = "keenetic" ]; then
-    z2r_download_project_file /opt/zapret2/init.d/sysv/keenetic-policy.sh "Entware/keenetic-policy.sh" || return 1
-    chmod +x /opt/zapret2/init.d/sysv/keenetic-policy.sh
+    z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
+    chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
   fi
   if command -v nft >/dev/null 2>&1; then
-    sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "/opt/zapret2/config.default"
+    sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$ZAPRET2_ROOT/config.default"
   fi
 # cache
-mkdir -p /opt/zapret2/extra_strats/cache
+mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
 }
 
 #Удаление старого запрета, если есть
 remove_zapret() {
- if [ -f "$ZAPRET2_INIT" ] && [ -f "/opt/zapret2/config" ]; then
+ if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
  	"$ZAPRET2_INIT" stop
  fi
- if [ -f "/opt/zapret2/config" ] && [ -f "/opt/zapret2/uninstall_easy.sh" ]; then
+ if [ -f "$ZAPRET2_ROOT/config" ] && [ -f "$ZAPRET2_ROOT/uninstall_easy.sh" ]; then
      echo "Выполняем zapret2/uninstall_easy.sh"
-     sh /opt/zapret2/uninstall_easy.sh
+     sh "$ZAPRET2_ROOT/uninstall_easy.sh"
      echo "Скрипт uninstall_easy.sh выполнен."
  else
      echo "zapret2 не инсталлирован в систему. Переходим к следующему шагу."
  fi
- if [ -d "/opt/zapret2" ]; then
+ # Удаляем ТОЛЬКО zapret2-native ($ZAPRET2_ROOT). zator-контент ($ZATOR_ROOT)
+ # НЕ трогается — он переживает обновление/переустановку zapret2.
+ if [ -d "$ZAPRET2_ROOT" ]; then
      echo "Удаляем папку zapret2"
      webui_remove >/dev/null 2>&1 || true
      strategy_validator_remove_service
-     rm -rf /opt/zapret2
+     rm -rf "$ZAPRET2_ROOT"
  else
      echo "Папка zapret2 не существует."
  fi
  if [[ "$OSystem" == "entware" ]]; then
  	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/ndm/netfilter.d/000-zapret.sh /opt/etc/init.d/S00fix
  fi
- read -re -p $'\033[33mУдалить функционал доступа в меню через браузер (web-ssh)? Enter - Да, 1 - нет\033[0m\n' ttyd_answer_del
- case "$ttyd_answer_del" in
-     "1")
-         echo "Пропущено"
-     ;;
-     *)
- 		apk del ttyd 2>/dev/null || true
- 		opkg remove ttyd 2>/dev/null || true
- 		rm -f /usr/bin/ttyd
- 		echo "Процесс удаления завершён"
-     ;;
-  esac
+
+ if [ -d "$WEBUI_ROOT" ]; then
+     read -re -p $'\033[33mУдалить Web-панель управления (webui)? Enter - Да, 1 - нет\033[0m\n' webui_answer_del
+     case "$webui_answer_del" in
+         "1")
+             echo "Пропущено"
+         ;;
+         *)
+             webui_remove || true
+             echo "Процесс удаления завершён"
+         ;;
+     esac
+ fi
+}
+
+# Полное удаление zator-контента ($ZATOR_ROOT): Web-панель, lua, листы,
+# фиксы стратегий, кэш оркестра. Бэкапы НЕ трогаем — они в /opt/zator_backup.
+# Точки отказа обработаны: функция не роняет вызывающий код под set -e.
+zator_remove() {
+  if [ ! -d "$ZATOR_ROOT" ]; then
+    echo -e "${yellow}Каталог zator не существует: $ZATOR_ROOT${plain}"
+    return 0
+  fi
+  strategy_validator_remove_service || true
+  webui_remove || true
+  if ! rm -rf "$ZATOR_ROOT" 2>/dev/null; then
+    echo -e "${red}Не удалось полностью удалить $ZATOR_ROOT${plain}"
+    return 1
+  fi
+  echo -e "${green}Каталог zator удалён: $ZATOR_ROOT${plain}"
 }
 
 #Запрос желаемой версии zapret2
@@ -1164,11 +1297,12 @@ zapret_get() {
  z2r_prune_staged_sources "$workdir/zapret2"
  rm -rf "$workdir/zapret2/docs"
  rm -f "$workdir/zapret2/files/fake"/*
- rm -rf /opt/zapret2
- mv "$workdir/zapret2" /opt/zapret2
+ # Заменяем только zapret2-native; zator-контент в $ZATOR_ROOT не затрагивается.
+ rm -rf "$ZAPRET2_ROOT"
+ mv "$workdir/zapret2" "$ZAPRET2_ROOT"
  rm -rf "$workdir"
- if [ ! -f /opt/zapret2/install_easy.sh ]; then
-     echo -e "${red}zapret2 установлен некорректно: нет /opt/zapret2/install_easy.sh.${plain}"
+ if [ ! -f "$ZAPRET2_ROOT/install_easy.sh" ]; then
+     echo -e "${red}zapret2 установлен некорректно: нет $ZAPRET2_ROOT/install_easy.sh.${plain}"
      return 1
  fi
  set_zapret2_init
@@ -1208,7 +1342,7 @@ z2r_prune_staged_binaries() {
   esac
  done
 
- echo -e "${green}В /opt/zapret2/binaries будет оставлен только выбранный набор:$(printf '%s' "$keep_list").${plain}"
+ echo -e "${green}В $ZAPRET2_ROOT/binaries будет оставлен только выбранный набор:$(printf '%s' "$keep_list").${plain}"
 }
 
 z2r_prune_staged_sources() {
@@ -1222,12 +1356,12 @@ z2r_prune_staged_sources() {
 
 #Запуск установочных скриптов и перезагрузка
 install_zapret_reboot() {
- sh -i /opt/zapret2/install_easy.sh
+ sh -i "$ZAPRET2_ROOT/install_easy.sh"
  cleanup_zapret2_init_dirs
  "$ZAPRET2_INIT" restart
  if pidof nfqws2 >/dev/null; then
   check_access_list
-  echo -e "\033[32mzapret2 перезапущен и полностью установлен\n\033[33mЕсли требуется меню (например не работают какие-то ресурсы) - введите скрипт ещё раз или просто напишите "z2r" в терминале. Саппорт: tg: zee4r\033[0m"
+  echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Если требуется меню (например не работают какие-то ресурсы) - введите скрипт ещё раз или просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
  else
   echo -e "${yellow}zapret2 полностью установлен, но не обнаружен после запуска в исполняемых задачах через pidof\nСаппорт: tg: zee4r${plain}"
  fi
@@ -1236,43 +1370,43 @@ install_zapret_reboot() {
 #Для Entware Keenetic + merlin
 entware_fixes() {
  if [ "$hardware" = "keenetic" ]; then
-  z2r_download_project_file /opt/zapret2/init.d/sysv/zapret2 "Entware/zapret" || return 1
-  chmod +x /opt/zapret2/init.d/sysv/zapret2
-  echo "Права выданы /opt/zapret2/init.d/sysv/zapret2"
+  z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/zapret2" "Entware/zapret" || return 1
+  chmod +x "$ZAPRET2_ROOT/init.d/sysv/zapret2"
+  echo "Права выданы $ZAPRET2_ROOT/init.d/sysv/zapret2"
   z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret.sh "Entware/000-zapret.sh" || return 1
   chmod +x /opt/etc/ndm/netfilter.d/000-zapret.sh
   echo "Права выданы /opt/etc/ndm/netfilter.d/000-zapret.sh"
   z2r_download_project_file /opt/etc/init.d/S00fix "Entware/S00fix" || return 1
   chmod +x /opt/etc/init.d/S00fix
   echo "Права выданы /opt/etc/init.d/S00fix"
-  if [ -f /opt/zapret2/init.d/custom.d.examples.linux/10-keenetic-udp-fix ]; then
-    cp -a /opt/zapret2/init.d/custom.d.examples.linux/10-keenetic-udp-fix /opt/zapret2/init.d/sysv/custom.d/10-keenetic-udp-fix
+  if [ -f "$ZAPRET2_ROOT/init.d/custom.d.examples.linux/10-keenetic-udp-fix" ]; then
+    cp -a "$ZAPRET2_ROOT/init.d/custom.d.examples.linux/10-keenetic-udp-fix" "$ZAPRET2_ROOT/init.d/sysv/custom.d/10-keenetic-udp-fix"
   else
-    z2r_download_upstream_file /opt/zapret2/init.d/sysv/custom.d/10-keenetic-udp-fix "init.d/custom.d.examples.linux/10-keenetic-udp-fix" || return 1
+    z2r_download_upstream_file "$ZAPRET2_ROOT/init.d/sysv/custom.d/10-keenetic-udp-fix" "init.d/custom.d.examples.linux/10-keenetic-udp-fix" || return 1
   fi
   echo "10-keenetic-udp-fix скопирован"
  elif [ "$hardware" = "merlin" ]; then
-  if sed -n '167p' /opt/zapret2/install_easy.sh | grep -q '^nfqws_opt_validat'; then
-	sed -i '172s/return 1/return 0/' /opt/zapret2/install_easy.sh
+  if sed -n '167p' "$ZAPRET2_ROOT/install_easy.sh" | grep -q '^nfqws_opt_validat'; then
+	sed -i '172s/return 1/return 0/' "$ZAPRET2_ROOT/install_easy.sh"
   fi
 	grep -qxF "$ZAPRET2_INIT restart-fw" /jffs/scripts/firewall-start || echo "$ZAPRET2_INIT restart-fw" >> /jffs/scripts/firewall-start
 	chmod +x /jffs/scripts/firewall-start
  fi
- 
- sh /opt/zapret2/install_bin.sh
- 
+
+ sh "$ZAPRET2_ROOT/install_bin.sh"
+
  # #Раскомменчивание юзера под keenetic или merlin
  change_user
- #Патчинг на некоторых merlin /opt/zapret2/common/linux_fw.sh
+ #Патчинг на некоторых merlin $ZAPRET2_ROOT/common/linux_fw.sh
  if command -v sysctl >/dev/null 2>&1; then
   echo "sysctl доступен. Патч linux_fw.sh не требуется"
  else
-  echo "sysctl отсутствует. MerlinWRT? Патчим /opt/zapret2/common/linux_fw.sh"
-  sed -i 's|sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=\$1|echo \$1 > /proc/sys/net/netfilter/nf_conntrack_tcp_be_liberal|' /opt/zapret2/common/linux_fw.sh
-  sed -i 's|sysctl -q -w net.ipv4.conf.\$1.route_localnet="\$enable"|echo "\$enable" > /proc/sys/net/ipv4/conf/\$1/route_localnet|' /opt/zapret2/common/linux_iphelper.sh
+  echo "sysctl отсутствует. MerlinWRT? Патчим $ZAPRET2_ROOT/common/linux_fw.sh"
+  sed -i 's|sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=\$1|echo \$1 > /proc/sys/net/netfilter/nf_conntrack_tcp_be_liberal|' "$ZAPRET2_ROOT/common/linux_fw.sh"
+  sed -i 's|sysctl -q -w net.ipv4.conf.\$1.route_localnet="\$enable"|echo "\$enable" > /proc/sys/net/ipv4/conf/\$1/route_localnet|' "$ZAPRET2_ROOT/common/linux_iphelper.sh"
  fi
  #sed для пропуска запроса на прочтение readme, т.к. система entware. Дабы скрипт отрабатывал далее на Enter
- sed -i 's/if \[ -n "\$1" \] || ask_yes_no N "do you want to continue";/if true;/' /opt/zapret2/common/installer.sh
+ sed -i 's/if \[ -n "\$1" \] || ask_yes_no N "do you want to continue";/if true;/' "$ZAPRET2_ROOT/common/installer.sh"
  ln -fs "$ZAPRET2_INIT" /opt/etc/init.d/S90-zapret2
  echo "Добавлено в автозагрузку: /opt/etc/init.d/S90-zapret2 > $ZAPRET2_INIT"
 }
@@ -1306,11 +1440,11 @@ get_panel() {
 
 #Меню, проверка состояний и вывод с чтением ответа
 WEBUI_PORT="17682"
-WEBUI_ROOT="/opt/zapret2/webui"
+WEBUI_ROOT="$ZATOR_ROOT/webui"
 WEBUI_WWW="$WEBUI_ROOT/www"
 WEBUI_CGI="$WEBUI_ROOT/cgi-bin"
 WEBUI_RUNNER="$WEBUI_ROOT/run-webui.sh"
-WEBUI_STATUS_CACHE="/opt/zapret2/extra_strats/cache/webui"
+WEBUI_STATUS_CACHE="$ZATOR_ROOT/extra_strats/cache/webui"
 WEBUI_PATH="/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 webui_repo_fetch() {
@@ -1467,16 +1601,17 @@ export PATH
 
 start_service() {
   procd_open_instance
-  procd_set_param command bash /opt/zapret2/webui/run-webui.sh run
+  procd_set_param command bash @ZATOR_ROOT@/webui/run-webui.sh run
   procd_set_param stdout 1
   procd_set_param stderr 1
   procd_close_instance
 }
 
 stop_service() {
-  bash /opt/zapret2/webui/run-webui.sh stop >/dev/null 2>&1 || true
+  bash @ZATOR_ROOT@/webui/run-webui.sh stop >/dev/null 2>&1 || true
 }
 EOF
+      sed -i "s#@ZATOR_ROOT@#$ZATOR_ROOT#g" /etc/init.d/z2r-webui
       chmod +x /etc/init.d/z2r-webui
       /etc/init.d/z2r-webui enable 2>/dev/null || true
       ;;
@@ -1486,13 +1621,14 @@ EOF
 PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 case "$1" in
-  start) bash /opt/zapret2/webui/run-webui.sh start ;;
-  stop) bash /opt/zapret2/webui/run-webui.sh stop ;;
-  restart) bash /opt/zapret2/webui/run-webui.sh restart ;;
-  status) bash /opt/zapret2/webui/run-webui.sh status ;;
+  start) bash @ZATOR_ROOT@/webui/run-webui.sh start ;;
+  stop) bash @ZATOR_ROOT@/webui/run-webui.sh stop ;;
+  restart) bash @ZATOR_ROOT@/webui/run-webui.sh restart ;;
+  status) bash @ZATOR_ROOT@/webui/run-webui.sh status ;;
   *) echo "usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
 EOF
+      sed -i "s#@ZATOR_ROOT@#$ZATOR_ROOT#g" /opt/etc/init.d/S92z2r-webui
       chmod +x /opt/etc/init.d/S92z2r-webui
       ;;
     *)
@@ -1505,13 +1641,14 @@ After=network.target
 [Service]
 Type=simple
 Environment=PATH=/opt/bin:/opt/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=bash /opt/zapret2/webui/run-webui.sh run
+ExecStart=bash @ZATOR_ROOT@/webui/run-webui.sh run
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
 EOF
+        sed -i "s#@ZATOR_ROOT@#$ZATOR_ROOT#g" /etc/systemd/system/z2r-webui.service
         systemctl daemon-reload 2>/dev/null || true
         systemctl enable z2r-webui.service 2>/dev/null || true
       else
@@ -1519,8 +1656,9 @@ EOF
 #!/bin/sh
 PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
-bash /opt/zapret2/webui/run-webui.sh start
+bash @ZATOR_ROOT@/webui/run-webui.sh start
 EOF
+        sed -i "s#@ZATOR_ROOT@#$ZATOR_ROOT#g" "$WEBUI_ROOT/run.sh"
         chmod +x "$WEBUI_ROOT/run.sh"
       fi
       ;;
@@ -1560,6 +1698,15 @@ webui_stop_service() {
       [ -x "$WEBUI_RUNNER" ] && "$WEBUI_RUNNER" stop >/dev/null 2>&1 || true
       ;;
   esac
+}
+
+webui_restart() {
+  webui_stop_service || true
+  if ! webui_start_service; then
+    echo -e "${red}Не удалось запустить Web UI после перезапуска.${plain}"
+    return 1
+  fi
+  echo -e "${green}Web UI перезапущен.${plain}"
 }
 
 webui_status_text() {
@@ -1613,25 +1760,36 @@ webui_remove() {
       fi
       ;;
   esac
-  rm -rf "$WEBUI_ROOT"
+  rm -rf "$WEBUI_ROOT" 2>/dev/null || echo -e "${red}Не удалось полностью удалить $WEBUI_ROOT${plain}"
   echo -e "${green}Web UI удалён.${plain}"
 }
 
 webui_submenu() {
+  local status_line webui_running
   while true; do
     clear -x
+    status_line="$(webui_status_text)"
+    webui_running=0
+    case "$status_line" in
+      running:*) webui_running=1 ;;
+    esac
     echo -e "${cyan}--- Web UI ---${plain}"
-    echo -e "${yellow}Состояние: ${plain}$(webui_status_text)"
+    echo -e "${yellow}Состояние: ${plain}${status_line}"
     echo ""
     submenu_item "1" "Установить/обновить Web UI"
     submenu_item "2" "Показать статус и URL"
-    submenu_item "3" "Удалить Web UI"
+    if [ "$webui_running" = "1" ]; then
+      submenu_item "3" "Перезапустить Web UI"
+      submenu_item "4" "Удалить Web UI"
+    else
+      submenu_item "3" "Удалить Web UI"
+    fi
     submenu_item "0" "Назад"
     echo ""
     read -re -p "Ваш выбор: " webui_answer
     case "$webui_answer" in
       "1")
-        webui_install
+        webui_install || echo -e "${red}Установка/запуск Web UI не удался.${plain}"
         pause_enter
         ;;
       "2")
@@ -1639,8 +1797,21 @@ webui_submenu() {
         pause_enter
         ;;
       "3")
-        webui_remove
+        if [ "$webui_running" = "1" ]; then
+          webui_restart || echo -e "${red}Перезапуск Web UI не удался.${plain}"
+          webui_show_status || true
+        else
+          webui_remove || true
+        fi
         pause_enter
+        ;;
+      "4")
+        if [ "$webui_running" = "1" ]; then
+          webui_remove || true
+        else
+          echo -e "${yellow}Неверный ввод.${plain}"
+          sleep 1
+        fi
         ;;
       "0"|"")
         return
@@ -1678,46 +1849,45 @@ get_menu() {
     echo -e "${cyan}========================================${plain}"
     echo ""
     
-    echo -e '
-'"${Fcyan}"'+-----------------------------------------------------------------+
-'"${Fyellow}"'     _____     ____ │  '"${Fgreen}"'1 MB / 10 GB'"${Fyellow}"'        '"${Fpink}"'⏳'"${Fyellow}"'  ETA: КТТС         │
-'"${Fyellow}"'    /      \  |  o |│  [====>          ]                         │
-'"${Fyellow}"'   |        |/ ___\|│     '"${Fpink}"'(_o_)'"${Fyellow}"' ---->  '"${Fcyan}"'z a t o r'"${Fyellow}"'  <---- '"${Fpink}"'(_o_)'"${Fyellow}"'    │
-'"${Fyellow}"'   |_________/      │                                            │
-'"${Fyellow}"'   |_|_| |_|_|      │  '"${Fgreen}"'speed: 0.0001 Mb/s'"${Fyellow}"'   stability: возможно  │
-'"${Fcyan}"'+-----------------------------------------------------------------+
-'"${plain}"'
-'"\033[32mЯ черепашка Дейв. И я медленный.\033[33m"'
-'"\033[32mПрямо как твой интернет.\033[33m"'
-
-
-'"Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}"'
-'"${TITLE_MENU_LINE}"'
-\033[32mВыберите необходимое действие:\033[33m
+    echo -e "
+${Fcyan}+-----------------------------------------------------------------+
+${Fyellow}     _____     ____ │  ${Fgreen}1 MB / 10 GB${Fyellow}        ${Fpink}⏳${Fyellow}  ETA: КТТС         │
+${Fyellow}    /      \  |  o |│  [====>          ]                         │
+${Fyellow}   |        |/ ___\|│     ${Fpink}(_o_)${Fyellow} ---->  ${Fcyan}z a t o r${Fyellow}  <---- ${Fpink}(_o_)${Fyellow}    │
+${Fyellow}   |_________/      │                                            │
+${Fyellow}   |_|_| |_|_|      │  ${Fgreen}speed: 0.0001 Mb/s${Fyellow}   stability: возможно  │
+${Fcyan}+-----------------------------------------------------------------+
+${plain}
+${green}Я черепашка Дейв. И я медленный.${yellow}
+${green}Прямо как твой интернет.${yellow}
+Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
+Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
+${TITLE_MENU_LINE}
+${green}Выберите необходимое действие:${yellow}
 Enter (без цифр) - переустановка/обновление zapret2
-'"${Fyellow}"'0.'"${yellow}"' Выход
-'"${Fcyan}"'001.'"${yellow}"' CDN тест (test.sh)
-'"${Fcyan}"'01.'"${yellow}"' Проверить доступность сервисов (Тест не точен)
-'"${Fcyan}"'1.'"${yellow}"' Фиксация стратегии профиля/безразборного блока. Текущие: '"${plain}"'[ '"${strategies_status}"' ]'"${yellow}"' (fallback TLS: '"${plain}"'['"$(fallback_strategy_text)"']'"${yellow}"', HTTP: '"${plain}"'['"$(fallback_http_strategy_text)"']'"${yellow}"')
-'"${Fcyan}"'2.'"${yellow}"' Стоп/старт zapret2, '"${Fcyan}"'22'"${yellow}"' - рестарт (сейчас: '"$(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}")"')
-'"${Fcyan}"'3.'"${yellow}"' Запуск blockcheck2 и сохранение SUMMARY
-'"${Fcyan}"'4.'"${yellow}"' Удалить zapret2
-'"${Fcyan}"'5.'"${yellow}"' Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
-'"${Fcyan}"'6.'"${yellow}"' Управление доменами
-'"${Fcyan}"'7.'"${yellow}"' Открыть в редакторе config (Установит nano редактор ~250kb)
-'"${Fcyan}"'9.'"${yellow}"' Переключатель zapret2 на nftables/iptables (На всё жать Enter). Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: '"${plain}"'['"$MENU_FWTYPE"']'"${yellow}"'
-'"${Fcyan}"'10.'"${yellow}"' (Де)активировать обход UDP на 1026-65531 портах (BF6, Fifa и т.п.). Сейчас: '"${plain}"'['"$MENU_UDP_GAMES"']'"${yellow}"'
-'"${Fcyan}"'11.'"${yellow}"' Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: '"${plain}"'['"$MENU_FLOWOFFLOAD"']'"${yellow}"'
-'"${Fcyan}"'12.'"${yellow}"' Режим фильтра hostlist/autohostlist. Сейчас: '"${plain}"'['"$MENU_HOSTLIST"']'"${yellow}"'
-'"${Fcyan}"'13.'"${yellow}"' Безразборный режим (fallback). Сейчас: '"${plain}"'['"$MENU_FALLBACK"']'"${yellow}"'
-'"${Fcyan}"'14.'"${yellow}"' Активировать доступ в меню через браузер (~3мб места)
-'"${Fcyan}"'15.'"${yellow}"' Провайдер
-'"${Fcyan}"'16.'"${yellow}"' Сменить TLS blob (--blob=maxru). Сейчас: '"${plain}"'['"$MENU_TLS_BLOB"']'"${yellow}"'
-'"${Fcyan}"'18.'"${yellow}"' Защита от RST-инъекций. (BETA) Сейчас: '"${plain}"'['"$MENU_RST_GUARD"']'"${yellow}"'
-'"${Fcyan}"'19.'"${yellow}"' Дополнительные настройки
-'"${Fcyan}"'20.'"${yellow}"' Управление портами NFQWS2 (TCP/UDP). Сейчас: '"${plain}"'['"$MENU_PORTS"']'"${yellow}"'
-'"${Fcyan}"'21.'"${yellow}"' Управление бэкапами (создание/восстановление/удаление архивов)
-'"${Fcyan}"'777.'"${yellow}"' Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)\033[0m'
+${Fyellow}0.${yellow} Выход
+${Fcyan}001.${yellow} CDN тест (test.sh)
+${Fcyan}01.${yellow} Проверить доступность сервисов (Тест не точен)
+${Fcyan}1.${yellow} Фиксация стратегии профиля/безразборного блока. Текущие: ${plain}[ ${strategies_status} ]${yellow} (fallback TLS: ${plain}[$(fallback_strategy_text)]${yellow}, HTTP: ${plain}[$(fallback_http_strategy_text)]${yellow})
+${Fcyan}2.${yellow} Стоп/старт zapret2, ${Fcyan}22${yellow} - рестарт (сейчас: $(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}"))
+${Fcyan}3.${yellow} Запуск blockcheck2 и сохранение SUMMARY
+${Fcyan}4.${yellow} Удаление zator и zapret2, ${Fcyan} 44.${yellow} Удаление zapret2
+${Fcyan}5.${yellow} Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
+${Fcyan}6.${yellow} Управление доменами
+${Fcyan}7.${yellow} Открыть в редакторе config (Установит nano редактор ~250kb)
+${Fcyan}9.${yellow} Переключатель zapret2 на nftables/iptables (На всё жать Enter). Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: ${plain}[${MENU_FWTYPE}]${yellow}
+${Fcyan}10.${yellow} (Де)активировать обход UDP на 1026-65531 портах (BF6, Fifa и т.п.). Сейчас: ${plain}[${MENU_UDP_GAMES}]${yellow}
+${Fcyan}11.${yellow} Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: ${plain}[${MENU_FLOWOFFLOAD}]${yellow}
+${Fcyan}12.${yellow} Режим фильтра hostlist/autohostlist. Сейчас: ${plain}[${MENU_HOSTLIST}]${yellow}
+${Fcyan}13.${yellow} Безразборный режим (fallback). Сейчас: ${plain}[${MENU_FALLBACK}]${yellow}
+${Fcyan}14.${yellow} Web-панель управления (установка/обновление, ~3МБ места)
+${Fcyan}15.${yellow} Провайдер
+${Fcyan}16.${yellow} Сменить TLS blob (--blob=maxru). Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
+${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас: ${plain}[${MENU_RST_GUARD}]${yellow}
+${Fcyan}19.${yellow} Дополнительные настройки
+${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}
+${Fcyan}21.${yellow} Управление бэкапами (создание/восстановление/удаление архивов)
+${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
 	if [[ -f "$PREMIUM_FLAG" ]]; then
       echo -e "${red}999. Секретный пункт. Нажимать на свой страх и риск${plain}"
@@ -1780,12 +1950,29 @@ Enter (без цифр) - переустановка/обновление zapret
     ;;
 
   "4")
-    echo -e "${yellow}Внимание! Это приведёт к полному удалению zapret2.${plain}"
+    echo -e "${yellow}Внимание! Это приведёт к полному удалению zator и zapret2.${plain}"
+    read -re -p $'\033[33mВы действительно хотите удалить zator и zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
+    case "$del_confirm" in
+      "5")
+        backup_helper_ask_and_create
+        remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
+        zator_remove || echo -e "${red}Удаление zator завершилось с ошибкой.${plain}"
+        echo -e "${yellow}Удаление zator и zapret2 завершено${plain}"
+        ;;
+      *)
+        echo -e "${green}Удаление отменено.${plain}"
+        ;;
+    esac
+    pause_enter
+    ;;
+
+  "44")
+    echo -e "${yellow}Внимание! Это удалит только zapret2 (каталог zator и его данные останутся).${plain}"
     read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
-        remove_zapret
+        remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
         echo -e "${yellow}zapret2 удалён${plain}"
         ;;
       *)
@@ -1797,12 +1984,14 @@ Enter (без цифр) - переустановка/обновление zapret
 
   "5")
     backup_helper_ask_and_create
-    locked_lua_update_from_repo
-    circular_runtime_update_from_repo
-    strategy_validator_install_service
-    mkdir -p /opt/zapret2/extra_strats/cache/orchestra
-    chmod 777 /opt/zapret2/extra_strats/cache/orchestra 2>/dev/null || true
-    menu_action_update_config_reset
+    # Сетевые сбои не должны ронять меню (set -e): модули не критичны,
+    # прежние версии продолжают работать.
+    locked_lua_update_from_repo || echo -e "${yellow}locked.lua не обновлён (сеть недоступна).${plain}"
+    circular_runtime_update_from_repo || echo -e "${yellow}Lua-модули circular не обновлены (сеть недоступна).${plain}"
+    strategy_validator_install_service || true
+    mkdir -p "$ORCH_DIR"
+    chmod 777 "$ORCH_DIR" 2>/dev/null || true
+    menu_action_update_config_reset || true
     backup_update_offer_restore
     pause_enter
     ;;
@@ -1818,7 +2007,7 @@ Enter (без цифр) - переустановка/обновление zapret
       opkg remove nano 2>/dev/null || apk del nano 2>/dev/null
       opkg install nano-full 2>/dev/null || apk add nano-full 2>/dev/null
     fi
-    nano /opt/zapret2/config
+    nano "$ZAPRET2_ROOT/config"
     # после выхода из nano
     ;;
 
@@ -1941,7 +2130,7 @@ if [[ "$OSystem" == "VPS" ]] && [ ! $1 ]; then
 fi
 
 #Меню и быстрый запуск подбора стратегии
- if [ -d /opt/zapret2/extra_strats ] && [ -f "/opt/zapret2/config" ]; then
+ if [ -d "$ZATOR_ROOT/extra_strats" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
 	if [ $1 ]; then
 		Strats_Tryer $1
 	fi
@@ -1951,7 +2140,7 @@ fi
 #entware keenetic and merlin preinstal env.
 if [ "$hardware" = "keenetic" ]; then
  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
- opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "\033[31mНе удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.\033[0m"
+ opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "${red}Не удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.${plain}"
 elif [ "$hardware" = "merlin" ]; then
  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
 fi
@@ -1985,16 +2174,15 @@ if [ ! -s "$ORCH_LUA_LOCKED" ]; then
   fi
 fi
 
-#Запрос на установку web-ssh
-read -re -p $'\033[33mАктивировать доступ в меню через браузер (~3мб места)? 1 - Да, Enter - нет\033[0m\n' ttyd_answer
-case "$ttyd_answer" in
+read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
+case "$webui_answer" in
 	"1")
 		webui_install
 	;;
 	*)
-		echo "Пропуск (пере)установки web-терминала"
+		echo "Пропуск (пере)установки Web-панели"
 	;;
-esac 
+esac
 
 #Для Keenetic и merlin
 if [[ "$OSystem" == "entware" ]]; then
@@ -2003,15 +2191,15 @@ if [[ "$OSystem" == "entware" ]]; then
  config_keenetic_set_wan_iface_all
 fi
 
-profile_apply_all /opt/zapret2/config.default
+profile_apply_all "$ZAPRET2_ROOT/config.default"
 
 #Для x-wrt
 if [[ "$release" == "x-wrt" ]]; then
-	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' /opt/zapret2/common/installer.sh
+	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' "$ZAPRET2_ROOT/common/installer.sh"
 fi
 
 #Запуск установочных скриптов и перезагрузка
 if [ "$hardware" = "keenetic" ]; then
- ensure_keenetic_policy_config /opt/zapret2/config.default
+	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
 fi
 install_zapret_reboot

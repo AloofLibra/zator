@@ -238,15 +238,15 @@ z2r_normalize_domain() {
 
 # Пути к доменным спискам, общие для CLI и WebUI.
 custom_rkn_file() {
-    echo "/opt/zapret2/extra_strats/TCP_Custom.txt"
+    echo "/opt/zator/extra_strats/TCP_Custom.txt"
 }
 
 netrogat_file() {
-    echo "/opt/zapret2/lists/netrogat.txt"
+    echo "/opt/zator/lists/netrogat.txt"
 }
 
 rkn_substring_file() {
-    echo "/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt"
+    echo "/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt"
 }
 
 domain_list_prepare() {

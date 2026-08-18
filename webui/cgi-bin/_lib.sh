@@ -5,16 +5,18 @@ set -u
 PATH="/opt/bin:/opt/sbin:$PATH"
 export PATH
 
-WEBUI_ROOT="/opt/zapret2/webui"
+WEBUI_ROOT="/opt/zator/webui"
 ZAPRET_ROOT="/opt/zapret2"
+ZATOR_ROOT="/opt/zator"
 CONFIG_FILE="$ZAPRET_ROOT/config"
-ORCH_DIR="$ZAPRET_ROOT/extra_strats/cache/orchestra"
+ORCH_DIR="$ZATOR_ROOT/extra_strats/cache/orchestra"
 LIB_DIR=""
 
 find_runtime_libs() {
   local here dir
   here="$(cd -- "$(dirname -- "$0")" && pwd)"
   for dir in \
+    "$ZATOR_ROOT/z2r_lib" \
     "$ZAPRET_ROOT/z2r_lib" \
     "$here/../../z2r_lib" \
     "$here/../../lib" \
@@ -326,13 +328,13 @@ $(check_one_target_json "YouTube" "https://www.youtube.com/")
 
 api_tls_blob_get() {
   local cfg="/opt/zapret2/config"
-  local fake_dir="/opt/zapret2/files/fake"
+  local fake_dir="/opt/zator/files/fake"
   local current_blob current_mode available_blobs
 
   [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
   [ -d "$fake_dir" ] || send_error "500 Internal Server Error" "Директория fake не найдена"
 
-  current_blob="$(sed -n -E 's#.*--blob=maxru:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  current_blob="$(sed -n -E 's#.*--blob=maxru:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p' "$cfg" | head -n1)"
   [ -z "$current_blob" ] && current_blob=""
   current_mode="$(config_tls_blob_mode_value "$cfg")"
 
@@ -367,7 +369,7 @@ api_tls_blob_get() {
 api_tls_blob_set() {
   local blob="$PARAM_VALUE"
   local cfg="/opt/zapret2/config"
-  local fake_dir="/opt/zapret2/files/fake"
+  local fake_dir="/opt/zator/files/fake"
   local sed_ereg prefix
 
   case "$blob" in
@@ -386,27 +388,27 @@ api_tls_blob_set() {
   [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
 
   sed_ereg="$(config_sed_ereg)"
-  prefix="--blob=maxru:@/opt/zapret2/files/fake/"
+  prefix="--blob=maxru:@/opt/zator/files/fake/"
 
-  if ! grep -q -- "--blob=maxru:@/opt/zapret2/files/fake/" "$cfg"; then
+  if ! grep -qE -- "--blob=maxru:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
     send_error "500 Internal Server Error" "Строка --blob=maxru не найдена в конфиге"
   fi
 
   sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
-  sed -i $sed_ereg "s#(${prefix})[^[:space:]]+#\\1${blob}#g" "$cfg"
+  sed -i $sed_ereg "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${blob}#g" "$cfg"
 
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
 
 api_wg_blob_get() {
   local cfg="/opt/zapret2/config"
-  local fake_dir="/opt/zapret2/files/fake"
+  local fake_dir="/opt/zator/files/fake"
   local current_blob current_repeats available_blobs
 
   [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
   [ -d "$fake_dir" ] || send_error "500 Internal Server Error" "Директория fake не найдена"
 
-  current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p' "$cfg" | head -n1)"
   [ -z "$current_blob" ] && current_blob=""
   current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
   [ -z "$current_repeats" ] && current_repeats=""
@@ -435,7 +437,7 @@ api_wg_blob_get() {
 api_wg_blob_set() {
   local blob="$PARAM_VALUE"
   local cfg="/opt/zapret2/config"
-  local fake_dir="/opt/zapret2/files/fake"
+  local fake_dir="/opt/zator/files/fake"
   local sed_ereg prefix
 
   # Валидация имени файла: только wg_initial_fake_* (как в CLI)
@@ -451,13 +453,13 @@ api_wg_blob_set() {
   [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
 
   sed_ereg="$(config_sed_ereg)"
-  prefix="--blob=fakewgblob:@/opt/zapret2/files/fake/"
+  prefix="--blob=fakewgblob:@/opt/zator/files/fake/"
 
-  if ! grep -q -- "--blob=fakewgblob:@/opt/zapret2/files/fake/" "$cfg"; then
+  if ! grep -qE -- "--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
     send_error "500 Internal Server Error" "Стратегия WireGuard не найдена в конфиге (нет --blob=fakewgblob:@...)"
   fi
 
-  sed -i $sed_ereg "s#(${prefix})[^[:space:]]+#\\1${blob}#g" "$cfg"
+  sed -i $sed_ereg "s#--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${blob}#g" "$cfg"
 
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }

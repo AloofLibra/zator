@@ -3,7 +3,7 @@
 START=99
 USE_PROCD=1
 QUEUE_DIR=/tmp/z2r-strategy-validation
-WORKER=/opt/zapret2/lua/strategy-validator.sh
+WORKER=/opt/zator/lua/strategy-validator.sh
 
 start_service() {
     mkdir -p "$QUEUE_DIR"

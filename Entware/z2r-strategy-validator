@@ -3,7 +3,7 @@
 PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-WORKER=/opt/zapret2/lua/strategy-validator.sh
+WORKER=/opt/zator/lua/strategy-validator.sh
 PIDFILE=/opt/var/run/z2r-strategy-validator.pid
 LOGFILE=/tmp/z2r-strategy-validator.log
 

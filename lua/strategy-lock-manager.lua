@@ -25,7 +25,7 @@ SLM_AUTO_LOCKED = SLM_AUTO_LOCKED or {}
 -- нужна только для восстановления после перезапуска и обновляется с паузой,
 -- чтобы не изнашивать flash-накопитель роутера частыми мелкими записями.
 local SLM_AUTO_LOCKED_PATH = "/tmp/auto_locked.tsv"
-local SLM_AUTO_LOCKED_BACKUP_PATH = "/opt/zapret2/extra_strats/cache/orchestra/auto_locked.tsv"
+local SLM_AUTO_LOCKED_BACKUP_PATH = "/opt/zator/extra_strats/cache/orchestra/auto_locked.tsv"
 local SLM_AUTO_LOCKED_BACKUP_INTERVAL = 1800
 local SLM_AUTO_LOCKED_LAST_BACKUP = 0
 
@@ -299,7 +299,9 @@ local function slm_load_skip_pass_ips()
     if slm_skip_pass_ips_loaded then return end
     slm_skip_pass_ips_loaded = true
 
-    -- List of ipset files to load (relative to zapret folder)
+    -- List of ipset files to load. Ранее относительные (CWD nfqws2 = /opt/zapret2),
+    -- теперь lists живут в /opt/zator, поэтому открываем по абсолютному пути,
+    -- с fallback на относительный для совместимости.
     local ipset_files = {
         "lists/ipset-discord.txt",
         "lists/ipset-youtube.txt",
@@ -316,7 +318,7 @@ local function slm_load_skip_pass_ips()
     local total_ranges = 0
 
     for _, filename in ipairs(ipset_files) do
-        local file = io.open(filename, "r")
+        local file = io.open("/opt/zator/" .. filename, "r") or io.open(filename, "r")
         if file then
             for line in file:lines() do
                 -- Skip empty lines and comments

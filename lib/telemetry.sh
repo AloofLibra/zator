@@ -5,8 +5,8 @@ STATS_TOKEN="TzeiCfYn5DUIwjHJ6dPa4bSKrkFRZqts3BGWpA9l"
 STATS_CHANNEL_ID="z4r-sql-v2"
 
 # 2. Пути к файлам (используем простые форматы)
-CACHE_DIR="/opt/zapret2/extra_strats/cache"
-TELEMETRY_CFG="/opt/zapret2/z2r_lib/telemetry.config"
+CACHE_DIR="/opt/zator/extra_strats/cache"
+TELEMETRY_CFG="/opt/zator/z2r_lib/telemetry.config"
 PROVIDER_TXT="$CACHE_DIR/provider.txt"
 
 telemetry_save_config() {
@@ -16,7 +16,11 @@ telemetry_save_config() {
 
     echo "tel_enabled=$enabled" > "$TELEMETRY_CFG"
     echo "tel_uuid=$uuid" >> "$TELEMETRY_CFG"
-    [ -n "$channel_id" ] && echo "tel_channel_id=$channel_id" >> "$TELEMETRY_CFG"
+    # Пустой channel_id не должен делать возврат функции ненулевым (set -e в z2r.sh).
+    if [ -n "$channel_id" ]; then
+        echo "tel_channel_id=$channel_id" >> "$TELEMETRY_CFG"
+    fi
+    return 0
 }
 
 # Функция инициализации (Спрашивает пользователя один раз)
@@ -34,11 +38,11 @@ init_telemetry() {
         echo ""
         echo -e "${green}Хотите отправлять анонимную статистику (Провайдер + Стратегии)?${plain}"
         echo -e "Это поможет понять, какие стратегии работают лучше всего."
-        read -p "Разрешить? (y/n): " stats_yn
+        read -p "Разрешить? (Enter - да, n - нет): " stats_yn
 
         case "$stats_yn" in
-            [Yy]*) tel_enabled="1" ;;
-            *)     tel_enabled="0" ;;
+            [NnНн]*) tel_enabled="0" ;;
+            *)       tel_enabled="1" ;;
         esac
 
         # Сразу сохраняем выбор
@@ -132,7 +136,7 @@ send_stats() {
     fi
     [ -n "$router_os" ] || router_os="unknown"
     local webui=0
-    [ -x /opt/zapret2/webui/run-webui.sh ] && webui=1
+    [ -x /opt/zator/webui/run-webui.sh ] && webui=1
 
     # 4. Отправка в z4r telemetry endpoint (Тихий режим, в фоне &)
     curl -sL --max-time 10 \

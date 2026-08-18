@@ -272,7 +272,7 @@ G.slm_is_blocked = function(askey, _, strategy) assert(askey == 3); return block
 
 mock_locked, mock_failure, mock_validated = nil, false, false
 circular.arg.key = 3
-circular.arg.validator = "/opt/zapret2/lua/strategy-validator.sh"
+circular.arg.validator = "/opt/zator/lua/strategy-validator.sh"
 circular.plan = { { arg = { strategy = 1 } }, { arg = { strategy = 2 } } }
 circular._hrec, circular._crec = {}, {}
 circular_quality(nil, circular)

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-ORCH_DIR="${ORCH_DIR:-/opt/zapret2/extra_strats/cache/orchestra}"
+ORCH_DIR="${ORCH_DIR:-/opt/zator/extra_strats/cache/orchestra}"
 ORCH_LOCK_FILE="${ORCH_LOCK_FILE:-$ORCH_DIR/locked.tsv}"
 PROFILE_STATE_FILE="${PROFILE_STATE_FILE:-${Z2R_PROFILE_STATE_FILE:-/opt/etc/z2r/profile.lock}}"
 
