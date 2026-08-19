@@ -191,6 +191,15 @@ config_tls_blob_menu_value() {
   [ -n "$blob_file" ] && echo "$blob_file" || echo "неизвестно"
 }
 
+config_udp_games_active() {
+  local cfg="$1" blk
+  blk="$(sed -n '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/p' "$cfg" 2>/dev/null)"
+  if printf "%s\n" "$blk" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=1026'; then
+    return 1
+  fi
+  printf "%s\n" "$blk" | grep -Eq '^[[:space:]]*--filter-udp=1026'
+}
+
 config_mode_text() {
   local mode="$1"
   local cfg="$2"
@@ -260,12 +269,13 @@ config_mode_text() {
       fi
       ;;
     udp_games)
-      if printf "%s" "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" | grep -Eq '(^|,)1026-65531(,|$)'; then
-        echo "Включен"
-      elif config_var_exists "$cfg" NFQWS2_PORTS_UDP; then
-        echo "Выключен"
-      else
+      if ! config_var_exists "$cfg" NFQWS2_PORTS_UDP; then
         echo "Неизвестно"
+      elif printf "%s" "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" | grep -Eq '(^|,)1026-65531(,|$)' \
+           && config_udp_games_active "$cfg"; then
+        echo "Включен"
+      else
+        echo "Выключен"
       fi
       ;;
     tls_blob_mode)
@@ -365,6 +375,10 @@ menu_config_snapshot() {
       v = $0; sub(/^#Z2R_AUTO_MODE=/, "", v)
       print "_auto_mode=" v
     }
+    /#Стратегии для игрового UDP/ { in_game_udp = 1 }
+    in_game_udp && /^[[:space:]]*--new[[:space:]]*$/ { in_game_udp = 0 }
+    in_game_udp && /^[[:space:]]*--skip[[:space:]]+--filter-udp=1026/ { game_udp_skip = 1 }
+    in_game_udp && /^[[:space:]]*--filter-udp=1026/ { game_udp_on = 1 }
     /^[[:space:]]*#Z2R_FALLBACK_BEGIN[[:space:]]*$/      { in_fb = 1; fb_profile = 8 }
     /^[[:space:]]*#Z2R_FALLBACK_END[[:space:]]*$/        { in_fb = 0; fb_profile = 0 }
     /^[[:space:]]*#Z2R_FALLBACK_HTTP_BEGIN[[:space:]]*$/ { in_fb = 1; fb_profile = 9 }
@@ -422,7 +436,7 @@ menu_config_snapshot() {
       if (ports_udp == "") out_udp = "Неизвестно"
       else {
         udp_re = "(^|,)1026-65531(,|$)"
-        if (ports_udp ~ udp_re) out_udp = "Включен"
+        if (ports_udp ~ udp_re && game_udp_on && !game_udp_skip) out_udp = "Включен"
         else out_udp = "Выключен"
       }
       n = 0

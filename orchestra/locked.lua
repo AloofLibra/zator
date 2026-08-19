@@ -241,21 +241,35 @@ function circular_locked(ctx, desync)
       end
     end
   end
+  -- Hostname for list gates. Extracted even without allow_nohost so every
+  -- profile can apply exclude lists; does not participate in profile choice.
+  local gate_host = host
+  if not gate_host or gate_host == "" then
+    gate_host = desync_hostname(desync)
+    if gate_host and gate_host ~= "" then
+      gate_host = string.lower(tostring(gate_host):gsub("%.$", ""))
+    end
+  end
   local route_substrings = desync.arg and desync.arg.route_substrings
   local route_key = desync.arg and desync.arg.route_key
-  if route_substrings and route_key and substring_hostlist_matches_desync(desync, route_substrings, host) then
+  if route_substrings and route_key and substring_hostlist_matches_desync(desync, route_substrings, gate_host) then
     base_profile = tostring(route_key)
     desync.arg.key = base_profile
-    DLOG("circular_locked: substring routed to profile="..base_profile.." host="..tostring(host))
+    DLOG("circular_locked: substring routed to profile="..base_profile.." host="..tostring(gate_host))
   end
   local profile = (host and host ~= "") and host or base_profile
-  if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, host) then
-    DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..host)
+  if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, gate_host) then
+    DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..tostring(gate_host))
+    return VERDICT_PASS
+  end
+  local exclude_substrings = desync.arg and desync.arg.exclude_substrings
+  if exclude_substrings and substring_hostlist_matches_desync(desync, exclude_substrings, gate_host) then
+    DLOG("circular_locked: excluded by substring profile="..profile.." host="..tostring(gate_host))
     return VERDICT_PASS
   end
   local include_substrings = desync.arg and desync.arg.include_substrings
-  if include_substrings and not substring_hostlist_matches_desync(desync, include_substrings, host) then
-    DLOG("circular_locked: no substring match profile="..profile.." host="..tostring(host))
+  if include_substrings and not substring_hostlist_matches_desync(desync, include_substrings, gate_host) then
+    DLOG("circular_locked: no substring match profile="..profile.." host="..tostring(gate_host))
     lua_cutoff(ctx)
     return VERDICT_PASS
   end

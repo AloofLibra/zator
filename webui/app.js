@@ -7,7 +7,7 @@ const state = {
   wgStateSettings: null,
   fallbackSettings: null,
   udpGamesSettings: null,
-  domains: { netrogat: null, custom_rkn: null, substring: null },
+  domains: { netrogat: null, custom_rkn: null, substring: null, netrogat_substring: null },
   activeSubview: 'netrogat',
 };
 
@@ -1106,6 +1106,12 @@ const DOMAIN_META = {
     placeholder: 'cdn, media, static, …',
     itemName: 'Подстрока',
   },
+  netrogat_substring: {
+    kind: 'substring',
+    addLabel: 'Подстрока',
+    placeholder: 'bank, shop, gov, …',
+    itemName: 'Подстрока',
+  },
 };
 
 function domainsApi(params, options = {}) {
@@ -1126,6 +1132,7 @@ async function refreshDomains() {
     refreshDomainList('netrogat'),
     refreshDomainList('custom_rkn'),
     refreshDomainList('substring'),
+    refreshDomainList('netrogat_substring'),
   ]);
 }
 

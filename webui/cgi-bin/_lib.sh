@@ -672,6 +672,17 @@ _domains_resolve_list() {
       printf '%s|%s|%s|%s' "$(rkn_substring_file)" "substring" \
         "Подстроки (TCP_RKN_domains_by_substring)" "$desc"
       ;;
+    netrogat_substring)
+      local desc
+      desc="$(printf '%b' \
+        "Подстроки-исключения (netrogat_substrings.txt). Без нормализации — как есть.\n" \
+        "Добавьте часть имени домена, и все домены с таким текстом будут исключены из обработки —\n" \
+        "аналог netrogat.txt, но по части имени.\n" \
+        "Например, если добавить bank, исключены будут sber-bank.ru, banki.ru\n" \
+        "и другие домены, в названии которых есть bank.")"
+      printf '%s|%s|%s|%s' "$(netrogat_substring_file)" "substring" \
+        "Подстроки исключений (netrogat_substrings)" "$desc"
+      ;;
     *)
       return 1
       ;;
