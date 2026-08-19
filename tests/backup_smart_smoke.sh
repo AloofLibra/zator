@@ -204,7 +204,7 @@ ok "blob с несовпадающим именем пропущен"
 
 # 3d. Блобы NEW, не затронутые переносом, остаются нетронутыми (дефолт).
 wg_new="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/zator/files/fake/([^[:space:]]+).*#\1#p' "$NEW" | head -n1)"
-[ "$wg_new" = "wg_initial_fake_1.bin" ] \
+[ "$wg_new" = "wg_initial_fake_2.bin" ] \
   || fail "blob fakewgblob должен остаться дефолтным (got: $wg_new)"
 ok "непереносимые blob'ы нового config остались нетронутыми"
 
@@ -265,14 +265,18 @@ else
   fail "Пункт 19: QUIC443 не включён"
 fi
 
-# Игровой UDP (п.19): состояние определяется наличием диапазона 1026-65531 в
-# NFQWS2_PORTS_UDP (см. config_mode_text udp_games). После переноса портов
-# состояние NEW должно совпадать с OLD. Точечный toggle --skip — в блоке 4b.
+# Игровой UDP (п.10/19): «Включен» = порты 1026-65531 в NFQWS2_PORTS_UDP И
+# отсутствие --skip в блоке стратегий. Детектор и сам блок должны совпадать.
 udp_old="$(config_mode_text udp_games "$OLD")"
 udp_new="$(config_mode_text udp_games "$NEW")"
 [ "$udp_old" = "$udp_new" ] || fail "состояние игрового UDP не совпало (old=$udp_old new=$udp_new)"
 [ "$udp_old" = "Включен" ] || fail "OLD игровой UDP должен быть 'Включен' (got: $udp_old)"
-ok "Пункт 19: состояние игрового UDP синхронизировано ($udp_new)"
+game_blk="$(sed -n '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/p' "$NEW")"
+if printf "%s\n" "$game_blk" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=1026'; then
+  fail "Пункт 10: --skip остался в блоке игрового UDP в NEW (перенос не включил стратегии)"
+else
+  ok "Пункт 10: состояние игрового UDP перенесено, --skip в блоке убран ($udp_new)"
+fi
 
 # FWTYPE / FLOWOFFLOAD (переменные).
 [ "$(config_get_var "$NEW" FWTYPE)" = "nftables" ] \
@@ -294,21 +298,19 @@ ok "MODE_FILTER=autohostlist перенесён"
 echo "== 4b. Прямой тест сеттеров backup_smart_set_* =="
 T="$ENV/setter_cfg"
 
-# Игровой UDP: toggle --skip в блоке (detector config_mode_text смотрит на порты,
-# поэтому здесь проверяем сам блок напрямую).
+# Игровой UDP: детектор config_mode_text учитывает и порты, и --skip блока.
 cp "$REPO_DIR/config.default" "$T"
+[ "$(config_mode_text udp_games "$T")" = "Выключен" ] || fail "udp_games: дефолт должен быть Выключен"
+config_set_var "$T" NFQWS2_PORTS_UDP "1026-65531,443"
+[ "$(config_mode_text udp_games "$T")" = "Выключен" ] || fail "udp_games: порты при --skip должны давать Выключен"
 backup_smart_set_udp_games "$T" 1
-sed -n '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/p' "$T" \
-  | grep -Eq '^[[:space:]]*--filter-udp=1026' \
-  || fail "set_udp_games 1: --filter-udp=1026 должен быть без --skip"
-! sed -n '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/p' "$T" \
-  | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=1026' \
-  || fail "set_udp_games 1: --skip не убран"
+[ "$(config_mode_text udp_games "$T")" = "Включен" ] || fail "udp_games: set 1 не сработал"
 backup_smart_set_udp_games "$T" 0
-sed -n '/#Стратегии для игрового UDP/,/^[[:space:]]*--new[[:space:]]*$/p' "$T" \
-  | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=1026' \
-  || fail "set_udp_games 0: --skip не возвращён"
-ok "set_udp_games: round-trip вкл↔выкл корректен"
+[ "$(config_mode_text udp_games "$T")" = "Выключен" ] || fail "udp_games: set 0 не сработал"
+config_set_var "$T" NFQWS2_PORTS_UDP "443"
+backup_smart_set_udp_games "$T" 1
+[ "$(config_mode_text udp_games "$T")" = "Выключен" ] || fail "udp_games: без портов должен быть Выключен"
+ok "udp_games: детектор согласован с портом и --skip блока"
 
 # WireGuard: detector backup_smart_wg_state.
 cp "$REPO_DIR/config.default" "$T"
@@ -354,6 +356,28 @@ backup_smart_set_hostlist "$T" 1
 backup_smart_set_hostlist "$T" 0
 [ "$(config_mode_text hostlist "$T")" = "по листам" ] || fail "set_hostlist 0 не сработал"
 ok "set_hostlist: round-trip вкл↔выкл корректен"
+
+# ===========================================================================
+# 4c. Снапшот меню и тумблер п.10 на рассинхронном конфиге (порты + --skip)
+# ===========================================================================
+echo "== 4c. menu_config_snapshot / menu_action_toggle_udp_range =="
+cp "$REPO_DIR/config.default" "$T"
+config_set_var "$T" NFQWS2_PORTS_UDP "1026-65531,443"
+menu_config_snapshot "$T"
+[ "$MENU_UDP_GAMES" = "Выключен" ] || fail "snapshot: порты при --skip должны давать Выключен (got: $MENU_UDP_GAMES)"
+backup_smart_set_udp_games "$T" 1
+menu_config_snapshot "$T"
+[ "$MENU_UDP_GAMES" = "Включен" ] || fail "snapshot: активный блок должен давать Включен (got: $MENU_UDP_GAMES)"
+ok "MENU_UDP_GAMES согласован с состоянием блока"
+
+backup_smart_set_udp_games "$T" 0
+get_config_file() { echo "$T"; }
+menu_action_toggle_udp_range >/dev/null || fail "toggle: включение упало"
+[ "$(config_mode_text udp_games "$T")" = "Включен" ] || fail "toggle: рассинхронный конфиг не вылечен включением"
+menu_action_toggle_udp_range >/dev/null || fail "toggle: выключение упало"
+[ "$(config_mode_text udp_games "$T")" = "Выключен" ] || fail "toggle: выключение не сработало"
+unset -f get_config_file
+ok "menu_action_toggle_udp_range: самовосстановление и полное переключение"
 
 # ===========================================================================
 # 5. Сквозной неразрушающий перенос (menu_action_backup_restore_smart)

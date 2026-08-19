@@ -108,11 +108,9 @@ menu_action_update_config_reset() {
     config_keenetic_set_wan_iface /opt/zapret2/config
   fi
 
-  "$ZAPRET2_INIT" start
-
-  # ВАЖНО: check_access_list — это по сути интерактивный тест (он сам печатает и может ждать Enter),
-  # поэтому лучше вызывать его из get_menu отдельным пунктом ("01"), а не тут.
-  # check_access_list
+  if [ "$BACKUP_HELPER_CREATED" != "1" ] || [ ! -f "$BACKUP_LAST_ARCHIVE" ]; then
+    "$ZAPRET2_INIT" start
+  fi
 
   echo -e "${green}Config файл обновлён. Листы подбора стратегий и исключений сброшены в дефолт, если не просили сохранить. Фейк файлы обновлены.${plain}"
   return 0
@@ -141,22 +139,23 @@ menu_action_toggle_fwtype() {
 }
 
 menu_action_toggle_udp_range() {
-  local cfg current_ports new_ports
+  local cfg current_ports new_ports state
   cfg="$(get_config_file)"
   current_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+  state="$(config_mode_text udp_games "$cfg")"
 
-  if ! printf "%s" "$current_ports" | grep -Eq '(^|,)1026-65531(,|$)'; then
-    new_ports="$(csv_add_tokens "" "1026-65531,${current_ports:-443}")"
-    config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
-    backup_smart_set_udp_games "$cfg" 1
-    echo -e "${green}Стратегия UDP обхода активирована. Выделены порты 1026-65531${plain}"
-
-  elif printf "%s" "$current_ports" | grep -Eq '(^|,)1026-65531(,|$)'; then
+  if [ "$state" = "Включен" ]; then
     new_ports="$(csv_remove_tokens "$current_ports" "1026-65531")"
     [ -n "$new_ports" ] || new_ports="443"
     config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
     backup_smart_set_udp_games "$cfg" 0
     echo -e "${green}Стратегия UDP обхода ДЕактивирована. Выделенные порты 1026-65531 убраны${plain}"
+
+  elif [ "$state" = "Выключен" ]; then
+    new_ports="$(csv_add_tokens "" "1026-65531,${current_ports:-443}")"
+    config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
+    backup_smart_set_udp_games "$cfg" 1
+    echo -e "${green}Стратегия UDP обхода активирована. Выделены порты 1026-65531${plain}"
 
   else
     echo -e "${yellow}Неизвестное состояние строки NFQWS2_PORTS_UDP. Проверь конфиг вручную.${plain}"
@@ -1100,6 +1099,10 @@ backup_update_offer_restore() {
         echo -e "${green}Обновлённый config оставлен без изменений.${plain}"
         ;;
     esac
+    if ! pidof nfqws2 >/dev/null 2>&1; then
+      "$ZAPRET2_INIT" start >/dev/null 2>&1 || true
+      echo -e "${green}zapret2 запущен.${plain}"
+    fi
     return 0
   fi
 
