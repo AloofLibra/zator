@@ -588,13 +588,6 @@ netrogat_substring_add_line() {
     local file line
     file="$(netrogat_substring_file)"
 
-    if [ ! -f "$file" ]; then
-        echo -e "${red}Файл $file не найден.${plain}"
-        echo -e "${yellow}Обновите конфиг через пункт 5 главного меню.${plain}"
-        pause_enter
-        return 1
-    fi
-
     clear -x
     echo -e "${cyan}--- Исключения по части имени ---${plain}"
     echo "Добавьте часть имени домена, и все домены с таким текстом будут исключены из обработки."
@@ -614,16 +607,7 @@ netrogat_substring_add_line() {
 }
 
 netrogat_substring_manage_lines() {
-    local file
-    file="$(netrogat_substring_file)"
-
-    if [ ! -f "$file" ]; then
-        echo -e "${red}Файл $file не найден.${plain}"
-        pause_enter
-        return 1
-    fi
-
-    domain_list_manage "$file" \
+    domain_list_manage "$(netrogat_substring_file)" \
         "Управление строками netrogat_substrings" \
         "Файл пуст. Добавьте подстроки через соответствующий пункт меню." \
         "Текущие подстроки исключений в файле:" \
