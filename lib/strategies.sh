@@ -599,7 +599,7 @@ netrogat_substring_add_line() {
     file="$(netrogat_substring_file)"
 
     clear -x
-    netrogat_substring_warn_old_config
+    netrogat_substring_warn_old_config || true
     echo ""
     echo -e "${cyan}--- Исключения по части имени ---${plain}"
     echo "Добавьте часть имени домена, и все домены с таким текстом будут исключены из обработки."
