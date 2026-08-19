@@ -245,6 +245,10 @@ netrogat_file() {
     echo "/opt/zator/lists/netrogat.txt"
 }
 
+netrogat_substring_file() {
+    echo "/opt/zator/lists/netrogat_substrings.txt"
+}
+
 rkn_substring_file() {
     echo "/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt"
 }
@@ -578,6 +582,55 @@ manage_netrogat_list() {
         "Домены в netrogat.txt (лист исключений):" \
         "Домен удалён из netrogat.txt." \
         0
+}
+
+netrogat_substring_add_line() {
+    local file line
+    file="$(netrogat_substring_file)"
+
+    if [ ! -f "$file" ]; then
+        echo -e "${red}Файл $file не найден.${plain}"
+        echo -e "${yellow}Обновите конфиг через пункт 5 главного меню.${plain}"
+        pause_enter
+        return 1
+    fi
+
+    clear -x
+    echo -e "${cyan}--- Исключения по части имени ---${plain}"
+    echo "Добавьте часть имени домена, и все домены с таким текстом будут исключены из обработки."
+    echo "Аналог netrogat.txt, но работает по части имени, а не по полному домену."
+    echo "Например, если добавить bank, исключены будут: sber-bank.ru, banki.ru"
+    echo "и другие домены, в названии которых есть bank."
+    echo ""
+    read -re -p "Введите подстроку для исключения: " line
+    if [ -z "$line" ]; then
+        echo "Отменено."
+        pause_enter
+        return 0
+    fi
+
+    domain_list_add "$file" "$line" "список подстрок исключений (netrogat_substrings.txt)" "Подстрока"
+    pause_enter
+}
+
+netrogat_substring_manage_lines() {
+    local file
+    file="$(netrogat_substring_file)"
+
+    if [ ! -f "$file" ]; then
+        echo -e "${red}Файл $file не найден.${plain}"
+        pause_enter
+        return 1
+    fi
+
+    domain_list_manage "$file" \
+        "Управление строками netrogat_substrings" \
+        "Файл пуст. Добавьте подстроки через соответствующий пункт меню." \
+        "Текущие подстроки исключений в файле:" \
+        "Подстрока успешно удалена." \
+        0 \
+        "подстроки" \
+        "подстроку"
 }
 
 rkn_substring_add_line() {

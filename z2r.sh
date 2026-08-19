@@ -1079,6 +1079,9 @@ get_repo() {
     mkdir -p "$ZATOR_ROOT/extra_strats"
     z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" "extra_strats/TCP/RKN/Domains_By_Substring.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt"
   fi
+  if [ ! -f "$ZATOR_ROOT/lists/netrogat_substrings.txt" ]; then
+    z2r_download_project_file "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt" || touch "$ZATOR_ROOT/lists/netrogat_substrings.txt"
+  fi
   if [ -f "/opt/netrogat.txt" ]; then
     mv -f /opt/netrogat.txt "$ZATOR_ROOT/lists/netrogat.txt"
     echo "Востановление листа исключений выполнено."

@@ -1477,6 +1477,11 @@ function circular_quality(ctx, desync)
         DLOG("circular_quality: excluded by hostlist host=" .. tostring(hostname))
         return VERDICT_PASS
     end
+    local exclude_substrings = desync.arg and desync.arg.exclude_substrings
+    if exclude_substrings and substring_hostlist_matches_desync(desync, exclude_substrings, hostname) then
+        DLOG("circular_quality: excluded by substring host=" .. tostring(hostname))
+        return VERDICT_PASS
+    end
     local include_substrings = desync.arg and desync.arg.include_substrings
     if include_substrings and not substring_hostlist_matches_desync(desync, include_substrings, hostname) then
         DLOG("circular_quality: no substring match host=" .. tostring(hostname))

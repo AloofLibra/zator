@@ -148,6 +148,10 @@ domains_submenu() {
     echo -e "${yellow}TCP_RKN_domains_by_substring (строки):${plain}"
     submenu_item "5" "Добавить строку в TCP_RKN_domains_by_substring"
     submenu_item "6" "Просмотр/удаление строк TCP_RKN_domains_by_substring"
+    echo ""
+    echo -e "${yellow}Исключения по подстрокам (netrogat_substrings.txt):${plain}"
+    submenu_item "7" "Добавить подстроку в netrogat_substrings"
+    submenu_item "8" "Просмотр/удаление подстрок netrogat_substrings"
     submenu_item "0" "Назад"
     echo ""
 
@@ -171,6 +175,12 @@ domains_submenu() {
         ;;
       "6")
         rkn_substring_manage_lines
+        ;;
+      "7")
+        netrogat_substring_add_line
+        ;;
+      "8")
+        netrogat_substring_manage_lines
         ;;
       "0"|"")
         return

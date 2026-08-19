@@ -918,6 +918,7 @@ Z2R_BACKUP_DIR="/opt/zator_backup"
 z2r_backup_state_files() {
   cat <<'EOF'
 lists/netrogat.txt
+lists/netrogat_substrings.txt
 extra_strats/TCP_Custom.txt
 extra_strats/TCP_RKN_domains_by_substring.txt
 extra_strats/cache/orchestra/locked.tsv

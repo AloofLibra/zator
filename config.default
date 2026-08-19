@@ -160,7 +160,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=1
+--in-range=-s32768 --lua-desync=circular_locked:key=1:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_STANDARD_1_END
 
@@ -173,7 +173,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=2
+--in-range=-s32768 --lua-desync=circular_locked:key=2:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_STANDARD_2_END
 
@@ -190,7 +190,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=3
+--in-range=-s32768 --lua-desync=circular_locked:key=3:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_STANDARD_3_END
 
@@ -202,7 +202,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=4
+--in-range=-s32768 --lua-desync=circular_locked:key=4:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --in-range=x
 --payload=tls_client_hello,discord_ip_discovery
 --lua-desync=fake:blob=fake_default_tls:tcp_ts=-1000:repeats=2:strategy=1 --lua-desync=multisplit:pos=1,midsld:strategy=1
@@ -245,7 +245,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --in-range=-d100
 --out-range=-d100
---lua-desync=circular_locked:key=5:proto=udp
+--lua-desync=circular_locked:key=5:proto=udp:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --in-range=x
 --payload=quic_initial
 --lua-desync=fake:blob=stun_fake:repeats=3:strategy=1 --lua-desync=fake:blob=discord_fake:repeats=3:strategy=1
@@ -286,7 +286,7 @@ NFQWS2_OPT="
 #Стратегии для голосовой связи. В первую очередь Discord, но может ещё для чего поможет
 --filter-udp=443,2053,2083,2087,2096,8443,50000-50099,1400,3478-3481,5349,19294-19344
 --filter-l7=discord,stun
---lua-desync=circular_locked:key=6:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt
+--lua-desync=circular_locked:key=6:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --payload=discord_ip_discovery,stun
 --lua-desync=fake:blob=stun_fake:repeats=3:strategy=1 --lua-desync=fake:blob=discord_fake:repeats=3:strategy=1
 --lua-desync=fake:blob=discord_udp_1:repeats=10:out_range=-d8:strategy=2 --lua-desync=fake:blob=discord_udp_2:repeats=2:out_range=-d8:strategy=2
@@ -325,7 +325,7 @@ NFQWS2_OPT="
 
 #Стратегии для игрового UDP. Широкий диапазон портов для BF, FIFA/FC и похожих игр
 --skip --filter-udp=1026-65531
---lua-desync=circular_locked:key=7:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt
+--lua-desync=circular_locked:key=7:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --lua-desync=fake:blob=quic_google:repeats=10:out_range=-n2:strategy=1
 --lua-desync=fake:blob=discord_udp_1:repeats=3:out_range=-d3:strategy=2
 --lua-desync=fake:blob=0x00:repeats=4:out_range=-d4:strategy=3
@@ -356,7 +356,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=8:allow_nohost=1:route_key=3:route_substrings=/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt
+--in-range=-s32768 --lua-desync=circular_locked:key=8:allow_nohost=1:route_key=3:route_substrings=/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_STANDARD_8_END
   #Z2R_FALLBACK_END
@@ -369,7 +369,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=3:allow_nohost=1:include_substrings=/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt
+--in-range=-s32768 --lua-desync=circular_locked:key=3:allow_nohost=1:include_substrings=/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_STANDARD_3S_END
 
@@ -382,7 +382,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=http_req
 --out-range=-n19
---lua-desync=circular_locked:key=9:allow_nohost=1
+--lua-desync=circular_locked:key=9:allow_nohost=1:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --lua-desync=http_hostcase:spell=hoSt:strategy=1 --lua-desync=http_domcase:strategy=1
 --lua-desync=multisplit:pos=method+2,host+1,midsld:strategy=2
 --lua-desync=multidisorder:pos=method+2,host+1,midsld:strategy=3
@@ -423,7 +423,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=3:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zator/lua/strategy-validator.sh
+--in-range=-s32768 --lua-desync=circular_quality:key=3:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zator/lua/strategy-validator.sh:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --import=z2r_tcp_tls_common
 #Z2R_AUTO_3_END
 
@@ -434,7 +434,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
 --out-range=-s34228
---in-range=-s32768 --lua-desync=circular_quality:key=4:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zator/lua/strategy-validator.sh
+--in-range=-s32768 --lua-desync=circular_quality:key=4:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:validator=/opt/zator/lua/strategy-validator.sh:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --in-range=x
 --payload=tls_client_hello,discord_ip_discovery
 --lua-desync=fake:blob=fake_default_tls:tcp_ts=-1000:repeats=2:strategy=1 --lua-desync=multisplit:pos=1,midsld:strategy=1
@@ -474,7 +474,7 @@ NFQWS2_OPT="
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=http_req,empty
 --out-range=-n19
---in-range=-s32768 --lua-desync=circular_quality:key=9:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3
+--in-range=-s32768 --lua-desync=circular_quality:key=9:fails=3:time=60:failure_detector=combined_failure_detector:success_detector=combined_success_detector:lock_successes=3:lock_tests=5:lock_rate=0.6:unlock_fails=3:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
 --in-range=x
 --payload=http_req
 --lua-desync=http_hostcase:spell=hoSt:strategy=1 --lua-desync=http_domcase:strategy=1
