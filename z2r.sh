@@ -1724,7 +1724,7 @@ webui_print_urls() {
   if [ -x "$WEBUI_RUNNER" ]; then
     "$WEBUI_RUNNER" urls 2>/dev/null || true
   else
-    echo "http://127.0.0.1:${WEBUI_PORT}"
+    echo "http://$(hostname 2>/dev/null || echo 127.0.0.1):${WEBUI_PORT}"
   fi
 }
 

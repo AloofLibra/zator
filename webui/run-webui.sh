@@ -176,15 +176,34 @@ status_server() {
   fi
 }
 
+detect_lan_ip() {
+  local iface iface_ip
+  if command -v ip >/dev/null 2>&1; then
+    for iface in br-lan br0; do
+      iface_ip="$(ip -4 addr show dev "$iface" 2>/dev/null | awk '/inet /{print $2; exit}' | cut -d/ -f1)"
+      if [ -n "$iface_ip" ]; then
+        echo "$iface_ip"
+        return 0
+      fi
+    done
+  fi
+  hostname -I 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v '^127\.' | head -n 1
+}
+
 print_urls() {
-  local hostname ip
-  hostname="$(hostname 2>/dev/null || echo localhost)"
-  echo "http://127.0.0.1:${PORT}"
-  echo "http://localhost:${PORT}"
-  echo "http://${hostname}:${PORT}"
-  for ip in $(hostname -I 2>/dev/null || true); do
-    echo "http://${ip}:${PORT}"
-  done
+  local hostname lan_ip
+  hostname="$(hostname 2>/dev/null || true)"
+  [ "$hostname" = "localhost" ] && hostname=""
+  lan_ip="$(detect_lan_ip || true)"
+  if [ -n "$lan_ip" ]; then
+    echo "http://${lan_ip}:${PORT}"
+  fi
+  if [ -n "$hostname" ]; then
+    echo "http://${hostname}:${PORT}"
+  fi
+  if [ -z "$lan_ip" ] && [ -z "$hostname" ]; then
+    echo "http://127.0.0.1:${PORT}"
+  fi
 }
 
 case "${1:-}" in
