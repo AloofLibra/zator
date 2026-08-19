@@ -446,7 +446,7 @@ function renderCurrentLock(el, value) {
     el.textContent = '0 (выключено)';
     el.classList.add('bad');
   } else {
-    el.textContent = lock;
+    el.textContent = lock === 'auto' ? 'def' : lock;
   }
 }
 

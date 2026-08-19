@@ -380,11 +380,11 @@ wireguard_submenu() {
       wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' "$cfg")"
       if printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard' &&
          printf "%s\n" "$wg_block" | grep -q 'blob=fakewgblob:repeats=' &&
-         grep -q -- '--blob=fakewgblob:@/opt/zapret2/files/fake/wg_initial_fake_' "$cfg"; then
+         grep -qE -- '--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/wg_initial_fake_' "$cfg"; then
         has_wg_block=1
       fi
       current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
-      current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+      current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p' "$cfg" | head -n1)"
     fi
 
     echo -e "${cyan}--- Настройки WireGuard ---${plain}"
@@ -595,8 +595,9 @@ beginner_guide_menu() {
   echo -e "${Bblue}${Fplain} Не знаешь, с чего начать? Есть проблемы? ${plain}"
   echo ""
   echo -e "${Fcyan}Что делает проект${plain}"
-  echo -e "z2r устанавливает и настраивает zapret2 в ${yellow}/opt/zapret2${plain}, кладет туда конфиг,"
-  echo -e "списки доменов, fake payload'ы и набор стратегий обхода. Дальше меню помогает"
+  echo -e "z2r устанавливает и настраивает zapret2 в ${yellow}/opt/zapret2${plain} (бинарники и ${yellow}config${plain}),"
+  echo -e "а весь zator-контент (списки, fake payload'ы, стратегии, lua, webui) держит отдельно в ${yellow}/opt/zator${plain},"
+  echo -e "чтобы обновление zapret2 не затрагивало настройки. Дальше меню помогает"
   echo -e "перезапускать zapret2, переключать режимы и подбирать рабочие стратегии под"
   echo -e "конкретного провайдера и устройство."
   echo ""

@@ -45,7 +45,7 @@ export PROFILE_STATE_FILE="$TMP_DIR/profile.lock"
 export ZAPRET2_INIT="$ROOT/init.d/sysv/zapret2"
 
 mkdir -p "$ORCH_DIR" "$ROOT/init.d/sysv"
-sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$CFG"
+sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$CFG"
 printf '#!/bin/sh\nexit 0\n' > "$ZAPRET2_INIT"
 chmod +x "$ZAPRET2_INIT"
 
@@ -75,7 +75,7 @@ grep -q 'lua_cutoff(ctx)' "$REPO_DIR/orchestra/locked.lua" || fail "non-matching
 grep -q '^function fakemultidisorder(ctx, desync)' "$REPO_DIR/orchestra/locked.lua" || fail "fakemultidisorder is not bundled into locked.lua"
 grep -q '^function fakemultisplit(ctx, desync)' "$REPO_DIR/orchestra/locked.lua" || fail "fakemultisplit is not bundled into locked.lua"
 grep -q 'file_stat = stat(path)' "$REPO_DIR/orchestra/locked.lua" || fail "substring list changes are not checked by the nfqws2 C stat function"
-grep -q 'circular_locked:key=3:.*include_substrings=/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default" || fail "substring list is not wired into the standard RKN router"
+grep -q 'circular_locked:key=3:.*include_substrings=/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt' "$REPO_DIR/config.default" || fail "substring list is not wired into the standard RKN router"
 grep -q 'include_substrings auto counterpart must cut off non-matching host' "$REPO_DIR/tests/provisional_tcp_success.lua" || fail "auto substring routing regression is missing"
 grep -q 'allow_nohost route must use route_key' "$REPO_DIR/tests/provisional_tcp_success.lua" || fail "auto fallback routing regression is missing"
 [ -f "$REPO_DIR/extra_strats/TCP/RKN/Domains_By_Substring.txt" ] || fail "substring list source is missing"
@@ -102,14 +102,14 @@ grep -q '"lua/strategy-validator.sh"' "$REPO_DIR/z2r.sh" || fail "strategy valid
 grep -q '"init.d/openwrt/z2r-strategy-validator"' "$REPO_DIR/z2r.sh" || fail "strategy validator service is not deployed"
 grep -q '"Entware/z2r-strategy-validator"' "$REPO_DIR/z2r.sh" || fail "Entware strategy validator service is not deployed"
 grep -q 'chmod +x "$STRATEGY_VALIDATOR_WORKER"' "$REPO_DIR/z2r.sh" || fail "strategy validator worker is not executable after deploy"
-grep -q 'validator=/opt/zapret2/lua/strategy-validator.sh' "$REPO_DIR/config.default" || fail "auto profile does not reference the deployed validator"
-[ "$(grep -c '^--lua-init=@/opt/zapret2/lua/strategy-lock-manager.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "strategy lock manager lua-init is missing or duplicated"
-[ "$(grep -c '^--lua-init=@/opt/zapret2/lua/combined-detector.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "combined detector lua-init is missing or duplicated"
-[ "$(grep -c '^--lua-init=@/opt/zapret2/lua/silent-drop-detector.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "silent-drop detector lua-init is missing or duplicated"
+grep -q 'validator=/opt/zator/lua/strategy-validator.sh' "$REPO_DIR/config.default" || fail "auto profile does not reference the deployed validator"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/strategy-lock-manager.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "strategy lock manager lua-init is missing or duplicated"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/combined-detector.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "combined detector lua-init is missing or duplicated"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/silent-drop-detector.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "silent-drop detector lua-init is missing or duplicated"
 awk '
-  /lua-init=@\/opt\/zapret2\/lua\/strategy-lock-manager\.lua/ {manager=NR}
-  /lua-init=@\/opt\/zapret2\/lua\/combined-detector\.lua/ {combined=NR}
-  /lua-init=@\/opt\/zapret2\/lua\/silent-drop-detector\.lua/ {silent=NR}
+  /lua-init=@\/opt\/zator\/lua\/strategy-lock-manager\.lua/ {manager=NR}
+  /lua-init=@\/opt\/zator\/lua\/combined-detector\.lua/ {combined=NR}
+  /lua-init=@\/opt\/zator\/lua\/silent-drop-detector\.lua/ {silent=NR}
   END {exit !(manager < combined && combined < silent)}
 ' "$REPO_DIR/config.default" || fail "circular lua-init order is invalid"
 
@@ -225,7 +225,7 @@ sum_after="$(file_sha "$CFG")"
 AUTO_OLD_CFG="$TMP_DIR/auto-old.conf"
 AUTO_NEW_CFG="$TMP_DIR/auto-new.conf"
 cp "$CFG" "$AUTO_OLD_CFG"
-sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_NEW_CFG"
+sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_NEW_CFG"
 backup_smart_apply_flags "$AUTO_OLD_CFG" "$AUTO_NEW_CFG"
 [ "$(config_mode_text auto_mode "$AUTO_NEW_CFG")" = "включен" ] || fail "smart restore did not preserve auto mode"
 config_set_auto_mode "$AUTO_NEW_CFG" 0 || fail "smart-restored auto mode could not be disabled"
@@ -235,10 +235,10 @@ done
 
 AUTO_ON_OLD_CFG="$TMP_DIR/auto-on-old.conf"
 AUTO_ON_NEW_CFG="$TMP_DIR/auto-on-new.conf"
-sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_ON_OLD_CFG"
+sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_ON_OLD_CFG"
 backup_smart_set_fallback "$AUTO_ON_OLD_CFG" 1
 config_set_auto_mode "$AUTO_ON_OLD_CFG" 1 || fail "smart restore setup could not enable auto mode"
-sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_ON_NEW_CFG"
+sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$AUTO_ON_NEW_CFG"
 backup_smart_apply_flags "$AUTO_ON_OLD_CFG" "$AUTO_ON_NEW_CFG"
 [ "$(config_mode_text auto_mode "$AUTO_ON_NEW_CFG")" = "включен" ] || fail "smart restore lost auto mode with saved fallback"
 config_set_auto_mode "$AUTO_ON_NEW_CFG" 0 || fail "smart-restored saved fallback could not leave auto mode"
@@ -302,7 +302,7 @@ done
 [ "$(profile_max_snapshot "$CFG")" = "$profile_max_before" ] || fail "auto-mode blocks changed logical profile numbering"
 
 PORT_CFG="$TMP_DIR/ports.conf"
-sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$PORT_CFG"
+sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$PORT_CFG"
 config_set_auto_mode "$PORT_CFG" 1 || fail "port routing test could not enable auto mode"
 ports_set_rkn_filter "$PORT_CFG" "12345"
 assert_contains "$(auto_pair_block "$PORT_CFG" STANDARD_ 3)" '^--skip --filter-tcp=12345,80,443,' "RKN port setter did not update skipped standard profile 3"
@@ -371,7 +371,7 @@ else
 fi
 [ "$(orch_locked_state_get 3 tls)" = "0" ] || fail "explicit 0 lock was not restored after cancel"
 
-sed "s#/opt/zapret2#$ROOT#g" "$REPO_DIR/config.default" > "$CFG"
+sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$CFG"
 profile_apply_all "$CFG"
 [ "$(orch_locked_get 6 udp)" = "2" ] || fail "stored VOICE N was not rehydrated into orchestra lock"
 assert_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)50000-50099(,|$)' "stored VOICE N did not restore voice ports on fresh config"
@@ -391,5 +391,30 @@ if profile_apply_all "$CFG" >/dev/null 2>&1; then
   fail "profile_apply_all masked an orchestra lock write error"
 fi
 ORCH_LOCK_FILE="$saved_orch_lock_file"
+
+# --- Дата изменения config (# Last modified) для главного меню ---
+grep -q '^# Last modified: ' "$REPO_DIR/config.default" \
+  || fail "config.default lost its Last modified header"
+stamp="$(config_last_modified "$REPO_DIR/config.default")"
+assert_contains "$stamp" '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} UTC$' \
+  "Last modified stamp has unexpected format: $stamp"
+
+menu_config_snapshot "$CFG"
+[ "$MENU_CONFIG_DATE" = "$(config_last_modified "$CFG")" ] \
+  || fail "menu_config_snapshot did not fill MENU_CONFIG_DATE from config"
+
+no_hdr_cfg="$TMP_DIR/no-header.cfg"
+sed '/^# Last modified: /d' "$CFG" > "$no_hdr_cfg"
+[ "$(config_last_modified "$no_hdr_cfg")" = "Неизвестно" ] \
+  || fail "config_last_modified must return Неизвестно without header"
+menu_config_snapshot "$no_hdr_cfg"
+[ "$MENU_CONFIG_DATE" = "Неизвестно" ] \
+  || fail "menu_config_snapshot must default MENU_CONFIG_DATE without header"
+menu_config_snapshot "$TMP_DIR/missing-$$.cfg"
+[ "$MENU_CONFIG_DATE" = "Неизвестно" ] \
+  || fail "menu_config_snapshot must default MENU_CONFIG_DATE for missing file"
+
+grep -qF 'Версия config файла от: ${plain}${MENU_CONFIG_DATE}' "$REPO_DIR/z2r.sh" \
+  || fail "main menu does not show config file date"
 
 echo "profile_lock smoke ok"

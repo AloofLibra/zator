@@ -1,26 +1,3 @@
-# Функция для генерации строки статуса стратегий
-get_current_strategies_info() {
-    local s_udp s_tcp s_gv s_rkn
-    s_udp="$(profile_state_display 5 udp)"
-    s_tcp="$(profile_state_display 1 tls)"
-    s_gv="$(profile_state_display 2 tls)"
-    s_rkn="$(profile_state_display 3 tls)"
-
-    colorize_num() {
-        if [ "$1" = "auto" ]; then
-            echo "${gray}auto${plain}"
-        elif [ "$1" = "0" ]; then
-            echo "${red}0${plain}"
-        elif printf "%s" "$1" | grep -Eq '^[0-9]+$'; then
-            echo "${green}$1${plain}"
-        else
-            echo "${gray}auto${plain}"
-        fi
-    }
-
-    echo -e "YT_UDP:$(colorize_num "$s_udp") YT_TCP:$(colorize_num "$s_tcp") YT_GV:$(colorize_num "$s_gv") RKN:$(colorize_num "$s_rkn")"
-}
-
 telemetry_notify() {
     type send_stats >/dev/null 2>&1 && send_stats || true
 }
@@ -74,7 +51,7 @@ orch_profile_try() {
     fi
 
     echo "$title"
-    echo "Текущее состояние: $current_state"
+    echo "Текущее состояние: ${current_state/auto/def}"
     read -re -p "Введите номер стратегии 1-${max_strat} (0 - отключить профиль, Enter - без изменений): " start_strat
     if [ -z "$start_strat" ]; then
         echo "Без изменений."
@@ -181,7 +158,7 @@ get_orchestra_locks_info() {
         case "$raw" in
             ""|auto)
                 eff="auto"
-                printf -v colored "%b" "${gray}auto${plain}"
+                printf -v colored "%b" "${gray}def${plain}"
                 ;;
             0|skip)
                 eff="0"
@@ -189,7 +166,7 @@ get_orchestra_locks_info() {
                 ;;
             *[!0-9]*|0*)
                 eff="auto"
-                printf -v colored "%b" "${gray}auto${plain}"
+                printf -v colored "%b" "${gray}def${plain}"
                 ;;
             *)
                 eff="$raw"
@@ -261,15 +238,15 @@ z2r_normalize_domain() {
 
 # Пути к доменным спискам, общие для CLI и WebUI.
 custom_rkn_file() {
-    echo "/opt/zapret2/extra_strats/TCP_Custom.txt"
+    echo "/opt/zator/extra_strats/TCP_Custom.txt"
 }
 
 netrogat_file() {
-    echo "/opt/zapret2/lists/netrogat.txt"
+    echo "/opt/zator/lists/netrogat.txt"
 }
 
 rkn_substring_file() {
-    echo "/opt/zapret2/extra_strats/TCP_RKN_domains_by_substring.txt"
+    echo "/opt/zator/extra_strats/TCP_RKN_domains_by_substring.txt"
 }
 
 domain_list_prepare() {

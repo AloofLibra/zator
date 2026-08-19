@@ -187,7 +187,7 @@ config_tls_blob_menu_value() {
     fake_default_tls) echo "default"; return ;;
     mixed) echo "mixed"; return ;;
   esac
-  blob_file="$(sed -n -E 's#.*--blob=maxru:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  blob_file="$(sed -n -E 's#.*--blob=maxru:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p' "$cfg" | head -n1)"
   [ -n "$blob_file" ] && echo "$blob_file" || echo "неизвестно"
 }
 
@@ -280,6 +280,12 @@ config_mode_text() {
   esac
 }
 
+config_last_modified() {
+  local header
+  header="$(sed -n 's/^# Last modified:[[:space:]]*//p' "$1" 2>/dev/null | head -n1 | tr -d '\r')"
+  printf '%s\n' "${header:-Неизвестно}"
+}
+
 menu_config_snapshot() {
   local cfg="$1"
 
@@ -292,6 +298,7 @@ menu_config_snapshot() {
   MENU_RST_GUARD="выключен"
   MENU_UDP_GAMES="Неизвестно"
   MENU_PORTS="дефолт"
+  MENU_CONFIG_DATE="Неизвестно"
   MENU_PROFILE_MAX_1=0
   MENU_PROFILE_MAX_2=0
   MENU_PROFILE_MAX_3=0
@@ -303,6 +310,8 @@ menu_config_snapshot() {
   MENU_PROFILE_MAX_9=0
 
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
+
+  MENU_CONFIG_DATE="$(config_last_modified "$cfg")"
 
   local fwtype flowoffload mode_filter auto_mode has_skip has_filter_tcp
   local has_tls_maxru has_tls_default has_rst blob_file udp_games ports
@@ -368,9 +377,12 @@ menu_config_snapshot() {
       if ($0 ~ /--lua-desync=/ && $0 ~ /blob=maxru/ && $0 !~ /strategy=26/) print "_has_tls_maxru=1"
       if ($0 ~ /--lua-desync=/ && $0 ~ /blob=fake_default_tls/ && $0 !~ /strategy=26/) print "_has_tls_default=1"
       if ($0 ~ /--lua-desync=rst_guard_locked:key=/) print "_has_rst=1"
-      if (blob_done == 0 && match($0, /--blob=maxru:@\/opt\/zapret2\/files\/fake\/[^[:space:]]+/)) {
-        p = "--blob=maxru:@/opt/zapret2/files/fake/"
-        print "_blob_file=" substr($0, RSTART + length(p), RLENGTH - length(p))
+      if (blob_done == 0 && match($0, /--blob=maxru:@\/opt\/(zapret2|zator)\/files\/fake\/[^[:space:]]+/)) {
+        # Имя файла извлекаем независимо от корня (zapret2|zator).
+        bs = $0
+        sub(/^.*--blob=maxru:@\/opt\/(zapret2|zator)\/files\/fake\//, "", bs)
+        sub(/[[:space:]].*$/, "", bs)
+        print "_blob_file=" bs
         blob_done = 1
       }
 
@@ -496,10 +508,18 @@ menu_config_snapshot() {
       ;;
   esac
 
-  [ "$has_rst" = "1" ] && MENU_RST_GUARD="включен"
-
-  [ -n "$udp_games" ] && MENU_UDP_GAMES="$udp_games"
-  [ -n "$ports" ] && MENU_PORTS="$ports"
+  # Присвоения через if, а не [ ... ] &&: пустые значения не должны отдавать
+  # из функции ненулевой статус (вызывается как инструкция под set -e в z2r.sh).
+  if [ "$has_rst" = "1" ]; then
+    MENU_RST_GUARD="включен"
+  fi
+  if [ -n "$udp_games" ]; then
+    MENU_UDP_GAMES="$udp_games"
+  fi
+  if [ -n "$ports" ]; then
+    MENU_PORTS="$ports"
+  fi
+  return 0
 }
 
 config_profile_max_strategy() {
