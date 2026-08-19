@@ -584,11 +584,23 @@ manage_netrogat_list() {
         0
 }
 
+netrogat_substring_warn_old_config() {
+    local cfg
+    cfg="$(get_config_file 2>/dev/null)" || return 0
+    [ -n "$cfg" ] || return 0
+    grep -q "exclude_substrings=" "$cfg" 2>/dev/null && return 0
+    echo -e "${yellow}Внимание: текущий config не содержит exclude_substrings.${plain}"
+    echo -e "Подстроки исключений начнут действовать после обновления конфига (пункт 5 главного меню)."
+    return 1
+}
+
 netrogat_substring_add_line() {
     local file line
     file="$(netrogat_substring_file)"
 
     clear -x
+    netrogat_substring_warn_old_config
+    echo ""
     echo -e "${cyan}--- Исключения по части имени ---${plain}"
     echo "Добавьте часть имени домена, и все домены с таким текстом будут исключены из обработки."
     echo "Аналог netrogat.txt, но работает по части имени, а не по полному домену."
@@ -607,6 +619,7 @@ netrogat_substring_add_line() {
 }
 
 netrogat_substring_manage_lines() {
+    netrogat_substring_warn_old_config || pause_enter
     domain_list_manage "$(netrogat_substring_file)" \
         "Управление строками netrogat_substrings" \
         "Файл пуст. Добавьте подстроки через соответствующий пункт меню." \
