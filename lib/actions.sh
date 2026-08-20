@@ -116,25 +116,30 @@ menu_action_update_config_reset() {
   return 0
 }
 
-menu_action_toggle_fwtype() {
-  local cfg
+fwtype_apply() {
+  local target="$1" cfg cur
   cfg="$(get_config_file)"
-  if [ "$(config_get_var "$cfg" FWTYPE)" = "iptables" ]; then
-    config_set_var "$cfg" FWTYPE nftables
-    /opt/zapret2/install_prereq.sh
-    "$ZAPRET2_INIT" restart
-    echo -e "${green}Zapret moode: nftables.${plain}"
+  cur="$(config_get_var "$cfg" FWTYPE)"
 
-  elif [ "$(config_get_var "$cfg" FWTYPE)" = "nftables" ]; then
-    config_set_var "$cfg" FWTYPE iptables
-    /opt/zapret2/install_prereq.sh
-    "$ZAPRET2_INIT" restart
-    echo -e "${green}Zapret moode: iptables.${plain}"
-
-  else
-    echo -e "${yellow}Неизвестное состояние строки FWTYPE. Проверь конфиг вручную.${plain}"
+  if [ "$cur" = "$target" ]; then
+    echo -e "${yellow}Режим $target уже активен.${plain}"
+    return 0
   fi
 
+  if [ "$target" = "nftables" ] && ! fwtype_nft_available; then
+    echo -e "${yellow}Переход на nftables невозможен: $(fwtype_unavailable_reason nftables).${plain}"
+    return 0
+  fi
+
+  if [ "$target" = "iptables" ] && ! fwtype_iptables_available; then
+    echo -e "${yellow}Переход на iptables невозможен: $(fwtype_unavailable_reason iptables).${plain}"
+    return 0
+  fi
+
+  config_set_var "$cfg" FWTYPE "$target"
+  /opt/zapret2/install_prereq.sh
+  "$ZAPRET2_INIT" restart
+  echo -e "${green}Zapret mode: $target.${plain}"
   return 0
 }
 

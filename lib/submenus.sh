@@ -279,6 +279,57 @@ flowoffload_submenu() {
   done
 }
 
+fwtype_submenu() {
+  local cfg cur nft_state ipt_state
+  cfg="$(get_config_file)"
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Firewall (nftables/iptables) ---${plain}"
+    cur="$(config_get_var "$cfg" FWTYPE)"
+    echo "Текущий режим: $cur"
+    echo ""
+
+    if fwtype_nft_available; then
+      nft_state="${green}доступен${plain}"
+    else
+      nft_state="${yellow}недоступен ($(fwtype_unavailable_reason nftables))${plain}"
+    fi
+    if fwtype_iptables_available; then
+      ipt_state="${green}доступен${plain}"
+    else
+      ipt_state="${yellow}недоступен ($(fwtype_unavailable_reason iptables))${plain}"
+    fi
+    echo "nftables: $nft_state"
+    echo "iptables: $ipt_state"
+    echo ""
+
+    submenu_item "1" "Переключить на nftables"
+    submenu_item "2" "Переключить на iptables"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+
+    case "$ans" in
+      "1")
+        fwtype_apply "nftables"
+        pause_enter
+        ;;
+      "2")
+        fwtype_apply "iptables"
+        pause_enter
+        ;;
+      "0"|"")
+        return
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
 tcp443_submenu() {
   local cfg selected_count
   cfg="/opt/zapret2/config"

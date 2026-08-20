@@ -200,6 +200,29 @@ config_udp_games_active() {
   printf "%s\n" "$blk" | grep -Eq '^[[:space:]]*--filter-udp=1026'
 }
 
+fwtype_nft_available() {
+  if [ "$OSystem" = "entware" ]; then
+    return 1
+  fi
+  command -v nft >/dev/null 2>&1 || return 1
+  nft list tables >/dev/null 2>&1
+}
+
+fwtype_iptables_available() {
+  command -v iptables >/dev/null 2>&1 || return 1
+  iptables -L -n >/dev/null 2>&1
+}
+
+fwtype_unavailable_reason() {
+  if [ "$1" = "nftables" ] && [ "$OSystem" = "entware" ]; then
+    echo "на Keenetic/Entware работает только iptables"
+  elif [ "$1" = "nftables" ]; then
+    echo "нет утилиты nft или поддержки nftables в ядре"
+  else
+    echo "нет утилиты iptables или поддержки iptables в ядре"
+  fi
+}
+
 config_mode_text() {
   local mode="$1"
   local cfg="$2"
