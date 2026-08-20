@@ -188,6 +188,9 @@ const ACTION_SELECTORS = [
   '#provider-form button[type="submit"]',
   '#provider-redetect-btn',
   '#backup-create-btn',
+  '#backup-import-btn',
+  '#backup-items .remove-btn',
+  '#backup-items .backups-toggle',
   '.tab',
   '.subtab',
   '#open-strategies',
@@ -1526,6 +1529,9 @@ function formatSize(bytes) {
   return value + ' Б';
 }
 
+const BACKUPS_PREVIEW_COUNT = 4;
+let backupsListExpanded = false;
+
 function renderBackups() {
   if (!state.backups) return;
   const items = Array.isArray(state.backups.items) ? state.backups.items : [];
@@ -1542,7 +1548,10 @@ function renderBackups() {
     if (items.length > 0) chip.classList.add('is-ok');
   }
 
-  items.forEach((item) => {
+  const collapsed = items.length > BACKUPS_PREVIEW_COUNT && !backupsListExpanded;
+  const visible = collapsed ? items.slice(0, BACKUPS_PREVIEW_COUNT) : items;
+
+  visible.forEach((item) => {
     const row = document.createElement('li');
     row.className = 'backup-item';
     const name = document.createElement('span');
@@ -1552,9 +1561,62 @@ function renderBackups() {
     meta.className = 'backup-meta';
     const size = item.size !== undefined ? formatSize(item.size) : '';
     meta.textContent = [item.date, size].filter(Boolean).join(' · ');
-    row.append(name, meta);
+    const actions = document.createElement('span');
+    actions.className = 'backup-actions';
+    const download = document.createElement('a');
+    download.className = 'download-btn';
+    download.href = '/cgi-bin/backups.cgi?action=download&name=' + encodeURIComponent(item.name);
+    download.setAttribute('aria-label', 'Скачать');
+    download.setAttribute('title', 'Скачать');
+    download.textContent = '↓';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'ghost danger remove-btn';
+    remove.setAttribute('aria-label', 'Удалить');
+    remove.setAttribute('title', 'Удалить');
+    remove.textContent = '×';
+    remove.addEventListener('click', async () => {
+      const confirmed = await confirmDialog({
+        title: `Удалить бэкап «${item.name}»?`,
+        message: 'Действие необратимо.',
+        confirmText: 'Удалить',
+        cancelText: 'Отмена',
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        await withBusy(remove, async () => {
+          await api('/cgi-bin/backups.cgi', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ action: 'delete', name: item.name }),
+          });
+          showToast(`Бэкап удалён: ${item.name}`);
+          await refreshBackups();
+        });
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+    actions.append(download, remove);
+    row.append(name, meta, actions);
     list.appendChild(row);
   });
+
+  if (items.length > BACKUPS_PREVIEW_COUNT) {
+    const row = document.createElement('li');
+    row.className = 'backup-toggle-row';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'ghost backups-toggle';
+    toggle.textContent = collapsed ? `Показать все (${items.length})` : 'Свернуть';
+    toggle.addEventListener('click', () => {
+      backupsListExpanded = !backupsListExpanded;
+      renderBackups();
+    });
+    row.appendChild(toggle);
+    list.appendChild(row);
+  }
 }
 
 document.getElementById('backup-create-btn').addEventListener('click', async (event) => {
@@ -1566,6 +1628,30 @@ document.getElementById('backup-create-btn').addEventListener('click', async (ev
         body: new URLSearchParams({ action: 'create' }),
       });
       showToast(`Бэкап создан: ${payload.name}`);
+      await refreshBackups();
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+});
+
+document.getElementById('backup-import-btn').addEventListener('click', () => {
+  document.getElementById('backup-import-file').click();
+});
+
+document.getElementById('backup-import-file').addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  const importBtn = document.getElementById('backup-import-btn');
+  event.target.value = '';
+  if (!file) return;
+  try {
+    await withBusy(importBtn, async () => {
+      const payload = await api('/cgi-bin/backups.cgi?action=upload&name=' + encodeURIComponent(file.name), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-tar' },
+        body: file,
+      });
+      showToast(`Бэкап импортирован: ${payload.name}`);
       await refreshBackups();
     });
   } catch (error) {

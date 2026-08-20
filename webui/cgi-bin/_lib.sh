@@ -928,6 +928,77 @@ api_backups_create() {
   send_json "200 OK" "{\"ok\":true,\"name\":\"$(json_escape "$(basename "$archive")")\"}"
 }
 
+send_tar_file() {
+  local path="$1" name="$2" size
+  size="$(wc -c < "$path" | tr -d '[:space:]')"
+  printf 'Status: 200 OK\r\n'
+  printf 'Content-Type: application/x-tar\r\n'
+  printf 'Content-Disposition: attachment; filename="%s"\r\n' "$name"
+  printf 'Content-Length: %s\r\n' "${size:-0}"
+  printf 'Cache-Control: no-store\r\n\r\n'
+  cat "$path"
+  exit 0
+}
+
+query_param() {
+  local key="$1" part k v _qp_parts
+  [ -n "${QUERY_STRING:-}" ] || return 1
+  IFS='&' read -r -a _qp_parts <<< "${QUERY_STRING}"
+  for part in "${_qp_parts[@]}"; do
+    k="${part%%=*}"
+    [ "$k" = "$key" ] || continue
+    v="${part#*=}"
+    v="${v//+/ }"
+    printf -v v '%b' "${v//%/\\x}"
+    printf '%s' "$v"
+    return 0
+  done
+  return 1
+}
+
+api_backups_delete() {
+  local name="${PARAM_NAME:-}"
+  if ! type backup_delete_core >/dev/null 2>&1; then
+    send_error "500 Internal Server Error" "Модуль бэкапов недоступен"
+  fi
+  [ -n "$name" ] || send_error "400 Bad Request" "Не указано имя файла"
+  backup_delete_core "$name" >/dev/null 2>&1 || send_error "404 Not Found" "Бэкап не найден"
+  send_json "200 OK" "{\"ok\":true,\"name\":\"$(json_escape "$name")\"}"
+}
+
+api_backups_download() {
+  local name="${PARAM_NAME:-}" path
+  if ! type backup_resolve_archive >/dev/null 2>&1; then
+    send_error "500 Internal Server Error" "Модуль бэкапов недоступен"
+  fi
+  [ -n "$name" ] || send_error "400 Bad Request" "Не указано имя файла"
+  path="$(backup_resolve_archive "$name")" || send_error "404 Not Found" "Бэкап не найден"
+  send_tar_file "$path" "$name"
+}
+
+api_backups_upload() {
+  local len orig tmp got name
+  if ! type backup_import_core >/dev/null 2>&1; then
+    send_error "500 Internal Server Error" "Модуль бэкапов недоступен"
+  fi
+  len="${CONTENT_LENGTH:-0}"
+  case "$len" in
+    ''|*[!0-9]*) len=0 ;;
+  esac
+  [ "$len" -gt 0 ] || send_error "400 Bad Request" "Пустой файл"
+  [ "$len" -le 33554432 ] || send_error "413 Payload Too Large" "Файл слишком большой (максимум 32 МБ)"
+  tmp="/tmp/z2r_webui_upload_$$"
+  head -c "$len" > "$tmp" 2>/dev/null || { rm -f "$tmp"; send_error "500 Internal Server Error" "Не удалось принять файл"; }
+  got="$(wc -c < "$tmp" | tr -d '[:space:]')"
+  if [ "${got:-0}" -ne "$len" ]; then
+    rm -f "$tmp"
+    send_error "400 Bad Request" "Файл получен не полностью"
+  fi
+  orig="$(query_param name || true)"
+  name="$(backup_import_core "$tmp" "$orig")" || { rm -f "$tmp"; send_error "400 Bad Request" "Файл не является архивом бэкапа"; }
+  send_json "200 OK" "{\"ok\":true,\"name\":\"$(json_escape "$name")\"}"
+}
+
 # Управление доменами переиспользует нормализацию, пути и операции со списками
 # из lib/strategies.sh; здесь остаётся только CGI-представление.
 

@@ -449,11 +449,15 @@
         <p class="panel-desc">
           Бэкап сохраняет текущий конфиг, списки доменов и зафиксированные стратегии.
           Создавайте бэкап перед экспериментами с настройками — если что-то пойдёт не так,
-          состояние можно будет вернуть. Восстановление доступно через CLI (пункт 21 меню).
+          состояние можно будет вернуть. Архив можно скачать на компьютер, вернуть на
+          роутер кнопкой «Импортировать» или удалить из списка.
+          Восстановление доступно через CLI (пункт 21 меню).
         </p>
 
         <div class="card-actions">
           <button type="button" class="primary" id="backup-create-btn">Создать бэкап</button>
+          <button type="button" id="backup-import-btn">Импортировать бэкап</button>
+          <input type="file" id="backup-import-file" accept=".tar,application/x-tar" hidden>
         </div>
         <div class="domain-empty" id="backups-empty" hidden>Бэкапов пока нет.</div>
         <ul class="backup-list" id="backup-items"></ul>

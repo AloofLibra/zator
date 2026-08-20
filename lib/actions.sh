@@ -1047,6 +1047,60 @@ backup_create_core() {
   printf '%s\n' "$archive"
 }
 
+backup_resolve_archive() {
+  local name="$1" list_file path rc
+  case "$name" in
+    z2r_backup_*.tar) ;;
+    *) return 1 ;;
+  esac
+  case "$name" in
+    */*|..*) return 1 ;;
+  esac
+  path="$Z2R_BACKUP_DIR/$name"
+  [ -f "$path" ] || return 1
+  list_file="/tmp/z2r_backup_resolve_$$"
+  backup_build_list_file "$list_file"
+  grep -qxF "$path" "$list_file"
+  rc=$?
+  rm -f "$list_file"
+  [ "$rc" -eq 0 ] || return 1
+  printf '%s\n' "$path"
+}
+
+backup_delete_core() {
+  local name="$1" path
+  path="$(backup_resolve_archive "$name")" || return 1
+  rm -f "$path" || return 1
+  printf '%s\n' "$path"
+}
+
+backup_import_core() {
+  local src="$1" orig="${2:-}" listing name="" ts n
+  [ -f "$src" ] || return 1
+  [ -s "$src" ] || return 1
+  listing="/tmp/z2r_backup_import_$$"
+  tar -tf "$src" > "$listing" 2>/dev/null || { rm -f "$listing"; return 1; }
+  grep -qE '(^|/)config$|/(lists|extra_strats)/' "$listing" || { rm -f "$listing"; return 1; }
+  rm -f "$listing"
+  case "$orig" in
+    z2r_backup_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9].tar)
+      [ -e "$Z2R_BACKUP_DIR/$orig" ] || name="$orig"
+      ;;
+  esac
+  if [ -z "$name" ]; then
+    ts="$(date +%Y%m%d_%H%M%S)"
+    name="z2r_backup_${ts}.tar"
+    n=0
+    while [ -e "$Z2R_BACKUP_DIR/$name" ]; do
+      n=$((n+1))
+      name="z2r_backup_${ts}_${n}.tar"
+    done
+  fi
+  mkdir -p "$Z2R_BACKUP_DIR" || return 1
+  mv -f "$src" "$Z2R_BACKUP_DIR/$name" || return 1
+  printf '%s\n' "$name"
+}
+
 menu_action_backup_create() {
   local archive
   if ! archive="$(backup_create_core 2>/dev/null)"; then

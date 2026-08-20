@@ -80,18 +80,22 @@ done
 
 [ -f "$REPO_DIR/webui/cgi-bin/backups.cgi" ] || fail "backups.cgi отсутствует"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/backups.cgi")" '405 Method Not Allowed' "backups.cgi не отдаёт 405"
+for fn in api_backups_list api_backups_create api_backups_delete api_backups_download api_backups_upload; do
+  assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/backups.cgi")" "$fn" "backups.cgi не вызывает $fn"
+done
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'send_tar_file' "_lib.sh не отдаёт tar-файлы"
 
 for key in auto_mode rst_guard reasm quic443 provider; do
   assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" "\\\"$key\\\"" "api_status не отдаёт поле $key"
 done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'rst-guard\.lua' "rst_guard set без guard на lua-файл"
 
-for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form ports-tcp-form ports-udp-form provider-form backup-create-btn; do
+for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form ports-tcp-form ports-udp-form provider-form backup-create-btn backup-import-btn backup-import-file; do
   grep -q "id=\"$id\"" "$REPO_DIR/webui/index.html" || fail "index.html не содержит #$id"
 done
 
 app_js="$(cat "$REPO_DIR/webui/app.js")"
-for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' '/cgi-bin/backups.cgi'; do
+for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' '/cgi-bin/backups.cgi' "action: 'create'" "action: 'delete'" 'action=download' 'action=upload' 'download-btn' 'backups-toggle' 'confirmDialog'; do
   assert_contains "$app_js" "$needle" "app.js не использует $needle"
 done
 assert_contains "$app_js" 'AUTO_MODE_GATED_PROFILES' "app.js не гейтит профили 1-4 при авторотации"
@@ -103,7 +107,7 @@ assert_contains "$(cat "$REPO_DIR/lib/actions.sh")" 'ports_apply_remove "\$proto
 assert_contains "$(cat "$REPO_DIR/lib/actions.sh")" 'backup_create_core 2>/dev/null' "CLI menu_action_backup_create не использует ядро backup_create_core"
 
 fake_py="$(cat "$REPO_DIR/webui/dev/fake_router_server.py")"
-for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'ports_add' 'provider_set' 'provider_redetect' 'apply_backup_create' 'ConflictError'; do
+for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'ports_add' 'provider_set' 'provider_redetect' 'apply_backup_create' 'apply_backup_delete' 'apply_backup_import' 'ConflictError'; do
   assert_contains "$fake_py" "$needle" "fake_router_server.py не реализует $needle"
 done
 assert_contains "$fake_py" 'netrogat_substring' "fake_router_server.py не поддерживает список netrogat_substring"
@@ -219,6 +223,60 @@ backup_tar="$(cat "$backup_out")"
 [ "$backup_tar" = "$BACKUP_LAST_ARCHIVE" ] || fail "BACKUP_LAST_ARCHIVE не совпадает с путём архива"
 basename "$backup_tar" | grep -Eq '^z2r_backup_[0-9]{8}_[0-9]{6}\.tar$' || fail "имя архива не по шаблону: $backup_tar"
 [ -s "$backup_tar" ] || fail "архив бэкапа пуст"
+
+# == 8a. Бэкапы: ядра resolve/delete/import ==
+
+backup_name="$(basename "$backup_tar")"
+resolved="$(backup_resolve_archive "$backup_name")" || fail "backup_resolve_archive не нашёл свежий архив"
+[ "$resolved" = "$backup_tar" ] || fail "backup_resolve_archive вернул не тот путь: $resolved"
+if backup_resolve_archive "../$backup_name" >/dev/null 2>&1; then
+  fail "backup_resolve_archive должен отклонять path traversal"
+fi
+if backup_resolve_archive "z2r_backup_20990101_000000.tar" >/dev/null 2>&1; then
+  fail "backup_resolve_archive должен отклонять отсутствующий архив"
+fi
+if backup_resolve_archive "evil.tar" >/dev/null 2>&1; then
+  fail "backup_resolve_archive должен отклонять имя мимо шаблона"
+fi
+
+deleted="$(backup_delete_core "$backup_name")" || fail "backup_delete_core упал"
+[ ! -f "$deleted" ] || fail "backup_delete_core не удалил архив"
+if backup_delete_core "$backup_name" >/dev/null 2>&1; then
+  fail "backup_delete_core должен отклонять отсутствующий архив"
+fi
+
+import_stage="$TMP_DIR/import_stage"
+mkdir -p "$import_stage"
+printf 'MODE_FILTER=hostlist\n' > "$import_stage/config"
+import_src="$TMP_DIR/upload.tar"
+tar -cf "$import_src" -C "$import_stage" .
+imported="$(backup_import_core "$import_src" "z2r_backup_20990101_000000.tar")" \
+  || fail "backup_import_core упал на валидном tar"
+[ "$imported" = "z2r_backup_20990101_000000.tar" ] || fail "backup_import_core не сохранил оригинальное имя: $imported"
+[ -f "$Z2R_BACKUP_DIR/$imported" ] || fail "импортированный архив не в каталоге бэкапов"
+[ ! -f "$import_src" ] || fail "backup_import_core не перенёс файл"
+
+tar -cf "$import_src" -C "$import_stage" .
+imported2="$(backup_import_core "$import_src" "my_router.tar")" \
+  || fail "backup_import_core упал на валидном tar без шаблонного имени"
+printf '%s\n' "$imported2" | grep -Eq '^z2r_backup_[0-9]{8}_[0-9]{6}(_[0-9]+)?\.tar$' \
+  || fail "сгенерированное имя не по шаблону: $imported2"
+
+bad_stage="$TMP_DIR/bad_stage"
+mkdir -p "$bad_stage"
+printf 'junk\n' > "$bad_stage/readme.txt"
+bad_src="$TMP_DIR/bad.tar"
+tar -cf "$bad_src" -C "$bad_stage" .
+if backup_import_core "$bad_src" >/dev/null 2>&1; then
+  fail "backup_import_core должен отклонять tar без config/lists/extra_strats"
+fi
+[ -f "$bad_src" ] || fail "при отказе backup_import_core не должен удалять исходный файл"
+
+garbage="$TMP_DIR/garbage.bin"
+printf 'not a tar\n' > "$garbage"
+if backup_import_core "$garbage" >/dev/null 2>&1; then
+  fail "backup_import_core должен отклонять не-tar файл"
+fi
 
 # == 9. Провайдер ==
 
