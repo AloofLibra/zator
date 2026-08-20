@@ -280,7 +280,7 @@ flowoffload_submenu() {
 }
 
 fwtype_submenu() {
-  local cfg cur nft_state ipt_state
+  local cfg cur target nft_state ipt_state
   cfg="$(get_config_file)"
 
   while true; do
@@ -304,11 +304,15 @@ fwtype_submenu() {
     echo -e "iptables: $ipt_state"
     echo ""
 
+    target=""
     if [ "$cur" != "nftables" ] && fwtype_nft_available; then
-      submenu_item "1" "Переключить на nftables"
+      target="nftables"
+    elif [ "$cur" != "iptables" ] && fwtype_iptables_available; then
+      target="iptables"
     fi
-    if [ "$cur" != "iptables" ] && fwtype_iptables_available; then
-      submenu_item "2" "Переключить на iptables"
+
+    if [ -n "$target" ]; then
+      submenu_item "1" "Переключить на $target"
     fi
     submenu_item "0" "Назад"
     echo ""
@@ -317,12 +321,12 @@ fwtype_submenu() {
 
     case "$ans" in
       "1")
-        fwtype_apply "nftables"
-        pause_enter
-        ;;
-      "2")
-        fwtype_apply "iptables"
-        pause_enter
+        if [ -n "$target" ]; then
+          fwtype_apply "$target"
+          pause_enter
+        else
+          ui_invalid_input
+        fi
         ;;
       "0"|"")
         return
