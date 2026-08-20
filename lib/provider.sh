@@ -70,7 +70,7 @@ provider_update_database() {
   fi
   local tmp
   tmp="$(mktemp /tmp/z2r_asn_db.XXXXXX 2>/dev/null)" || tmp="/tmp/z2r_asn_db.$$"
-  if ! curl -s --max-time 10 "$PROVIDER_ASN_REMOTE" -o "$tmp" 2>/dev/null; then
+  if ! curl -s --connect-timeout 3 --max-time 10 "$PROVIDER_ASN_REMOTE" -o "$tmp" 2>/dev/null; then
     rm -f "$tmp"
     return 1
   fi
@@ -129,7 +129,7 @@ _detect_api_simple() {
 
   provider_load_database
 
-  resp="$(curl -s --max-time 6 'https://ipwho.is/' 2>/dev/null)"
+  resp="$(curl -s --connect-timeout 4 --max-time 6 'https://ipwho.is/' 2>/dev/null)"
   if printf '%s' "$resp" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
     asn="$(_provider_json_num "$resp" asn)"
     isp="$(_provider_clean "$(_provider_json_str "$resp" isp)")"
@@ -137,7 +137,7 @@ _detect_api_simple() {
   fi
 
   if [ -z "$asn" ]; then
-    resp="$(curl -s --max-time 6 'https://ipinfo.io/json' 2>/dev/null)"
+    resp="$(curl -s --connect-timeout 4 --max-time 6 'https://ipinfo.io/json' 2>/dev/null)"
     local org
     org="$(_provider_json_str "$resp" org)"
     if printf '%s' "$org" | grep -q '^AS[0-9][0-9]*'; then
@@ -148,7 +148,7 @@ _detect_api_simple() {
   fi
 
   if [ -z "$asn" ]; then
-    resp="$(curl -s --max-time 6 'http://ip-api.com/json/?fields=isp,city,as' 2>/dev/null)"
+    resp="$(curl -s --connect-timeout 4 --max-time 6 'http://ip-api.com/json/?fields=isp,city,as' 2>/dev/null)"
     local as_field
     as_field="$(_provider_json_str "$resp" as)"
     if printf '%s' "$as_field" | grep -q '^AS[0-9][0-9]*'; then
@@ -206,10 +206,10 @@ provider_force_redetect() {
 
   if [ -s "$PROVIDER_CACHE" ]; then
       PROVIDER_MENU="$(head -n1 "$PROVIDER_CACHE")"
-      echo -e "${green}Определено:${plain} $PROVIDER_MENU"
+      echo -e "${green:-}Определено:${plain:-} $PROVIDER_MENU"
   else
       PROVIDER_MENU="Не удалось определить"
-      echo -e "${red}$PROVIDER_MENU.${plain} Проверьте сеть или задайте провайдера вручную."
+      echo -e "${red:-}$PROVIDER_MENU.${plain:-} Проверьте сеть или задайте провайдера вручную."
   fi
 }
 
@@ -227,6 +227,6 @@ provider_set_manual_menu() {
   local p c
   read -re -p "Провайдер (например MTS/Beeline): " p
   read -re -p "Город (можно пусто): " c
-  provider_set_manual "$p" "$c" || echo -e "${red}Провайдер не задан.${plain}"
+  provider_set_manual "$p" "$c" || echo -e "${red:-}Провайдер не задан.${plain:-}"
 }
 # ---- /Provider detector integration ----

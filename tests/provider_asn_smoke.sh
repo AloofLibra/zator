@@ -250,6 +250,19 @@ case "$out_u" in *выбирают:*5*) ;; *) fail "Ufanet - Odintsovo: подс
 out_m="$(hint_out "MTS - Kazan" RKN)"
 case "$out_m" in *выбирают:*5*) ;; *) fail "MTS - Kazan: подсказка не найдена (ожидалась строка Kazan - MTS PJSC, RKN:5)";; esac
 
+# == 17. redetect не падает без цветовых переменных (регрессия CGI 502) ==
+
+export CURL_MODE=ok CURL_FILE="$TMP_DIR/remote_ok.txt"
+rm -f "$PROVIDER_CACHE"
+if ( unset green red plain cyan yellow
+     provider_force_redetect >/dev/null 2>&1
+   ); then
+  :
+else
+  fail "сценарий 17: force_redetect падает без цветовых переменных (причина 502 в WebUI)"
+fi
+[ ! -s "$PROVIDER_CACHE" ] || fail "сценарий 17: мусорный ответ должен давать пустой provider.txt"
+
 # == доп: обычный init не делает сетевых запросов ==
 
 echo "Init - No Net" > "$PROVIDER_CACHE"
