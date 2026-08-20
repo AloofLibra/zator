@@ -102,10 +102,13 @@ function confirmDialog({
     card.appendChild(heading);
 
     if (message) {
-      const msg = document.createElement('p');
-      msg.className = 'modal-message';
-      msg.textContent = message;
-      card.appendChild(msg);
+      const parts = (Array.isArray(message) ? message : [message]).filter(Boolean);
+      parts.forEach((part) => {
+        const msg = document.createElement('p');
+        msg.className = 'modal-message';
+        msg.textContent = part;
+        card.appendChild(msg);
+      });
     }
 
     const actions = document.createElement('div');
@@ -227,6 +230,8 @@ function unlockAllControls() {
   updateFallbackSubmit();
   updateUdpGamesSubmit();
   MODE_TOGGLES.forEach(updateModeSubmit);
+  document.querySelectorAll('.ports-add-form').forEach(updatePortsSubmit);
+  updateDomainsAddState();
   updateProviderSubmit();
 }
 
@@ -429,6 +434,11 @@ function renderStatus() {
   statusCards.innerHTML = '';
   statusProfiles.innerHTML = '';
 
+  const providerRaw = String(state.status.provider ?? '');
+  const providerCut = providerRaw.indexOf(' - ');
+  const providerName = providerCut > 0 ? providerRaw.slice(0, providerCut) : providerRaw;
+  const providerCity = providerCut > 0 ? providerRaw.slice(providerCut + 3) : '';
+
   const cards = [
     ['zapret2', state.status.zapret2_running ? 'Запущен' : 'Остановлен', state.status.zapret2_running ? 'ok' : 'bad'],
     ['Локи стратегий', state.status.strategy_locks_status],
@@ -439,15 +449,21 @@ function renderStatus() {
     ['TLS blob', state.status.tls_blob_mode],
     ['WireGuard', state.status.wireguard, state.status.wireguard === 'включено' ? 'ok' : ''],
     ['RST guard', state.status.rst_guard, state.status.rst_guard === 'включен' ? 'ok' : ''],
-    ['Провайдер', state.status.provider],
+    ['Провайдер', providerName, '', providerCity],
   ];
 
-  cards.forEach(([label, value, stateClass]) => {
+  cards.forEach(([label, value, stateClass, subText]) => {
     const node = statTemplate.content.firstElementChild.cloneNode(true);
     node.querySelector('.label').textContent = label;
     const valueEl = node.querySelector('.value');
     valueEl.textContent = value ?? '—';
     if (stateClass) valueEl.classList.add(stateClass);
+    if (String(valueEl.textContent).length > 18) valueEl.classList.add('is-long');
+    if (subText) {
+      const subEl = node.querySelector('.value-sub');
+      subEl.textContent = subText;
+      subEl.hidden = false;
+    }
     statusCards.appendChild(node);
   });
 
@@ -1009,13 +1025,20 @@ function renderFallbackSettings() {
     }
   }
 
-  const submit = stateForm.querySelector('button[type="submit"]');
-  if (submit && unavailable) {
-    submit.disabled = true;
-    submit.title = 'Выключите авторотацию, чтобы управлять безразборным режимом';
+  const alertEl = document.getElementById('fallback-state-alert');
+  if (alertEl) {
+    alertEl.hidden = !unavailable;
+    alertEl.textContent = unavailable
+      ? 'Авторотация включена. Выключите её, чтобы управлять безразборным режимом.'
+      : '';
   }
 
   updateFallbackSubmit();
+
+  const autoToggle = MODE_TOGGLES.find((t) => t.setting === 'auto_mode');
+  if (autoToggle && state.modeSettings.auto_mode) {
+    renderModeSetting(autoToggle);
+  }
 }
 
 async function refreshFallbackSettings() {
@@ -1129,10 +1152,34 @@ if (fallbackStateForm) {
     const submitButton = event.currentTarget.querySelector('button[type="submit"]');
     if (!checkbox || !submitButton) return;
 
+    const enable = checkbox.checked;
+    const confirmed = await confirmDialog({
+      title: enable ? 'Включить безразборный режим?' : 'Выключить безразборный режим?',
+      message: enable
+        ? [
+            'Обход будет применяться ко всему трафику на выбранных портах, а не только к доменам из списков.',
+            'После включения выберите стратегии для TLS (профиль 8) и HTTP (профиль 9) во вкладке «Стратегии».',
+            'Изменение применяется после перезапуска zapret2.',
+          ]
+        : [
+            'Обход снова будет применяться только к доменам из списков и выбранным стратегиям.',
+            'Изменение применяется после перезапуска zapret2.',
+          ],
+      confirmText: enable ? 'Включить' : 'Выключить',
+      cancelText: 'Отмена',
+    });
+    if (!confirmed) {
+      checkbox.checked = !enable;
+      updateFallbackSubmit();
+      return;
+    }
+
     await withBusy(submitButton, async () => {
       try {
-        await applyFallbackState(checkbox.checked);
-        showToast(checkbox.checked ? 'Безразборный режим включён.' : 'Безразборный режим выключен.');
+        await applyFallbackState(enable);
+        showToast(enable
+          ? 'Безразборный режим включён. Перезапустите zapret2 для применения.'
+          : 'Безразборный режим выключен. Перезапустите zapret2 для применения.', 'warning');
         await refreshFallbackSettings();
         await refreshAll();
       } catch (error) {
@@ -1155,6 +1202,19 @@ const MODE_TOGGLES = [
     offToast: 'Авторотация выключена.',
     needsRestart: false,
     askConfirm: true,
+    confirm: {
+      titleOn: 'Включить авторотацию?',
+      messageOn: [
+        'zapret2 будет сам подбирать и менять стратегии TCP/HTTP.',
+        'Ручные фиксации профилей 1–4 и безразборный режим применяться не будут.',
+        'Сервис перезапустится сразу.',
+      ],
+      titleOff: 'Выключить авторотацию?',
+      messageOff: [
+        'Стратегии перестанут меняться автоматически — управление вернётся к ручным фиксациям.',
+        'Сервис перезапустится сразу.',
+      ],
+    },
   },
   {
     setting: 'hostlist',
@@ -1167,6 +1227,21 @@ const MODE_TOGGLES = [
     onToast: 'Автосбор списков включён. Перезапустите zapret2 для применения.',
     offToast: 'Фильтрация только по спискам. Перезапустите zapret2 для применения.',
     needsRestart: true,
+    askConfirm: true,
+    confirm: {
+      titleOn: 'Включить автосбор списков?',
+      messageOn: [
+        'zapret2 начнёт сам определять заблокированные домены и пополнять список — обход будет работать шире.',
+        'Пока автосбор включён, добавление доменов в RKN-списки (TCP_Custom и подстроки RKN) отключено. Списки исключений не затрагиваются.',
+        'Изменение применяется после перезапуска zapret2.',
+      ],
+      titleOff: 'Выключить автосбор списков?',
+      messageOff: [
+        'Обход снова будет применяться только к доменам из ваших списков.',
+        'Ручное добавление доменов в RKN-списки вернётся.',
+        'Изменение применяется после перезапуска zapret2.',
+      ],
+    },
   },
   {
     setting: 'rst_guard',
@@ -1240,6 +1315,25 @@ function renderModeSetting(toggle) {
     if (checkbox) checkbox.disabled = luaMissing && !enabled;
   }
 
+  if (toggle.setting === 'auto_mode') {
+    const alertEl = document.getElementById('auto-mode-alert');
+    const submit = form.querySelector('button[type="submit"]');
+    const fallbackOn = state.fallbackSettings?.state === 'включен';
+    if (checkbox) checkbox.disabled = fallbackOn;
+    if (alertEl) {
+      alertEl.hidden = !fallbackOn;
+      alertEl.textContent = fallbackOn
+        ? 'Безразборный режим включён. Выключите его, чтобы включить авторотацию.'
+        : '';
+    }
+    if (submit && fallbackOn) {
+      submit.disabled = true;
+      submit.title = 'Выключите безразборный режим, чтобы включить авторотацию';
+    } else if (submit) {
+      submit.title = '';
+    }
+  }
+
   updateModeSubmit(toggle);
 }
 
@@ -1248,7 +1342,11 @@ function updateModeSubmit(toggle) {
   if (!form) return;
   const submit = form.querySelector('button[type="submit"]');
   const checkbox = form.querySelector('input[type="checkbox"]');
-  if (!submit || !checkbox || checkbox.disabled) return;
+  if (!submit || !checkbox) return;
+  if (checkbox.disabled) {
+    submit.disabled = true;
+    return;
+  }
   const saved = checkbox.dataset.saved || '0';
   submit.disabled = (checkbox.checked ? '1' : '0') === saved;
 }
@@ -1266,6 +1364,12 @@ function bindModeToggle(toggle) {
     event.preventDefault();
     const enable = checkbox.checked;
 
+    if (checkbox.disabled) {
+      checkbox.checked = checkbox.dataset.saved === '1';
+      updateModeSubmit(toggle);
+      return;
+    }
+
     if (toggle.setting === 'rst_guard' && enable &&
         state.modeSettings.rst_guard && state.modeSettings.rst_guard.lua_available === false) {
       showToast('На устройстве нет файла rst-guard.lua. Включите защиту через CLI (пункт 18 меню).', 'error');
@@ -1274,12 +1378,18 @@ function bindModeToggle(toggle) {
       return;
     }
 
-    if (toggle.askConfirm) {
+    if (toggle.setting === 'auto_mode' && enable &&
+        state.fallbackSettings?.state === 'включен') {
+      showToast('Авторотация недоступна при включённом безразборном режиме. Сначала выключите безразборный режим.', 'error');
+      checkbox.checked = false;
+      updateModeSubmit(toggle);
+      return;
+    }
+
+    if (toggle.askConfirm && toggle.confirm) {
       const confirmed = await confirmDialog({
-        title: enable ? 'Включить авторотацию?' : 'Выключить авторотацию?',
-        message: enable
-          ? 'zapret2 будет сам подбирать и менять стратегии TCP/HTTP. Ручные фиксации профилей 1–4 и безразборный режим применяться не будут. Сервис перезапустится сразу.'
-          : 'Стратегии перестанут меняться автоматически — управление вернётся к ручным фиксациям. Сервис перезапустится сразу.',
+        title: enable ? toggle.confirm.titleOn : toggle.confirm.titleOff,
+        message: enable ? toggle.confirm.messageOn : toggle.confirm.messageOff,
         confirmText: enable ? 'Включить' : 'Выключить',
         cancelText: 'Отмена',
       });
@@ -1316,6 +1426,14 @@ function bindModeToggle(toggle) {
 }
 
 MODE_TOGGLES.forEach(bindModeToggle);
+
+function updatePortsSubmit(form) {
+  const input = form.querySelector('input[type="text"]');
+  const submit = form.querySelector('button[type="submit"]');
+  if (input && submit) {
+    submit.disabled = input.value.trim() === '';
+  }
+}
 
 async function refreshPorts() {
   const data = await api('/cgi-bin/settings.cgi?setting=ports');
@@ -1404,6 +1522,7 @@ async function addPorts(proto) {
       const skipped = payload.skipped ? ` Пропущено: ${payload.skipped}.` : '';
       showToast(`Добавлено: ${payload.added}.${skipped} Перезапустите zapret2 для применения.`, 'warning');
       input.value = '';
+      updatePortsSubmit(submitButton.form);
       await refreshPorts();
       await refreshAll();
     });
@@ -1437,6 +1556,13 @@ document.getElementById('ports-tcp-form').addEventListener('submit', (event) => 
 document.getElementById('ports-udp-form').addEventListener('submit', (event) => {
   event.preventDefault();
   addPorts('udp');
+});
+
+document.querySelectorAll('.ports-add-form').forEach((form) => {
+  const input = form.querySelector('input[type="text"]');
+  if (!input) return;
+  input.addEventListener('input', () => updatePortsSubmit(form));
+  updatePortsSubmit(form);
 });
 
 async function refreshProvider() {
@@ -1659,6 +1785,28 @@ document.getElementById('backup-import-file').addEventListener('change', async (
   }
 });
 
+const AUTO_RKN_LISTS = ['custom_rkn', 'substring'];
+
+function updateDomainsAddState() {
+  const autoBlocked = AUTO_RKN_LISTS.includes(state.activeSubview) &&
+    state.status?.hostlist_mode === 'авто';
+  const alertEl = document.getElementById('domains-auto-alert');
+  if (alertEl) {
+    alertEl.hidden = !autoBlocked;
+    alertEl.textContent = autoBlocked
+      ? 'Автосбор списков включён: домены RKN zapret2 определяет автоматически, ручное добавление отключено. Выключите автосбор в настройках («Фильтрация по спискам»), чтобы пополнять список вручную. Удаление доступно.'
+      : '';
+  }
+  const addInput = document.getElementById('domain-add-input');
+  if (addInput) addInput.disabled = autoBlocked;
+  const addSubmit = document.getElementById('domain-add-submit');
+  if (addSubmit) addSubmit.disabled = autoBlocked;
+  const importBtn = document.getElementById('domain-import-btn');
+  if (importBtn) importBtn.disabled = autoBlocked;
+  const importInput = document.getElementById('domain-import-input');
+  if (importInput) importInput.disabled = autoBlocked;
+}
+
 const DOMAIN_META = {
   netrogat: {
     kind: 'domain',
@@ -1740,6 +1888,7 @@ function renderDomainList(name) {
   addInput.placeholder = meta.placeholder;
   addInput.value = '';
 
+  updateDomainsAddState();
   const listEl = document.getElementById('domain-items');
   listEl.innerHTML = '';
   const items = Array.isArray(data.items) ? data.items : [];

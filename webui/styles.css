@@ -315,6 +315,7 @@ h3 { font-size: 1rem; line-height: 1.25; }
 
 .toast.success { border-color: color-mix(in srgb, var(--success) 35%, var(--line)); }
 .toast.error   { border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); }
+.toast.warning { border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); }
 
 .toast-message { min-width: 0; line-height: 1.35; }
 
@@ -476,6 +477,16 @@ button.primary.is-busy::after,
   line-height: 1.45;
 }
 
+.panel-desc {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.panel-desc + .panel-desc {
+  margin-top: -6px;
+}
+
 .panel-header, .card-top {
   display: flex;
   flex-wrap: wrap;
@@ -511,6 +522,19 @@ button.primary.is-busy::after,
   display: block;
   font-size: 1.3rem;
   line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.stat-card .value.is-long {
+  font-size: 1.05rem;
+}
+
+.stat-card .value-sub {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: normal;
+  color: var(--muted);
+  line-height: 1.2;
   overflow-wrap: anywhere;
 }
 
@@ -718,6 +742,17 @@ input[type="number"]::-webkit-inner-spin-button {
   background: var(--bg-warning, #fff3cd);
   border-left: 3px solid var(--warning, #ffc107);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.settings-alert {
+  padding: 0.5rem 0.7rem;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-left: 3px solid var(--danger);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 0.875rem;
+  color: var(--danger);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .ports-section {

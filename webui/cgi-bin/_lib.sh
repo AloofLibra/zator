@@ -709,6 +709,9 @@ api_auto_mode_set() {
     *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
   esac
   _require_config
+  if [ "$value" = "1" ] && [ "$(config_mode_text fallback "$CONFIG_FILE")" = "включен" ]; then
+    send_error "409 Conflict" "Авторотация недоступна при включённом безразборном режиме. Сначала выключите безразборный режим."
+  fi
   for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
     [ -f "$cfg" ] || continue
     config_auto_layout_valid "$cfg" || send_error "500 Internal Server Error" "В $cfg не найдены маркеры авторежима. Обновите конфиг через CLI (пункт 5 главного меню)."
@@ -1108,6 +1111,14 @@ api_domains_action() {
 
   local action="${PARAM_ACTION:-}"
   local domain normalized added=0 duplicates=0 skipped=0 count=0
+
+  case "${PARAM_LIST:-}:$action" in
+    custom_rkn:add|custom_rkn:import|substring:add|substring:import)
+      if [ "$(config_mode_text hostlist "$CONFIG_FILE")" = "авто" ]; then
+        send_error "409 Conflict" "Автосбор списков включён: домены RKN zapret2 определяет автоматически. Выключите автосбор в настройках, чтобы пополнять список вручную."
+      fi
+      ;;
+  esac
 
   case "$action" in
     add)
