@@ -300,12 +300,16 @@ fwtype_submenu() {
     else
       ipt_state="${yellow}недоступен ($(fwtype_unavailable_reason iptables))${plain}"
     fi
-    echo "nftables: $nft_state"
-    echo "iptables: $ipt_state"
+    echo -e "nftables: $nft_state"
+    echo -e "iptables: $ipt_state"
     echo ""
 
-    submenu_item "1" "Переключить на nftables"
-    submenu_item "2" "Переключить на iptables"
+    if [ "$cur" != "nftables" ] && fwtype_nft_available; then
+      submenu_item "1" "Переключить на nftables"
+    fi
+    if [ "$cur" != "iptables" ] && fwtype_iptables_available; then
+      submenu_item "2" "Переключить на iptables"
+    fi
     submenu_item "0" "Назад"
     echo ""
 
