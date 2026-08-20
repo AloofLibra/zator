@@ -7,6 +7,10 @@ const state = {
   wgStateSettings: null,
   fallbackSettings: null,
   udpGamesSettings: null,
+  modeSettings: {},
+  ports: null,
+  provider: null,
+  backups: null,
   domains: { netrogat: null, custom_rkn: null, substring: null, netrogat_substring: null },
   activeSubview: 'netrogat',
 };
@@ -173,6 +177,17 @@ const ACTION_SELECTORS = [
   '#wg-blob-form button[type="submit"]',
   '#fallback-state-form button[type="submit"]',
   '#udp-games-form button[type="submit"]',
+  '#auto-mode-form button[type="submit"]',
+  '#hostlist-form button[type="submit"]',
+  '#rst-guard-form button[type="submit"]',
+  '#reasm-form button[type="submit"]',
+  '#quic443-form button[type="submit"]',
+  '#ports-tcp-form button[type="submit"]',
+  '#ports-udp-form button[type="submit"]',
+  '.port-remove',
+  '#provider-form button[type="submit"]',
+  '#provider-redetect-btn',
+  '#backup-create-btn',
   '.tab',
   '.subtab',
   '#open-strategies',
@@ -208,6 +223,8 @@ function unlockAllControls() {
   updateWgSubmit();
   updateFallbackSubmit();
   updateUdpGamesSubmit();
+  MODE_TOGGLES.forEach(updateModeSubmit);
+  updateProviderSubmit();
 }
 
 function normalizeStrategyValue(raw) {
@@ -412,11 +429,14 @@ function renderStatus() {
   const cards = [
     ['zapret2', state.status.zapret2_running ? 'Запущен' : 'Остановлен', state.status.zapret2_running ? 'ok' : 'bad'],
     ['Локи стратегий', state.status.strategy_locks_status],
+    ['Авторотация', state.status.auto_mode, state.status.auto_mode === 'включен' ? 'ok' : ''],
     ['Фильтр', state.status.hostlist_mode],
     ['FW', state.status.fwtype],
     ['Offload', state.status.flowoffload],
     ['TLS blob', state.status.tls_blob_mode],
     ['WireGuard', state.status.wireguard, state.status.wireguard === 'включено' ? 'ok' : ''],
+    ['RST guard', state.status.rst_guard, state.status.rst_guard === 'включен' ? 'ok' : ''],
+    ['Провайдер', state.status.provider],
   ];
 
   cards.forEach(([label, value, stateClass]) => {
@@ -452,14 +472,24 @@ function renderCurrentLock(el, value) {
 
 const FALLBACK_CHECK_HINT = 'Безразборный режим: быстрая проверка неприменима (применяется ко всем доменам).';
 const UDP_GAMES_CHECK_HINT = 'Игровой UDP: быстрая проверка неприменима (широкий диапазон портов).';
+const AUTO_MODE_GATED_PROFILES = [1, 2, 3, 4];
+
+function isAutoModeGated(profile) {
+  return AUTO_MODE_GATED_PROFILES.includes(Number(profile.profile)) &&
+    state.status?.auto_mode === 'включен';
+}
 
 function isProfileGated(profile) {
+  if (isAutoModeGated(profile)) return true;
   if (profile.is_fallback && !profile.fallback_enabled) return true;
   if (profile.is_udp_games && !profile.udp_games_enabled) return true;
   return false;
 }
 
 function gatedReason(profile) {
+  if (isAutoModeGated(profile)) {
+    return 'Пока включена авторотация, стратегии профилей 1–4 подбираются автоматически. Выключите авторотацию в настройках, чтобы управлять ими вручную.';
+  }
   if (profile.is_fallback && !profile.fallback_enabled) {
     return 'Сначала включите безразборный режим в настройках.';
   }
@@ -524,6 +554,7 @@ function renderStrategies() {
       submitButton.disabled = true;
       clearButton.disabled = true;
       stepButtons.forEach((b) => { b.disabled = true; });
+      inlineCheck.classList.remove('empty');
       inlineCheck.innerHTML = `<p class="fallback-hint">${gatedReason(profile)}</p>`;
     }
 
@@ -750,6 +781,10 @@ document.getElementById('refresh-settings').addEventListener('click', (event) =>
       refreshWgStateSettings(),
       refreshUdpGamesSettings(),
       refreshFallbackSettings(),
+      ...MODE_TOGGLES.map(refreshModeSetting),
+      refreshPorts(),
+      refreshProvider(),
+      refreshBackups(),
     ]);
   }).catch((e) => showToast(e.message, 'error'));
 });
@@ -952,21 +987,29 @@ function renderFallbackSettings() {
   if (!state.fallbackSettings || !stateForm) return;
 
   const settings = state.fallbackSettings;
+  const unavailable = settings.state === 'недоступен';
   const isEnabled = settings.state === 'включен';
 
   const checkbox = stateForm.querySelector('input[type="checkbox"]');
   if (checkbox) {
     checkbox.checked = isEnabled;
+    checkbox.disabled = unavailable;
     checkbox.dataset.saved = isEnabled ? '1' : '0';
   }
 
   const stateChip = document.getElementById('fallback-state-chip');
   if (stateChip) {
-    stateChip.textContent = isEnabled ? 'включен' : 'выключен';
+    stateChip.textContent = unavailable ? 'недоступен' : (isEnabled ? 'включен' : 'выключен');
     stateChip.className = 'chip';
     if (isEnabled) {
       stateChip.classList.add('is-ok');
     }
+  }
+
+  const submit = stateForm.querySelector('button[type="submit"]');
+  if (submit && unavailable) {
+    submit.disabled = true;
+    submit.title = 'Выключите авторотацию, чтобы управлять безразборным режимом';
   }
 
   updateFallbackSubmit();
@@ -1095,6 +1138,440 @@ if (fallbackStateForm) {
     });
   });
 }
+
+const MODE_TOGGLES = [
+  {
+    setting: 'auto_mode',
+    postKey: 'auto_mode_state',
+    formId: 'auto-mode-form',
+    chipId: 'auto-mode-chip',
+    enabledField: 'enabled',
+    onChip: 'включена',
+    offChip: 'выключена',
+    onToast: 'Авторотация включена.',
+    offToast: 'Авторотация выключена.',
+    needsRestart: false,
+    askConfirm: true,
+  },
+  {
+    setting: 'hostlist',
+    postKey: 'hostlist_state',
+    formId: 'hostlist-form',
+    chipId: 'hostlist-chip',
+    enabledField: 'auto',
+    onChip: 'автосбор',
+    offChip: 'по листам',
+    onToast: 'Автосбор списков включён. Перезапустите zapret2 для применения.',
+    offToast: 'Фильтрация только по спискам. Перезапустите zapret2 для применения.',
+    needsRestart: true,
+  },
+  {
+    setting: 'rst_guard',
+    postKey: 'rst_guard_state',
+    formId: 'rst-guard-form',
+    chipId: 'rst-guard-chip',
+    enabledField: 'enabled',
+    onChip: 'включена',
+    offChip: 'выключена',
+    onToast: 'Защита от RST-инъекций включена. Перезапустите zapret2 для применения.',
+    offToast: 'Защита от RST-инъекций выключена. Перезапустите zapret2 для применения.',
+    needsRestart: true,
+  },
+  {
+    setting: 'reasm',
+    postKey: 'reasm_state',
+    formId: 'reasm-form',
+    chipId: 'reasm-chip',
+    enabledField: 'enabled',
+    onChip: 'включен',
+    offChip: 'выключен',
+    onToast: 'Параметр --reasm-disable включён. Перезапустите zapret2 для применения.',
+    offToast: 'Параметр --reasm-disable выключен. Перезапустите zapret2 для применения.',
+    needsRestart: true,
+  },
+  {
+    setting: 'quic443',
+    postKey: 'quic443_state',
+    formId: 'quic443-form',
+    chipId: 'quic443-chip',
+    enabledField: 'enabled',
+    onChip: 'включены',
+    offChip: 'выключены',
+    onToast: 'Фейки QUIC на порту 443 включены. Перезапустите zapret2 для применения.',
+    offToast: 'Фейки QUIC на порту 443 выключены. Перезапустите zapret2 для применения.',
+    needsRestart: true,
+  },
+];
+
+async function refreshModeSetting(toggle) {
+  const data = await api(`/cgi-bin/settings.cgi?setting=${toggle.setting}`);
+  state.modeSettings[toggle.setting] = data;
+  renderModeSetting(toggle);
+}
+
+function renderModeSetting(toggle) {
+  const data = state.modeSettings[toggle.setting];
+  const form = document.getElementById(toggle.formId);
+  if (!data || !form) return;
+
+  const enabled = data[toggle.enabledField] === true;
+  const checkbox = form.querySelector('input[type="checkbox"]');
+  if (checkbox) {
+    checkbox.checked = enabled;
+    checkbox.dataset.saved = enabled ? '1' : '0';
+  }
+
+  if (toggle.chipId) {
+    const chip = document.getElementById(toggle.chipId);
+    if (chip) {
+      chip.textContent = enabled ? toggle.onChip : toggle.offChip;
+      chip.className = 'chip';
+      if (enabled) chip.classList.add('is-ok');
+    }
+  }
+
+  if (toggle.setting === 'rst_guard') {
+    const hint = document.getElementById('rst-guard-hint');
+    const luaMissing = data.lua_available === false;
+    if (hint) hint.hidden = !luaMissing;
+    if (checkbox) checkbox.disabled = luaMissing && !enabled;
+  }
+
+  updateModeSubmit(toggle);
+}
+
+function updateModeSubmit(toggle) {
+  const form = document.getElementById(toggle.formId);
+  if (!form) return;
+  const submit = form.querySelector('button[type="submit"]');
+  const checkbox = form.querySelector('input[type="checkbox"]');
+  if (!submit || !checkbox || checkbox.disabled) return;
+  const saved = checkbox.dataset.saved || '0';
+  submit.disabled = (checkbox.checked ? '1' : '0') === saved;
+}
+
+function bindModeToggle(toggle) {
+  const form = document.getElementById(toggle.formId);
+  if (!form) return;
+  const checkbox = form.querySelector('input[type="checkbox"]');
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (!checkbox || !submitButton) return;
+
+  checkbox.addEventListener('change', () => updateModeSubmit(toggle));
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const enable = checkbox.checked;
+
+    if (toggle.setting === 'rst_guard' && enable &&
+        state.modeSettings.rst_guard && state.modeSettings.rst_guard.lua_available === false) {
+      showToast('На устройстве нет файла rst-guard.lua. Включите защиту через CLI (пункт 18 меню).', 'error');
+      checkbox.checked = false;
+      updateModeSubmit(toggle);
+      return;
+    }
+
+    if (toggle.askConfirm) {
+      const confirmed = await confirmDialog({
+        title: enable ? 'Включить авторотацию?' : 'Выключить авторотацию?',
+        message: enable
+          ? 'zapret2 будет сам подбирать и менять стратегии TCP/HTTP. Ручные фиксации профилей 1–4 и безразборный режим применяться не будут. Сервис перезапустится сразу.'
+          : 'Стратегии перестанут меняться автоматически — управление вернётся к ручным фиксациям. Сервис перезапустится сразу.',
+        confirmText: enable ? 'Включить' : 'Выключить',
+        cancelText: 'Отмена',
+      });
+      if (!confirmed) {
+        checkbox.checked = !enable;
+        updateModeSubmit(toggle);
+        return;
+      }
+    }
+
+    try {
+      await withBusy(submitButton, async () => {
+        const payload = await api('/cgi-bin/settings.cgi', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ setting: toggle.postKey, value: enable ? '1' : '0' }),
+        });
+        let message = enable ? toggle.onToast : toggle.offToast;
+        if (toggle.setting === 'auto_mode') {
+          message += payload.restarted ? ' zapret2 перезапущен.' : ' Применится при следующем запуске zapret2.';
+        }
+        showToast(message, toggle.needsRestart ? 'warning' : 'success');
+        await refreshModeSetting(toggle);
+        if (toggle.setting === 'auto_mode') {
+          await refreshFallbackSettings();
+        }
+        await refreshAll();
+      });
+    } catch (error) {
+      showToast(error.message, 'error');
+      await refreshModeSetting(toggle);
+    }
+  });
+}
+
+MODE_TOGGLES.forEach(bindModeToggle);
+
+async function refreshPorts() {
+  const data = await api('/cgi-bin/settings.cgi?setting=ports');
+  state.ports = data;
+  renderPorts();
+}
+
+function renderPorts() {
+  if (!state.ports) return;
+  renderPortsProto('tcp', state.ports.tcp);
+  renderPortsProto('udp', state.ports.udp);
+  const tcpCount = Array.isArray(state.ports.tcp?.user) ? state.ports.tcp.user.length : 0;
+  const udpCount = Array.isArray(state.ports.udp?.user) ? state.ports.udp.user.length : 0;
+  const chip = document.getElementById('ports-count-chip');
+  if (chip) {
+    const total = tcpCount + udpCount;
+    chip.textContent = total > 0 ? `добавлено: ${total}` : 'не добавлены';
+    chip.className = 'chip';
+    if (total > 0) chip.classList.add('is-ok');
+  }
+}
+
+function renderPortsProto(proto, info) {
+  const chips = document.getElementById(`ports-${proto}-chips`);
+  const base = document.getElementById(`ports-${proto}-base`);
+  const empty = document.getElementById(`ports-${proto}-empty`);
+  if (!chips) return;
+
+  const users = Array.isArray(info?.user) ? info.user : [];
+  chips.innerHTML = '';
+  if (base) base.textContent = info?.base || '—';
+  if (empty) empty.hidden = users.length > 0;
+
+  users.forEach((token) => {
+    const chip = document.createElement('span');
+    chip.className = 'port-chip';
+    const label = document.createElement('span');
+    label.textContent = token;
+    chip.appendChild(label);
+
+    if (proto === 'udp' && token === '1026-65531') {
+      chip.classList.add('is-managed');
+      chip.title = 'Управляется переключателем «Игровой UDP» выше';
+    } else {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'port-remove';
+      removeBtn.textContent = '×';
+      removeBtn.setAttribute('aria-label', `Удалить порт ${token}`);
+      removeBtn.addEventListener('click', () => removePort(proto, token, removeBtn));
+      chip.appendChild(removeBtn);
+    }
+    chips.appendChild(chip);
+  });
+}
+
+function validatePortList(raw) {
+  const value = String(raw || '').replace(/\s+/g, '');
+  if (!value) return null;
+  const tokens = value.split(',');
+  for (const token of tokens) {
+    const match = token.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
+    if (!match) return null;
+    const start = Number(match[1]);
+    const end = match[2] ? Number(match[2]) : start;
+    if (start < 1 || end > 65535 || start > end) return null;
+  }
+  return value;
+}
+
+async function addPorts(proto) {
+  const input = document.getElementById(`ports-${proto}-input`);
+  const submitButton = document.getElementById(`ports-${proto}-form`).querySelector('button[type="submit"]');
+  const value = validatePortList(input.value);
+  if (!value) {
+    showToast('Формат: порт (8080) или диапазон (9000-9100), через запятую. Значения от 1 до 65535.', 'error');
+    return;
+  }
+  try {
+    await withBusy(submitButton, async () => {
+      const payload = await api('/cgi-bin/settings.cgi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ setting: 'ports_add', proto, value }),
+      });
+      const skipped = payload.skipped ? ` Пропущено: ${payload.skipped}.` : '';
+      showToast(`Добавлено: ${payload.added}.${skipped} Перезапустите zapret2 для применения.`, 'warning');
+      input.value = '';
+      await refreshPorts();
+      await refreshAll();
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function removePort(proto, token, button) {
+  try {
+    await withBusy(button, async () => {
+      await api('/cgi-bin/settings.cgi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ setting: 'ports_remove', proto, value: token }),
+      });
+      showToast(`Порт ${token} удалён. Перезапустите zapret2 для применения.`, 'warning');
+      await refreshPorts();
+      await refreshAll();
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+document.getElementById('ports-tcp-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  addPorts('tcp');
+});
+
+document.getElementById('ports-udp-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  addPorts('udp');
+});
+
+async function refreshProvider() {
+  const data = await api('/cgi-bin/settings.cgi?setting=provider');
+  state.provider = data;
+  renderProvider();
+}
+
+function renderProvider() {
+  if (!state.provider) return;
+  const current = document.getElementById('provider-current');
+  if (current) current.textContent = state.provider.provider || 'Не определён';
+  const nameInput = document.getElementById('provider-name-input');
+  const cityInput = document.getElementById('provider-city-input');
+  if (nameInput && !nameInput.value) {
+    const parts = String(state.provider.provider || '').split(' - ');
+    if (parts.length > 1 && parts[0] !== 'Не определён') {
+      nameInput.value = parts[0];
+      cityInput.value = parts.slice(1).join(' - ');
+    }
+  }
+  updateProviderSubmit();
+}
+
+function updateProviderSubmit() {
+  const form = document.getElementById('provider-form');
+  if (!form) return;
+  const submit = form.querySelector('button[type="submit"]');
+  const nameInput = document.getElementById('provider-name-input');
+  if (!submit || !nameInput) return;
+  submit.disabled = !nameInput.value.trim();
+}
+
+document.getElementById('provider-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+  const name = document.getElementById('provider-name-input').value.trim();
+  const city = document.getElementById('provider-city-input').value.trim();
+  if (!name) {
+    showToast('Укажите название провайдера.', 'error');
+    return;
+  }
+  try {
+    await withBusy(submitButton, async () => {
+      await api('/cgi-bin/settings.cgi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ setting: 'provider_set', name, city }),
+      });
+      showToast('Провайдер сохранён.');
+      await refreshProvider();
+      await refreshAll();
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+});
+
+document.getElementById('provider-redetect-btn').addEventListener('click', async (event) => {
+  try {
+    await withBusy(event.currentTarget, async () => {
+      const payload = await api('/cgi-bin/settings.cgi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ setting: 'provider_redetect' }),
+      });
+      if (payload.provider && payload.provider !== 'Не удалось определить') {
+        showToast(`Провайдер определён: ${payload.provider}`);
+      } else {
+        showToast('Не удалось определить провайдера автоматически. Задайте вручную.', 'warning');
+      }
+      await refreshProvider();
+      await refreshAll();
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+});
+
+async function refreshBackups() {
+  const data = await api('/cgi-bin/backups.cgi');
+  state.backups = data;
+  renderBackups();
+}
+
+function formatSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' МБ';
+  if (value >= 1024) return (value / 1024).toFixed(1) + ' КБ';
+  return value + ' Б';
+}
+
+function renderBackups() {
+  if (!state.backups) return;
+  const items = Array.isArray(state.backups.items) ? state.backups.items : [];
+  const list = document.getElementById('backup-items');
+  const empty = document.getElementById('backups-empty');
+  const chip = document.getElementById('backups-count-chip');
+  if (!list) return;
+
+  list.innerHTML = '';
+  if (empty) empty.hidden = items.length > 0;
+  if (chip) {
+    chip.textContent = items.length > 0 ? `всего: ${items.length}` : 'нет';
+    chip.className = 'chip';
+    if (items.length > 0) chip.classList.add('is-ok');
+  }
+
+  items.forEach((item) => {
+    const row = document.createElement('li');
+    row.className = 'backup-item';
+    const name = document.createElement('span');
+    name.className = 'backup-name';
+    name.textContent = item.name;
+    const meta = document.createElement('span');
+    meta.className = 'backup-meta';
+    const size = item.size !== undefined ? formatSize(item.size) : '';
+    meta.textContent = [item.date, size].filter(Boolean).join(' · ');
+    row.append(name, meta);
+    list.appendChild(row);
+  });
+}
+
+document.getElementById('backup-create-btn').addEventListener('click', async (event) => {
+  try {
+    await withBusy(event.currentTarget, async () => {
+      const payload = await api('/cgi-bin/backups.cgi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ action: 'create' }),
+      });
+      showToast(`Бэкап создан: ${payload.name}`);
+      await refreshBackups();
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+});
 
 const DOMAIN_META = {
   netrogat: {
@@ -1533,6 +2010,18 @@ Promise.all([
   }),
   refreshFallbackSettings().catch((error) => {
     console.error('Fallback settings error:', error);
+  }),
+  ...MODE_TOGGLES.map((toggle) => refreshModeSetting(toggle).catch((error) => {
+    console.error(`Mode setting "${toggle.setting}" error:`, error);
+  })),
+  refreshPorts().catch((error) => {
+    console.error('Ports settings error:', error);
+  }),
+  refreshProvider().catch((error) => {
+    console.error('Provider settings error:', error);
+  }),
+  refreshBackups().catch((error) => {
+    console.error('Backups error:', error);
   }),
 ]);
 

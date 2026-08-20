@@ -1082,6 +1082,10 @@ get_repo() {
   if [ ! -f "$ZATOR_ROOT/lists/netrogat_substrings.txt" ]; then
     z2r_download_project_file "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt" || touch "$ZATOR_ROOT/lists/netrogat_substrings.txt"
   fi
+  mkdir -p "$ZATOR_ROOT/data/providers"
+  if z2r_download_project_file "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"; then
+    grep -qE '^[0-9]+:' "$ZATOR_ROOT/data/providers/asn.txt" 2>/dev/null || rm -f "$ZATOR_ROOT/data/providers/asn.txt"
+  fi
   if [ -f "/opt/netrogat.txt" ]; then
     mv -f /opt/netrogat.txt "$ZATOR_ROOT/lists/netrogat.txt"
     echo "Востановление листа исключений выполнено."
@@ -1570,6 +1574,7 @@ webui_install_files() {
   webui_repo_fetch "cgi-bin/check.cgi" "$WEBUI_CGI/check.cgi" || return 1
   webui_repo_fetch "cgi-bin/domains.cgi" "$WEBUI_CGI/domains.cgi" || return 1
   webui_repo_fetch "cgi-bin/settings.cgi" "$WEBUI_CGI/settings.cgi" || return 1
+  webui_repo_fetch "cgi-bin/backups.cgi" "$WEBUI_CGI/backups.cgi" || return 1
 
   chmod +x "$WEBUI_RUNNER" "$WEBUI_CGI"/*.sh "$WEBUI_CGI"/*.cgi
   webui_fix_interpreters

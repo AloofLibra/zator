@@ -705,6 +705,103 @@ input[type="number"]::-webkit-inner-spin-button {
   color: var(--text-secondary, #6c757d);
 }
 
+.beta-chip {
+  margin-left: 8px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  vertical-align: middle;
+}
+
+.rst-guard-hint {
+  padding: 0.5rem 0.7rem;
+  background: var(--bg-warning, #fff3cd);
+  border-left: 3px solid var(--warning, #ffc107);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.ports-section {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ports-section h3 { margin: 0; font-size: 1rem; }
+
+.port-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.port-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.4rem 0.3rem 0.75rem;
+  background: var(--surface-strong);
+  font-size: 0.85rem;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.port-chip.is-managed {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  cursor: help;
+}
+
+button.port-remove {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 7px;
+  border-radius: 999px;
+  min-height: 0;
+}
+
+button.port-remove:not(:disabled):hover {
+  color: var(--danger);
+  background: var(--surface-muted);
+  transform: none;
+}
+
+.ports-empty { font-style: italic; }
+
+.backup-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.backup-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  background: var(--surface-strong);
+}
+
+.backup-name { font-size: 0.92rem; overflow-wrap: anywhere; }
+
+.backup-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
 .profile-card.is-disabled {
   opacity: 0.55;
   pointer-events: none;

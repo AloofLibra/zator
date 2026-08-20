@@ -45,7 +45,8 @@ export PROFILE_STATE_FILE="$TMP_DIR/profile.lock"
 export ZAPRET2_INIT="$ROOT/init.d/sysv/zapret2"
 
 mkdir -p "$ORCH_DIR" "$ROOT/init.d/sysv"
-sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$CFG"
+tr -d '\r' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" > "$CFG"
+tr -d '\r' < "$REPO_DIR/config.default" > "$TMP_DIR/config.default.lf"
 printf '#!/bin/sh\nexit 0\n' > "$ZAPRET2_INIT"
 chmod +x "$ZAPRET2_INIT"
 
@@ -102,10 +103,10 @@ grep -q '"lua/strategy-validator.sh"' "$REPO_DIR/z2r.sh" || fail "strategy valid
 grep -q '"init.d/openwrt/z2r-strategy-validator"' "$REPO_DIR/z2r.sh" || fail "strategy validator service is not deployed"
 grep -q '"Entware/z2r-strategy-validator"' "$REPO_DIR/z2r.sh" || fail "Entware strategy validator service is not deployed"
 grep -q 'chmod +x "$STRATEGY_VALIDATOR_WORKER"' "$REPO_DIR/z2r.sh" || fail "strategy validator worker is not executable after deploy"
-grep -q 'validator=/opt/zator/lua/strategy-validator.sh' "$REPO_DIR/config.default" || fail "auto profile does not reference the deployed validator"
-[ "$(grep -c '^--lua-init=@/opt/zator/lua/strategy-lock-manager.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "strategy lock manager lua-init is missing or duplicated"
-[ "$(grep -c '^--lua-init=@/opt/zator/lua/combined-detector.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "combined detector lua-init is missing or duplicated"
-[ "$(grep -c '^--lua-init=@/opt/zator/lua/silent-drop-detector.lua$' "$REPO_DIR/config.default")" -eq 1 ] || fail "silent-drop detector lua-init is missing or duplicated"
+grep -q 'validator=/opt/zator/lua/strategy-validator.sh' "$TMP_DIR/config.default.lf" || fail "auto profile does not reference the deployed validator"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/strategy-lock-manager.lua$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "strategy lock manager lua-init is missing or duplicated"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/combined-detector.lua$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "combined detector lua-init is missing or duplicated"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/silent-drop-detector.lua$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "silent-drop detector lua-init is missing or duplicated"
 awk '
   /lua-init=@\/opt\/zator\/lua\/strategy-lock-manager\.lua/ {manager=NR}
   /lua-init=@\/opt\/zator\/lua\/combined-detector\.lua/ {combined=NR}

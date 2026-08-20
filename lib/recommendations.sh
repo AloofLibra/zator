@@ -38,9 +38,30 @@ show_hint() {
     return 0
   fi
 
-  # В. Ищем строку (grep -F для безопасности спецсимволов)
-  local line
+  # В. Ищем строку: сначала точное совпадение всего ключа, затем по бренду/алиасам
+  # из ASN-таблицы (ключи базы бывают "City - Org" и голые "Beeline").
+  # Бренд может содержать пробелы и скобки, поэтому поиск литеральный (awk index),
+  # а не регулярным выражением.
+  local line brand city alias
   line="$(grep -F "$my_isp|" "$RECS_FILE" | head -n 1)"
+  if [ -z "$line" ] && type provider_brand_aliases >/dev/null 2>&1; then
+    brand="${my_isp%% - *}"
+    city="${my_isp#* - }"
+    [ "$city" = "$my_isp" ] && city=""
+    if [ -n "$city" ]; then
+      line="$(awk -F'|' -v b="$brand" -v c="$city" 'index(tolower($1), tolower(b)) && index(tolower($1), tolower(c)) {print; exit}' "$RECS_FILE")"
+    fi
+    if [ -z "$line" ]; then
+      line="$(awk -F'|' -v b="$brand" 'index(tolower($1), tolower(b)) {print; exit}' "$RECS_FILE")"
+    fi
+    if [ -z "$line" ]; then
+      for alias in $(provider_brand_aliases "$brand" 2>/dev/null); do
+        [ -n "$alias" ] || continue
+        line="$(awk -F'|' -v b="$alias" 'index(tolower($1), tolower(b)) {print; exit}' "$RECS_FILE")"
+        [ -n "$line" ] && break
+      done
+    fi
+  fi
   [ -z "$line" ] && return 0
 
   # Г. Парсим (актуальный формат у тебя: ISP|UDP:...|TCP:...|GV:...|RKN:...

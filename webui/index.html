@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>z2r Web UI</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
   <main class="app">
@@ -15,7 +15,7 @@
         <h1 id="brand-link" role="button" tabindex="0">
           <img class="brand-logo" src="favicon.svg" alt="" aria-hidden="true"><span class="brand-label">z2r Web UI</span>
         </h1>
-        <p class="subtitle">Панель состояния, проверки доступности и ручной фиксации стратегий zapret2.</p>
+        <p class="subtitle">Управление zapret2: статус, проверки доступности, стратегии и настройки обхода.</p>
       </div>
 
       <div class="header-controls">
@@ -154,18 +154,67 @@
 
       <section class="panel">
         <div class="panel-header">
+          <h2>Авторотация TCP/HTTP</h2>
+          <span class="chip" id="auto-mode-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Автоматический подбор стратегий: zapret2 сам тестирует стратегии TCP/HTTP и
+          переключает их при сбоях. Пока авторотация включена, ручная фиксация стратегий
+          профилей 1–4 и безразборный режим недоступны. Выключите её, если хотите
+          полностью управлять стратегиями вручную. Сервис перезапускается автоматически.
+        </p>
+
+        <form id="auto-mode-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="auto-mode-toggle">
+            <span>Автоматически подбирать и менять стратегии</span>
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
           <h2>Безразборный режим (Fallback)</h2>
           <span class="chip" id="fallback-state-chip"></span>
         </div>
         <p class="panel-desc">
-          Безразборный режим позволяет обходить блокировки для всех доменов, не только из списков RKN.
-          Включите режим, затем выберите стратегию для TLS (profile 8) и HTTP (profile 9) во вкладке "Стратегии".
+          Безразборный режим применяет обход ко всему трафику на выбранных портах, а не только
+          к доменам из списков. Это самый грубый, но надёжный способ — попробуйте его, если
+          точные стратегии не помогают. Включите режим, затем выберите стратегию для TLS
+          (профиль 8) и HTTP (профиль 9) во вкладке «Стратегии». Недоступен при включённой
+          авторотации.
         </p>
 
         <form id="fallback-state-form" class="settings-form">
           <label class="toggle-field">
             <input type="checkbox" id="fallback-state-toggle">
             <span>Включить безразборный режим</span>
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Фильтрация по спискам</h2>
+          <span class="chip" id="hostlist-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Определяет, какие соединения попадают под обход. В режиме «по листам» обход
+          применяется только к доменам из ваших списков. В режиме «автосбор» zapret2
+          дополнительно сам определяет заблокированные домены и пополняет список — обход
+          работает шире, но список растёт. Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="hostlist-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="hostlist-toggle">
+            <span>Автоматически пополнять списки (autohostlist)</span>
           </label>
           <div class="card-actions">
             <button type="submit" class="primary">Сохранить</button>
@@ -241,6 +290,173 @@
             <button type="submit" class="primary">Сохранить</button>
           </div>
         </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Защита от RST-инъекций <span class="chip beta-chip">BETA</span></h2>
+          <span class="chip" id="rst-guard-chip"></span>
+        </div>
+        <p class="panel-desc">
+          ТСПУ может принудительно разрывать соединения поддельными RST-пакетами.
+          Защита переключает стратегии на устойчивый к этому режим работы. Функция
+          экспериментальная: если соединения станут менее стабильными, выключите её.
+          Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="rst-guard-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="rst-guard-toggle">
+            <span>Включить защиту от RST-инъекций</span>
+          </label>
+          <div class="form-hint rst-guard-hint" id="rst-guard-hint" hidden>
+            На устройстве нет файла rst-guard.lua. Включите защиту один раз через CLI
+            (пункт 18 меню) — файл скачается автоматически.
+          </div>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Склейка фрагментов (--reasm-disable)</h2>
+          <span class="chip" id="reasm-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Отключает склейку больших пакетов из фрагментов при анализе средствами NFQWS2.
+          Параметр нужен, только если на роутере не удаётся или не хочется отключать
+          аппаратное ускорение: NFQWS2 задерживает первый фрагмент, роутер отправляет второй
+          напрямую в сеть, и соединение ломается. Проблема чаще актуальна на Keenetic и
+          Netcraze; OpenWRT по умолчанию работает с отключённым ускорением. Быстрая проверка:
+          откройте в новом инкогнито-окне
+          <a href="https://img.reg.ru/news/showcase-main-page__hero-slider_image_domains.webp" target="_blank" rel="noopener">картинку-тест</a> —
+          если она открывается, параметр обычно не нужен. Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="reasm-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="reasm-toggle">
+            <span>Включить параметр --reasm-disable</span>
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Фейки QUIC (UDP 443)</h2>
+          <span class="chip" id="quic443-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Отправляет фейковые QUIC-пакеты инициализации для всего UDP-трафика на порту 443,
+          не только для YouTube. Выключите, если видео или приложения на QUIC начали работать
+          хуже. Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="quic443-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="quic443-toggle">
+            <span>Включить фейки для всех QUIC-соединений на порту 443</span>
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Порты NFQWS2</h2>
+          <span class="chip" id="ports-count-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Дополнительные порты, на которых nfqws2 обрабатывает трафик. Стандартные порты
+          (TCP 80, UDP 443) всегда активны. TCP-порты дополнительно попадают в стратегию RKN.
+          Формат ввода: один порт (8080) или диапазон (9000-9100), несколько значений — через
+          запятую. Изменение требует перезапуска zapret2.
+        </p>
+
+        <div class="ports-section">
+          <h3>TCP</h3>
+          <form id="ports-tcp-form" class="settings-form ports-add-form">
+            <label>
+              <span>Добавить TCP-порты</span>
+              <input type="text" id="ports-tcp-input" placeholder="8080,9090,9000-9100">
+            </label>
+            <div class="card-actions">
+              <button type="submit" class="primary">Добавить</button>
+            </div>
+          </form>
+          <div class="port-chips" id="ports-tcp-chips"></div>
+          <div class="form-hint ports-empty" id="ports-tcp-empty">Добавленных TCP-портов нет.</div>
+          <div class="form-hint">Базовые порты: <code id="ports-tcp-base">—</code></div>
+        </div>
+
+        <div class="ports-section">
+          <h3>UDP</h3>
+          <form id="ports-udp-form" class="settings-form ports-add-form">
+            <label>
+              <span>Добавить UDP-порты</span>
+              <input type="text" id="ports-udp-input" placeholder="5060,3478-3479">
+            </label>
+            <div class="card-actions">
+              <button type="submit" class="primary">Добавить</button>
+            </div>
+          </form>
+          <div class="port-chips" id="ports-udp-chips"></div>
+          <div class="form-hint ports-empty" id="ports-udp-empty">Добавленных UDP-портов нет.</div>
+          <div class="form-hint">Базовые порты: <code id="ports-udp-base">—</code></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Провайдер</h2>
+        </div>
+        <p class="panel-desc">
+          Провайдер определяется по номеру автономной системы (ASN) вашего оператора —
+          это надёжнее геолокации по IP: ASN одинаков у всех источников, а названия
+          из гео-баз часто неточные. Город определяется приблизительно. Если определилось
+          неверно — задайте значение вручную. На сам обход эта настройка не влияет.
+        </p>
+
+        <form id="provider-form" class="settings-form">
+          <label>
+            <span>Провайдер</span>
+            <input type="text" id="provider-name-input" placeholder="Например: MTS, Beeline, Ростелеком">
+          </label>
+          <label>
+            <span>Город (необязательно)</span>
+            <input type="text" id="provider-city-input" placeholder="Москва">
+          </label>
+          <div class="form-hint">Текущее значение: <code id="provider-current">—</code></div>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+            <button type="button" class="ghost" id="provider-redetect-btn">Определить заново</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Бэкапы</h2>
+          <span class="chip" id="backups-count-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Бэкап сохраняет текущий конфиг, списки доменов и зафиксированные стратегии.
+          Создавайте бэкап перед экспериментами с настройками — если что-то пойдёт не так,
+          состояние можно будет вернуть. Восстановление доступно через CLI (пункт 21 меню).
+        </p>
+
+        <div class="card-actions">
+          <button type="button" class="primary" id="backup-create-btn">Создать бэкап</button>
+        </div>
+        <div class="domain-empty" id="backups-empty" hidden>Бэкапов пока нет.</div>
+        <ul class="backup-list" id="backup-items"></ul>
       </section>
     </section>
   </main>
@@ -336,6 +552,6 @@
 
   <div class="toast-region" id="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

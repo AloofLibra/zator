@@ -33,6 +33,8 @@ find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{
 . "$LIB_DIR/config.sh"
 . "$LIB_DIR/orchestra_state.sh"
 . "$LIB_DIR/strategies.sh"
+[ -f "$LIB_DIR/actions.sh" ] && . "$LIB_DIR/actions.sh"
+[ -f "$LIB_DIR/provider.sh" ] && . "$LIB_DIR/provider.sh"
 [ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
 
 telemetry_notify() {
@@ -79,6 +81,9 @@ parse_params() {
   PARAM_VALUE=""
   PARAM_LIST=""
   PARAM_DOMAIN=""
+  PARAM_NAME=""
+  PARAM_CITY=""
+  PARAM_PROTO=""
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
@@ -93,6 +98,9 @@ parse_params() {
       value) PARAM_VALUE="$value" ;;
       list) PARAM_LIST="$value" ;;
       domain) PARAM_DOMAIN="$value" ;;
+      name) PARAM_NAME="$value" ;;
+      city) PARAM_CITY="$value" ;;
+      proto) PARAM_PROTO="$value" ;;
     esac
   done
 }
@@ -258,6 +266,25 @@ profile_check_json() {
   esac
 }
 
+_quic443_state_text() {
+  local state
+  state="$(backup_smart_quic443_state "$1" 2>/dev/null)"
+  case "$state" in
+    1) echo "включены" ;;
+    0) echo "выключены" ;;
+    *) echo "неизвестно" ;;
+  esac
+}
+
+_provider_cache_text() {
+  local cache="/opt/zator/extra_strats/cache/provider.txt"
+  if [ -s "$cache" ]; then
+    cat "$cache"
+  else
+    echo "Не определён"
+  fi
+}
+
 api_status() {
   local running wg_raw wg_state
   if zapret2_running; then running=true; else running=false; fi
@@ -268,7 +295,7 @@ api_status() {
     *) wg_state="недоступно" ;;
   esac
   send_json "200 OK" "$(cat <<EOF
-{"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","profiles":$(all_profiles_json)}
+{"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","auto_mode":"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")","rst_guard":"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")","reasm":"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")","quic443":"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")","provider":"$(json_escape "$(_provider_cache_text)")","profiles":$(all_profiles_json)}
 EOF
 )"
 }
@@ -277,6 +304,12 @@ api_set_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   [[ "${PARAM_STRATEGY:-}" =~ ^[0-9]+$ ]] || send_error "400 Bad Request" "Некорректная стратегия"
+  case "$PARAM_PROFILE" in
+    1|2|3|4)
+      [ "$(config_mode_text auto_mode "$CONFIG_FILE")" = "включен" ] && \
+        send_error "409 Conflict" "Профиль $PARAM_PROFILE управляется авторотацией TCP/HTTP. Сначала выключите авторотацию."
+      ;;
+  esac
   local max proto_list check_json old_udp_ports
   max="$(orch_max_strategy_for_profile "$PARAM_PROFILE")"
   if [ "${PARAM_STRATEGY}" -ne 0 ]; then
@@ -295,6 +328,12 @@ api_set_lock() {
 api_clear_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
+  case "$PARAM_PROFILE" in
+    1|2|3|4)
+      [ "$(config_mode_text auto_mode "$CONFIG_FILE")" = "включен" ] && \
+        send_error "409 Conflict" "Профиль $PARAM_PROFILE управляется авторотацией TCP/HTTP. Сначала выключите авторотацию."
+      ;;
+  esac
   local proto_list old_udp_ports
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
@@ -468,12 +507,7 @@ api_wg_blob_set() {
 }
 
 _fallback_state() {
-  local cfg="$1"
-  if { sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg"; } | grep -q '^[[:space:]]*--skip[[:space:]]'; then
-    echo "выключен"
-  else
-    echo "включен"
-  fi
+  config_mode_text fallback "$1"
 }
 
 _fallback_set_state() {
@@ -497,7 +531,7 @@ api_fallback_get() {
 
   state="$(_fallback_state "$cfg")"
 
-  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\"}"
+  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\",\"enabled\":$([ "$state" = "включен" ] && echo true || echo false)}"
 }
 
 api_fallback_state_set() {
@@ -511,7 +545,18 @@ api_fallback_state_set() {
     *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
   esac
 
-  _fallback_set_state "$cfg" "$value"
+  if [ "$(_fallback_state "$cfg")" = "недоступен" ]; then
+    send_error "409 Conflict" "Безразборный режим недоступен при включённой авторотации TCP/HTTP. Сначала выключите авторотацию."
+  fi
+
+  if type backup_smart_set_fallback >/dev/null 2>&1; then
+    for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
+      [ -f "$cfg" ] || continue
+      backup_smart_set_fallback "$cfg" "$value"
+    done
+  else
+    _fallback_set_state "$cfg" "$value"
+  fi
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
 
@@ -644,6 +689,243 @@ api_udp_games_set() {
   fi
 
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+}
+
+_require_config() {
+  [ -f "$CONFIG_FILE" ] || send_error "500 Internal Server Error" "Config не найден"
+}
+
+api_auto_mode_get() {
+  local state
+  _require_config
+  state="$(config_mode_text auto_mode "$CONFIG_FILE")"
+  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\",\"enabled\":$([ "$state" = "включен" ] && echo true || echo false)}"
+}
+
+api_auto_mode_set() {
+  local value="$PARAM_VALUE" cfg restarted=false
+  case "$value" in
+    0|1) ;;
+    *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
+  esac
+  _require_config
+  for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
+    [ -f "$cfg" ] || continue
+    config_auto_layout_valid "$cfg" || send_error "500 Internal Server Error" "В $cfg не найдены маркеры авторежима. Обновите конфиг через CLI (пункт 5 главного меню)."
+  done
+  for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
+    [ -f "$cfg" ] || continue
+    config_set_auto_mode "$cfg" "$value" || send_error "500 Internal Server Error" "Не удалось переключить авторотацию в $cfg"
+  done
+  if zapret2_running; then
+    service_zapret2 restart && restarted=true
+  fi
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$restarted,\"state\":\"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")\"}"
+}
+
+api_hostlist_get() {
+  local state
+  _require_config
+  state="$(config_mode_text hostlist "$CONFIG_FILE")"
+  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\",\"auto\":$([ "$state" = "авто" ] && echo true || echo false)}"
+}
+
+api_hostlist_set() {
+  local value="$PARAM_VALUE" cfg
+  case "$value" in
+    0|1) ;;
+    *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
+  esac
+  _require_config
+  for cfg in /opt/zapret2/config /opt/zapret2/config.default; do
+    [ -f "$cfg" ] || continue
+    backup_smart_set_hostlist "$cfg" "$value"
+  done
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")\"}"
+}
+
+api_rst_guard_get() {
+  local state
+  _require_config
+  state="$(config_mode_text rst_guard "$CONFIG_FILE")"
+  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\",\"enabled\":$([ "$state" = "включен" ] && echo true || echo false),\"lua_available\":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)}"
+}
+
+api_rst_guard_set() {
+  local value="$PARAM_VALUE"
+  case "$value" in
+    0|1) ;;
+    *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
+  esac
+  _require_config
+  if [ "$value" = "1" ] && [ ! -s "$ZATOR_ROOT/lua/rst-guard.lua" ]; then
+    send_error "500 Internal Server Error" "Файл rst-guard.lua отсутствует на устройстве. Включите защиту один раз через CLI (пункт 18) — при включении файл скачивается автоматически."
+  fi
+  backup_smart_set_rst_guard "$CONFIG_FILE" "$value"
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")\"}"
+}
+
+api_reasm_get() {
+  local state
+  _require_config
+  state="$(config_mode_text reasm_disable "$CONFIG_FILE")"
+  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\",\"enabled\":$([ "$state" = "включено" ] && echo true || echo false)}"
+}
+
+api_reasm_set() {
+  local value="$PARAM_VALUE"
+  case "$value" in
+    0|1) ;;
+    *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
+  esac
+  _require_config
+  grep -q '^NFQWS2_OPT="' "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не найден блок NFQWS2_OPT в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."
+  backup_smart_set_reasm "$CONFIG_FILE" "$value"
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")\"}"
+}
+
+api_quic443_get() {
+  _require_config
+  [ -n "$(backup_smart_quic443_state "$CONFIG_FILE")" ] || \
+    send_error "500 Internal Server Error" "Блок QUIC (UDP443) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."
+  send_json "200 OK" "{\"state\":\"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")\",\"enabled\":$([ "$(backup_smart_quic443_state "$CONFIG_FILE")" = "1" ] && echo true || echo false)}"
+}
+
+api_quic443_set() {
+  local value="$PARAM_VALUE"
+  case "$value" in
+    0|1) ;;
+    *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
+  esac
+  _require_config
+  [ -n "$(backup_smart_quic443_state "$CONFIG_FILE")" ] || \
+    send_error "500 Internal Server Error" "Блок QUIC (UDP443) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."
+  backup_smart_set_quic443 "$CONFIG_FILE" "$value"
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")\"}"
+}
+
+_ports_tokens_json() {
+  local csv="$1" out="" first=1 t old_ifs="$IFS"
+  [ -n "$csv" ] || { printf '%s' "$out"; return; }
+  IFS=','
+  for t in $csv; do
+    [ -n "$t" ] || continue
+    if [ "$first" = "1" ]; then first=0; else out="${out},"; fi
+    out="${out}\"$(json_escape "$t")\""
+  done
+  IFS="$old_ifs"
+  printf '%s' "$out"
+}
+
+api_ports_get() {
+  local tcp udp tcp_user tcp_base udp_user udp_base
+  _require_config
+  tcp="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_TCP)"
+  udp="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_UDP)"
+  ports_split "$tcp" "80"
+  tcp_user="$_PORTS_USER"
+  tcp_base="$_PORTS_BASE"
+  ports_split "$udp" "443"
+  udp_user="$_PORTS_USER"
+  udp_base="$_PORTS_BASE"
+  send_json "200 OK" "{
+    \"tcp\":{\"full\":\"$(json_escape "$tcp")\",\"user\":[$(_ports_tokens_json "$tcp_user")],\"base\":\"$(json_escape "$tcp_base")\"},
+    \"udp\":{\"full\":\"$(json_escape "$udp")\",\"user\":[$(_ports_tokens_json "$udp_user")],\"base\":\"$(json_escape "$udp_base")\"}
+  }"
+}
+
+_validate_proto_param() {
+  case "${PARAM_PROTO:-}" in
+    tcp|udp) ;;
+    *) send_error "400 Bad Request" "Некорректный протокол: ${PARAM_PROTO:-}" ;;
+  esac
+}
+
+api_ports_add() {
+  _validate_proto_param
+  [ -n "${PARAM_VALUE:-}" ] || send_error "400 Bad Request" "Не указаны порты"
+  _require_config
+  if ! ports_apply_add "$PARAM_PROTO" "$PARAM_VALUE" "$CONFIG_FILE"; then
+    send_error "400 Bad Request" "Ничего не добавлено (некорректные значения или дубликаты): ${PORTS_APPLY_SKIPPED:-}"
+  fi
+  send_json "200 OK" "{\"ok\":true,\"added\":\"$(json_escape "$PORTS_APPLY_ADDED")\",\"skipped\":\"$(json_escape "$PORTS_APPLY_SKIPPED")\",\"reboot_required\":true}"
+}
+
+api_ports_remove() {
+  _validate_proto_param
+  [ -n "${PARAM_VALUE:-}" ] || send_error "400 Bad Request" "Не указан порт"
+  if [ "$PARAM_PROTO" = "udp" ] && [ "$PARAM_VALUE" = "1026-65531" ]; then
+    send_error "400 Bad Request" "Диапазон 1026-65531 управляется переключателем игрового UDP на вкладке Настройки"
+  fi
+  _require_config
+  ports_apply_remove "$PARAM_PROTO" "$PARAM_VALUE" "$CONFIG_FILE" || \
+    send_error "400 Bad Request" "Порт не найден среди добавленных: $PARAM_VALUE"
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+}
+
+api_provider_get() {
+  send_json "200 OK" "{\"provider\":\"$(json_escape "$(_provider_cache_text)")\"}"
+}
+
+api_provider_set() {
+  local name="${PARAM_NAME:-}" city="${PARAM_CITY:-}"
+  name="${name//$'\n'/}"
+  name="${name//|/}"
+  city="${city//$'\n'/}"
+  city="${city//|/}"
+  [ -n "$(printf '%s' "$name" | tr -d '[:space:]')" ] || send_error "400 Bad Request" "Укажите название провайдера"
+  if ! type provider_set_manual >/dev/null 2>&1; then
+    send_error "500 Internal Server Error" "Модуль провайдера недоступен"
+  fi
+  provider_set_manual "$name" "$city" || send_error "400 Bad Request" "Укажите название провайдера"
+  send_json "200 OK" "{\"ok\":true,\"provider\":\"$(json_escape "$PROVIDER_MENU")\"}"
+}
+
+api_provider_redetect() {
+  if ! type provider_force_redetect >/dev/null 2>&1; then
+    send_error "500 Internal Server Error" "Модуль провайдера недоступен"
+  fi
+  provider_force_redetect >/dev/null 2>&1
+  send_json "200 OK" "{\"ok\":true,\"provider\":\"$(json_escape "$PROVIDER_MENU")\"}"
+}
+
+_backup_date_from_name() {
+  local name="$1" d
+  case "$name" in
+    z2r_backup_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9].tar)
+      d="${name#z2r_backup_}"
+      d="${d%.tar}"
+      printf '%s-%s-%s %s:%s:%s' "${d:0:4}" "${d:4:2}" "${d:6:2}" "${d:9:2}" "${d:11:2}" "${d:13:2}"
+      ;;
+  esac
+}
+
+api_backups_list() {
+  local list_file f items="" first=1 name size date_str
+  if ! type backup_build_list_file >/dev/null 2>&1; then
+    send_error "500 Internal Server Error" "Модуль бэкапов недоступен"
+  fi
+  list_file="/tmp/z2r_webui_backups_$$"
+  backup_build_list_file "$list_file"
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    if [ "$first" = "1" ]; then first=0; else items="${items},"; fi
+    name="$(basename "$f")"
+    size="$(wc -c < "$f" | tr -d '[:space:]')"
+    date_str="$(_backup_date_from_name "$name")"
+    items="${items}{\"name\":\"$(json_escape "$name")\",\"size\":${size:-0},\"date\":\"$(json_escape "$date_str")\"}"
+  done < "$list_file"
+  rm -f "$list_file"
+  send_json "200 OK" "{\"items\":[${items}]}"
+}
+
+api_backups_create() {
+  local archive
+  if ! type backup_create_core >/dev/null 2>&1; then
+    send_error "500 Internal Server Error" "Модуль бэкапов недоступен"
+  fi
+  archive="$(backup_create_core 2>/dev/null)" || send_error "500 Internal Server Error" "Не удалось создать бэкап"
+  send_json "200 OK" "{\"ok\":true,\"name\":\"$(json_escape "$(basename "$archive")")\"}"
 }
 
 # Управление доменами переиспользует нормализацию, пути и операции со списками

@@ -85,7 +85,8 @@ Normal flow:
 - `z2r.sh`: top-level orchestration script. Sources runtime modules from `zapret2/z2r_lib` after deployment, while this repository stores their source versions in `lib/`.
 - `config.default`: main shipped `zapret2` config. This is now a large profile-driven config with `--lua-init`, `--lua-desync`, profile blocks, fallback blocks, blob declarations, and strategy numbering that other scripts depend on.
 - `lib/ui.sh`: generic menu and terminal UI helpers.
-- `lib/provider.sh`: ISP/provider and location detection, cache, and manual override.
+- `lib/provider.sh`: ASN-based ISP/provider detection (ipwho.is → ipinfo.io → ip-api), city, cache, and manual override. The ASN→brand table is layered: builtin minimal table in `PROVIDER_ASN_BUILTIN` merged with the updatable `data/providers/asn.txt` (remote-priority, see `provider_load_database`/`provider_update_database`, cache in `extra_strats/cache/provider_asn.txt`, TTL 7 days, GitHub is never a runtime dependency).
+- `data/providers/asn.txt`: maintainable ASN:BRAND:ALIASES database deployed to `/opt/zator/data/providers/asn.txt`; remote updates from the same path on the `zator` branch.
 - `lib/telemetry.sh`: telemetry enable/disable and stats sending.
 - `lib/recommendations.sh`: hint database and provider-based recommendations.
 - `lib/netcheck.sh`: connectivity tests, CDN tests, and YouTube cluster probing.
@@ -136,8 +137,9 @@ Important practical consequence:
 - `z2r.sh` performs destructive operations on target machines, including removing or rebuilding `/opt/zapret2`.
 - Strategy lock files under `/opt/zator/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
-- `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs. Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
-- Fallback (безразборный режим) functions in `webui/cgi-bin/_lib.sh` (`_fallback_state`, `_fallback_set_state`) are local copies of CLI logic. Changes to `lib/actions.sh` (`backup_smart_set_fallback`) or `config.default` fallback blocks (`#Z2R_FALLBACK_BEGIN`/`#Z2R_FALLBACK_END`, `#Z2R_FALLBACK_HTTP_BEGIN`/`#Z2R_FALLBACK_HTTP_END`) require updating WebUI copies. Strategy selection for fallback profiles 8/9 goes through the shared `set-lock.cgi` → `api_set_lock()` path (writes `locked.manual.tsv`); the former `fallback_strategy` API and `_fallback_current_strategy`/`_fallback_set_strategy` helpers were removed as unused.
+- `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs (it sources `lib/config.sh`, `lib/orchestra_state.sh`, `lib/strategies.sh`, plus `lib/actions.sh` and `lib/provider.sh` for shared setters). Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
+- `webui/cgi-bin/_lib.sh` reuses shared setters from `lib/actions.sh` (`backup_smart_set_*`, `ports_apply_add`/`ports_apply_remove`, `backup_create_core`) and `lib/provider.sh` (`provider_set_manual`) instead of duplicating sed logic. The local `_fallback_set_state` is only a legacy fallback used when `lib/actions.sh` is unavailable; `api_fallback_state_set` normally calls `backup_smart_set_fallback` with the same auto-rotation guard as CLI `toggle_fallback_mode`. Changes to those lib functions affect both CLI and WebUI.
+- WebUI settings (auto-rotation, hostlist, RST guard, reasm, QUIC443, NFQWS2 ports, provider, backups) are exposed via `settings.cgi`/`backups.cgi` and mirrored in `webui/dev/fake_router_server.py` and `webui/dev/API_CONTRACT.md` — keep all three in sync when changing behavior. Update/install actions stay CLI-only by design.
 
 ## Editing Guidelines
 
@@ -284,6 +286,51 @@ bash tests/uninstall_smoke.sh
 
 ```text
 uninstall smoke ok
+```
+
+```bash
+bash tests/webui_settings_smoke.sh
+```
+
+Тест новых настроек WebUI (тумблеры, порты, бэкапы, провайдер), тоже только во
+временной директории в `/tmp`:
+
+- не пишет в `/opt`; mock-config собирается из `config.default` с нормализацией
+  CRLF (работает и на LF-, и на CRLF-checkout);
+- проверяет синтаксис `lib/actions.sh`, `lib/provider.sh`, `_lib.sh`,
+  `settings.cgi`, `backups.cgi`, `app.js`, `fake_router_server.py`;
+- проверяет статический wiring: `_lib.sh` source-ит actions/provider, dispatcher
+  знает все новые ключи, `app.js`/`index.html` содержат все новые панели и вызовы;
+- проверяет логику ядер на mock-config: hostlist (+`<HOSTLIST>`), reasm,
+  QUIC443, RST guard, fallback c guard'ом авторотации и восстановлением
+  `#Z2R_AUTO_FALLBACK_WAS`, `config_set_auto_mode`, `ports_apply_add/remove`
+  (включая синхронизацию `--filter-tcp` RKN-блока и дубликаты), `backup_create_core`,
+  `provider_set_manual`.
+
+Успешный результат:
+
+```text
+webui settings smoke ok
+```
+
+```bash
+bash tests/provider_asn_smoke.sh
+```
+
+Тест внешней ASN-базы провайдеров (второй слой детекта), только во временной
+директории в `/tmp`, с моком `curl` в PATH:
+
+- 10 сценариев: remote доступен → cache обновился; remote недоступен → старый
+  cache цел; нет cache → builtin; битый remote → cache не затирается; живой TTL
+  → сетевого запроса нет; merge (remote приоритет, builtin не теряется);
+  remote-ASN + алиас → рекомендация находится; неизвестный ASN → fallback;
+  manual-провайдер не перезаписывается; fake-router redetect не менял формат;
+- плюс: `provider_init_once` при готовом provider.txt не делает сетевых запросов.
+
+Успешный результат:
+
+```text
+provider asn smoke ok
 ```
 
 ## Local Inspection Notes
