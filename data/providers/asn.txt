@@ -1,0 +1,21 @@
+# ZATOR_PROVIDER_DB_VERSION=2026-08-20
+# FORMAT=ASN:BRAND:ALIASES
+# ASN:BRAND:ALIASES — один ASN на строку, алиасы через запятую без пробелов.
+# BRAND пишется в provider.txt, ALIASES используются для поиска подсказок.
+# Все ASN подтверждены через RIPEstat (as-overview, holder).
+8359:MTS:
+31133:MTS:MGTS
+12389:Rostelecom:
+42610:Rostelecom:
+20485:Rostelecom:TTK
+3216:Beeline:VimpelCom
+8369:Dom.ru:ER-Telecom
+9049:Dom.ru:ER-Telecom
+47119:Ufanet:
+25159:MegaFon:
+12958:T2:
+9002:RETN:
+8492:OBIT:
+9198:Kazakhtelecom:
+15895:Kyivstar:
+6697:Beltelecom:

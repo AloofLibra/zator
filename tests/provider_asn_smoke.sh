@@ -169,6 +169,14 @@ grep -q 'provider_update_database' "$REPO_DIR/lib/provider.sh" || fail "сцен
 grep -q '^25159:MegaFon:' "$REPO_DIR/lib/provider.sh" || fail "сценарий 10: builtin без подтверждённого MegaFon AS25159"
 grep -q '^12958:T2:' "$REPO_DIR/lib/provider.sh" || fail "сценарий 10: builtin без подтверждённого T2 AS12958"
 
+# == доп: data/providers/asn.txt валиден и парсится конвейером ==
+
+[ -f "$REPO_DIR/data/providers/asn.txt" ] || fail "data/providers/asn.txt отсутствует"
+_provider_asn_file_valid "$REPO_DIR/data/providers/asn.txt" \
+  || fail "data/providers/asn.txt не проходит валидатор (формат/минимум 5 строк)"
+grep -q '^# ZATOR_PROVIDER_DB_VERSION=' "$REPO_DIR/data/providers/asn.txt" \
+  || fail "data/providers/asn.txt без строки версии"
+
 # == 11. Успешное обновление recommendations заменяет базу ==
 
 cat > "$TMP_DIR/recs_new.txt" <<'EOF'
