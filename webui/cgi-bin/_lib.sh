@@ -213,8 +213,8 @@ get_yt_cluster_domain() {
   local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
   local letters_map_b="0 1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p q r s t u v w x y z -"
 
-  cluster_codename="$(curl -s --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
-  cluster_codename="$(curl -s --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
+  cluster_codename="$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
+  cluster_codename="$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
   [ -n "$cluster_codename" ] || { echo "rr1---sn-5goeenes.googlevideo.com"; return; }
 
   while [ $i -lt ${#cluster_codename} ]; do
@@ -235,8 +235,8 @@ check_one_target_json() {
   local label="$1"
   local target="$2"
   local tls12=0 tls13=0
-  curl --tls-max 1.2 --max-time 1 -s -o /dev/null "$target" && tls12=1 || true
-  curl --tlsv1.3 --max-time 1 -s -o /dev/null "$target" && tls13=1 || true
+  curl -A "$Z2R_CURL_UA" --tls-max 1.2 --max-time 1 -s -o /dev/null "$target" && tls12=1 || true
+  curl -A "$Z2R_CURL_UA" --tlsv1.3 --max-time 1 -s -o /dev/null "$target" && tls13=1 || true
   printf '{"label":"%s","target":"%s","tls12":%s,"tls13":%s}' \
     "$(json_escape "$label")" "$(json_escape "$target")" "$tls12" "$tls13"
 }

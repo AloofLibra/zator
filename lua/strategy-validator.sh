@@ -2,6 +2,7 @@
 # Async worker for circular_quality; hostname is read only from a validated TSV.
 
 QUEUE_DIR=/tmp/z2r-strategy-validation
+Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 CURL_BIN="$(command -v curl 2>/dev/null)" || CURL_BIN=
 
 if [ -z "$CURL_BIN" ]; then
@@ -27,7 +28,7 @@ process_request() {
     result=$QUEUE_DIR/result.$id
     tmp=$result.tmp.$$
     status=ERROR
-    "$CURL_BIN" -sS --http1.1 --connect-timeout 5 --max-time 15 "https://$host/" -o /dev/null
+    "$CURL_BIN" -sS --http1.1 -A "$Z2R_CURL_UA" --connect-timeout 5 --max-time 15 "https://$host/" -o /dev/null
     rc=$?
     if [ "$rc" -eq 0 ]; then status=OK
     elif [ "$rc" -ne 5 ] && [ "$rc" -ne 6 ]; then status=FAIL

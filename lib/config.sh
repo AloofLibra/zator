@@ -1,5 +1,7 @@
 #!/bin/sh
 
+Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
+
 config_get_file() {
   if [ -n "$1" ] && [ -f "$1" ]; then
     echo "$1"

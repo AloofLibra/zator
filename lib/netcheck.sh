@@ -5,14 +5,15 @@
 [ -z "$red" ] && red='\033[0;31m'
 [ -z "$green" ] && green='\033[0;32m'
 [ -z "$yellow" ] && yellow='\033[0;33m'
+[ -z "$Z2R_CURL_UA" ] && Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
 get_yt_cluster_domain() {
     local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
     local letters_map_b="0 1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p q r s t u v w x y z -"
     
-    cluster_codename=$(curl -s --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
+    cluster_codename=$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
 	#Второй раз для пробития нерелевантного ответа
-    cluster_codename=$(curl -s --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
+    cluster_codename=$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
     
     [ -z "$cluster_codename" ] && {
         echo "Не удалось получить cluster_codename. Используем тогда rr1---sn-5goeenes.googlevideo.com" >&2
@@ -40,13 +41,13 @@ get_yt_cluster_domain() {
 check_access() {
 	local TestURL="$1"
 	# Проверка TLS 1.2
-	if curl --tls-max 1.2 --max-time 1 -s -o /dev/null "$TestURL"; then
+	if curl -A "$Z2R_CURL_UA" --tls-max 1.2 --max-time 1 -s -o /dev/null "$TestURL"; then
 		echo -e "${green}Есть ответ по TLS 1.2 (важно для ТВ и т.п.). ${yellow}Тест может быть ошибочен.${plain}"
 	else
 		echo -e "${yellow}Нет ответа по TLS 1.2 (важно для ТВ и т.п.) Таймаут 2сек. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
 	fi
 	# Проверка TLS 1.3
-	if curl --tlsv1.3 --max-time 1 -s -o /dev/null "$TestURL"; then
+	if curl -A "$Z2R_CURL_UA" --tlsv1.3 --max-time 1 -s -o /dev/null "$TestURL"; then
 		echo -e "${green}Есть ответ по TLS 1.3 (важно в основном для всего современного) ${yellow}Тест может быть ошибочен.${plain}"
 	else
 		echo -e "${yellow}Нет ответа по TLS 1.3 (важно в основном для всего современного) Таймаут 2сек. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
@@ -63,7 +64,7 @@ check_dns() {
     echo " Анализ DNS для домена: $DOMAIN"
     echo "================================================"
 
-    DOH_RAW=$(curl -s --max-time 5 "https://dns.google/resolve?name=${DOMAIN}&type=A")
+    DOH_RAW=$(curl -s -A "$Z2R_CURL_UA" --max-time 5 "https://dns.google/resolve?name=${DOMAIN}&type=A")
 
     if [ -z "$DOH_RAW" ]; then
         echo -e "${red}[-] Ошибка: Google DoH недоступен${plain}"

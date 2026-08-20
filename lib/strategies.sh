@@ -94,7 +94,7 @@ orch_profile_try() {
             fi
         elif printf "%s" "$test_url" | grep -q '^http://'; then
             echo "Проверка HTTP-доступа: $test_url"
-            if curl --max-time 2 -s -o /dev/null "$test_url"; then
+            if curl -A "$Z2R_CURL_UA" --max-time 2 -s -o /dev/null "$test_url"; then
                 echo -e "${green}Есть ответ по HTTP.${plain}"
             else
                 echo -e "${yellow}Нет ответа по HTTP. Проверьте доступность вручную.${plain}"

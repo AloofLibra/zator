@@ -969,6 +969,7 @@ run_cdn_test() {
 
       for ((i=1;i<=times;i++)); do
           read bytes code <<< $(curl -L -s \
+              -A "$Z2R_CURL_UA" \
               -H "Range: bytes=0-${thr}" \
               --connect-timeout 5 \
               --max-time 5 \
@@ -991,7 +992,7 @@ run_cdn_test() {
   }
 
   export -f check_one
-  export BIN_THR_BYTES PARALLEL GREEN RED YELLOW NC
+  export BIN_THR_BYTES PARALLEL GREEN RED YELLOW NC Z2R_CURL_UA
 
   rm -f /tmp/cdn_ok /tmp/cdn_fail
 
