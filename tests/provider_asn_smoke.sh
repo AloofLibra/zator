@@ -28,7 +28,9 @@ for arg in "$@"; do
 done
 case "${CURL_MODE:-ok}" in
   fail) exit 22 ;;
+  http404) exit 22 ;;
   garbage) printf 'total junk\n' > "$out"; exit 0 ;;
+  empty) : > "$out"; exit 0 ;;
   *)
     if [ -n "$out" ]; then cp "$CURL_FILE" "$out"; else cat "$CURL_FILE"; fi
     ;;
@@ -43,6 +45,7 @@ source "$REPO_DIR/lib/provider.sh"
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/recommendations.sh"
 RECS_FILE="$REPO_DIR/recommendations.txt"
+cyan="" green="" yellow="" plain="" red=""
 
 PROVIDER_CACHE="$TMP_DIR/provider.txt"
 PROVIDER_ASN_DB_FILE="$TMP_DIR/absent/asn.txt"
@@ -165,6 +168,75 @@ grep -q 'provider_load_database' "$REPO_DIR/lib/provider.sh" || fail "сцена
 grep -q 'provider_update_database' "$REPO_DIR/lib/provider.sh" || fail "сценарий 10: нет provider_update_database"
 grep -q '^25159:MegaFon:' "$REPO_DIR/lib/provider.sh" || fail "сценарий 10: builtin без подтверждённого MegaFon AS25159"
 grep -q '^12958:T2:' "$REPO_DIR/lib/provider.sh" || fail "сценарий 10: builtin без подтверждённого T2 AS12958"
+
+# == 11. Успешное обновление recommendations заменяет базу ==
+
+cat > "$TMP_DIR/recs_new.txt" <<'EOF'
+NewBase|UDP:1|TCP:2|GV:3|RKN:4
+OldKey|UDP:0|TCP:0|GV:0|RKN:0
+EOF
+RECS_FILE="$TMP_DIR/recs_work.txt"
+printf 'OldBase|UDP:9|TCP:9|GV:9|RKN:9\n' > "$RECS_FILE"
+stale_touch "$RECS_FILE"
+export CURL_MODE=ok CURL_FILE="$TMP_DIR/recs_new.txt"
+update_recommendations
+grep -q '^NewBase|' "$RECS_FILE" || fail "сценарий 11: успешное обновление не заменило базу"
+
+# == 12. Ошибка curl сохраняет старую базу ==
+
+printf 'OldBase|UDP:9|TCP:9|GV:9|RKN:9\n' > "$RECS_FILE"
+stale_touch "$RECS_FILE"
+export CURL_MODE=fail
+update_recommendations
+grep -q '^OldBase|' "$RECS_FILE" || fail "сценарий 12: ошибка curl затёрла рабочую базу"
+
+# == 13. HTTP 404/500 сохраняет старую базу ==
+
+printf 'OldBase|UDP:9|TCP:9|GV:9|RKN:9\n' > "$RECS_FILE"
+stale_touch "$RECS_FILE"
+export CURL_MODE=http404
+update_recommendations
+grep -q '^OldBase|' "$RECS_FILE" || fail "сценарий 13: HTTP-ошибка затёрла рабочую базу"
+
+# == 14. Пустой файл не заменяет рабочую базу ==
+
+printf 'OldBase|UDP:9|TCP:9|GV:9|RKN:9\n' > "$RECS_FILE"
+stale_touch "$RECS_FILE"
+export CURL_MODE=empty
+update_recommendations
+grep -q '^OldBase|' "$RECS_FILE" || fail "сценарий 14: пустая загрузка затёрла рабочую базу"
+ls "$TMP_DIR"/recs_work.tmp.* >/dev/null 2>&1 && fail "сценарий 14: остался мусорный .tmp"
+
+RECS_FILE="$REPO_DIR/recommendations.txt"
+
+# == 15. Exact match не ловит частичное совпадение ==
+
+hint_out() {
+  printf '%s' "$1" > "$PROVIDER_CACHE"
+  show_hint "$2" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'
+}
+[ -z "$(hint_out "UDP:0" RKN)" ] || fail "сценарий 15: ключ 'UDP:0' ложно сматчился (частичное совпадение)"
+[ -n "$(hint_out "JSC Ufanet" RKN)" ] || fail "сценарий 15: точный ключ 'JSC Ufanet' не сматчился"
+
+# == 16. Alias с пробелом не разбивается на слова ==
+
+PROVIDER_ASN_TABLE="$PROVIDER_ASN_TABLE
+55555:SpaceBrand:JSC Ufanet"
+out16="$(hint_out "SpaceBrand - Nowhere" RKN)"
+case "$out16" in
+  *выбирают:*5*) ;;
+  *) fail "сценарий 16: alias 'JSC Ufanet' с пробелом не сработал целиком: $out16" ;;
+esac
+case "$out16" in
+  *выбирают:*2*) fail "сценарий 16: сработал split-фрагмент 'JSC' (чужая строка ER-Telecom)" ;;
+esac
+
+# == доп: классические связки продолжают работать ==
+
+out_u="$(hint_out "Ufanet - Odintsovo" RKN)"
+case "$out_u" in *выбирают:*5*) ;; *) fail "Ufanet - Odintsovo: подсказка не найдена";; esac
+out_m="$(hint_out "MTS - Kazan" RKN)"
+case "$out_m" in *выбирают:*5*) ;; *) fail "MTS - Kazan: подсказка не найдена (ожидалась строка Kazan - MTS PJSC, RKN:5)";; esac
 
 # == доп: обычный init не делает сетевых запросов ==
 
