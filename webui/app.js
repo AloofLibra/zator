@@ -659,7 +659,7 @@ function renderSettings() {
     statusChip.classList.add('is-ok');
   }
 
-  currentFile.textContent = (!isBuiltin && maxruFile) ? maxruFile : '—';
+  currentFile.textContent = isBuiltin ? 'fake_default_tls (встроенный)' : (maxruFile || '—');
 
   const listedBlobs = Array.isArray(settings.available_blobs) ? settings.available_blobs : [];
   const blobs = (maxruFile && !listedBlobs.includes(maxruFile))
@@ -673,11 +673,20 @@ function renderSettings() {
   if (!isBuiltin && maxruFile) {
     placeholder.textContent = maxruFile + ' (текущий) — выберите файл';
   } else {
-    placeholder.textContent = 'fake_default_tls(default) — выберите файл';
+    placeholder.textContent = 'Выберите блоб';
   }
   placeholder.disabled = true;
   placeholder.selected = true;
   select.appendChild(placeholder);
+
+  const builtin = document.createElement('option');
+  builtin.value = 'fake_default_tls';
+  builtin.textContent = 'fake_default_tls (встроенный)';
+  if (isBuiltin) {
+    builtin.textContent += ' (текущий)';
+    builtin.disabled = true;
+  }
+  select.appendChild(builtin);
 
   blobs.forEach(blob => {
     const option = document.createElement('option');
@@ -691,7 +700,7 @@ function renderSettings() {
     select.appendChild(option);
   });
 
-  select.dataset.saved = maxruFile;
+  select.dataset.saved = isBuiltin ? 'fake_default_tls' : maxruFile;
   updateTlsBlobSubmit();
   if (select.dataset.bound !== '1') {
     select.addEventListener('change', updateTlsBlobSubmit);
@@ -710,8 +719,8 @@ async function refreshTlsBlobSettings() {
 }
 
 async function applyTlsBlob(blob) {
-  if (!blob || blob === 'fake_default_tls') {
-    showToast('Выберите файл блоба. Возврат на встроенный блоб недоступен.', 'error');
+  if (!blob) {
+    showToast('Выберите блоб.', 'error');
     return;
   }
   try {

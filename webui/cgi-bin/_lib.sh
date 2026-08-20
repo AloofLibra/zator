@@ -373,12 +373,10 @@ api_tls_blob_set() {
   local sed_ereg prefix
 
   case "$blob" in
+    fake_default_tls)
+      ;;
     tls_*.bin|custom_tls.bin)
       [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
-      ;;
-    fake_default_tls)
-
-      send_error "400 Bad Request" "Возврат на встроенный блоб недоступен"
       ;;
     *)
       send_error "400 Bad Request" "Некорректное значение блоба: $blob"
@@ -388,14 +386,19 @@ api_tls_blob_set() {
   [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
 
   sed_ereg="$(config_sed_ereg)"
-  prefix="--blob=maxru:@/opt/zator/files/fake/"
 
-  if ! grep -qE -- "--blob=maxru:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
-    send_error "500 Internal Server Error" "Строка --blob=maxru не найдена в конфиге"
+  if [ "$blob" = "fake_default_tls" ]; then
+    sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)maxru#\1fake_default_tls#g; }' "$cfg"
+  else
+    prefix="--blob=maxru:@/opt/zator/files/fake/"
+
+    if ! grep -qE -- "--blob=maxru:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
+      send_error "500 Internal Server Error" "Строка --blob=maxru не найдена в конфиге"
+    fi
+
+    sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
+    sed -i $sed_ereg "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${blob}#g" "$cfg"
   fi
-
-  sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
-  sed -i $sed_ereg "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${blob}#g" "$cfg"
 
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
