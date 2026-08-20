@@ -1448,12 +1448,12 @@ function renderProvider() {
   if (current) current.textContent = state.provider.provider || 'Не определён';
   const nameInput = document.getElementById('provider-name-input');
   const cityInput = document.getElementById('provider-city-input');
-  if (nameInput && !nameInput.value) {
+  if (nameInput && document.activeElement !== nameInput) {
+    nameInput.value = state.provider.provider === 'Не определён' ? '' : String(state.provider.provider || '').split(' - ')[0];
+  }
+  if (cityInput && document.activeElement !== cityInput) {
     const parts = String(state.provider.provider || '').split(' - ');
-    if (parts.length > 1 && parts[0] !== 'Не определён') {
-      nameInput.value = parts[0];
-      cityInput.value = parts.slice(1).join(' - ');
-    }
+    cityInput.value = parts.length > 1 ? parts.slice(1).join(' - ') : '';
   }
   updateProviderSubmit();
 }

@@ -199,15 +199,17 @@ provider_init_once() {
 }
 
 provider_force_redetect() {
-  echo "Обновляем данные о провайдере..."
+  echo "Обновляем данные о провайдере (запрашиваем гео-сервисы, до ~20 секунд)..."
   provider_update_database || true
   rm -f "$PROVIDER_CACHE"
   _detect_api_simple || true
 
   if [ -s "$PROVIDER_CACHE" ]; then
       PROVIDER_MENU="$(head -n1 "$PROVIDER_CACHE")"
+      echo -e "${green}Определено:${plain} $PROVIDER_MENU"
   else
       PROVIDER_MENU="Не удалось определить"
+      echo -e "${red}$PROVIDER_MENU.${plain} Проверьте сеть или задайте провайдера вручную."
   fi
 }
 
