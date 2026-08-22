@@ -152,6 +152,18 @@ z2r_tls_check_target() {
     dl="skip"
     if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
         dl="$(z2r_tls_probe_download "$url")"
+        dstate="$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "$(z2r_tls_field "$dl" 2)" "$(z2r_tls_field "$dl" 3)")"
+        # DPI режет поток выборочно: одна неудачная попытка ещё не значит, что
+        # страница не качается (браузер маскирует повторами). Повтор различает
+        # "иногда срезает" (retry, жёлтый) и "срезает всегда" (красный).
+        if [ "$dstate" != "ok" ]; then
+            dl2="$(z2r_tls_probe_download "$url")"
+            if [ "$(z2r_tls_download_state "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" "$(z2r_tls_field "$dl2" 3)")" = "ok" ]; then
+                dl="$(printf '%s|%s|%s|%s|retry' \
+                    "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" \
+                    "$(z2r_tls_field "$dl2" 3)" "$(z2r_tls_field "$dl2" 4)")"
+            fi
+        fi
     fi
     rm -rf "$tmp"
     printf '%s\n%s\n%s\n' "$v12" "$v13" "$dl"
@@ -205,7 +217,13 @@ z2r_tls_download_parts() {
     state="$(z2r_tls_download_state "$rc" "$code" "$size")"
     hint="Проверьте доступность вручную. Возможно ошибка теста."
     case "$state" in
-        ok) fact="Данные: получено $size байт за $time с (код $code)"; hint="" ;;
+        ok)
+            fact="Данные: получено $size байт за $time с (код $code)"
+            if [ "$(z2r_tls_field "$raw" 5)" = "retry" ]; then
+                fact="Данные: получено $size байт за $time с (код $code) — со второй попытки, первая оборвалась"
+            fi
+            hint=""
+            ;;
         cut) fact="Данные оборвались: получено $size байт и поток остановился." ;;
         zero)
             if [ "$code" != "000" ]; then
@@ -272,6 +290,10 @@ z2r_tls_target_verdict() {
         fi
         if [ "$dstate" = "zero" ] || [ "$dstate" = "fail" ]; then
             printf 'fail|TLS работает, но данные не приходят — страница не скачивается. Проверьте доступность вручную. Возможно ошибка теста.'
+            return
+        fi
+        if [ "$(z2r_tls_field "$dl" 5)" = "retry" ]; then
+            printf 'warn|Поток иногда срезается — повторное соединение прошло, страница может открываться не с первого раза. Проверьте доступность вручную.'
             return
         fi
     fi

@@ -52,6 +52,9 @@ if [ "$head" = 1 ]; then
   esac
   exit 1
 fi
+if [ "${MOCK_DL_FLAKY:-0}" = 1 ] && [ "$n" = 1 ]; then
+  echo "206 4098 12.0"; exit 28
+fi
 case "${MOCK_DL:-ok206}" in
   ok206)      echo "206 65536 1.234"; exit 0 ;;
   small200)   echo "200 512 0.400"; exit 0 ;;
@@ -162,11 +165,23 @@ printf '%s' "$v" | grep -q "только по TLS 1.2" || fail "сценарий
 
 # == 8. хендшейк есть, тело не приходит (0 байт) -> красный fail ==
 reset_counter
-export MOCK_HEAD_12=ok200 MOCK_HEAD_13=ok200 MOCK_FLAKY_13=0 MOCK_DL=zero
+export MOCK_HEAD_12=ok200 MOCK_HEAD_13=ok200 MOCK_FLAKY_13=0 MOCK_DL=zero MOCK_DL_FLAKY=0
 out="$(target_out)"
 v="$(verdict_of "$out")"
 [ "${v%%|*}" = "fail" ] || fail "сценарий 8: вердикт должен быть fail (страница не скачивается), получено: $v"
 z2r_tls_download_text "$(printf '%s\n' "$out" | sed -n 3p)" | grep -q "0 байт" || fail "сценарий 8: текст не про 0 байт"
+
+# == 8b. первая докачка срезалась, повтор прошёл -> жёлтый warn «иногда» ==
+reset_counter
+export MOCK_DL=ok206 MOCK_DL_FLAKY=1
+out="$(target_out)"
+v="$(verdict_of "$out")"
+[ "${v%%|*}" = "warn" ] || fail "сценарий 8b: повтор спасает -> warn, получено: $v"
+printf '%s' "$v" | grep -q "иногда срезается" || fail "сценарий 8b: нет текста про выборочный срез"
+[ "$(calls dl)" = 2 ] || fail "сценарий 8b: должно быть две попытки докачки, было $(calls dl)"
+z2r_tls_download_text "$(printf '%s\n' "$out" | sed -n 3p)" | grep -q "со второй попытки" \
+  || fail "сценарий 8b: строка данных не упоминает вторую попытку"
+export MOCK_DL_FLAKY=0
 
 # == 9. маленькая страница целиком (206, меньше запрошенного) -> зелёный ok ==
 reset_counter
@@ -237,7 +252,7 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   export COUNTER_DIR="$TMP_DIR/counter"
   export PATH="$TMP_DIR/bin:$PATH"
   export TMPDIR="$TMP_DIR"
-  unset MOCK_FLAKY_12 MOCK_FLAKY_13
+  unset MOCK_FLAKY_12 MOCK_FLAKY_13 MOCK_DL_FLAKY
   # shellcheck source=/dev/null
   source "$REPO_DIR/webui/cgi-bin/_lib.sh"
   rm -f "$COUNTER_DIR"/*
