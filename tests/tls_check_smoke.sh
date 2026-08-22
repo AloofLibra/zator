@@ -47,6 +47,12 @@ if [ "$head" = 1 ]; then
     [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"; echo "30.0 192.0.2.10"; exit 0
   fi
   case "$mode" in
+    seq_ok*)
+      thr="${mode#seq_ok}"
+      if [ "$n" -ge "$thr" ] 2>/dev/null; then mode=ok200; else mode=timeout; fi
+      ;;
+  esac
+  case "$mode" in
     ok200)   [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"; echo "0.800 192.0.2.10"; exit 0 ;;
     code403) [ -n "$hdr" ] && printf 'HTTP/1.1 403 Forbidden\r\n' >"$hdr"; echo "0.900 192.0.2.10"; exit 0 ;;
     code405) [ -n "$hdr" ] && printf 'HTTP/2 405\r\n' >"$hdr"; echo "0.700 192.0.2.10"; exit 0 ;;
@@ -61,6 +67,10 @@ if [ "${MOCK_DL_FLAKY:-0}" = 1 ] && mkdir "$COUNTER_DIR/dlflaky_lock" 2>/dev/nul
 fi
 case "${MOCK_DL:-ok206}" in
   ok206)      echo "206 65536 1.234"; exit 0 ;;
+  ok206var)
+    strat="$(cat "$COUNTER_DIR/head_13" 2>/dev/null || echo 0)"
+    if [ "$strat" -ge 4 ] 2>/dev/null; then echo "206 65536 0.500"; else echo "206 65536 3.000"; fi
+    exit 0 ;;
   small200)   echo "200 512 0.400"; exit 0 ;;
   partial206) echo "206 1200 0.400"; exit 0 ;;
   zero)       echo "200 0 0.500"; exit 0 ;;
@@ -265,6 +275,78 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   echo survived
 ) | grep -q survived || fail "сценарий 14: set -e роняет check_access при сбоях curl"
 
+# == 14b. компактный результат для таблицы автопрогона ==
+[ "$(z2r_tls_short_result "28|000|-|-|-" "0|200|HTTP/2|0.6|1.1.1.1" "28|200|4098|2.0")" = "fail|срез после 4098 байт" ] \
+  || fail "сценарий 14b: cut должен давать короткий текст среза"
+[ "$(z2r_tls_short_result "28|000|-|-|-" "0|200|HTTP/2|0.6|1.1.1.1" "0|206|65536|0.8")" = "ok|данные 65536 байт за 0.8 с" ] \
+  || fail "сценарий 14b: ok должен давать данные с размером"
+[ "$(z2r_tls_short_result "28|000|-|-|-" "0|200|HTTP/2|0.6|1.1.1.1" "0|206|65536|0.8|retry")" = "warn|срез нестабильный, повтор прошёл" ] \
+  || fail "сценарий 14b: retry должен давать warn"
+[ "$(z2r_tls_short_result "0|404|HTTP/1.1|0.6|1.1.1.1" "0|404|HTTP/1.1|0.6|1.1.1.1" "skip")" = "ok|сервер ответил кодом 404" ] \
+  || fail "сценарий 14b: 4xx должен давать ok с кодом"
+[ "$(z2r_tls_short_result "0|200|HTTP/2|0.6|1.1.1.1" "28|000|-|-|-" "skip")" = "warn|только TLS 1.2" ] \
+  || fail "сценарий 14b: только TLS 1.2 должен давать warn"
+[ "$(z2r_tls_short_result "28|000|-|-|-" "28|000|-|-|-" "skip")" = "fail|нет ответа (таймаут)" ] \
+  || fail "сценарий 14b: обе версии молчат -> нет ответа"
+
+# == 14c. автопрогон: до первого успеха + сохранение, полный + возврат, профиль-вид ==
+(
+  export ORCH_LOCK_FILE="$TMP_DIR/locked_auto.tsv"
+  export PROFILE_STATE_FILE="$TMP_DIR/profile_auto.lock"
+  : > "$ORCH_LOCK_FILE"
+  reset_counter
+  export MOCK_HEAD_12=timeout MOCK_HEAD_13=seq_ok3 MOCK_DL=ok206
+  plain="" green="" yellow="" red="" cyan="" Fgreen=""
+  export plain green yellow red cyan Fgreen
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/lib/orchestra_state.sh"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/lib/strategies.sh"
+
+  out="$(printf '\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 5 1)"
+  [ "$(orch_locked_get example.org tls)" = "3" ] \
+    || fail "сценарий 14c: Enter должен сохранить лучшую (3), лок: $(orch_locked_get example.org tls)"
+  printf '%s' "$out" | grep -q "OK" || fail "сценарий 14c: нет строки OK в прогоне"
+  printf '%s' "$out" | grep -q "FAIL" || fail "сценарий 14c: нет строк FAIL в прогоне"
+  printf '%s' "$out" | grep -q "Итог автопрогона" || fail "сценарий 14c: нет сводки"
+  [ "$(grep -c 'FAIL' <<<"$out")" = "2" ] || fail "сценарий 14c: до первого успеха должно быть 2 FAIL"
+
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  export MOCK_DL=ok206var
+  out="$(printf '\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 5 0)"
+  [ "$(orch_locked_get example.org tls)" = "4" ] \
+    || fail "сценарий 14c: лучшей должна стать самая быстрая (4), сохранено: $(orch_locked_get example.org tls)"
+  printf '%s' "$out" | grep -q "самая быстрая из зелёных" || fail "сценарий 14c: сводка не помечает выбор по скорости"
+  export MOCK_DL=ok206
+  grep -q "  *3:" <<<"$out" || true
+
+  orch_locked_set example.org tls 7
+  out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 5 0)"
+  [ "$(orch_locked_get example.org tls)" = "7" ] \
+    || fail "сценарий 14c: ответ 0 должен вернуть прежний лок (7)"
+  printf '%s' "$out" | grep -q "Зелёные стратегии: " || fail "сценарий 14c: полный прогон без списка зелёных"
+
+  orch_locked_set 1 tls 5
+  out="$(printf '0\n' | orch_auto_sweep profile 1 "tls" https://www.youtube.com/ 1 5 0)"
+  [ "$(orch_locked_get 1 tls)" = "5" ] \
+    || fail "сценарий 14c: профиль-вид с ответом 0 должен вернуть прежний лок"
+  printf '%s' "$out" | grep -q "прежние стратегии профиля возвращены" || fail "сценарий 14c: нет сообщения возврата"
+
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  orch_locked_set example.org tls 7
+  printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 200 0 >"$TMP_DIR/sweep_int.log" 2>&1 &
+  swpid=$!
+  sleep 2
+  kill -INT "$swpid" 2>/dev/null || true
+  swrc=0
+  wait "$swpid" 2>/dev/null || swrc=$?
+  [ "$swrc" = "0" ] || fail "сценарий 14c: Ctrl+C не должен ронять автопрогон (rc=$swrc)"
+  [ "$(orch_locked_get example.org tls)" = "7" ] \
+    || fail "сценарий 14c: после Ctrl+C лок не восстановлен"
+  grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" \
+    || fail "сценарий 14c: нет сообщения о прерывании"
+)
+
 # == 15. WebUI-обёртка: JSON с вердиктом и деталями ==
 (
   export COUNTER_DIR="$TMP_DIR/counter"
@@ -306,6 +388,8 @@ lib_sh="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
 printf '%s' "$lib_sh" | grep -q 'LIB_DIR/netcheck\.sh' || fail "сценарий 16: _lib.sh не подключает netcheck.sh"
 if printf '%s' "$lib_sh" | grep -q -- '--tls-max 1\.2'; then fail "сценарий 16: в _lib.sh осталась локальная curl-логика TLS"; fi
 printf '%s' "$lib_sh" | grep -q '_domains_check_json' || fail "сценарий 16: нет _domains_check_json"
+grep -q 'orch_auto_sweep' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 16: нет orch_auto_sweep"
+[ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "2" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
 printf '%s' "$lib_sh" | grep -q '^    check)' || fail "сценарий 16: нет действия check в domains"
 grep -q 'checkVerdictClass' "$REPO_DIR/webui/app.js" || fail "сценарий 16: app.js не рендерит verdict"
 grep -q 'renderDomainCheck' "$REPO_DIR/webui/app.js" || fail "сценарий 16: app.js без renderDomainCheck"

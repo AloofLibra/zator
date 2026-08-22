@@ -338,6 +338,62 @@ z2r_tls_target_verdict() {
     printf 'ok|Сайт доступен: TLS работает, данные идут.'
 }
 
+# Компактный результат одной стратегии для таблицы автопрогона:
+# печатает "verdict|короткий текст" (цвета накладывает вызывающий).
+z2r_tls_short_result() {
+    local v12="$1" v13="$2" dl="$3"
+    local rc12 code12 rc13 code13 s12 s13 t12 t13 best
+    local dlrc dlcode dlsize dltime dstate short
+    rc12="$(z2r_tls_field "$v12" 1)"; code12="$(z2r_tls_field "$v12" 2)"
+    rc13="$(z2r_tls_field "$v13" 1)"; code13="$(z2r_tls_field "$v13" 2)"
+    s12="$(z2r_tls_version_state "$rc12" "$code12")"
+    s13="$(z2r_tls_version_state "$rc13" "$code13")"
+    case "$s12" in ok|http) t12=1 ;; *) t12=0 ;; esac
+    case "$s13" in ok|http) t13=1 ;; *) t13=0 ;; esac
+    short=""
+    if [ "$t12" -eq 0 ] && [ "$t13" -eq 0 ]; then
+        if [ "$s12" = "dns" ] || [ "$s13" = "dns" ]; then
+            short="нет ответа (DNS)"
+        elif [ "$s12" = "tls" ] || [ "$s13" = "tls" ]; then
+            short="TLS-рукопожатие не проходит"
+        elif [ "$s12" = "timeout" ] || [ "$s13" = "timeout" ]; then
+            short="нет ответа (таймаут)"
+        else
+            short="нет ответа"
+        fi
+        printf 'fail|%s\n' "$short"
+        return
+    fi
+    if ! z2r_tls_code_ok "$code12" && ! z2r_tls_code_ok "$code13"; then
+        if [ "$t12" -eq 1 ]; then best="$code12"; else best="$code13"; fi
+        printf 'ok|сервер ответил кодом %s\n' "$best"
+        return
+    fi
+    if [ "$dl" != "skip" ]; then
+        dlrc="$(z2r_tls_field "$dl" 1)"; dlcode="$(z2r_tls_field "$dl" 2)"
+        dlsize="$(z2r_tls_field "$dl" 3)"; dltime="$(z2r_tls_field "$dl" 4)"
+        dstate="$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")"
+        case "$dstate" in
+            cut) printf 'fail|срез после %s байт\n' "$dlsize"; return ;;
+            zero) printf 'fail|тело не приходит\n'; return ;;
+            fail) printf 'fail|докачка не началась\n'; return ;;
+            ok)
+                if [ "$(z2r_tls_field "$dl" 5)" = "retry" ]; then
+                    printf 'warn|срез нестабильный, повтор прошёл\n'
+                    return
+                fi
+                printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
+                return
+                ;;
+        esac
+    fi
+    if [ "$t13" -eq 0 ]; then
+        printf 'warn|только TLS 1.2\n'
+        return
+    fi
+    printf 'ok|данные идут\n'
+}
+
 check_access() {
     local TestURL="$1" out v12 v13 dl parts fact hint c12 c13 cd verdict vcolor
     out="$(z2r_tls_check_target "$TestURL")"

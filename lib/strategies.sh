@@ -52,7 +52,24 @@ orch_profile_try() {
 
     echo "$title"
     echo "Текущее состояние: ${current_state/auto/def}"
-    read -re -p "Введите номер стратегии 1-${max_strat} (0 - отключить профиль, Enter - без изменений): " start_strat
+    local prompt_text="Введите номер стратегии 1-${max_strat} (0 - отключить профиль"
+    if printf '%s' "$test_url" | grep -q '^https://'; then
+        prompt_text="${prompt_text}, A - автопрогон"
+    fi
+    read -re -p "${prompt_text}, Enter - без изменений): " start_strat
+    case "$start_strat" in
+        a|A|а|А)
+            if printf '%s' "$test_url" | grep -q '^https://'; then
+                local mode
+                read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1): " mode
+                local sok=1
+                [ "$mode" = "2" ] && sok=0
+                orch_auto_sweep "profile" "$profile" "$proto_list" "$test_url" 1 "$max_strat" "$sok"
+                pause_enter
+            fi
+            return
+            ;;
+    esac
     if [ -z "$start_strat" ]; then
         echo "Без изменений."
         return
@@ -133,6 +150,168 @@ orch_profile_try() {
     done
     echo "Изменения отменены."
     pause_enter
+}
+
+# Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
+# прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
+# и выбор сохранения. kind=profile|domain; key=профиль или домен.
+orch_auto_sweep() {
+    local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6" stop_on_ok="$7"
+    local s p out v12 v13 dl short token color vcolor
+    local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0
+    local ok_stats="" best="" best_short=""
+    local prev_str="" interrupted=0
+    local -A prev_map
+
+    if [ "$kind" = "domain" ]; then
+        prev_str="$(orch_locked_get "$key" "tls")"
+    else
+        for p in $proto_list; do
+            prev_map["$p"]="$(orch_locked_get "$key" "$p")"
+        done
+    fi
+
+    local total=$((max - start + 1))
+    echo -e "${cyan}Автопрогон: стратегии ${start}-${max} (${total} шт., примерно $((total * 5)) сек). Ctrl+C - прервать.${plain}"
+    # Ctrl+C не должен ронять скрипт: под set -e прерванный curl/sleep завершает
+    # всю функцию раньше флага. Отключаем -e на время прогона и восстанавливаем.
+    local had_e=0
+    case "$-" in *e*) had_e=1 ;; esac
+    set +e
+    trap 'orch_auto_sweep_interrupted=1' INT
+    orch_auto_sweep_interrupted=0
+
+    for ((s=start; s<=max; s++)); do
+        if [ "$kind" = "domain" ]; then
+            orch_locked_set "$key" "tls" "$s"
+        else
+            for p in $proto_list; do
+                orch_locked_set "$key" "$p" "$s"
+            done
+        fi
+
+        out="$(z2r_tls_check_target "$test_url")"
+        if [ "$orch_auto_sweep_interrupted" = "1" ]; then
+            echo -e "${yellow}Прервано пользователем на стратегии ${s}.${plain}"
+            break
+        fi
+        v12="$(printf '%s\n' "$out" | sed -n 1p)"
+        v13="$(printf '%s\n' "$out" | sed -n 2p)"
+        dl="$(printf '%s\n' "$out" | sed -n 3p)"
+        short="$(z2r_tls_short_result "$v12" "$v13" "$dl")"
+        token="${short%%|*}"; short="${short#*|}"
+
+        case "$token" in
+            ok)
+                color="$green"; disp="OK  "; n_ok=$((n_ok + 1)); ok_list="${ok_list}${ok_list:+ }${s}"
+                dlsize2="$(z2r_tls_field "$dl" 3)"; dltime2="$(z2r_tls_field "$dl" 4)"
+                if [ "$dl" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                    ok_stats="${ok_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                fi
+                ;;
+            warn) color="$yellow"; disp="WARN"; n_warn=$((n_warn + 1)); warn_list="${warn_list}${warn_list:+ }${s}" ;;
+            *) color="$red"; disp="FAIL"; token="fail"; n_fail=$((n_fail + 1)) ;;
+        esac
+        printf '%s %3d: %b\n' "$(date '+%H:%M:%S')" "$s" "${color}${disp} ${short}${plain}"
+
+        if [ "$stop_on_ok" = "1" ] && [ "$token" = "ok" ]; then
+            break
+        fi
+    done
+    trap - INT
+    if [ "$had_e" = 1 ]; then set -e; fi
+
+    # Лучшая = самая быстрая зелёная по скорости докачки (байт/с), а не первая
+    # попавшаяся; при равной скорости выигрывает меньший номер.
+    best=""
+    best_short=""
+    if [ -n "$ok_stats" ]; then
+        win="$(printf '%s' "$ok_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+        best="${win%%|*}"
+        best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+    fi
+    if [ -z "$best" ] && [ -n "$ok_list" ]; then
+        best="${ok_list%% *}"
+        best_short="сервер ответил (без докачки)"
+    fi
+    if [ -z "$best" ] && [ -n "$warn_list" ]; then
+        best="${warn_list%% *}"
+        best_short="жёлтая (единственная без красных)"
+    fi
+
+    echo ""
+    echo "================================================"
+    echo -e " Итог автопрогона: ${green}OK ${n_ok}${plain}, ${yellow}жёлтых ${n_warn}${plain}, ${red}красных ${n_fail}${plain}"
+    [ -n "$ok_list" ] && echo -e " Зелёные стратегии: ${green}${ok_list}${plain}"
+    [ -n "$warn_list" ] && echo -e " Жёлтые стратегии: ${yellow}${warn_list}${plain}"
+    if [ -n "$best" ]; then
+        echo -e " Лучшая (самая быстрая из зелёных): ${Fgreen}${best}${plain} (${best_short})"
+    else
+        echo -e " ${red}Рабочих стратегий не найдено.${plain}"
+    fi
+    echo "================================================"
+
+    local answer
+    if [ -n "$best" ]; then
+        read -re -p "Enter - сохранить ${best}, номер - сохранить другую, 0 - вернуть как было: " answer || answer="0"
+    else
+        read -re -p "0 или Enter - вернуть как было: " answer || answer="0"
+    fi
+
+    if [ "$kind" = "domain" ]; then
+        if [ -n "$answer" ] && [ "$answer" != "0" ] && printf '%s' "$answer" | grep -Eq '^[0-9]+$' \
+            && [ "$answer" -ge 1 ] && [ "$answer" -le "$max" ]; then
+            orch_locked_set "$key" "tls" "$answer"
+            echo "Стратегия ${answer} сохранена для домена ${key}."
+            telemetry_notify
+        elif [ -z "$answer" ] && [ -n "$best" ]; then
+            orch_locked_set "$key" "tls" "$best"
+            echo "Стратегия ${best} сохранена для домена ${key}."
+            telemetry_notify
+        else
+            if [ -n "$prev_str" ] && [ "$prev_str" != "0" ]; then
+                orch_locked_set "$key" "tls" "$prev_str"
+            elif [ "$prev_str" = "0" ]; then
+                orch_locked_set "$key" "tls" 0
+            else
+                orch_locked_clear "$key" "tls"
+            fi
+            echo "Изменения отменены, прежняя стратегия домена возвращена."
+        fi
+    else
+        if [ -n "$answer" ] && [ "$answer" != "0" ] && printf '%s' "$answer" | grep -Eq '^[0-9]+$' \
+            && [ "$answer" -ge 1 ] && [ "$answer" -le "$max" ]; then
+            :
+        elif [ -z "$answer" ] && [ -n "$best" ]; then
+            answer="$best"
+        else
+            answer="0"
+        fi
+        if [ "$answer" != "0" ]; then
+            local cfg old_udp_ports
+            cfg="$(get_config_file)"
+            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+            if profile_state_set_and_apply "$key" "$proto_list" "$answer" "$cfg"; then
+                echo "Стратегия ${answer} сохранена для профиля ${key}."
+                profile_strategy_restart_if_needed "$key" "$cfg" "$old_udp_ports"
+            else
+                echo -e "${red}Не удалось сохранить стратегию ${answer} для профиля ${key}.${plain}"
+            fi
+            telemetry_notify
+        else
+            for p in $proto_list; do
+                if [ -n "${prev_map[$p]}" ] && [ "${prev_map[$p]}" -gt 0 ]; then
+                    orch_locked_set "$key" "$p" "${prev_map[$p]}"
+                elif [ "${prev_map[$p]}" = "0" ]; then
+                    orch_locked_set "$key" "$p" 0
+                else
+                    orch_locked_clear "$key" "$p"
+                fi
+            done
+            echo "Изменения отменены, прежние стратегии профиля возвращены."
+        fi
+    fi
+    return 0
 }
 
 get_orchestra_locks_info() {
@@ -503,7 +682,21 @@ manage_custom_rkn_domain() {
         prev_strat="$existing_strat"
     fi
 
-    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat): " strategy_num
+    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
+    case "$strategy_num" in
+        a|A|а|А)
+            local mode sok=1
+            read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1): " mode
+            [ "$mode" = "2" ] && sok=0
+            test_url="$user_domain"
+            if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
+                test_url="https://$test_url"
+            fi
+            orch_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat" "$sok"
+            pause_enter
+            return 0
+            ;;
+    esac
     if [ -z "$strategy_num" ]; then
         strategy_num="$current_strat"
     fi

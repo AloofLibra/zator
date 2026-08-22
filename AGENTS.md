@@ -361,6 +361,10 @@ bash tests/tls_check_smoke.sh
 - CLI `check_access` (тексты итога, отсутствие старого «Таймаут 2сек») и WebUI
   `check_one_target_json` (форма JSON: verdict / tls*_detail / download;
   JSON обязан быть валидным — `code` без ведущих нулей);
+- автопрогон стратегий `orch_auto_sweep` (профили 1-4 и кастомные домены,
+  опция A в промптах перебора): компактные строки `z2r_tls_short_result`,
+  режимы «до первого успеха»/«полный», сводка, Enter=лучшая / номер / 0=возврат
+  прежних локов, Ctrl+C с восстановлением;
 - статический wiring: `_lib.sh` source-ит `netcheck.sh` и не содержит локальной
   curl-логики TLS, `app.js`/`styles.css`/`fake_router_server.py` синхронны.
 
