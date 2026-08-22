@@ -74,7 +74,6 @@ done
 
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/netcheck.sh"
-Z2R_TLS_RETRY_DELAY=0
 plain="" green="" yellow="" red=""
 
 calls() {
@@ -113,15 +112,16 @@ printf '%s' "$t12" | grep -q "Ошибка TLS-рукопожатия" || fail "
 printf '%s' "$t12" | grep -q "Проверьте доступность вручную" || fail "сценарий 2: нет подсказки у TLS 1.2"
 if printf '%s' "$t12" | grep -q "отключён на стороне сайта"; then fail "сценарий 2: остался длинный override-текст"; fi
 
-# == 3. обе версии отвечают 403 -> красный fail, этап данных пропущен ==
+# == 3. обе версии отвечают 403 -> зелёный ok (сервер ответил, TLS пробит), докачки нет ==
 reset_counter
 export MOCK_HEAD_12=code403 MOCK_HEAD_13=code403 MOCK_DL=ok206
 out="$(target_out)"
 [ "$(printf '%s\n' "$out" | sed -n 3p)" = "skip" ] || fail "сценарий 3: докачка должна быть пропущена"
 v="$(verdict_of "$out")"
-[ "${v%%|*}" = "fail" ] || fail "сценарий 3: вердикт должен быть fail (страница не открывается), получено: $v"
+[ "${v%%|*}" = "ok" ] || fail "сценарий 3: вердикт должен быть ok (сервер ответил), получено: $v"
 printf '%s' "$v" | grep -q "403" || fail "сценарий 3: в тексте нет кода 403"
-printf '%s' "$v" | grep -q "страница не открывается" || fail "сценарий 3: нет пояснения про страницу"
+z2r_tls_version_text 1.2 "$(printf '%s\n' "$out" | sed -n 1p)" | grep -q "HTTP/1.1 403" \
+  || fail "сценарий 3: строка версии не в формате успеха с кодом"
 
 # == 4. HEAD 405 -> транспорт работает ==
 reset_counter
@@ -132,14 +132,16 @@ state="$(z2r_tls_version_state "$(printf '%s\n' "$out" | sed -n 2p | cut -d'|' -
 v="$(verdict_of "$out")"
 [ "${v%%|*}" = "ok" ] || fail "сценарий 4: вердикт должен быть ok, получено: $v"
 
-# == 5. обе версии таймаут -> fail + был повтор ==
+# == 5. обе версии таймаут -> fail, одна попытка без ретрая ==
 reset_counter
 export MOCK_HEAD_12=timeout MOCK_HEAD_13=timeout MOCK_DL=ok206
 out="$(target_out)"
 v="$(verdict_of "$out")"
 [ "${v%%|*}" = "fail" ] || fail "сценарий 5: вердикт должен быть fail, получено: $v"
-[ "$(calls head_12)" = 2 ] || fail "сценарий 5: retry по TLS 1.2 не выполнен ($(calls head_12))"
+[ "$(calls head_12)" = 1 ] || fail "сценарий 5: должна быть одна попытка, было $(calls head_12)"
 [ "$(calls dl)" = 0 ] || fail "сценарий 5: докачка не должна была запускаться"
+z2r_tls_version_text 1.2 "$(printf '%s\n' "$out" | sed -n 1p)" | grep -q "Таймаут 8сек\." \
+  || fail "сценарий 5: текст таймаута без упоминания попыток"
 
 # == 6. DNS не разрешается -> fail с указанием на DNS ==
 reset_counter
@@ -149,13 +151,14 @@ v="$(verdict_of "$out")"
 [ "${v%%|*}" = "fail" ] || fail "сценарий 6: вердикт должен быть fail"
 printf '%s' "$v" | grep -q "DNS" || fail "сценарий 6: в тексте нет упоминания DNS"
 
-# == 7. первый таймаут, второй успех -> retry спасает ==
+# == 7. ретрая нет: единственный сбой TLS 1.3 даёт warn «только TLS 1.2» ==
 reset_counter
 export MOCK_HEAD_12=ok200 MOCK_HEAD_13=ok200 MOCK_FLAKY_13=1 MOCK_DL=ok206
 out="$(target_out)"
 v="$(verdict_of "$out")"
-[ "${v%%|*}" = "ok" ] || fail "сценарий 7: после успешного повтора вердикт должен быть ok, получено: $v"
-[ "$(calls head_13)" = 2 ] || fail "сценарий 7: повтор по TLS 1.3 не выполнен"
+[ "${v%%|*}" = "warn" ] || fail "сценарий 7: без ретрая сбой TLS 1.3 должен давать warn, получено: $v"
+printf '%s' "$v" | grep -q "только по TLS 1.2" || fail "сценарий 7: нет пояснения про TLS 1.2"
+[ "$(calls head_13)" = 1 ] || fail "сценарий 7: должна быть одна попытка, было $(calls head_13)"
 
 # == 8. хендшейк есть, тело не приходит (0 байт) -> красный fail ==
 reset_counter
@@ -232,6 +235,8 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   json="$(check_one_target_json "Test" "https://example.org/")"
   printf '%s' "$json" | grep -q '"verdict":"fail"' || fail "сценарий 15: в JSON нет verdict fail"
   printf '%s' "$json" | grep -q '"download":null' || fail "сценарий 15: download должен быть null"
+  printf '{"results":[%s]}' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+    || fail "сценарий 15: JSON невалиден (например code с ведущими нулями): $json"
 
   rm -f "$COUNTER_DIR"/*
   export MOCK_HEAD_12=tls MOCK_HEAD_13=ok200 MOCK_DL=ok206
@@ -240,6 +245,8 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   printf '%s' "$json" | grep -q '"label":"example.org"' || fail "сценарий 15: label должен быть доменом"
   printf '%s' "$json" | grep -q '"verdict":"ok"' || fail "сценарий 15: _domains_check_json без verdict ok: $json"
   printf '%s' "$json" | grep -q 'Проверьте доступность вручную\|проверьте вручную' || fail "сценарий 15: в тексте TLS 1.2 нет подсказки проверить вручную"
+  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+    || fail "сценарий 15: JSON доменной проверки невалиден: $json"
 )
 
 # == 16. статический wiring ==

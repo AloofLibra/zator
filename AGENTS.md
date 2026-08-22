@@ -89,7 +89,7 @@ Normal flow:
 - `data/providers/asn.txt`: maintainable ASN:BRAND:ALIASES database deployed to `/opt/zator/data/providers/asn.txt`; remote updates from the same path on the `zator` branch.
 - `lib/telemetry.sh`: telemetry enable/disable and stats sending.
 - `lib/recommendations.sh`: hint database and provider-based recommendations.
-- `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel TLS 1.2/TLS 1.3 HEAD probes with one retry + a 64KB Range download when HEAD returns 2xx/3xx; classification by curl rc and HTTP code). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
+- `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel single-attempt TLS 1.2/TLS 1.3 HEAD probes with `-L -k` + a Range download of up to 64KB when HEAD returns 2xx/3xx; classification by curl rc and HTTP code; any HTTP code including 4xx/5xx means the server answered → green ok, e.g. googlevideo root 404 is normal). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
 - `lib/premium.sh`: easter-egg and premium menu branches.
 - `lib/strategies.sh`: active strategy status, orchestra lock helpers, per-profile strategy trial flow, custom RKN domain handling.
 - `lib/submenus.sh`: menu wiring for strategies, provider, offload, and related actions.
@@ -341,19 +341,22 @@ bash tests/tls_check_smoke.sh
 директории в `/tmp`, с моком `curl` в PATH:
 
 - не пишет в `/opt`;
-- движок `z2r_tls_*` из `lib/netcheck.sh`: HEAD-проба с парсингом статусной
-  строки («HTTP/2 200») из дампа заголовков, повтор при транспортном сбое,
-  классификация кодов возврата curl (DNS / таймаут / TLS / соединение);
-- этап докачки 64КБ после успешного HEAD: ok / partial / zero / fail,
-  405 на HEAD считается работающим транспортом;
-- вердикты: `ok` — 2xx/3xx и данные идут (зелёный; даже если TLS 1.2 не отвечает,
-  пока работает TLS 1.3); `warn` — данные идут не полностью или только TLS 1.2
-  (жёлтый); `fail` — обе версии не ответили транспортом, либо код ≥400 (страница
-  не открывается), либо данные не приходят (красный). Строки версий: факт
-  жёлтым/зелёным + подсказка «Проверьте доступность вручную. Возможно ошибка
-  теста.» красным (как в эталонном выводе старого меню);
+- движок `z2r_tls_*` из `lib/netcheck.sh`: HEAD-проба (`-L -k`, одна попытка,
+  следует за редиректами) с парсингом последней статусной строки из дампа
+  заголовков, классификация кодов возврата curl (DNS / таймаут / TLS / соединение,
+  rc=77 → TLS, нет CA-бандла в CGI);
+- этап докачки (Range до 64КБ, фактические байты) после успешного HEAD:
+  ok / partial / zero / fail, 405 на HEAD считается работающим транспортом;
+- вердикты: `ok` — сервер ответил: 2xx/3xx и данные идут, либо любой HTTP-код
+  включая 4xx/5xx (сервер ответил, TLS пробит — googlevideo на корневом пути
+  отдаёт 404, это норма; зелёный, даже если TLS 1.2 не отвечает, пока работает
+  TLS 1.3); `warn` — данные идут не полностью или только TLS 1.2 (жёлтый);
+  `fail` — обе версии не ответили транспортом либо данные не приходят (красный).
+  Строки версий: факт жёлтым/зелёным + подсказка «Проверьте доступность вручную.
+  Возможно ошибка теста.» красным (как в эталонном выводе старого меню);
 - CLI `check_access` (тексты итога, отсутствие старого «Таймаут 2сек») и WebUI
-  `check_one_target_json` (форма JSON: verdict / tls*_detail / download);
+  `check_one_target_json` (форма JSON: verdict / tls*_detail / download;
+  JSON обязан быть валидным — `code` без ведущих нулей);
 - статический wiring: `_lib.sh` source-ит `netcheck.sh` и не содержит локальной
   curl-логики TLS, `app.js`/`styles.css`/`fake_router_server.py` синхронны.
 

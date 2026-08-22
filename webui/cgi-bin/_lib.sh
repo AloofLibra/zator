@@ -211,8 +211,11 @@ strategy_locks_status_text() {
 
 _tls_detail_json() {
   local raw="$1" ver="$2"
+  local code
+  code="$(z2r_tls_field "$raw" 2)"
+  case "$code" in ''|*[!0-9]*) code=0 ;; *) code=$((10#$code)) ;; esac
   printf '{"code":%s,"proto":"%s","time":"%s","ip":"%s","state":"%s","text":"%s"}' \
-    "$(z2r_tls_field "$raw" 2)" \
+    "$code" \
     "$(json_escape "$(z2r_tls_field "$raw" 3)")" \
     "$(json_escape "$(z2r_tls_field "$raw" 4)")" \
     "$(json_escape "$(z2r_tls_field "$raw" 5)")" \
@@ -237,9 +240,11 @@ check_one_target_json() {
     dlcode="$(z2r_tls_field "$dl" 2)"
     dlsize="$(z2r_tls_field "$dl" 3)"
     dltime="$(z2r_tls_field "$dl" 4)"
+    case "$dlcode" in ''|*[!0-9]*) dlcode=0 ;; *) dlcode=$((10#$dlcode)) ;; esac
+    case "$dlsize" in ''|*[!0-9]*) dlsize=0 ;; *) dlsize=$((10#$dlsize)) ;; esac
     dljson="$(printf '{"code":%s,"size":%s,"time":"%s","state":"%s","text":"%s"}' \
-      "${dlcode:-000}" "${dlsize:-0}" "$(json_escape "$dltime")" \
-      "$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "${dlcode:-000}" "${dlsize:-0}")" \
+      "$dlcode" "$dlsize" "$(json_escape "$dltime")" \
+      "$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "$dlcode" "$dlsize")" \
       "$(json_escape "$(z2r_tls_download_text "$dl")")")"
   fi
   printf '{"label":"%s","target":"%s","tls12":%s,"tls13":%s,"verdict":"%s","text":"%s","tls12_detail":%s,"tls13_detail":%s,"download":%s}' \

@@ -648,8 +648,7 @@ function checkVerdictClass(verdict) {
 }
 
 function checkLineClass(state) {
-  if (state === 'ok') return 'ok';
-  if (state === 'http') return 'warn';
+  if (state === 'ok' || state === 'http') return 'ok';
   return 'bad';
 }
 

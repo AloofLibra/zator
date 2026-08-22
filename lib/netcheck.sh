@@ -40,19 +40,18 @@ get_yt_cluster_domain() {
 
 Z2R_TLS_CONNECT_TIMEOUT=4
 Z2R_TLS_MAX_TIME=8
-Z2R_TLS_RETRY_DELAY=2
 Z2R_TLS_DL_RANGE=65536
 Z2R_TLS_DL_MIN_OK=32768
 Z2R_TLS_DL_MAX_TIME=12
 
-# Функции движка обязаны возвращать 0: они вызываются под set -e в z2r.sh,
-# поэтому код возврата curl передаётся внутри данных, а не через статус функции.
+# Функции движка всегда возвращают 0 (вызовы под set -e в z2r.sh):
+# код возврата curl передаётся внутри данных, а не статусом функции.
 
 z2r_tls_head_once() {
     local url="$1" hdr="$2"; shift 2
     local out rc
     rc=0
-    out="$(curl -4 -s -I -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(curl -4 -s -L -k -I -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_MAX_TIME" \
         -D "$hdr" -w '%{time_total} %{remote_ip}' \
         "$@" "$url" 2>/dev/null)" || rc=$?
@@ -60,32 +59,24 @@ z2r_tls_head_once() {
 }
 
 z2r_tls_probe_version() {
-    local url="$1" ver="$2" flags hdr attempt raw rc rest time ip first proto code
+    local url="$1" ver="$2" flags hdr raw rc rest time ip first proto code
     case "$ver" in
         12) flags="--tlsv1.2 --tls-max 1.2" ;;
         13) flags="--tlsv1.3" ;;
         *) return 1 ;;
     esac
     hdr="$(mktemp "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
-    code=000
-    for attempt in 1 2; do
-        if [ "$attempt" -eq 2 ]; then
-            [ "$code" != "000" ] && break
-            sleep "$Z2R_TLS_RETRY_DELAY"
-        fi
-        : >"$hdr"
-        raw="$(z2r_tls_head_once "$url" "$hdr" $flags)"
-        rc="${raw%%|*}"; rest="${raw#*|}"
-        case "$rest" in
-            *' '*) time="${rest%% *}"; ip="${rest##* }" ;;
-            *) time="-"; ip="-" ;;
-        esac
-        first="$(head -n 1 "$hdr" 2>/dev/null | tr -d '\r')"
-        proto="${first%% *}"; code="${first#* }"; code="${code%% *}"
-        [ -n "$proto" ] || proto="-"
-        case "$code" in ''|*[!0-9]*) code=000 ;; esac
-        [ "$code" != "000" ] && break
-    done
+    : >"$hdr"
+    raw="$(z2r_tls_head_once "$url" "$hdr" $flags)"
+    rc="${raw%%|*}"; rest="${raw#*|}"
+    case "$rest" in
+        *' '*) time="${rest%% *}"; ip="${rest##* }" ;;
+        *) time="-"; ip="-" ;;
+    esac
+    first="$(grep '^HTTP/' "$hdr" 2>/dev/null | tail -n 1 | tr -d '\r')"
+    proto="${first%% *}"; code="${first#* }"; code="${code%% *}"
+    [ -n "$proto" ] || proto="-"
+    case "$code" in ''|*[!0-9]*) code=000 ;; esac
     rm -f "$hdr"
     printf '%s|%s|%s|%s|%s\n' "$rc" "$code" "$proto" "$time" "$ip"
 }
@@ -93,7 +84,7 @@ z2r_tls_probe_version() {
 z2r_tls_probe_download() {
     local url="$1" out rc code rest size time
     rc=0
-    out="$(curl -4 -s -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(curl -4 -s -L -k -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_DL_MAX_TIME" \
         -H "Range: bytes=0-$((Z2R_TLS_DL_RANGE - 1))" \
         -w '%{http_code} %{size_download} %{time_total}' \
@@ -128,7 +119,7 @@ z2r_tls_version_state() {
         28) echo timeout ;;
         7) echo conn ;;
         4) echo unsupported ;;
-        35|16|53|54|56|60) echo tls ;;
+        35|16|53|54|56|60|77) echo tls ;;
         *) echo none ;;
     esac
 }
@@ -181,10 +172,9 @@ z2r_tls_version_parts() {
     fi
     hint="Проверьте доступность вручную. Возможно ошибка теста."
     case "$state" in
-        ok) fact="Есть ответ по TLS $ver ($why): $proto $code за $time с"; hint="" ;;
-        http) fact="Есть ответ по TLS $ver ($why), сайт ответил кодом $code" ;;
+        ok|http) fact="Есть ответ по TLS $ver ($why): $proto $code за $time с"; hint="" ;;
         dns) fact="Нет ответа по TLS $ver ($why) Домен не разрешается (DNS)." ;;
-        timeout) fact="Нет ответа по TLS $ver ($why) Таймаут ${Z2R_TLS_MAX_TIME}сек (2 попытки)." ;;
+        timeout) fact="Нет ответа по TLS $ver ($why) Таймаут ${Z2R_TLS_MAX_TIME}сек." ;;
         tls) fact="Нет ответа по TLS $ver ($why) Ошибка TLS-рукопожатия." ;;
         conn) fact="Нет ответа по TLS $ver ($why) Соединение не устанавливается." ;;
         unsupported) fact="Нет ответа по TLS $ver ($why) Локальный curl не поддерживает эту версию TLS." ;;
@@ -215,8 +205,8 @@ z2r_tls_download_parts() {
     state="$(z2r_tls_download_state "$rc" "$code" "$size")"
     hint="Проверьте доступность вручную. Возможно ошибка теста."
     case "$state" in
-        ok) fact="Данные ($((Z2R_TLS_DL_RANGE / 1024))КБ): получено $size байт за $time с (код $code)"; hint="" ;;
-        partial) fact="Данные: получено только $size байт из $Z2R_TLS_DL_RANGE." ;;
+        ok) fact="Данные: получено $size байт за $time с (код $code)"; hint="" ;;
+        partial) fact="Данные: получено только $size байт из $((Z2R_TLS_DL_RANGE / 1024))КБ — данных меньше ожидаемого." ;;
         zero)
             if [ "$code" != "000" ]; then
                 fact="Данные: код $code, 0 байт — сервер не отдал тело ответа."
@@ -264,7 +254,7 @@ z2r_tls_target_verdict() {
     fi
     if ! z2r_tls_code_ok "$code12" && ! z2r_tls_code_ok "$code13"; then
         if [ "$t12" -eq 1 ]; then best="$code12"; else best="$code13"; fi
-        printf 'fail|Сайт отвечает кодом %s — страница не открывается. Стратегия может не работать. Проверьте доступность вручную. Возможно ошибка теста.' "$best"
+        printf 'ok|Доступ есть: TLS работает, сервер ответил кодом %s.' "$best"
         return
     fi
     if [ "$dl" != "skip" ]; then
@@ -294,7 +284,7 @@ check_access() {
     dl="$(printf '%s\n' "$out" | sed -n 3p)"
 
     case "$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")" in
-        ok) c12="$green" ;;
+        ok|http) c12="$green" ;;
         *) c12="$yellow" ;;
     esac
     parts="$(z2r_tls_version_parts 1.2 "$v12")"
@@ -306,7 +296,7 @@ check_access() {
     fi
 
     case "$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")" in
-        ok) c13="$green" ;;
+        ok|http) c13="$green" ;;
         *) c13="$yellow" ;;
     esac
     parts="$(z2r_tls_version_parts 1.3 "$v13")"

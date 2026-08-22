@@ -34,8 +34,6 @@ orch_profile_try() {
     local answer=""
     local cfg=""
     local old_udp_ports=""
-    local http_rc=""
-    local http_attempt=""
     local first_proto="${proto_list%% *}"
     local -A prev_map
 
@@ -96,18 +94,10 @@ orch_profile_try() {
             fi
         elif printf "%s" "$test_url" | grep -q '^http://'; then
             echo "Проверка HTTP-доступа: $test_url"
-            http_rc=1
-            for http_attempt in 1 2; do
-                if curl -A "$Z2R_CURL_UA" --connect-timeout 4 --max-time 8 -s -o /dev/null "$test_url"; then
-                    http_rc=0
-                    break
-                fi
-                [ "$http_attempt" -eq 1 ] && sleep 2
-            done
-            if [ "$http_rc" -eq 0 ]; then
+            if curl -L -k -A "$Z2R_CURL_UA" --connect-timeout 4 --max-time 8 -s -o /dev/null "$test_url"; then
                 echo -e "${green}Есть ответ по HTTP.${plain}"
             else
-                echo -e "${yellow}Нет ответа по HTTP (2 попытки). Проверьте доступность вручную.${plain}"
+                echo -e "${yellow}Нет ответа по HTTP. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
             fi
         elif [ -n "$test_url" ]; then
             echo "Проверка доступа: $test_url"
