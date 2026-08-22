@@ -38,10 +38,12 @@ get_yt_cluster_domain() {
     echo "rr1---sn-${converted_name}.googlevideo.com"
 }
 
-Z2R_TLS_CONNECT_TIMEOUT=4
-Z2R_TLS_MAX_TIME=8
+Z2R_TLS_CONNECT_TIMEOUT=3
+Z2R_TLS_MAX_TIME=5
 Z2R_TLS_DL_RANGE=65536
-Z2R_TLS_DL_MAX_TIME=12
+Z2R_TLS_DL_MAX_TIME=10
+Z2R_TLS_DL_SPEED_LIMIT=2048
+Z2R_TLS_DL_SPEED_TIME=1
 
 # Функции движка всегда возвращают 0 (вызовы под set -e в z2r.sh):
 # код возврата curl передаётся внутри данных, а не статусом функции.
@@ -83,8 +85,10 @@ z2r_tls_probe_version() {
 z2r_tls_probe_download() {
     local url="$1" out rc code rest size time
     rc=0
+
     out="$(curl -4 -s -L -k -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_DL_MAX_TIME" \
+        --speed-limit "$Z2R_TLS_DL_SPEED_LIMIT" --speed-time "$Z2R_TLS_DL_SPEED_TIME" \
         -H "Range: bytes=0-$((Z2R_TLS_DL_RANGE - 1))" \
         -w '%{http_code} %{size_download} %{time_total}' \
         "$url" 2>/dev/null)" || rc=$?
@@ -139,30 +143,60 @@ z2r_tls_download_state() {
     fi
 }
 
+z2r_tls_poll_sleep() {
+    sleep 0.3 2>/dev/null || sleep 1
+}
+
 z2r_tls_check_target() {
-    local url="$1" tmp v12 v13 dl
+    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 peek t0
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
     z2r_tls_probe_version "$url" 12 >"$tmp/v12" &
+    p12=$!
     z2r_tls_probe_version "$url" 13 >"$tmp/v13" &
+    p13=$!
+
+    t0=$SECONDS
+    while [ $((SECONDS - t0)) -lt $((Z2R_TLS_MAX_TIME + 2)) ]; do
+        z2r_tls_poll_sleep
+        if [ -s "$tmp/v12" ] && [ -s "$tmp/v13" ]; then
+            break
+        fi
+        if [ -s "$tmp/v12" ] && [ ! -s "$tmp/v13" ]; then
+            peek="$(cat "$tmp/v12" 2>/dev/null)" || peek=""
+            if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
+                kill "$p13" 2>/dev/null || true
+                wait "$p13" 2>/dev/null || true
+                break
+            fi
+        elif [ -s "$tmp/v13" ] && [ ! -s "$tmp/v12" ]; then
+            peek="$(cat "$tmp/v13" 2>/dev/null)" || peek=""
+            if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
+                kill "$p12" 2>/dev/null || true
+                wait "$p12" 2>/dev/null || true
+                break
+            fi
+        fi
+    done
     wait
     v12="$(cat "$tmp/v12" 2>/dev/null)" || v12=""
     v13="$(cat "$tmp/v13" 2>/dev/null)" || v13=""
-    [ -n "$v12" ] || v12="1|000|-|-|-"
-    [ -n "$v13" ] || v13="1|000|-|-|-"
+    [ -n "$v12" ] || v12="28|000|-|-|-"
+    [ -n "$v13" ] || v13="28|000|-|-|-"
     dl="skip"
     if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
-        dl="$(z2r_tls_probe_download "$url")"
-        dstate="$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "$(z2r_tls_field "$dl" 2)" "$(z2r_tls_field "$dl" 3)")"
-        # DPI режет поток выборочно: одна неудачная попытка ещё не значит, что
-        # страница не качается (браузер маскирует повторами). Повтор различает
-        # "иногда срезает" (retry, жёлтый) и "срезает всегда" (красный).
-        if [ "$dstate" != "ok" ]; then
-            dl2="$(z2r_tls_probe_download "$url")"
-            if [ "$(z2r_tls_download_state "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" "$(z2r_tls_field "$dl2" 3)")" = "ok" ]; then
-                dl="$(printf '%s|%s|%s|%s|retry' \
-                    "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" \
-                    "$(z2r_tls_field "$dl2" 3)" "$(z2r_tls_field "$dl2" 4)")"
-            fi
+        z2r_tls_probe_download "$url" >"$tmp/d1" &
+        z2r_tls_probe_download "$url" >"$tmp/d2" &
+        wait
+        dl1="$(cat "$tmp/d1" 2>/dev/null)" || dl1=""
+        dl2="$(cat "$tmp/d2" 2>/dev/null)" || dl2=""
+        [ -n "$dl1" ] || dl1="28|000|0|-"
+        [ -n "$dl2" ] || dl2="28|000|0|-"
+        dl="$dl1"
+        if [ "$(z2r_tls_download_state "$(z2r_tls_field "$dl1" 1)" "$(z2r_tls_field "$dl1" 2)" "$(z2r_tls_field "$dl1" 3)")" != "ok" ] \
+            && [ "$(z2r_tls_download_state "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" "$(z2r_tls_field "$dl2" 3)")" = "ok" ]; then
+            dl="$(printf '%s|%s|%s|%s|retry' \
+                "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" \
+                "$(z2r_tls_field "$dl2" 3)" "$(z2r_tls_field "$dl2" 4)")"
         fi
     fi
     rm -rf "$tmp"

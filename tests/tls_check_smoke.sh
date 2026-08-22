@@ -42,6 +42,10 @@ if [ "$head" = 1 ]; then
   eval "mode=\${MOCK_HEAD_${ver:-x}:-ok200}"
   eval "flaky=\${MOCK_FLAKY_${ver:-x}:-0}"
   if [ "$flaky" = 1 ] && [ "$n" = 1 ]; then mode=timeout; fi
+  if [ "${MOCK_SLOW_12:-0}" = 1 ] && [ "$ver" = 12 ]; then
+    sleep 30
+    [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"; echo "30.0 192.0.2.10"; exit 0
+  fi
   case "$mode" in
     ok200)   [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"; echo "0.800 192.0.2.10"; exit 0 ;;
     code403) [ -n "$hdr" ] && printf 'HTTP/1.1 403 Forbidden\r\n' >"$hdr"; echo "0.900 192.0.2.10"; exit 0 ;;
@@ -52,7 +56,7 @@ if [ "$head" = 1 ]; then
   esac
   exit 1
 fi
-if [ "${MOCK_DL_FLAKY:-0}" = 1 ] && [ "$n" = 1 ]; then
+if [ "${MOCK_DL_FLAKY:-0}" = 1 ] && mkdir "$COUNTER_DIR/dlflaky_lock" 2>/dev/null; then
   echo "206 4098 12.0"; exit 28
 fi
 case "${MOCK_DL:-ok206}" in
@@ -84,7 +88,8 @@ calls() {
 }
 
 reset_counter() {
-  rm -f "$COUNTER_DIR"/*
+  rm -rf "$COUNTER_DIR"
+  mkdir -p "$COUNTER_DIR"
 }
 
 target_out() {
@@ -103,6 +108,19 @@ v="$(verdict_of "$out")"
 [ "${v%%|*}" = "ok" ] || fail "сценарий 1: вердикт должен быть ok, получено: $v"
 z2r_tls_version_text 1.3 "$(printf '%s\n' "$out" | sed -n 2p)" | grep -q "HTTP/2 200" || fail "сценарий 1: нет HTTP/2 200 в тексте TLS 1.3"
 z2r_tls_download_text "$(printf '%s\n' "$out" | sed -n 3p)" | grep -q "65536" || fail "сценарий 1: нет размера в тексте данных"
+
+# == 1b. зависший TLS 1.2 добивается после ответа TLS 1.3, а не ждёт max-time ==
+reset_counter
+export MOCK_SLOW_12=1
+t0=$(date +%s)
+out="$(target_out)"
+elapsed=$(( $(date +%s) - t0 ))
+unset MOCK_SLOW_12
+[ "$elapsed" -lt 5 ] || fail "сценарий 1b: зависшая версия держала этап ${elapsed}с (должно быть ~2с)"
+[ "$(printf '%s\n' "$out" | sed -n 1p)" = "28|000|-|-|-" ] \
+  || fail "сценарий 1b: добитая версия должна быть 28|000, получено: $(printf '%s\n' "$out" | sed -n 1p)"
+v="$(verdict_of "$out")"
+[ "${v%%|*}" = "ok" ] || fail "сценарий 1b: вердикт по TLS 1.3 должен быть ok, получено: $v"
 
 # == 2. TLS 1.2 не отвечает, TLS 1.3 работает -> итог ok, строка 1.2 с подсказкой ==
 reset_counter
@@ -143,7 +161,7 @@ v="$(verdict_of "$out")"
 [ "${v%%|*}" = "fail" ] || fail "сценарий 5: вердикт должен быть fail, получено: $v"
 [ "$(calls head_12)" = 1 ] || fail "сценарий 5: должна быть одна попытка, было $(calls head_12)"
 [ "$(calls dl)" = 0 ] || fail "сценарий 5: докачка не должна была запускаться"
-z2r_tls_version_text 1.2 "$(printf '%s\n' "$out" | sed -n 1p)" | grep -q "Таймаут 8сек\." \
+z2r_tls_version_text 1.2 "$(printf '%s\n' "$out" | sed -n 1p)" | grep -q "Таймаут 5сек\." \
   || fail "сценарий 5: текст таймаута без упоминания попыток"
 
 # == 6. DNS не разрешается -> fail с указанием на DNS ==
