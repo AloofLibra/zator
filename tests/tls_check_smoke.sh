@@ -99,26 +99,29 @@ export MOCK_HEAD_12=ok200 MOCK_HEAD_13=ok200 MOCK_DL=ok206 MOCK_FLAKY_12=0 MOCK_
 out="$(target_out)"
 v="$(verdict_of "$out")"
 [ "${v%%|*}" = "ok" ] || fail "сценарий 1: вердикт должен быть ok, получено: $v"
-z2r_tls_version_text 1.3 "$(printf '%s\n' "$out" | sed -n 2p)" "" | grep -q "HTTP/2 200" || fail "сценарий 1: нет HTTP/2 200 в тексте TLS 1.3"
+z2r_tls_version_text 1.3 "$(printf '%s\n' "$out" | sed -n 2p)" | grep -q "HTTP/2 200" || fail "сценарий 1: нет HTTP/2 200 в тексте TLS 1.3"
 z2r_tls_download_text "$(printf '%s\n' "$out" | sed -n 3p)" | grep -q "65536" || fail "сценарий 1: нет размера в тексте данных"
 
-# == 2. TLS 1.2 отключён на сервере, TLS 1.3 работает -> ok, не красный ==
+# == 2. TLS 1.2 не отвечает, TLS 1.3 работает -> итог ok, строка 1.2 с подсказкой ==
 reset_counter
 export MOCK_HEAD_12=tls MOCK_HEAD_13=ok200 MOCK_DL=ok206
 out="$(target_out)"
 v="$(verdict_of "$out")"
 [ "${v%%|*}" = "ok" ] || fail "сценарий 2: вердикт должен быть ok (сайт работает), получено: $v"
-z2r_tls_version_text 1.2 "$(printf '%s\n' "$out" | sed -n 1p)" "$(printf '%s\n' "$out" | sed -n 2p)" \
-  | grep -q "отключён на стороне сайта" || fail "сценарий 2: нет пояснения про отключённый TLS 1.2"
+t12="$(z2r_tls_version_text 1.2 "$(printf '%s\n' "$out" | sed -n 1p)")"
+printf '%s' "$t12" | grep -q "Ошибка TLS-рукопожатия" || fail "сценарий 2: нет причины сбоя TLS 1.2"
+printf '%s' "$t12" | grep -q "Проверьте доступность вручную" || fail "сценарий 2: нет подсказки у TLS 1.2"
+if printf '%s' "$t12" | grep -q "отключён на стороне сайта"; then fail "сценарий 2: остался длинный override-текст"; fi
 
-# == 3. обе версии отвечают 403 -> warn, этап данных пропущен ==
+# == 3. обе версии отвечают 403 -> красный fail, этап данных пропущен ==
 reset_counter
 export MOCK_HEAD_12=code403 MOCK_HEAD_13=code403 MOCK_DL=ok206
 out="$(target_out)"
 [ "$(printf '%s\n' "$out" | sed -n 3p)" = "skip" ] || fail "сценарий 3: докачка должна быть пропущена"
 v="$(verdict_of "$out")"
-[ "${v%%|*}" = "warn" ] || fail "сценарий 3: вердикт должен быть warn, получено: $v"
+[ "${v%%|*}" = "fail" ] || fail "сценарий 3: вердикт должен быть fail (страница не открывается), получено: $v"
 printf '%s' "$v" | grep -q "403" || fail "сценарий 3: в тексте нет кода 403"
+printf '%s' "$v" | grep -q "страница не открывается" || fail "сценарий 3: нет пояснения про страницу"
 
 # == 4. HEAD 405 -> транспорт работает ==
 reset_counter
@@ -154,32 +157,32 @@ v="$(verdict_of "$out")"
 [ "${v%%|*}" = "ok" ] || fail "сценарий 7: после успешного повтора вердикт должен быть ok, получено: $v"
 [ "$(calls head_13)" = 2 ] || fail "сценарий 7: повтор по TLS 1.3 не выполнен"
 
-# == 8. хендшейк есть, тело не приходит (0 байт) -> warn ==
+# == 8. хендшейк есть, тело не приходит (0 байт) -> красный fail ==
 reset_counter
 export MOCK_HEAD_12=ok200 MOCK_HEAD_13=ok200 MOCK_FLAKY_13=0 MOCK_DL=zero
 out="$(target_out)"
 v="$(verdict_of "$out")"
-[ "${v%%|*}" = "warn" ] || fail "сценарий 8: вердикт должен быть warn, получено: $v"
+[ "${v%%|*}" = "fail" ] || fail "сценарий 8: вердикт должен быть fail (страница не скачивается), получено: $v"
 z2r_tls_download_text "$(printf '%s\n' "$out" | sed -n 3p)" | grep -q "0 байт" || fail "сценарий 8: текст не про 0 байт"
 
-# == 9. 206 меньше порога -> partial, вердикт ok ==
+# == 9. 206 меньше порога -> partial, вердикт warn ==
 reset_counter
 export MOCK_DL=partial206
 out="$(target_out)"
 [ "$(z2r_tls_download_state 0 206 1200)" = "partial" ] || fail "сценарий 9: состояние докачки должно быть partial"
 v="$(verdict_of "$out")"
-[ "${v%%|*}" = "ok" ] || fail "сценарий 9: вердикт должен быть ok, получено: $v"
+[ "${v%%|*}" = "warn" ] || fail "сценарий 9: вердикт должен быть warn, получено: $v"
 z2r_tls_download_text "$(printf '%s\n' "$out" | sed -n 3p)" | grep -q "1200" || fail "сценарий 9: в тексте нет 1200"
 
 # == 10. 200 без Range с малым телом -> данные идут ==
 [ "$(z2r_tls_download_state 0 200 512)" = "ok" ] || fail "сценарий 10: 200+512 должен быть ok"
 
-# == 11. докачка оборвалась (rc=28) -> warn ==
+# == 11. докачка оборвалась (rc=28) -> красный fail ==
 reset_counter
 export MOCK_DL=fail28
 out="$(target_out)"
 v="$(verdict_of "$out")"
-[ "${v%%|*}" = "warn" ] || fail "сценарий 11: вердикт должен быть warn, получено: $v"
+[ "${v%%|*}" = "fail" ] || fail "сценарий 11: вердикт должен быть fail, получено: $v"
 
 # == 12. докачка 403/0 байт -> zero с кодом ==
 z2r_tls_download_text "0|403|0|0.5" | grep -q "код 403" || fail "сценарий 12: текст не содержит код 403"

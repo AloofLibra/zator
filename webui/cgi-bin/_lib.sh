@@ -210,14 +210,14 @@ strategy_locks_status_text() {
 }
 
 _tls_detail_json() {
-  local raw="$1" other="$2" ver="$3"
+  local raw="$1" ver="$2"
   printf '{"code":%s,"proto":"%s","time":"%s","ip":"%s","state":"%s","text":"%s"}' \
     "$(z2r_tls_field "$raw" 2)" \
     "$(json_escape "$(z2r_tls_field "$raw" 3)")" \
     "$(json_escape "$(z2r_tls_field "$raw" 4)")" \
     "$(json_escape "$(z2r_tls_field "$raw" 5)")" \
     "$(z2r_tls_version_state "$(z2r_tls_field "$raw" 1)" "$(z2r_tls_field "$raw" 2)")" \
-    "$(json_escape "$(z2r_tls_version_text "$ver" "$raw" "$other")")"
+    "$(json_escape "$(z2r_tls_version_text "$ver" "$raw")")"
 }
 
 check_one_target_json() {
@@ -245,7 +245,7 @@ check_one_target_json() {
   printf '{"label":"%s","target":"%s","tls12":%s,"tls13":%s,"verdict":"%s","text":"%s","tls12_detail":%s,"tls13_detail":%s,"download":%s}' \
     "$(json_escape "$label")" "$(json_escape "$target")" "$b12" "$b13" \
     "${verdict%%|*}" "$(json_escape "${verdict#*|}")" \
-    "$(_tls_detail_json "$v12" "$v13" 1.2)" "$(_tls_detail_json "$v13" "$v12" 1.3)" "$dljson"
+    "$(_tls_detail_json "$v12" 1.2)" "$(_tls_detail_json "$v13" 1.3)" "$dljson"
 }
 
 profile_check_json() {

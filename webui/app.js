@@ -648,7 +648,15 @@ function checkVerdictClass(verdict) {
 }
 
 function checkLineClass(state) {
-  return state === 'ok' || state === 'http' ? 'ok' : 'warn';
+  if (state === 'ok') return 'ok';
+  if (state === 'http') return 'warn';
+  return 'bad';
+}
+
+function checkDownloadClass(state) {
+  if (state === 'ok') return 'ok';
+  if (state === 'partial') return 'warn';
+  return 'bad';
 }
 
 function renderCheckResults(container, payload, emptyMessage, emptyIsHidden = true) {
@@ -683,7 +691,7 @@ function renderCheckResults(container, payload, emptyMessage, emptyIsHidden = tr
         appendText(pair, 'span', item.tls13_detail.text || 'TLS 1.3', checkLineClass(item.tls13_detail.state));
       }
       if (item.download) {
-        appendText(pair, 'span', item.download.text || 'Данные', item.download.state === 'ok' ? 'ok' : 'warn');
+        appendText(pair, 'span', item.download.text || 'Данные', checkDownloadClass(item.download.state));
       }
     } else {
       appendText(pair, 'span', `TLS 1.2: ${item.tls12 ? 'OK' : 'FAIL'}`, item.tls12 ? 'ok' : 'bad');
