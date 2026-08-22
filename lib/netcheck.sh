@@ -10,10 +10,10 @@
 get_yt_cluster_domain() {
     local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
     local letters_map_b="0 1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p q r s t u v w x y z -"
-    
-    cluster_codename=$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
+
+    cluster_codename=$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
 	#Второй раз для пробития нерелевантного ответа
-    cluster_codename=$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
+    cluster_codename=$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
     
     [ -z "$cluster_codename" ] && {
         echo "Не удалось получить cluster_codename. Используем тогда rr1---sn-5goeenes.googlevideo.com" >&2
@@ -126,16 +126,22 @@ z2r_tls_version_state() {
 
 z2r_tls_download_state() {
     local rc="$1" code="$2" size="$3"
-    if [ "$rc" -eq 0 ]; then
-        if [ "$code" = "206" ]; then
-            if [ "$size" -ge "$Z2R_TLS_DL_MIN_OK" ]; then echo ok; else echo partial; fi
-        elif z2r_tls_code_ok "$code"; then
-            if [ "$size" -gt 0 ]; then echo ok; else echo zero; fi
+    if [ "$code" = "206" ]; then
+        if [ "$size" -ge "$Z2R_TLS_DL_MIN_OK" ]; then
+            echo ok
+        elif [ "$rc" -eq 0 ]; then
+            echo partial
+        else
+            echo cut
+        fi
+    elif z2r_tls_code_ok "$code"; then
+        if [ "$size" -gt 0 ]; then
+            if [ "$rc" -eq 0 ]; then echo ok; else echo cut; fi
         else
             echo zero
         fi
     else
-        echo fail
+        if [ "$rc" -eq 0 ]; then echo zero; else echo fail; fi
     fi
 }
 
@@ -207,6 +213,7 @@ z2r_tls_download_parts() {
     case "$state" in
         ok) fact="Данные: получено $size байт за $time с (код $code)"; hint="" ;;
         partial) fact="Данные: получено только $size байт из $((Z2R_TLS_DL_RANGE / 1024))КБ — данных меньше ожидаемого." ;;
+        cut) fact="Данные оборвались: получено $size байт и поток остановился." ;;
         zero)
             if [ "$code" != "000" ]; then
                 fact="Данные: код $code, 0 байт — сервер не отдал тело ответа."
@@ -260,6 +267,10 @@ z2r_tls_target_verdict() {
     if [ "$dl" != "skip" ]; then
         dlrc="$(z2r_tls_field "$dl" 1)"; dlcode="$(z2r_tls_field "$dl" 2)"; dlsize="$(z2r_tls_field "$dl" 3)"
         dstate="$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")"
+        if [ "$dstate" = "cut" ]; then
+            printf 'fail|TLS работает, но поток данных срезается после %s байт — похоже на блокировку по содержимому. Проверьте доступность вручную. Возможно ошибка теста.' "$dlsize"
+            return
+        fi
         if [ "$dstate" = "zero" ] || [ "$dstate" = "fail" ]; then
             printf 'fail|TLS работает, но данные не приходят — страница не скачивается. Проверьте доступность вручную. Возможно ошибка теста.'
             return

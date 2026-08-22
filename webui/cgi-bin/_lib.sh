@@ -367,19 +367,13 @@ api_service() {
 }
 
 api_check() {
-  local gv tmp i
+  local gv results
   gv="$(get_yt_cluster_domain)"
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_check.XXXXXX")" || { send_error "500 Internal Server Error" "Не удалось создать временный каталог"; return; }
-  check_one_target_json "YouTube" "https://www.youtube.com/" >"$tmp/1" &
-  check_one_target_json "Googlevideo" "https://${gv}" >"$tmp/2" &
-  check_one_target_json "Blocked Sites" "https://meduza.io" >"$tmp/3" &
-  check_one_target_json "Instagram" "https://www.instagram.com/" >"$tmp/4" &
-  wait
-  for i in 1 2 3 4; do
-    [ -s "$tmp/$i" ] || printf '{"label":"","target":"","tls12":0,"tls13":0,"verdict":"fail","text":"Проверка не выполнена"}' >"$tmp/$i"
-  done
-  send_json "200 OK" "{\"results\":[$(cat "$tmp/1"),$(cat "$tmp/2"),$(cat "$tmp/3"),$(cat "$tmp/4")]}"
-  rm -rf "$tmp"
+  results="$(check_one_target_json "YouTube" "https://www.youtube.com/")"
+  results="${results},$(check_one_target_json "Googlevideo" "https://${gv}")"
+  results="${results},$(check_one_target_json "Blocked Sites" "https://meduza.io")"
+  results="${results},$(check_one_target_json "Instagram" "https://www.instagram.com/")"
+  send_json "200 OK" "{\"results\":[${results}]}"
 }
 
 api_tls_blob_get() {
