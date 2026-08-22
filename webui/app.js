@@ -641,6 +641,16 @@ function appendText(parent, tag, text, className) {
   return element;
 }
 
+function checkVerdictClass(verdict) {
+  if (verdict === 'ok') return 'ok';
+  if (verdict === 'warn') return 'warn';
+  return 'bad';
+}
+
+function checkLineClass(state) {
+  return state === 'ok' || state === 'http' ? 'ok' : 'warn';
+}
+
 function renderCheckResults(container, payload, emptyMessage, emptyIsHidden = true) {
   if (!container) return;
   container.innerHTML = '';
@@ -664,8 +674,21 @@ function renderCheckResults(container, payload, emptyMessage, emptyIsHidden = tr
 
     const pair = document.createElement('div');
     pair.className = 'check-pair';
-    appendText(pair, 'span', `TLS 1.2: ${item.tls12 ? 'OK' : 'FAIL'}`, item.tls12 ? 'ok' : 'bad');
-    appendText(pair, 'span', `TLS 1.3: ${item.tls13 ? 'OK' : 'FAIL'}`, item.tls13 ? 'ok' : 'bad');
+    if (item.verdict) {
+      appendText(pair, 'span', item.text || item.verdict, checkVerdictClass(item.verdict));
+      if (item.tls12_detail) {
+        appendText(pair, 'span', item.tls12_detail.text || 'TLS 1.2', checkLineClass(item.tls12_detail.state));
+      }
+      if (item.tls13_detail) {
+        appendText(pair, 'span', item.tls13_detail.text || 'TLS 1.3', checkLineClass(item.tls13_detail.state));
+      }
+      if (item.download) {
+        appendText(pair, 'span', item.download.text || 'Данные', item.download.state === 'ok' ? 'ok' : 'warn');
+      }
+    } else {
+      appendText(pair, 'span', `TLS 1.2: ${item.tls12 ? 'OK' : 'FAIL'}`, item.tls12 ? 'ok' : 'bad');
+      appendText(pair, 'span', `TLS 1.3: ${item.tls13 ? 'OK' : 'FAIL'}`, item.tls13 ? 'ok' : 'bad');
+    }
 
     article.append(title, pair);
     container.appendChild(article);
@@ -1902,6 +1925,7 @@ function renderDomainList(name) {
 
     const stratChip = row.querySelector('.domain-strategy');
     const trialBtn = row.querySelector('.trial-btn');
+    const checkBtn = row.querySelector('.domain-check-btn');
     if (isCustomRkn) {
       const strat = Number.isFinite(item.strategy) ? item.strategy : 0;
       if (strat > 0) {
@@ -1911,9 +1935,11 @@ function renderDomainList(name) {
         stratChip.textContent = 'РКН стр.';
       }
       if (trialBtn) trialBtn.hidden = false;
+      if (checkBtn) checkBtn.hidden = false;
     } else {
       stratChip.hidden = true;
       if (trialBtn) trialBtn.hidden = true;
+      if (checkBtn) checkBtn.hidden = true;
     }
 
     const rowEl = row.querySelector('.domain-row');
@@ -1936,6 +1962,30 @@ function findDomainRow(value) {
   return document.querySelector(`#domain-items .domain-row[data-value="${CSS.escape(value)}"]`);
 }
 
+function renderDomainCheck(container, check) {
+  if (!container) return;
+  if (check && Array.isArray(check.results) && check.results.length) {
+    container.hidden = false;
+    renderCheckResults(container, check, 'Нет результатов проверки.', false);
+  } else {
+    container.hidden = true;
+    container.innerHTML = '';
+  }
+}
+
+async function checkDomain(value) {
+  const rowEl = findDomainRow(value);
+  const btn = rowEl ? rowEl.querySelector('.domain-check-btn') : null;
+  try {
+    await withBusy(btn, async () => {
+      const payload = await domainsPost({ list: 'custom_rkn', action: 'check', domain: value });
+      if (rowEl) renderDomainCheck(rowEl.querySelector('.domain-check'), payload && payload.check);
+    });
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
 async function addDomainFromForm() {
   const name = state.activeSubview;
   const input = document.getElementById('domain-add-input');
@@ -1951,6 +2001,13 @@ async function addDomainFromForm() {
         showToast('Добавлено.');
       }
       await refreshDomainList(name);
+      const label = payload && payload.check && Array.isArray(payload.check.results) && payload.check.results[0]
+        ? payload.check.results[0].label
+        : '';
+      if (label) {
+        const rowEl = findDomainRow(label);
+        if (rowEl) renderDomainCheck(rowEl.querySelector('.domain-check'), payload.check);
+      }
     });
   } catch (error) {
     showToast(error.message, 'error');
@@ -2063,7 +2120,9 @@ async function copyDomains() {
 
 async function trialApplyStrategy(rowEl, strategyNum) {
   const domain = rowEl.dataset.value;
-  await domainsPost({ list: 'custom_rkn', action: 'set_strategy', domain, strategy: String(strategyNum) });
+  const payload = await domainsPost({ list: 'custom_rkn', action: 'set_strategy', domain, strategy: String(strategyNum) });
+  renderDomainCheck(rowEl.querySelector('.domain-check'), payload && payload.check);
+  return payload;
 }
 
 function trialReadNum(rowEl) {
@@ -2182,6 +2241,8 @@ document.getElementById('domain-items').addEventListener('click', async (event) 
   const value = rowEl.dataset.value;
   if (event.target.classList.contains('remove-btn')) {
     await removeDomain(value);
+  } else if (event.target.classList.contains('domain-check-btn')) {
+    await checkDomain(value);
   } else if (event.target.classList.contains('trial-btn')) {
     await withBusy(event.target, () => openTrial(rowEl));
   } else if (event.target.classList.contains('trial-save')) {

@@ -982,7 +982,7 @@ run_cdn_test() {
 
       avg=$((total/times))
 
-      if (( avg >= thr )) && [[ "$code" =~ ^2|3 ]]; then
+      if (( avg >= thr )) && [[ "$code" =~ ^[23] ]]; then
           echo -e "${GREEN}$id OK${NC} ${avg}b [$provider]"
           echo OK >> /tmp/cdn_ok
       else

@@ -31,7 +31,8 @@ process_request() {
     "$CURL_BIN" -sS --http1.1 -A "$Z2R_CURL_UA" --connect-timeout 5 --max-time 15 "https://$host/" -o /dev/null
     rc=$?
     if [ "$rc" -eq 0 ]; then status=OK
-    elif [ "$rc" -ne 5 ] && [ "$rc" -ne 6 ]; then status=FAIL
+    elif [ "$rc" -eq 5 ] || [ "$rc" -eq 6 ] || [ "$rc" -eq 28 ]; then status=ERROR
+    else status=FAIL
     fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$status" "$askey" "$hostkey" "$strategy" > "$tmp" && mv -f "$tmp" "$result"
     logger -t strategy-validator "id=$id host=$hostkey strategy=$strategy status=$status"

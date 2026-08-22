@@ -21,7 +21,7 @@ find_runtime_libs() {
     "$here/../../z2r_lib" \
     "$here/../../lib" \
     "$here/../lib"; do
-    if [ -f "$dir/orchestra_state.sh" ] && [ -f "$dir/config.sh" ] && [ -f "$dir/strategies.sh" ]; then
+    if [ -f "$dir/orchestra_state.sh" ] && [ -f "$dir/config.sh" ] && [ -f "$dir/strategies.sh" ] && [ -f "$dir/netcheck.sh" ]; then
       LIB_DIR="$dir"
       return 0
     fi
@@ -33,6 +33,7 @@ find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{
 . "$LIB_DIR/config.sh"
 . "$LIB_DIR/orchestra_state.sh"
 . "$LIB_DIR/strategies.sh"
+. "$LIB_DIR/netcheck.sh"
 [ -f "$LIB_DIR/actions.sh" ] && . "$LIB_DIR/actions.sh"
 [ -f "$LIB_DIR/provider.sh" ] && . "$LIB_DIR/provider.sh"
 [ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
@@ -208,37 +209,43 @@ strategy_locks_status_text() {
   fi
 }
 
-get_yt_cluster_domain() {
-  local cluster_codename converted_name="" i=0 char idx b
-  local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
-  local letters_map_b="0 1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p q r s t u v w x y z -"
-
-  cluster_codename="$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
-  cluster_codename="$(curl -s -A "$Z2R_CURL_UA" --max-time 2 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
-  [ -n "$cluster_codename" ] || { echo "rr1---sn-5goeenes.googlevideo.com"; return; }
-
-  while [ $i -lt ${#cluster_codename} ]; do
-    char="$(echo "$cluster_codename" | cut -c$((i+1)))"
-    idx=1
-    for a in $letters_map_a; do
-      [ "$a" = "$char" ] && break
-      idx=$((idx+1))
-    done
-    b="$(echo "$letters_map_b" | cut -d' ' -f "$idx")"
-    converted_name="${converted_name}${b}"
-    i=$((i+1))
-  done
-  echo "rr1---sn-${converted_name}.googlevideo.com"
+_tls_detail_json() {
+  local raw="$1" other="$2" ver="$3"
+  printf '{"code":%s,"proto":"%s","time":"%s","ip":"%s","state":"%s","text":"%s"}' \
+    "$(z2r_tls_field "$raw" 2)" \
+    "$(json_escape "$(z2r_tls_field "$raw" 3)")" \
+    "$(json_escape "$(z2r_tls_field "$raw" 4)")" \
+    "$(json_escape "$(z2r_tls_field "$raw" 5)")" \
+    "$(z2r_tls_version_state "$(z2r_tls_field "$raw" 1)" "$(z2r_tls_field "$raw" 2)")" \
+    "$(json_escape "$(z2r_tls_version_text "$ver" "$raw" "$other")")"
 }
 
 check_one_target_json() {
-  local label="$1"
-  local target="$2"
-  local tls12=0 tls13=0
-  curl -A "$Z2R_CURL_UA" --tls-max 1.2 --max-time 1 -s -o /dev/null "$target" && tls12=1 || true
-  curl -A "$Z2R_CURL_UA" --tlsv1.3 --max-time 1 -s -o /dev/null "$target" && tls13=1 || true
-  printf '{"label":"%s","target":"%s","tls12":%s,"tls13":%s}' \
-    "$(json_escape "$label")" "$(json_escape "$target")" "$tls12" "$tls13"
+  local label="$1" target="$2"
+  local out v12 v13 dl s12 s13 b12 b13 verdict dlcode dlsize dltime dljson
+  out="$(z2r_tls_check_target "$target")"
+  v12="$(printf '%s\n' "$out" | sed -n 1p)"
+  v13="$(printf '%s\n' "$out" | sed -n 2p)"
+  dl="$(printf '%s\n' "$out" | sed -n 3p)"
+  s12="$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")"
+  s13="$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")"
+  case "$s12" in ok|http) b12=1 ;; *) b12=0 ;; esac
+  case "$s13" in ok|http) b13=1 ;; *) b13=0 ;; esac
+  verdict="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
+  dljson="null"
+  if [ "$dl" != "skip" ]; then
+    dlcode="$(z2r_tls_field "$dl" 2)"
+    dlsize="$(z2r_tls_field "$dl" 3)"
+    dltime="$(z2r_tls_field "$dl" 4)"
+    dljson="$(printf '{"code":%s,"size":%s,"time":"%s","state":"%s","text":"%s"}' \
+      "${dlcode:-000}" "${dlsize:-0}" "$(json_escape "$dltime")" \
+      "$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "${dlcode:-000}" "${dlsize:-0}")" \
+      "$(json_escape "$(z2r_tls_download_text "$dl")")")"
+  fi
+  printf '{"label":"%s","target":"%s","tls12":%s,"tls13":%s,"verdict":"%s","text":"%s","tls12_detail":%s,"tls13_detail":%s,"download":%s}' \
+    "$(json_escape "$label")" "$(json_escape "$target")" "$b12" "$b13" \
+    "${verdict%%|*}" "$(json_escape "${verdict#*|}")" \
+    "$(_tls_detail_json "$v12" "$v13" 1.2)" "$(_tls_detail_json "$v13" "$v12" 1.3)" "$dljson"
 }
 
 profile_check_json() {
@@ -355,14 +362,19 @@ api_service() {
 }
 
 api_check() {
-  local gv
+  local gv tmp i
   gv="$(get_yt_cluster_domain)"
-  send_json "200 OK" "{\"results\":[
-$(check_one_target_json "YouTube" "https://www.youtube.com/")
-,$(check_one_target_json "Googlevideo" "https://${gv}")
-,$(check_one_target_json "Blocked Sites" "https://meduza.io")
-,$(check_one_target_json "Instagram" "https://www.instagram.com/")
-]}"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_check.XXXXXX")" || { send_error "500 Internal Server Error" "Не удалось создать временный каталог"; return; }
+  check_one_target_json "YouTube" "https://www.youtube.com/" >"$tmp/1" &
+  check_one_target_json "Googlevideo" "https://${gv}" >"$tmp/2" &
+  check_one_target_json "Blocked Sites" "https://meduza.io" >"$tmp/3" &
+  check_one_target_json "Instagram" "https://www.instagram.com/" >"$tmp/4" &
+  wait
+  for i in 1 2 3 4; do
+    [ -s "$tmp/$i" ] || printf '{"label":"","target":"","tls12":0,"tls13":0,"verdict":"fail","text":"Проверка не выполнена"}' >"$tmp/$i"
+  done
+  send_json "200 OK" "{\"results\":[$(cat "$tmp/1"),$(cat "$tmp/2"),$(cat "$tmp/3"),$(cat "$tmp/4")]}"
+  rm -rf "$tmp"
 }
 
 api_tls_blob_get() {
@@ -1099,7 +1111,13 @@ api_domains_list() {
   }"
 }
 
-# Действия над списком: add/remove/import/clear/set_strategy/clear_strategy.
+# Быстрая проверка домена общим движком z2r_tls_* (как в CLI при подборе стратегии).
+_domains_check_json() {
+  local domain="$1"
+  printf '{"results":[%s]}' "$(check_one_target_json "$domain" "https://$domain/")"
+}
+
+# Действия над списком: add/remove/import/clear/set_strategy/clear_strategy/check.
 api_domains_action() {
   parse_params
   local meta file kind
@@ -1136,7 +1154,11 @@ api_domains_action() {
       local add_result=""
       domain_list_add "$file" "$normalized" "" "Домен" 1 add_result || \
         send_error "500 Internal Server Error" "Не удалось обновить список"
-      send_json "200 OK" "{\"ok\":true,\"duplicate\":$([ "$add_result" = "duplicate" ] && echo true || echo false)}"
+      local check_json=""
+      if [ "$PARAM_LIST" = "custom_rkn" ]; then
+        check_json=",\"check\":$(_domains_check_json "$normalized")"
+      fi
+      send_json "200 OK" "{\"ok\":true,\"duplicate\":$([ "$add_result" = "duplicate" ] && echo true || echo false)${check_json}}"
       ;;
     remove)
       domain="${PARAM_DOMAIN:-}"
@@ -1211,7 +1233,7 @@ api_domains_action() {
       [ "$strat" -ge 1 ] && [ "$strat" -le "$max_strat" ] || \
         send_error "400 Bad Request" "Стратегия вне диапазона (1..${max_strat})"
       orch_locked_set "$domain" "tls" "$strat"
-      send_json "200 OK" "{\"ok\":true,\"strategy\":${strat}}"
+      send_json "200 OK" "{\"ok\":true,\"strategy\":${strat},\"check\":$(_domains_check_json "$domain")}"
       ;;
     clear_strategy)
       [ "$PARAM_LIST" = "custom_rkn" ] || send_error "400 Bad Request" "Стратегия применяется только к TCP_Custom"
@@ -1219,6 +1241,12 @@ api_domains_action() {
       [ -n "$domain" ] || send_error "400 Bad Request" "Не указан домен"
       orch_locked_clear "$domain" "tls"
       send_json "200 OK" "{\"ok\":true}"
+      ;;
+    check)
+      [ "$PARAM_LIST" = "custom_rkn" ] || send_error "400 Bad Request" "Проверка применяется только к TCP_Custom"
+      domain="${PARAM_DOMAIN:-}"
+      [ -n "$domain" ] || send_error "400 Bad Request" "Не указан домен"
+      send_json "200 OK" "{\"ok\":true,\"check\":$(_domains_check_json "$domain")}"
       ;;
     *)
       send_error "400 Bad Request" "Неизвестное действие: $action"

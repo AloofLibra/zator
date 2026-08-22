@@ -89,7 +89,7 @@ Normal flow:
 - `data/providers/asn.txt`: maintainable ASN:BRAND:ALIASES database deployed to `/opt/zator/data/providers/asn.txt`; remote updates from the same path on the `zator` branch.
 - `lib/telemetry.sh`: telemetry enable/disable and stats sending.
 - `lib/recommendations.sh`: hint database and provider-based recommendations.
-- `lib/netcheck.sh`: connectivity tests, CDN tests, and YouTube cluster probing.
+- `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel TLS 1.2/TLS 1.3 HEAD probes with one retry + a 64KB Range download when HEAD returns 2xx/3xx; classification by curl rc and HTTP code). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
 - `lib/premium.sh`: easter-egg and premium menu branches.
 - `lib/strategies.sh`: active strategy status, orchestra lock helpers, per-profile strategy trial flow, custom RKN domain handling.
 - `lib/submenus.sh`: menu wiring for strategies, provider, offload, and related actions.
@@ -137,7 +137,7 @@ Important practical consequence:
 - `z2r.sh` performs destructive operations on target machines, including removing or rebuilding `/opt/zapret2`.
 - Strategy lock files under `/opt/zator/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
-- `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs (it sources `lib/config.sh`, `lib/orchestra_state.sh`, `lib/strategies.sh`, plus `lib/actions.sh` and `lib/provider.sh` for shared setters). Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
+- `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs (it sources `lib/config.sh`, `lib/orchestra_state.sh`, `lib/strategies.sh`, and `lib/netcheck.sh` for the shared TLS-check engine, plus `lib/actions.sh` and `lib/provider.sh` for shared setters). Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
 - `webui/cgi-bin/_lib.sh` reuses shared setters from `lib/actions.sh` (`backup_smart_set_*`, `ports_apply_add`/`ports_apply_remove`, `backup_create_core`) and `lib/provider.sh` (`provider_set_manual`) instead of duplicating sed logic. The local `_fallback_set_state` is only a legacy fallback used when `lib/actions.sh` is unavailable; `api_fallback_state_set` normally calls `backup_smart_set_fallback` with the same auto-rotation guard as CLI `toggle_fallback_mode`. Changes to those lib functions affect both CLI and WebUI.
 - WebUI settings (auto-rotation, hostlist, RST guard, reasm, QUIC443, NFQWS2 ports, provider, backups) are exposed via `settings.cgi`/`backups.cgi` and mirrored in `webui/dev/fake_router_server.py` and `webui/dev/API_CONTRACT.md` — keep all three in sync when changing behavior. Update/install actions stay CLI-only by design.
 
@@ -331,6 +331,33 @@ bash tests/provider_asn_smoke.sh
 
 ```text
 provider asn smoke ok
+```
+
+```bash
+bash tests/tls_check_smoke.sh
+```
+
+Тест TLS-проверок (пункт меню 01, перебор стратегий, WebUI), только во временной
+директории в `/tmp`, с моком `curl` в PATH:
+
+- не пишет в `/opt`;
+- движок `z2r_tls_*` из `lib/netcheck.sh`: HEAD-проба с парсингом статусной
+  строки («HTTP/2 200») из дампа заголовков, повтор при транспортном сбое,
+  классификация кодов возврата curl (DNS / таймаут / TLS / соединение);
+- этап докачки 64КБ после успешного HEAD: ok / partial / zero / fail,
+  405 на HEAD считается работающим транспортом;
+- вердикты: ok при работающем TLS 1.3 (даже если TLS 1.2 отключён на сервере),
+  warn (код ≥400, только TLS 1.2, данные не идут), fail — только когда обе
+  версии не ответили транспортом;
+- CLI `check_access` (тексты итога, отсутствие старого «Таймаут 2сек») и WebUI
+  `check_one_target_json` (форма JSON: verdict / tls*_detail / download);
+- статический wiring: `_lib.sh` source-ит `netcheck.sh` и не содержит локальной
+  curl-логики TLS, `app.js`/`styles.css`/`fake_router_server.py` синхронны.
+
+Успешный результат:
+
+```text
+tls check smoke ok
 ```
 
 ## Local Inspection Notes

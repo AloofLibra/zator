@@ -669,12 +669,20 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .check-pair {
   display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   font-size: 0.92rem;
 }
 
+.check-pair span { min-width: 0; overflow-wrap: anywhere; }
+
+.domain-row .domain-check { margin-top: 8px; }
+.domain-row .domain-check .check-item { border: none; padding: 0; background: none; gap: 4px; }
+.domain-row .domain-check .check-title { display: none; }
+
 .ok { color: var(--success); }
+.warn { color: var(--warning); }
 .bad { color: var(--danger); }
 
 .settings-form {

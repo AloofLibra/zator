@@ -1,11 +1,11 @@
 # Network / access checks
 
 # Цвета (определяются глобально в z2r.sh; fallback для автономного запуска)
-[ -z "$plain" ] && plain='\033[0m'
-[ -z "$red" ] && red='\033[0;31m'
-[ -z "$green" ] && green='\033[0;32m'
-[ -z "$yellow" ] && yellow='\033[0;33m'
-[ -z "$Z2R_CURL_UA" ] && Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
+[ -z "${plain:-}" ] && plain='\033[0m'
+[ -z "${red:-}" ] && red='\033[0;31m'
+[ -z "${green:-}" ] && green='\033[0;32m'
+[ -z "${yellow:-}" ] && yellow='\033[0;33m'
+[ -z "${Z2R_CURL_UA:-}" ] && Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
 get_yt_cluster_domain() {
     local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
@@ -38,20 +38,260 @@ get_yt_cluster_domain() {
     echo "rr1---sn-${converted_name}.googlevideo.com"
 }
 
+Z2R_TLS_CONNECT_TIMEOUT=4
+Z2R_TLS_MAX_TIME=8
+Z2R_TLS_RETRY_DELAY=2
+Z2R_TLS_DL_RANGE=65536
+Z2R_TLS_DL_MIN_OK=32768
+Z2R_TLS_DL_MAX_TIME=12
+
+# Функции движка обязаны возвращать 0: они вызываются под set -e в z2r.sh,
+# поэтому код возврата curl передаётся внутри данных, а не через статус функции.
+
+z2r_tls_head_once() {
+    local url="$1" hdr="$2"; shift 2
+    local out rc
+    rc=0
+    out="$(curl -4 -s -I -o /dev/null -A "$Z2R_CURL_UA" \
+        --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_MAX_TIME" \
+        -D "$hdr" -w '%{time_total} %{remote_ip}' \
+        "$@" "$url" 2>/dev/null)" || rc=$?
+    printf '%s|%s\n' "$rc" "${out:-- -}"
+}
+
+z2r_tls_probe_version() {
+    local url="$1" ver="$2" flags hdr attempt raw rc rest time ip first proto code
+    case "$ver" in
+        12) flags="--tlsv1.2 --tls-max 1.2" ;;
+        13) flags="--tlsv1.3" ;;
+        *) return 1 ;;
+    esac
+    hdr="$(mktemp "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
+    code=000
+    for attempt in 1 2; do
+        if [ "$attempt" -eq 2 ]; then
+            [ "$code" != "000" ] && break
+            sleep "$Z2R_TLS_RETRY_DELAY"
+        fi
+        : >"$hdr"
+        raw="$(z2r_tls_head_once "$url" "$hdr" $flags)"
+        rc="${raw%%|*}"; rest="${raw#*|}"
+        case "$rest" in
+            *' '*) time="${rest%% *}"; ip="${rest##* }" ;;
+            *) time="-"; ip="-" ;;
+        esac
+        first="$(head -n 1 "$hdr" 2>/dev/null | tr -d '\r')"
+        proto="${first%% *}"; code="${first#* }"; code="${code%% *}"
+        [ -n "$proto" ] || proto="-"
+        case "$code" in ''|*[!0-9]*) code=000 ;; esac
+        [ "$code" != "000" ] && break
+    done
+    rm -f "$hdr"
+    printf '%s|%s|%s|%s|%s\n' "$rc" "$code" "$proto" "$time" "$ip"
+}
+
+z2r_tls_probe_download() {
+    local url="$1" out rc code rest size time
+    rc=0
+    out="$(curl -4 -s -o /dev/null -A "$Z2R_CURL_UA" \
+        --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_DL_MAX_TIME" \
+        -H "Range: bytes=0-$((Z2R_TLS_DL_RANGE - 1))" \
+        -w '%{http_code} %{size_download} %{time_total}' \
+        "$url" 2>/dev/null)" || rc=$?
+    code="${out%% *}"; rest="${out#* }"; size="${rest%% *}"; time="${rest##* }"
+    case "$out" in *' '*) ;; *) size=""; time="" ;; esac
+    case "$code" in ''|*[!0-9]*) code=000 ;; esac
+    case "$size" in ''|*[!0-9]*) size=0 ;; esac
+    [ -n "$time" ] || time="-"
+    printf '%s|%s|%s|%s\n' "$rc" "$code" "$size" "$time"
+}
+
+z2r_tls_field() {
+    printf '%s\n' "$1" | cut -d'|' -f"$2"
+}
+
+z2r_tls_code_ok() {
+    case "$1" in
+        2??|3??) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+z2r_tls_version_state() {
+    local rc="$1" code="$2"
+    if [ "$code" != "000" ]; then
+        if z2r_tls_code_ok "$code"; then echo ok; else echo http; fi
+        return
+    fi
+    case "$rc" in
+        6) echo dns ;;
+        28) echo timeout ;;
+        7) echo conn ;;
+        4) echo unsupported ;;
+        35|16|53|54|56|60) echo tls ;;
+        *) echo none ;;
+    esac
+}
+
+z2r_tls_download_state() {
+    local rc="$1" code="$2" size="$3"
+    if [ "$rc" -eq 0 ]; then
+        if [ "$code" = "206" ]; then
+            if [ "$size" -ge "$Z2R_TLS_DL_MIN_OK" ]; then echo ok; else echo partial; fi
+        elif z2r_tls_code_ok "$code"; then
+            if [ "$size" -gt 0 ]; then echo ok; else echo zero; fi
+        else
+            echo zero
+        fi
+    else
+        echo fail
+    fi
+}
+
+z2r_tls_check_target() {
+    local url="$1" tmp v12 v13 dl
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
+    z2r_tls_probe_version "$url" 12 >"$tmp/v12" &
+    z2r_tls_probe_version "$url" 13 >"$tmp/v13" &
+    wait
+    v12="$(cat "$tmp/v12" 2>/dev/null)" || v12=""
+    v13="$(cat "$tmp/v13" 2>/dev/null)" || v13=""
+    [ -n "$v12" ] || v12="1|000|-|-|-"
+    [ -n "$v13" ] || v13="1|000|-|-|-"
+    dl="skip"
+    if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
+        dl="$(z2r_tls_probe_download "$url")"
+    fi
+    rm -rf "$tmp"
+    printf '%s\n%s\n%s\n' "$v12" "$v13" "$dl"
+}
+
+z2r_tls_version_text() {
+    local ver="$1" raw="$2" other_raw="$3"
+    local rc code proto time state other_code text why
+    rc="$(z2r_tls_field "$raw" 1)"; code="$(z2r_tls_field "$raw" 2)"
+    proto="$(z2r_tls_field "$raw" 3)"; time="$(z2r_tls_field "$raw" 4)"
+    state="$(z2r_tls_version_state "$rc" "$code")"
+    if [ "$ver" = "1.2" ]; then
+        why="важно для ТВ и т.п."
+    else
+        why="важно в основном для всего современного"
+    fi
+    case "$state" in
+        ok|http) text="Есть ответ по TLS $ver ($why): $proto $code за $time с" ;;
+        dns) text="Нет ответа по TLS $ver ($why): домен не разрешается (DNS). Проверьте доступность вручную. Возможно ошибка теста." ;;
+        timeout) text="Нет ответа по TLS $ver ($why) за $Z2R_TLS_MAX_TIME с (2 попытки). Проверьте доступность вручную. Возможно ошибка теста." ;;
+        tls) text="Нет ответа по TLS $ver ($why): ошибка TLS-рукопожатия. Проверьте доступность вручную. Возможно ошибка теста." ;;
+        conn) text="Нет ответа по TLS $ver ($why): соединение не устанавливается. Проверьте доступность вручную. Возможно ошибка теста." ;;
+        unsupported) text="Нет ответа по TLS $ver ($why): локальный curl не поддерживает эту версию TLS. Проверьте доступность вручную." ;;
+        *) text="Нет ответа по TLS $ver ($why), curl rc=$rc. Проверьте доступность вручную. Возможно ошибка теста." ;;
+    esac
+    other_code="$(z2r_tls_field "$other_raw" 2)"
+    if [ -n "$other_code" ] && [ "$other_code" != "000" ]; then
+        case "$state" in
+            ok|http) ;;
+            *) if [ "$ver" = "1.2" ]; then
+                    text="Нет ответа по TLS 1.2 ($why) — обычно он отключён на стороне сайта, для современных сайтов это нормально. Для ТВ и старых устройств проверьте вручную."
+                else
+                    text="Нет ответа по TLS 1.3 ($why) — сайт отвечает по TLS 1.2; современные браузеры могут не открыться. Проверьте вручную."
+                fi ;;
+        esac
+    fi
+    printf '%s\n' "$text"
+}
+
+z2r_tls_download_text() {
+    local raw="$1" rc code size time state
+    [ "$raw" = "skip" ] && return 0
+    rc="$(z2r_tls_field "$raw" 1)"; code="$(z2r_tls_field "$raw" 2)"
+    size="$(z2r_tls_field "$raw" 3)"; time="$(z2r_tls_field "$raw" 4)"
+    state="$(z2r_tls_download_state "$rc" "$code" "$size")"
+    case "$state" in
+        ok) echo "Данные ($((Z2R_TLS_DL_RANGE / 1024))КБ): получено $size байт за $time с (код $code)" ;;
+        partial) echo "Данные: получено только $size байт из $Z2R_TLS_DL_RANGE — данных меньше ожидаемого. Проверьте доступность вручную. Возможно ошибка теста." ;;
+        zero)
+            if [ "$code" != "000" ]; then
+                echo "Данные: код $code, 0 байт — сервер не отдал тело ответа. Проверьте доступность вручную. Возможно ошибка теста."
+            else
+                echo "Данные: 0 байт — TLS работает, но тело ответа не приходит. Проверьте доступность вручную. Возможно ошибка теста."
+            fi
+            ;;
+        fail) echo "Данные: скачать не удалось (curl rc=$rc). Проверьте доступность вручную. Возможно ошибка теста." ;;
+    esac
+}
+
+z2r_tls_target_verdict() {
+    local v12="$1" v13="$2" dl="$3"
+    local rc12 code12 rc13 code13 s12 s13 t12 t13 best dlrc dlcode dlsize dstate reason
+    rc12="$(z2r_tls_field "$v12" 1)"; code12="$(z2r_tls_field "$v12" 2)"
+    rc13="$(z2r_tls_field "$v13" 1)"; code13="$(z2r_tls_field "$v13" 2)"
+    s12="$(z2r_tls_version_state "$rc12" "$code12")"
+    s13="$(z2r_tls_version_state "$rc13" "$code13")"
+    case "$s12" in ok|http) t12=1 ;; *) t12=0 ;; esac
+    case "$s13" in ok|http) t13=1 ;; *) t13=0 ;; esac
+    if [ "$t12" -eq 0 ] && [ "$t13" -eq 0 ]; then
+        if [ "$s12" = "dns" ] || [ "$s13" = "dns" ]; then
+            reason="домен не разрешается системным DNS; браузер может работать через свой DoH"
+        elif [ "$s12" = "tls" ] || [ "$s13" = "tls" ]; then
+            reason="TLS-рукопожатие не проходит"
+        elif [ "$s12" = "timeout" ] || [ "$s13" = "timeout" ]; then
+            reason="нет ответа от сервера (таймаут)"
+        else
+            reason="соединение не устанавливается"
+        fi
+        printf 'fail|Нет ответа: %s. Стратегия, скорее всего, не работает. Проверьте доступность вручную. Возможно ошибка теста.' "$reason"
+        return
+    fi
+    if ! z2r_tls_code_ok "$code12" && ! z2r_tls_code_ok "$code13"; then
+        if [ "$t12" -eq 1 ]; then best="$code12"; else best="$code13"; fi
+        printf 'warn|Сервер отвечает (код %s), TLS работает — код не 2xx/3xx. Проверьте доступность вручную в браузере.' "$best"
+        return
+    fi
+    if [ "$dl" != "skip" ]; then
+        dlrc="$(z2r_tls_field "$dl" 1)"; dlcode="$(z2r_tls_field "$dl" 2)"; dlsize="$(z2r_tls_field "$dl" 3)"
+        dstate="$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")"
+        if [ "$dstate" = "zero" ] || [ "$dstate" = "fail" ]; then
+            printf 'warn|TLS работает, но данные не приходят — возможно, блокировка по содержимому или медленный сервер. Проверьте доступность вручную.'
+            return
+        fi
+    fi
+    if [ "$t13" -eq 0 ]; then
+        printf 'warn|Сайт отвечает только по TLS 1.2 — TLS 1.3 недоступен, современные браузеры могут не открыться. Проверьте доступность вручную.'
+        return
+    fi
+    printf 'ok|Сайт доступен: TLS работает, данные идут.'
+}
+
 check_access() {
-	local TestURL="$1"
-	# Проверка TLS 1.2
-	if curl -A "$Z2R_CURL_UA" --tls-max 1.2 --max-time 1 -s -o /dev/null "$TestURL"; then
-		echo -e "${green}Есть ответ по TLS 1.2 (важно для ТВ и т.п.). ${yellow}Тест может быть ошибочен.${plain}"
-	else
-		echo -e "${yellow}Нет ответа по TLS 1.2 (важно для ТВ и т.п.) Таймаут 2сек. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
-	fi
-	# Проверка TLS 1.3
-	if curl -A "$Z2R_CURL_UA" --tlsv1.3 --max-time 1 -s -o /dev/null "$TestURL"; then
-		echo -e "${green}Есть ответ по TLS 1.3 (важно в основном для всего современного) ${yellow}Тест может быть ошибочен.${plain}"
-	else
-		echo -e "${yellow}Нет ответа по TLS 1.3 (важно в основном для всего современного) Таймаут 2сек. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
-	fi
+    local TestURL="$1" out v12 v13 dl c12 c13 cd verdict vcolor
+    out="$(z2r_tls_check_target "$TestURL")"
+    v12="$(printf '%s\n' "$out" | sed -n 1p)"
+    v13="$(printf '%s\n' "$out" | sed -n 2p)"
+    dl="$(printf '%s\n' "$out" | sed -n 3p)"
+    case "$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")" in
+        ok|http) c12="$green" ;;
+        *) c12="$yellow" ;;
+    esac
+    case "$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")" in
+        ok|http) c13="$green" ;;
+        *) c13="$yellow" ;;
+    esac
+    echo -e "${c12}$(z2r_tls_version_text "1.2" "$v12" "$v13")${plain}"
+    echo -e "${c13}$(z2r_tls_version_text "1.3" "$v13" "$v12")${plain}"
+    if [ "$dl" != "skip" ]; then
+        case "$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "$(z2r_tls_field "$dl" 2)" "$(z2r_tls_field "$dl" 3)")" in
+            ok) cd="$green" ;;
+            *) cd="$yellow" ;;
+        esac
+        echo -e "${cd}$(z2r_tls_download_text "$dl")${plain}"
+    fi
+    verdict="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
+    case "${verdict%%|*}" in
+        ok) vcolor="$green" ;;
+        warn) vcolor="$yellow" ;;
+        *) vcolor="$red" ;;
+    esac
+    echo -e "${vcolor}Итог: ${verdict#*|}${plain}"
 }
 
 
