@@ -509,37 +509,36 @@ wireguard_submenu() {
 
 advanced_settings_submenu() {
   while true; do
-    local current_state current_label
-    local wg_label
-    local wg_block
-    local quic_label
-    local quic_block
+    local current_state current_value current_color
+    local wg_block wg_value wg_color
+    local quic_block quic_value quic_color
+    local keenetic_status keenetic_color
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
-      current_label="${red}активирован${plain}"
+      current_value="активирован"; current_color="red"
     elif [ "$current_state" = "выключено" ]; then
-      current_label="${cyan}отсутствует${plain}"
+      current_value="отсутствует"; current_color="green"
     else
-      current_label="${yellow}недоступно${plain}"
+      current_value="недоступно"; current_color="yellow"
     fi
 
     wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' /opt/zapret2/config 2>/dev/null)"
     if printf "%s\n" "$wg_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
-      wg_label="${red}выключено${plain}"
+      wg_value="выключено"; wg_color="red"
     elif printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard'; then
-      wg_label="${green}включено${plain}"
+      wg_value="включено"; wg_color="green"
     else
-      wg_label="${yellow}недоступно${plain}"
+      wg_value="недоступно"; wg_color="yellow"
     fi
 
     quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' /opt/zapret2/config 2>/dev/null)"
     if printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
-      quic_label="${green}включено${plain}"
+      quic_value="включено"; quic_color="green"
     elif printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$'; then
-      quic_label="${red}выключено${plain}"
+      quic_value="выключено"; quic_color="red"
     else
-      quic_label="${yellow}недоступно${plain}"
+      quic_value="недоступно"; quic_color="yellow"
     fi
 
     echo -e "${cyan}--- Дополнительные настройки ---${plain}"
@@ -550,12 +549,17 @@ advanced_settings_submenu() {
     echo "Если картинка открывается, параметр обычно не нужен. Проблема чаще актуальна на Keenetic/Netcraze."
     echo ""
 
-    submenu_item "1" "Параметр --reasm-disable. Сейчас: ${current_label}"
-    submenu_item "2" "Включить/выключить стратегию WireGuard. Сейчас: ${wg_label}"
-    submenu_item "3" "Настройки WireGuard (повторы и blob)"
-    submenu_item "4" "Фейки для всех QUIC-initial на 443 порту. Сейчас: ${quic_label}"
+    submenu_status_item "1" "Параметр --reasm-disable." "$current_value" "$current_color"
+    submenu_status_item "2" "Включить/выключить стратегию WireGuard." "$wg_value" "$wg_color"
+    submenu_status_item "3" "Настройки WireGuard (повторы и blob)"
+    submenu_status_item "4" "Фейки для всех QUIC-initial на 443 порту." "$quic_value" "$quic_color"
     if keenetic_policy_ndmc_is_supported; then
-      submenu_item "5" "Настройка Keenetic-политики для nfqws2. Сейчас: $(get_keenetic_policy_status)"
+      keenetic_status="$(get_keenetic_policy_status)"
+      case "$keenetic_status" in
+        "Не задана"|"") keenetic_color="yellow" ;;
+        *) keenetic_color="green" ;;
+      esac
+      submenu_status_item "5" "Настройка Keenetic-политики для nfqws2." "$keenetic_status" "$keenetic_color"
     fi
     submenu_item "0" "Назад"
     echo ""

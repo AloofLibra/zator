@@ -138,6 +138,8 @@ orch_profile_try() {
 get_orchestra_locks_info() {
     local output_var="${1:-}"
     local profile_state_file orch_lock_file
+    # fallback для автономного вызова (CGI/WebUI не наследует палитру z2r.sh)
+    [ -z "${gray:-}" ] && gray='\033[0;90m'
     profile_state_file="$PROFILE_STATE_FILE"
     orch_lock_file="$ORCH_LOCK_FILE"
 
@@ -170,7 +172,7 @@ get_orchestra_locks_info() {
                 ;;
             *)
                 eff="$raw"
-                printf -v colored "%b" "${Fcyan}${eff}${plain}"
+                printf -v colored "%b" "${Fgreen}${eff}${plain}"
                 ;;
         esac
         printf -v "${state_vars[i]}" "%s" "$eff"
