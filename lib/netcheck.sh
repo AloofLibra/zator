@@ -285,7 +285,7 @@ z2r_tls_target_verdict() {
         dlrc="$(z2r_tls_field "$dl" 1)"; dlcode="$(z2r_tls_field "$dl" 2)"; dlsize="$(z2r_tls_field "$dl" 3)"
         dstate="$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")"
         if [ "$dstate" = "cut" ]; then
-            printf 'fail|TLS работает, но поток данных срезается после %s байт - похоже на блокировку "16кб". Проверьте доступность вручную. Возможно ошибка теста.' "$dlsize"
+            printf 'fail|TLS работает, но поток данных срезается после %s байт - похоже на блокировку «16кб». Проверьте доступность вручную. Возможно ошибка теста.' "$dlsize"
             return
         fi
         if [ "$dstate" = "zero" ] || [ "$dstate" = "fail" ]; then
