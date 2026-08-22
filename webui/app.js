@@ -202,6 +202,7 @@ const ACTION_SELECTORS = [
   '#domain-copy-btn',
   '#domain-clear-btn',
   '#domain-items .remove-btn',
+  '#domain-items .domain-check-btn',
   '#domain-items .trial-btn',
   '#domain-items .trial-save',
   '#domain-items .trial-next',
@@ -653,9 +654,7 @@ function checkLineClass(state) {
 }
 
 function checkDownloadClass(state) {
-  if (state === 'ok') return 'ok';
-  if (state === 'partial') return 'warn';
-  return 'bad';
+  return state === 'ok' ? 'ok' : 'bad';
 }
 
 function renderCheckResults(container, payload, emptyMessage, emptyIsHidden = true) {
@@ -2171,12 +2170,6 @@ async function openTrial(rowEl) {
   trialWriteNum(rowEl, startNum);
   panel.hidden = false;
   rowEl.classList.add('is-expanded');
-
-  try {
-    await trialApplyStrategy(rowEl, startNum);
-  } catch (error) {
-    showToast(error.message, 'error');
-  }
 }
 
 async function closeTrial(rowEl, restore) {

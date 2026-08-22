@@ -41,7 +41,6 @@ get_yt_cluster_domain() {
 Z2R_TLS_CONNECT_TIMEOUT=4
 Z2R_TLS_MAX_TIME=8
 Z2R_TLS_DL_RANGE=65536
-Z2R_TLS_DL_MIN_OK=32768
 Z2R_TLS_DL_MAX_TIME=12
 
 # Функции движка всегда возвращают 0 (вызовы под set -e в z2r.sh):
@@ -124,17 +123,12 @@ z2r_tls_version_state() {
     esac
 }
 
+# 206/2xx/3xx + rc=0 и любые байты > 0 — тело дошло целиком (страница может
+# быть просто меньше запрошенных 64КБ). Обрыв ("cut") — только когда байты
+# пошли, но curl закончился ошибкой.
 z2r_tls_download_state() {
     local rc="$1" code="$2" size="$3"
-    if [ "$code" = "206" ]; then
-        if [ "$size" -ge "$Z2R_TLS_DL_MIN_OK" ]; then
-            echo ok
-        elif [ "$rc" -eq 0 ]; then
-            echo partial
-        else
-            echo cut
-        fi
-    elif z2r_tls_code_ok "$code"; then
+    if [ "$code" = "206" ] || z2r_tls_code_ok "$code"; then
         if [ "$size" -gt 0 ]; then
             if [ "$rc" -eq 0 ]; then echo ok; else echo cut; fi
         else
@@ -212,7 +206,6 @@ z2r_tls_download_parts() {
     hint="Проверьте доступность вручную. Возможно ошибка теста."
     case "$state" in
         ok) fact="Данные: получено $size байт за $time с (код $code)"; hint="" ;;
-        partial) fact="Данные: получено только $size байт из $((Z2R_TLS_DL_RANGE / 1024))КБ — данных меньше ожидаемого." ;;
         cut) fact="Данные оборвались: получено $size байт и поток остановился." ;;
         zero)
             if [ "$code" != "000" ]; then
@@ -221,7 +214,13 @@ z2r_tls_download_parts() {
                 fact="Данные: 0 байт — TLS работает, но тело ответа не приходит."
             fi
             ;;
-        fail) fact="Данные: скачать не удалось (curl rc=$rc)." ;;
+        fail)
+            if [ "$rc" = "28" ]; then
+                fact="Данные: таймаут — тело ответа не начало приходать за ${Z2R_TLS_DL_MAX_TIME} сек."
+            else
+                fact="Данные: скачать не удалось (curl rc=$rc)."
+            fi
+            ;;
     esac
     printf '%s|%s\n' "$fact" "$hint"
 }
@@ -273,10 +272,6 @@ z2r_tls_target_verdict() {
         fi
         if [ "$dstate" = "zero" ] || [ "$dstate" = "fail" ]; then
             printf 'fail|TLS работает, но данные не приходят — страница не скачивается. Проверьте доступность вручную. Возможно ошибка теста.'
-            return
-        fi
-        if [ "$dstate" = "partial" ]; then
-            printf 'warn|Данные идут не полностью. Проверьте доступность вручную. Возможно ошибка теста.'
             return
         fi
     fi
