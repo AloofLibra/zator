@@ -518,7 +518,8 @@ manage_custom_rkn_domain() {
     for ((s=strategy_num; s<=max_strat; s++)); do
         orch_locked_set "$user_domain" "tls" "$s"
 
-        echo "Стратегия $s применена для домена $user_domain"
+        echo -e "Стратегия $s применена для домена ${cyan}${user_domain}${plain}"
+        echo -e "${yellow}Запускается проверка, пожалуйста подождите:${plain}"
         check_access "$test_url"
 
         read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
