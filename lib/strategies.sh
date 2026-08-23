@@ -154,7 +154,7 @@ orch_profile_try() {
 orch_ask_sweep_extra_delay() {
     local extra
     echo "Пауза между стратегиями снижает риск блока ТСПУ: больше пауза — дольше прогон, но безопаснее." >&2
-    read -re -p "Добавить секунд к базовой паузе 3 сек (Enter - без добавки, 0 - без изменений): " extra
+    read -re -p "Добавить секунд к базовой паузе 3 сек (Enter - без добавки, 0 - отмена): " extra
     if [ "$extra" = "0" ]; then
         return 0
     fi
@@ -174,7 +174,7 @@ orch_ask_sweep_extra_delay() {
 orch_ask_sweep_tls_pref() {
     local pref
     echo "TLS 1.2 важен для ТВ и старых устройств, TLS 1.3 — для современных браузеров." >&2
-    read -re -p "Какой TLS должен работать: 1 - TLS 1.2, 2 - TLS 1.3, 3 - обе (Enter - 3, 0 - без изменений): " pref
+    read -re -p "Какой TLS должен работать: 1 - TLS 1.2, 2 - TLS 1.3, 3 - обе (Enter - 3, 0 - отмена): " pref
     case "$pref" in
         0) ;;
         1) echo "12" ;;
@@ -189,13 +189,13 @@ orch_ask_sweep_tls_pref() {
 }
 
 # Диалог автопрогона (режим → требуемый TLS → добавка к паузе) и запуск.
-# 0 на любом вопросе = выход без изменений.
+# 0 на любом вопросе = отмена.
 orch_run_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
     local mode tls_pref extra_pause
-    read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1, 0 - без изменений): " mode
+    read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1, 0 - отмена): " mode
     if [ "$mode" = "0" ]; then
-        echo "Без изменений."
+        echo "Отмена."
         pause_enter
         return 0
     fi
@@ -204,14 +204,14 @@ orch_run_auto_sweep() {
 
     tls_pref="$(orch_ask_sweep_tls_pref)"
     if [ -z "$tls_pref" ]; then
-        echo "Без изменений."
+        echo "Отмена."
         pause_enter
         return 0
     fi
 
     extra_pause="$(orch_ask_sweep_extra_delay)"
     if [ -z "$extra_pause" ]; then
-        echo "Без изменений."
+        echo "Отмена."
         pause_enter
         return 0
     fi
