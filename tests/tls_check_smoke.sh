@@ -389,6 +389,14 @@ printf '%s' "$lib_sh" | grep -q 'LIB_DIR/netcheck\.sh' || fail "сценарий
 if printf '%s' "$lib_sh" | grep -q -- '--tls-max 1\.2'; then fail "сценарий 16: в _lib.sh осталась локальная curl-логика TLS"; fi
 printf '%s' "$lib_sh" | grep -q '_domains_check_json' || fail "сценарий 16: нет _domains_check_json"
 grep -q 'orch_auto_sweep' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 16: нет orch_auto_sweep"
+if grep -q 'check_json="$(profile_check_json' webui/cgi-bin/_lib.sh 2>/dev/null; then
+  :
+fi
+[ "$(grep -c 'profile_check_json' webui/cgi-bin/_lib.sh)" = "2" ]   || fail "сценарий 16: profile_check_json должен зваться только из api_check (без инлайна в set-lock)"
+grep -q 'PARAM_PROFILE.*\[\[\|\[\[ "\${PARAM_PROFILE' webui/cgi-bin/_lib.sh   || grep -q 'api_check' webui/cgi-bin/_lib.sh || true
+grep -q '2>/dev/null </dev/null &' lib/netcheck.sh   || fail "сценарий 16: фоновые пробы не отсоединены от CGI stdio"
+grep -q "body: new URLSearchParams({ profile: profile.profile })" webui/app.js   || fail "сценарий 16: app.js не дергает проверку после set-lock"
+[ "$(grep -c "check.cgi" webui/app.js)" -ge 2 ]   || fail "сценарий 16: check.cgi должен вызываться и из кнопки, и после set-lock"
 [ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "2" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
 printf '%s' "$lib_sh" | grep -q '^    check)' || fail "сценарий 16: нет действия check в domains"
 grep -q 'checkVerdictClass' "$REPO_DIR/webui/app.js" || fail "сценарий 16: app.js не рендерит verdict"

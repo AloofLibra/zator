@@ -2212,6 +2212,13 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 
         if endpoint == "check":
             self._sleep_for("check")
+            profile = params.get("profile", "")
+            if re.match(r"^[1-9]$", profile):
+                self._log("{0} {1} | profile check profile={2} check_result={3}".format(
+                    self.command, parsed.path, profile, self.state.check_result))
+                with self.state.lock:
+                    self._send_json(self.state.profile_check_json(int(profile)))
+                return
             self._log("{0} {1} | check_result={2}".format(
                 self.command, parsed.path, self.state.check_result))
             with self.state.lock:
@@ -2306,10 +2313,9 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             # Профиль 6: restart (эмуляция)
             if int(profile) == 6:
                 self.state.nfqws2_running = True
-            check_json = self.state.profile_check_json(int(profile))
             self._log("{0} {1} | profile={2} strategy={3} -> ok (max={4})".format(
                 self.command, parsed.path, profile, strategy, maxstrat))
-            self._send_json({"ok": True, "check": check_json})
+            self._send_json({"ok": True})
 
     def _handle_clear_lock(self, params, parsed):
         # api_clear_lock() — _lib.sh:232

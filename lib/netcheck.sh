@@ -150,9 +150,9 @@ z2r_tls_poll_sleep() {
 z2r_tls_check_target() {
     local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 peek t0
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
-    z2r_tls_probe_version "$url" 12 >"$tmp/v12" &
+    z2r_tls_probe_version "$url" 12 >"$tmp/v12" 2>/dev/null </dev/null &
     p12=$!
-    z2r_tls_probe_version "$url" 13 >"$tmp/v13" &
+    z2r_tls_probe_version "$url" 13 >"$tmp/v13" 2>/dev/null </dev/null &
     p13=$!
 
     t0=$SECONDS
@@ -184,8 +184,8 @@ z2r_tls_check_target() {
     [ -n "$v13" ] || v13="28|000|-|-|-"
     dl="skip"
     if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
-        z2r_tls_probe_download "$url" >"$tmp/d1" &
-        z2r_tls_probe_download "$url" >"$tmp/d2" &
+        z2r_tls_probe_download "$url" >"$tmp/d1" 2>/dev/null </dev/null &
+        z2r_tls_probe_download "$url" >"$tmp/d2" 2>/dev/null </dev/null &
         wait
         dl1="$(cat "$tmp/d1" 2>/dev/null)" || dl1=""
         dl2="$(cat "$tmp/d2" 2>/dev/null)" || dl2=""

@@ -122,9 +122,20 @@ JSON, `Content-Type: application/json; charset=utf-8`.
 
 ```jsonc
 {
-  "ok": true,
-  "check": {                 // profile_check_json(profile)
-    "results": [
+  "ok": true
+}
+```
+
+`set-lock` отвечает **быстро** (только запись состояния, без проверки):
+долгий CGI упирается в таймаут httpd («Bad Gateway») и оставляет процессы.
+Инлайн-проверка после применения делается отдельным запросом
+[`check.cgi?profile=N`](#5-post-cgi-bincheckcgi--api_check) с фронтенда.
+
+Формат `check` (для справки, теперь возвращает `check.cgi?profile=N`):
+
+```jsonc
+{
+  "results": [
       {"label":"YouTube","target":"https://www.youtube.com/","tls12":1,"tls13":1,
        "verdict":"ok","text":"Сайт доступен: TLS работает, данные идут.",
      "tls12_detail":{"code":200,"proto":"HTTP/2","time":"0.8","ip":"203.0.113.1","state":"ok","text":"Есть ответ по TLS 1.2 (важно для ТВ и т.п.): HTTP/2 200 за 0.8 с"},
@@ -201,7 +212,9 @@ JSON, `Content-Type: application/json; charset=utf-8`.
 
 ## 5. `POST /cgi-bin/check.cgi` → `api_check`
 
-Параметры: нет. (Фронтенд шлёт `POST`, но метод для этого эндпоинта не важен.)
+Параметры: необязательный `profile` (`1..9`) — проверка одной цели профиля
+(`profile_check_json`, используется фронтендом после `set-lock.cgi`);
+без параметра — полная проверка 4 целей. (Метод для этого эндпоинта не важен.)
 
 Проверка выполняется движком `z2r_tls_*` из `lib/netcheck.sh` (единый модуль
 с CLI-меню; `_lib.sh` его source-ит): для каждой цели параллельно пробуются

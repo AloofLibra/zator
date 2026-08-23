@@ -591,15 +591,27 @@ function renderStrategies() {
         return;
       }
       try {
-        let payload = null;
         await withBusy(submitButton, async () => {
-          payload = await api('/cgi-bin/set-lock.cgi', {
+          await api('/cgi-bin/set-lock.cgi', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({ profile: profile.profile, strategy: value }),
           });
-          state.strategyChecks[profile.profile] = payload?.check;
+          delete state.strategyChecks[profile.profile];
           await refreshAll();
+          if (value !== 0) {
+            try {
+              const checkPayload = await api('/cgi-bin/check.cgi', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ profile: profile.profile }),
+              });
+              state.strategyChecks[profile.profile] = checkPayload;
+              renderStrategies();
+            } catch (_) {
+              // Проверка необязательна: стратегия уже применена.
+            }
+          }
         });
         showToast(value === 0 ? `Профиль ${profile.label} выключен.` : `Стратегия ${value} сохранена для ${profile.label}.`);
       } catch (error) {

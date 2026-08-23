@@ -333,8 +333,7 @@ api_set_lock() {
   profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$PARAM_STRATEGY" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
   profile_config_voice_ports_changed "$PARAM_PROFILE" "$CONFIG_FILE" "$old_udp_ports" && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
-  check_json="$(profile_check_json "$PARAM_PROFILE")"
-  send_json "200 OK" "{\"ok\":true,\"check\":$check_json}"
+  send_json "200 OK" "{\"ok\":true}"
 }
 
 api_clear_lock() {
@@ -367,6 +366,11 @@ api_service() {
 }
 
 api_check() {
+  parse_params
+  if [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]]; then
+    send_json "200 OK" "$(profile_check_json "$PARAM_PROFILE")"
+    return
+  fi
   local gv results
   gv="$(get_yt_cluster_domain)"
   results="$(check_one_target_json "YouTube" "https://www.youtube.com/")"
