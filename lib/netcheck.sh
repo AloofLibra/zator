@@ -162,19 +162,23 @@ z2r_tls_check_target() {
         if [ -s "$tmp/v12" ] && [ -s "$tmp/v13" ]; then
             break
         fi
-        if [ -s "$tmp/v12" ] && [ ! -s "$tmp/v13" ]; then
-            peek="$(cat "$tmp/v12" 2>/dev/null)" || peek=""
-            if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
-                kill "$p13" 2>/dev/null || true
-                wait "$p13" 2>/dev/null || true
-                break
-            fi
-        elif [ -s "$tmp/v13" ] && [ ! -s "$tmp/v12" ]; then
-            peek="$(cat "$tmp/v13" 2>/dev/null)" || peek=""
-            if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
-                kill "$p12" 2>/dev/null || true
-                wait "$p12" 2>/dev/null || true
-                break
+        # Z2R_TLS_WAIT_BOTH=1 (автопрогон): не добиваем вторую пробу — нужен
+        # честный статус каждой версии TLS, а не только факт прохода.
+        if [ -z "${Z2R_TLS_WAIT_BOTH:-}" ]; then
+            if [ -s "$tmp/v12" ] && [ ! -s "$tmp/v13" ]; then
+                peek="$(cat "$tmp/v12" 2>/dev/null)" || peek=""
+                if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
+                    kill "$p13" 2>/dev/null || true
+                    wait "$p13" 2>/dev/null || true
+                    break
+                fi
+            elif [ -s "$tmp/v13" ] && [ ! -s "$tmp/v12" ]; then
+                peek="$(cat "$tmp/v13" 2>/dev/null)" || peek=""
+                if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
+                    kill "$p12" 2>/dev/null || true
+                    wait "$p12" 2>/dev/null || true
+                    break
+                fi
             fi
         fi
     done
@@ -344,9 +348,12 @@ z2r_tls_target_verdict() {
 
 # Компактный результат одной стратегии для таблицы автопрогона:
 # печатает "verdict|короткий текст" (цвета накладывает вызывающий).
+# $4 tls_pref (any|12|13|both, по умолчанию any — старое поведение):
+# при 12/13/both зелёным считается только прохождение выбранных версий
+# TLS (докачка по-прежнему обязательна), иначе жёлтая с пояснением.
 z2r_tls_short_result() {
-    local v12="$1" v13="$2" dl="$3"
-    local rc12 code12 rc13 code13 s12 s13 t12 t13 best
+    local v12="$1" v13="$2" dl="$3" pref="${4:-any}"
+    local rc12 code12 rc13 code13 s12 s13 t12 t13 q12 q13 best
     local dlrc dlcode dlsize dltime dstate short
     rc12="$(z2r_tls_field "$v12" 1)"; code12="$(z2r_tls_field "$v12" 2)"
     rc13="$(z2r_tls_field "$v13" 1)"; code13="$(z2r_tls_field "$v13" 2)"
@@ -354,6 +361,9 @@ z2r_tls_short_result() {
     s13="$(z2r_tls_version_state "$rc13" "$code13")"
     case "$s12" in ok|http) t12=1 ;; *) t12=0 ;; esac
     case "$s13" in ok|http) t13=1 ;; *) t13=0 ;; esac
+    q12=0; q13=0
+    if z2r_tls_code_ok "$code12"; then q12=1; fi
+    if z2r_tls_code_ok "$code13"; then q13=1; fi
     short=""
     if [ "$t12" -eq 0 ] && [ "$t13" -eq 0 ]; then
         if [ "$s12" = "dns" ] || [ "$s13" = "dns" ]; then
@@ -368,7 +378,7 @@ z2r_tls_short_result() {
         printf 'fail|%s\n' "$short"
         return
     fi
-    if ! z2r_tls_code_ok "$code12" && ! z2r_tls_code_ok "$code13"; then
+    if [ "$q12" -eq 0 ] && [ "$q13" -eq 0 ]; then
         if [ "$t12" -eq 1 ]; then best="$code12"; else best="$code13"; fi
         printf 'ok|сервер ответил кодом %s\n' "$best"
         return
@@ -386,7 +396,34 @@ z2r_tls_short_result() {
                     printf 'warn|срез нестабильный, повтор прошёл\n'
                     return
                 fi
-                printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
+                case "$pref" in
+                    both)
+                        if [ "$q12" -eq 1 ] && [ "$q13" -eq 1 ]; then
+                            printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
+                        elif [ "$q12" -eq 1 ]; then
+                            printf 'warn|работает только TLS 1.2\n'
+                        else
+                            printf 'warn|работает только TLS 1.3\n'
+                        fi
+                        ;;
+                    12)
+                        if [ "$q12" -eq 1 ]; then
+                            printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
+                        else
+                            printf 'warn|TLS 1.2 не работает\n'
+                        fi
+                        ;;
+                    13)
+                        if [ "$q13" -eq 1 ]; then
+                            printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
+                        else
+                            printf 'warn|TLS 1.3 не работает\n'
+                        fi
+                        ;;
+                    *)
+                        printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
+                        ;;
+                esac
                 return
                 ;;
         esac
@@ -396,6 +433,21 @@ z2r_tls_short_result() {
         return
     fi
     printf 'ok|данные идут\n'
+}
+
+# Статус одной версии TLS для таблицы автопрогона: "текст|состояние"
+# (ok|http|fail|aborted — состояние выбирает цвет вызывающий).
+z2r_tls_version_badge() {
+    local label="$1" raw="$2" rc code state
+    rc="$(z2r_tls_field "$raw" 1)"
+    code="$(z2r_tls_field "$raw" 2)"
+    state="$(z2r_tls_version_state "$rc" "$code")"
+    case "$state" in
+        ok) printf '%s OK|ok\n' "$label" ;;
+        http) printf '%s %s|http\n' "$label" "$code" ;;
+        aborted) printf '%s -|aborted\n' "$label" ;;
+        *) printf '%s FAIL|fail\n' "$label" ;;
+    esac
 }
 
 check_access() {

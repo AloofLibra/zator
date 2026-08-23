@@ -295,6 +295,26 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
 [ "$(z2r_tls_short_result "28|000|-|-|-" "28|000|-|-|-" "skip")" = "fail|нет ответа (таймаут)" ] \
   || fail "сценарий 14b: обе версии молчат -> нет ответа"
 
+# == 14b-2. бейджи версий TLS и предпочтение (tls_pref) в коротком результате ==
+[ "$(z2r_tls_version_badge tls1.2 "0|200|HTTP/2|0.6|1.1.1.1")" = "tls1.2 OK|ok" ] \
+  || fail "сценарий 14b: бейдж ok"
+[ "$(z2r_tls_version_badge tls1.3 "28|000|-|-|-")" = "tls1.3 FAIL|fail" ] \
+  || fail "сценарий 14b: бейдж fail"
+[ "$(z2r_tls_version_badge tls1.2 "0|403|HTTP/2|0.6|1.1.1.1")" = "tls1.2 403|http" ] \
+  || fail "сценарий 14b: бейдж http-кода"
+[ "$(z2r_tls_short_result "0|200|HTTP/2|0.6|1.1.1.1" "28|000|-|-|-" "0|206|65536|1.2" both)" = "warn|работает только TLS 1.2" ] \
+  || fail "сценарий 14b: both + только 1.2 -> жёлтая"
+[ "$(z2r_tls_short_result "28|000|-|-|-" "0|200|HTTP/2|0.6|1.1.1.1" "0|206|65536|1.2" both)" = "warn|работает только TLS 1.3" ] \
+  || fail "сценарий 14b: both + только 1.3 -> жёлтая"
+[ "$(z2r_tls_short_result "0|200|HTTP/2|0.6|1.1.1.1" "0|200|HTTP/2|0.6|1.1.1.1" "0|206|65536|1.2" both)" = "ok|данные 65536 байт за 1.2 с" ] \
+  || fail "сценарий 14b: both + обе версии -> зелёная"
+[ "$(z2r_tls_short_result "28|000|-|-|-" "0|200|HTTP/2|0.6|1.1.1.1" "0|206|65536|1.2" 12)" = "warn|TLS 1.2 не работает" ] \
+  || fail "сценарий 14b: нужен 1.2, его нет -> жёлтая"
+[ "$(z2r_tls_short_result "0|200|HTTP/2|0.6|1.1.1.1" "28|000|-|-|-" "0|206|65536|1.2" 12)" = "ok|данные 65536 байт за 1.2 с" ] \
+  || fail "сценарий 14b: нужен 1.2, он есть -> зелёная"
+[ "$(z2r_tls_short_result "0|200|HTTP/2|0.6|1.1.1.1" "28|000|-|-|-" "0|206|65536|1.2")" = "ok|данные 65536 байт за 1.2 с" ] \
+  || fail "сценарий 14b: без pref (any) старое поведение"
+
 # == 14c. автопрогон: до первого успеха + сохранение, полный + возврат, профиль-вид ==
 (
   export ORCH_LOCK_FILE="$TMP_DIR/locked_auto.tsv"
@@ -317,7 +337,8 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   printf '%s' "$out" | grep -q "OK" || fail "сценарий 14c: нет строки OK в прогоне"
   printf '%s' "$out" | grep -q "FAIL" || fail "сценарий 14c: нет строк FAIL в прогоне"
   printf '%s' "$out" | grep -q "Итог автопрогона" || fail "сценарий 14c: нет сводки"
-  [ "$(grep -c 'FAIL' <<<"$out")" = "2" ] || fail "сценарий 14c: до первого успеха должно быть 2 FAIL"
+  # ': FAIL ' — только вердикт-колонка: бейджи тоже содержат слово FAIL
+  [ "$(grep -c ': FAIL ' <<<"$out")" = "2" ] || fail "сценарий 14c: до первого успеха должно быть 2 FAIL"
 
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   export MOCK_DL=ok206var
@@ -347,17 +368,54 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   printf '%s' "$out" | grep -q "пауза 5 сек" \
     || fail "сценарий 14c: добавка к паузе не попала в баннер: $out"
   cap="$(printf '5\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
-  [ "$cap" = "5" ] || fail "сценарий 14c: хеллер должен вернуть только число: $cap"
+  [ "$cap" = "5" ] || fail "сценарий 14c: хелпер паузы должен вернуть только число: $cap"
   cap="$(printf 'abc\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
-  [ "$cap" = "0" ] || fail "сценарий 14c: неверный ввод хеллера должен давать 0: $cap"
+  [ "$cap" = "0" ] || fail "сценарий 14c: неверный ввод хелпера паузы должен давать 0: $cap"
+  cap="$(printf '0\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
+  [ -z "$cap" ] || fail "сценарий 14c: 0 в паузе должен отменять: $cap"
+  cap="$(printf '1\n' | orch_ask_sweep_tls_pref 2>/dev/null)"
+  [ "$cap" = "12" ] || fail "сценарий 14c: выбор TLS 1.2: $cap"
+  cap="$(printf '\n' | orch_ask_sweep_tls_pref 2>/dev/null)"
+  [ "$cap" = "both" ] || fail "сценарий 14c: Enter в выборе TLS = обе версии: $cap"
+  cap="$(printf '0\n' | orch_ask_sweep_tls_pref 2>/dev/null)"
+  [ -z "$cap" ] || fail "сценарий 14c: 0 в выборе TLS должен отменять: $cap"
   export MOCK_HEAD_13=seq_ok3
+
+  # pref=13: зелёный там, где прошла 1.3 (мок: 1.2 всегда молчит)
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  out="$(printf '\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 5 1 0 13)"
+  [ "$(orch_locked_get example.org tls)" = "3" ] \
+    || fail "сценарий 14c: pref 13 до первого успеха должен сохранить 3"
+  printf '%s' "$out" | grep -q "цель TLS 1.3" || fail "сценарий 14c: баннер без цели TLS 1.3"
+
+  # pref=both: те же стратегии жёлтые («работает только TLS 1.3»), зелёных нет
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 5 0 0 both)"
+  printf '%s' "$out" | grep -q "работает только TLS 1.3" \
+    || fail "сценарий 14c: pref both должен пометить только-1.3 жёлтой"
+  printf '%s' "$out" | grep -q "OK 0" \
+    || fail "сценарий 14c: pref both без полных стратегий должен дать 0 зелёных"
+  printf '%s' "$out" | grep -q "жёлтая (единственная без красных)" \
+    || fail "сценарий 14c: лучшей должен стать жёлтый фолбэк"
+  printf '%s' "$out" | grep -q "tls1.2 FAIL" || fail "сценарий 14c: нет бейджа tls1.2 FAIL"
+  printf '%s' "$out" | grep -q "tls1.3 OK" || fail "сценарий 14c: нет бейджа tls1.3 OK"
+  printf '%s' "$out" | grep -q "цель TLS 1.2+1.3" || fail "сценарий 14c: баннер без цели both"
+  [ -z "${Z2R_TLS_WAIT_BOTH:-}" ] || fail "сценарий 14c: Z2R_TLS_WAIT_BOTH не восстановлен"
 
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   orch_locked_set example.org tls 7
   printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 200 0 >"$TMP_DIR/sweep_int.log" 2>&1 &
   swpid=$!
   sleep 2
-  kill -INT "$swpid" 2>/dev/null || true
+  # На Windows/MSYS эмуляция SIGINT иногда теряется: шлём повторно, пока
+  # прогон не прервётся (на Linux срабатывает первый же сигнал).
+  int_i=0
+  while kill -0 "$swpid" 2>/dev/null && [ "$int_i" -lt 10 ]; do
+    kill -INT "$swpid" 2>/dev/null || true
+    sleep 1
+    int_i=$((int_i + 1))
+    grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" 2>/dev/null && break
+  done
   swrc=0
   wait "$swpid" 2>/dev/null || swrc=$?
   [ "$swrc" = "0" ] || fail "сценарий 14c: Ctrl+C не должен ронять автопрогон (rc=$swrc)"
