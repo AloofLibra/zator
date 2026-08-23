@@ -1,4 +1,4 @@
-# Last modified: 2026-08-19 18:16:20 UTC
+# Last modified: 2026-08-23 18:46:01 UTC
 # this file is included from init scripts
 # change values here
 
@@ -136,18 +136,18 @@ NFQWS2_OPT="
 --lua-desync=multidisorder:pos=1,host+2,sld+2,sld+5,sniext+1,sniext+2,endhost-2:seqovl=1:strategy=28
 --lua-desync=send:repeats=2:strategy=29 --lua-desync=syndata:blob=google_www:strategy=29 --lua-desync=multisplit:seqovl=211:seqovl_pattern=tls5:strategy=29
 --lua-desync=multisplit:payload=tls_client_hello:pos=sld+1,midsld:seqovl=22:seqovl_pattern=custom:strategy=30
---lua-desync=tls_client_hello_clone:blob=clone_vk:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=31 --lua-desync=fake:blob=clone_vk:tcp_ts=-1000:repeats=2:strategy=31 --lua-desync=multisplit:pos=1,midsld:strategy=31
---lua-desync=tls_client_hello_clone:blob=clone_hcaptcha:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=32 --lua-desync=fake:blob=clone_hcaptcha:tcp_seq=-3000:repeats=2:strategy=32 --lua-desync=multisplit:pos=1,midsld:strategy=32
---lua-desync=tls_client_hello_clone:blob=clone_vk:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=33 --lua-desync=fake:blob=clone_vk:badsum:repeats=2:strategy=33 --lua-desync=multisplit:pos=1,midsld:strategy=33
---lua-desync=tls_client_hello_clone:blob=clone_hcaptcha:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=34 --lua-desync=fake:blob=clone_hcaptcha:tcp_md5:repeats=2:strategy=34 --lua-desync=multisplit:pos=1,midsld:strategy=34
---lua-desync=tls_client_hello_clone:blob=clone_vk:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=35 --lua-desync=fake:blob=clone_vk:tcp_ack=-66000:tcp_ts_up:repeats=2:strategy=35 --lua-desync=multisplit:pos=1,midsld:strategy=35
---lua-desync=tls_client_hello_clone:blob=clone_hcaptcha:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=36 --lua-desync=fake:blob=clone_hcaptcha:ip_autottl=2,3-20:ip6_autottl=2,3-20:repeats=2:strategy=36 --lua-desync=multisplit:pos=1,midsld:strategy=36
+--lua-desync=tls_client_hello_clone:blob=clone_vk:fallback=maxru:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=31 --lua-desync=fake:blob=clone_vk:tcp_ts=-1000:repeats=2:strategy=31 --lua-desync=multisplit:pos=1,midsld:strategy=31
+--lua-desync=tls_client_hello_clone:blob=clone_hcaptcha:fallback=maxru:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=32 --lua-desync=fake:blob=clone_hcaptcha:tcp_seq=-3000:repeats=2:strategy=32 --lua-desync=multisplit:pos=1,midsld:strategy=32
+--lua-desync=tls_client_hello_clone:blob=clone_vk:fallback=maxru:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=33 --lua-desync=fake:blob=clone_vk:badsum:repeats=2:strategy=33 --lua-desync=multisplit:pos=1,midsld:strategy=33
+--lua-desync=tls_client_hello_clone:blob=clone_hcaptcha:fallback=maxru:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=34 --lua-desync=fake:blob=clone_hcaptcha:tcp_md5:repeats=2:strategy=34 --lua-desync=multisplit:pos=1,midsld:strategy=34
+--lua-desync=tls_client_hello_clone:blob=clone_vk:fallback=maxru:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=35 --lua-desync=fake:blob=clone_vk:tcp_ack=-66000:tcp_ts_up:repeats=2:strategy=35 --lua-desync=multisplit:pos=1,midsld:strategy=35
+--lua-desync=tls_client_hello_clone:blob=clone_hcaptcha:fallback=maxru:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=36 --lua-desync=fake:blob=clone_hcaptcha:ip_autottl=2,3-20:ip6_autottl=2,3-20:repeats=2:strategy=36 --lua-desync=multisplit:pos=1,midsld:strategy=36
 --lua-desync=fakemultidisorder:fake_blob=fake_default_tls:pos=1,midsld:fake_count=1:tcp_ts=-1000:repeats=2:strategy=37
 --lua-desync=fakemultidisorder:fake_blob=fake_default_tls:pos=1,sniext+1,midsld:fake_count=2:tcp_seq=-3000:repeats=2:strategy=38
---lua-desync=tls_client_hello_clone:blob=clone_vk_fmd:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=39 --lua-desync=fakemultidisorder:fake_blob=clone_vk_fmd:pos=1,sniext+1,midsld:fake_all:badsum:repeats=2:strategy=39
+--lua-desync=tls_client_hello_clone:blob=clone_vk_fmd:fallback=maxru:sni_del:sni_first=vk.ru:sni_snt_new=0:strategy=39 --lua-desync=fakemultidisorder:fake_blob=clone_vk_fmd:pos=1,sniext+1,midsld:fake_all:badsum:repeats=2:strategy=39
 --lua-desync=fakemultisplit:fake_blob=fake_default_tls:pos=1,midsld:tcp_ack=-66000:tcp_ts_up:repeats=2:strategy=40
 --lua-desync=fakemultisplit:fake_blob=fake_default_tls:pos=1,sniext+1,midsld:tcp_md5:repeats=2:strategy=41
---lua-desync=tls_client_hello_clone:blob=clone_hcaptcha_fms:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=42 --lua-desync=fakemultisplit:fake_blob=clone_hcaptcha_fms:pos=1,sniext+1,midsld:nofake3:ip_autottl=2,3-20:ip6_autottl=2,3-20:repeats=2:strategy=42
+--lua-desync=tls_client_hello_clone:blob=clone_hcaptcha_fms:fallback=maxru:sni_del:sni_first=hcaptcha.com:sni_snt_new=0:strategy=42 --lua-desync=fakemultisplit:fake_blob=clone_hcaptcha_fms:pos=1,sniext+1,midsld:nofake3:ip_autottl=2,3-20:ip6_autottl=2,3-20:repeats=2:strategy=42
 --lua-desync=multisplit:pos=1:seqovl=740:seqovl_pattern=custom:strategy=43
 
 --new

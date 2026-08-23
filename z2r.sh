@@ -13,6 +13,7 @@ yellow='\033[0;33m'
 blue='\033[0;34m'
 pink='\033[0;35m'
 cyan='\033[0;36m'
+gray='\033[0;90m'
 Fplain='\033[1;37m'
 Fred='\033[1;31m'
 Fgreen='\033[1;32m'
@@ -404,12 +405,12 @@ source "$LIB_DIR/premium.sh"
 source "$LIB_DIR/strategies.sh"
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
-# Функции: strategies_submenu, flowoffload_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
+# Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
 source "$LIB_DIR/submenus.sh"
 
 # Действия меню (бэкапы/сбросы/переключатели)
 # Функции: backup_strats, menu_action_update_config_reset,
-#          menu_action_toggle_fwtype, menu_action_toggle_udp_range, menu_action_set_tls_blob
+#          fwtype_apply, menu_action_toggle_udp_range, menu_action_set_tls_blob
 source "$LIB_DIR/actions.sh"
 
 keenetic_policy_ndmc_is_supported() {
@@ -969,6 +970,7 @@ run_cdn_test() {
 
       for ((i=1;i<=times;i++)); do
           read bytes code <<< $(curl -L -s \
+              -A "$Z2R_CURL_UA" \
               -H "Range: bytes=0-${thr}" \
               --connect-timeout 5 \
               --max-time 5 \
@@ -981,7 +983,7 @@ run_cdn_test() {
 
       avg=$((total/times))
 
-      if (( avg >= thr )) && [[ "$code" =~ ^2|3 ]]; then
+      if (( avg >= thr )) && [[ "$code" =~ ^[23] ]]; then
           echo -e "${GREEN}$id OK${NC} ${avg}b [$provider]"
           echo OK >> /tmp/cdn_ok
       else
@@ -991,7 +993,7 @@ run_cdn_test() {
   }
 
   export -f check_one
-  export BIN_THR_BYTES PARALLEL GREEN RED YELLOW NC
+  export BIN_THR_BYTES PARALLEL GREEN RED YELLOW NC Z2R_CURL_UA
 
   rm -f /tmp/cdn_ok /tmp/cdn_fail
 
@@ -1082,6 +1084,10 @@ get_repo() {
   if [ ! -f "$ZATOR_ROOT/lists/netrogat_substrings.txt" ]; then
     z2r_download_project_file "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt" || touch "$ZATOR_ROOT/lists/netrogat_substrings.txt"
   fi
+  mkdir -p "$ZATOR_ROOT/data/providers"
+  if z2r_download_project_file "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"; then
+    grep -qE '^[0-9]+:' "$ZATOR_ROOT/data/providers/asn.txt" 2>/dev/null || rm -f "$ZATOR_ROOT/data/providers/asn.txt"
+  fi
   if [ -f "/opt/netrogat.txt" ]; then
     mv -f /opt/netrogat.txt "$ZATOR_ROOT/lists/netrogat.txt"
     echo "Востановление листа исключений выполнено."
@@ -1092,7 +1098,7 @@ get_repo() {
     z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
   fi
-  if command -v nft >/dev/null 2>&1; then
+  if fwtype_nft_available; then
     sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$ZAPRET2_ROOT/config.default"
   fi
 # cache
@@ -1570,6 +1576,7 @@ webui_install_files() {
   webui_repo_fetch "cgi-bin/check.cgi" "$WEBUI_CGI/check.cgi" || return 1
   webui_repo_fetch "cgi-bin/domains.cgi" "$WEBUI_CGI/domains.cgi" || return 1
   webui_repo_fetch "cgi-bin/settings.cgi" "$WEBUI_CGI/settings.cgi" || return 1
+  webui_repo_fetch "cgi-bin/backups.cgi" "$WEBUI_CGI/backups.cgi" || return 1
 
   chmod +x "$WEBUI_RUNNER" "$WEBUI_CGI"/*.sh "$WEBUI_CGI"/*.cgi
   webui_fix_interpreters
@@ -1724,7 +1731,7 @@ webui_print_urls() {
   if [ -x "$WEBUI_RUNNER" ]; then
     "$WEBUI_RUNNER" urls 2>/dev/null || true
   else
-    echo "http://127.0.0.1:${WEBUI_PORT}"
+    echo "http://$(hostname 2>/dev/null || echo 127.0.0.1):${WEBUI_PORT}"
   fi
 }
 
@@ -1878,7 +1885,7 @@ ${Fcyan}4.${yellow} Удаление zator и zapret2, ${Fcyan} 44.${yellow} У�
 ${Fcyan}5.${yellow} Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
 ${Fcyan}6.${yellow} Управление доменами
 ${Fcyan}7.${yellow} Открыть в редакторе config (Установит nano редактор ~250kb)
-${Fcyan}9.${yellow} Переключатель zapret2 на nftables/iptables (На всё жать Enter). Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: ${plain}[${MENU_FWTYPE}]${yellow}
+${Fcyan}9.${yellow} Переключатель zapret2 на nftables/iptables. Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: ${plain}[${MENU_FWTYPE}]${yellow}
 ${Fcyan}10.${yellow} (Де)активировать обход UDP на 1026-65531 портах (BF6, Fifa и т.п.). Сейчас: ${plain}[${MENU_UDP_GAMES}]${yellow}
 ${Fcyan}11.${yellow} Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: ${plain}[${MENU_FLOWOFFLOAD}]${yellow}
 ${Fcyan}12.${yellow} Режим фильтра hostlist/autohostlist. Сейчас: ${plain}[${MENU_HOSTLIST}]${yellow}
@@ -2015,8 +2022,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "9")
-    menu_action_toggle_fwtype
-    pause_enter
+    fwtype_submenu
     ;;
 
   "10")

@@ -116,25 +116,30 @@ menu_action_update_config_reset() {
   return 0
 }
 
-menu_action_toggle_fwtype() {
-  local cfg
+fwtype_apply() {
+  local target="$1" cfg cur
   cfg="$(get_config_file)"
-  if [ "$(config_get_var "$cfg" FWTYPE)" = "iptables" ]; then
-    config_set_var "$cfg" FWTYPE nftables
-    /opt/zapret2/install_prereq.sh
-    "$ZAPRET2_INIT" restart
-    echo -e "${green}Zapret moode: nftables.${plain}"
+  cur="$(config_get_var "$cfg" FWTYPE)"
 
-  elif [ "$(config_get_var "$cfg" FWTYPE)" = "nftables" ]; then
-    config_set_var "$cfg" FWTYPE iptables
-    /opt/zapret2/install_prereq.sh
-    "$ZAPRET2_INIT" restart
-    echo -e "${green}Zapret moode: iptables.${plain}"
-
-  else
-    echo -e "${yellow}Неизвестное состояние строки FWTYPE. Проверь конфиг вручную.${plain}"
+  if [ "$cur" = "$target" ]; then
+    echo -e "${yellow}Режим $target уже активен.${plain}"
+    return 0
   fi
 
+  if [ "$target" = "nftables" ] && ! fwtype_nft_available; then
+    echo -e "${yellow}Переход на nftables невозможен: $(fwtype_unavailable_reason nftables).${plain}"
+    return 0
+  fi
+
+  if [ "$target" = "iptables" ] && ! fwtype_iptables_available; then
+    echo -e "${yellow}Переход на iptables невозможен: $(fwtype_unavailable_reason iptables).${plain}"
+    return 0
+  fi
+
+  config_set_var "$cfg" FWTYPE "$target"
+  /opt/zapret2/install_prereq.sh
+  "$ZAPRET2_INIT" restart
+  echo -e "${green}Zapret mode: $target.${plain}"
   return 0
 }
 
@@ -736,6 +741,55 @@ ports_validate() {
   return 0
 }
 
+ports_apply_add() {
+  local proto="$1" input="$2" cfg="${3:-/opt/zapret2/config}"
+  local var anchor line tok added="" skipped="" arr=() new_user
+  var="$(ports_var "$proto")" || return 1
+  anchor="$(ports_anchor "$proto")"
+  line="$(config_get_var "$cfg" "$var")"
+  ports_split "$line" "$anchor"
+  new_user="$_PORTS_USER"
+
+  input="$(printf '%s' "$input" | tr -d '[:space:]')"
+  [ -n "$input" ] && IFS=',' read -ra arr <<< "$input"
+
+  for tok in "${arr[@]}"; do
+    [ -n "$tok" ] || continue
+    if ! ports_validate "$tok"; then
+      skipped="${skipped}${tok},"
+      continue
+    fi
+    if csv_contains_token "$line" "$tok" || csv_contains_token "$new_user" "$tok"; then
+      skipped="${skipped}${tok},"
+      continue
+    fi
+    new_user="$(ports_join "$new_user" "$tok")"
+    added="${added}${tok},"
+  done
+
+  PORTS_APPLY_ADDED="${added%,}"
+  PORTS_APPLY_SKIPPED="${skipped%,}"
+  [ -z "$added" ] && return 1
+
+  config_set_var "$cfg" "$var" "$(ports_join "$new_user" "$_PORTS_BASE")"
+  [ "$proto" = "tcp" ] && ports_set_rkn_filter "$cfg" "$new_user"
+  return 0
+}
+
+ports_apply_remove() {
+  local proto="$1" token="$2" cfg="${3:-/opt/zapret2/config}"
+  local var anchor line new_user
+  var="$(ports_var "$proto")" || return 1
+  anchor="$(ports_anchor "$proto")"
+  line="$(config_get_var "$cfg" "$var")"
+  ports_split "$line" "$anchor"
+  csv_contains_token "$_PORTS_USER" "$token" || return 1
+  new_user="$(csv_remove_tokens "$_PORTS_USER" "$token")"
+  config_set_var "$cfg" "$var" "$(ports_join "$new_user" "$_PORTS_BASE")"
+  [ "$proto" = "tcp" ] && ports_set_rkn_filter "$cfg" "$new_user"
+  return 0
+}
+
 # Записать строку --filter-tcp блока RKN = пользовательские TCP-порты + база из конфига.
 # Базовые порты (от якоря 80 и правее) берутся прямо из NFQWS2_PORTS_TCP — без констант.
 ports_set_rkn_filter() {
@@ -753,16 +807,10 @@ ports_set_rkn_filter() {
 # Добавление пользовательских портов (tcp|udp).
 # Порты добавляются в начало строки (до якоря 80/443) и читаются прямо из config.
 ports_add() {
-  local proto="$1" cfg="/opt/zapret2/config"
-  local var anchor label line input tok added="" skipped=""
-  local arr=() new_user
-
+  local proto="$1"
+  local var label input
   var="$(ports_var "$proto")" || return 1
-  anchor="$(ports_anchor "$proto")"
   label="$(ports_proto_label "$proto")"
-  line="$(config_get_var "$cfg" "$var")"
-  ports_split "$line" "$anchor"
-  new_user="$_PORTS_USER"
 
   clear -x
   echo -e "${cyan}--- Добавление ${label} портов ---${plain}"
@@ -776,40 +824,17 @@ ports_add() {
   echo "Несколько значений — через запятую без пробелов: 8080,9090,9000-9100"
   echo ""
   read -re -p "Введите порты: " input
-  if [ -n "$input" ]; then
-    # убираем любые пробелы
-    input="$(printf '%s' "$input" | tr -d '[:space:]')"
-    [ -n "$input" ] && IFS=',' read -ra arr <<< "$input"
-  fi
 
-  for tok in "${arr[@]}"; do
-    [ -n "$tok" ] || continue
-    if ! ports_validate "$tok"; then
-      skipped="${skipped}${tok},"
-      continue
-    fi
-    # дубликат: уже есть в строке конфига
-    if csv_contains_token "$line" "$tok"; then
-      skipped="${skipped}${tok},"
-      continue
-    fi
-    new_user="$(ports_join "$new_user" "$tok")"
-    added="${added}${tok},"
-  done
-
-  if [ -z "$added" ]; then
+  if ! ports_apply_add "$proto" "$input"; then
     echo -e "${yellow}Ничего не добавлено.${plain}"
-    [ -n "$skipped" ] && echo -e "${yellow}Пропущено (некорректно/дубликаты): ${skipped%,}${plain}"
+    [ -n "$PORTS_APPLY_SKIPPED" ] && echo -e "${yellow}Пропущено (некорректно/дубликаты): ${PORTS_APPLY_SKIPPED}${plain}"
     pause_enter
     return 0
   fi
 
-  config_set_var "$cfg" "$var" "$(ports_join "$new_user" "$_PORTS_BASE")"
-  [ "$proto" = "tcp" ] && ports_set_rkn_filter "$cfg" "$new_user"
-
-  echo -e "${green}Добавлено ${label}: ${added%,}${plain}"
-  [ -n "$skipped" ] && echo -e "${yellow}Пропущено: ${skipped%,}${plain}"
-  echo -e "${green}Строка $var: $(config_get_var "$cfg" "$var")${plain}"
+  echo -e "${green}Добавлено ${label}: ${PORTS_APPLY_ADDED}${plain}"
+  [ -n "$PORTS_APPLY_SKIPPED" ] && echo -e "${yellow}Пропущено: ${PORTS_APPLY_SKIPPED}${plain}"
+  echo -e "${green}Строка $var: $(config_get_var /opt/zapret2/config "$var")${plain}"
   echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
   pause_enter
   return 0
@@ -874,11 +899,11 @@ ports_manage() {
         read -re -p "Ваш выбор: " confirm
         case "$confirm" in
           "1")
-            local new_user
-            new_user="$(csv_remove_tokens "$_PORTS_USER" "$target")"
-            config_set_var "$cfg" "$var" "$(ports_join "$new_user" "$_PORTS_BASE")"
-            [ "$proto" = "tcp" ] && ports_set_rkn_filter "$cfg" "$new_user"
-            echo -e "${green}Порт ${target} удалён.${plain}"
+            if ports_apply_remove "$proto" "$target"; then
+              echo -e "${green}Порт ${target} удалён.${plain}"
+            else
+              echo -e "${red}Не удалось удалить порт ${target}.${plain}"
+            fi
             echo -e "${green}Строка $var: $(config_get_var "$cfg" "$var")${plain}"
             echo -e "${yellow}Для применения изменений перезапустите zapret2: пункт 22 главного меню.${plain}"
             pause_enter
@@ -988,13 +1013,8 @@ backup_pick_archive() {
   return 0
 }
 
-# Создание нового бэкапа с временной меткой.
-# Сбор во временную директорию /tmp, упаковка в .tar (BusyBox), перемещение в /opt/zator_backup.
-menu_action_backup_create() {
+backup_create_core() {
   local ts archive stage rel src tmp_list
-  # Глобальная переменная: путь к свежесозданному архиву. Используется хелпером
-  # backup_helper_ask_and_create() и пост-обновлением (пункт 5), чтобы восстановить
-  # настройки именно из только что созданного бэкапа.
   BACKUP_LAST_ARCHIVE=""
   ts="$(date +%Y%m%d_%H%M%S)"
   archive="$Z2R_BACKUP_DIR/z2r_backup_${ts}.tar"
@@ -1002,48 +1022,93 @@ menu_action_backup_create() {
   tmp_list="/tmp/z2r_backup_state_$$"
 
   rm -rf "$stage"
-  if ! mkdir -p "$stage"; then
-    echo -e "${red}Не удалось создать временную директорию $stage.${plain}"
-    return 1
-  fi
+  mkdir -p "$stage" || return 1
 
-  # Активный рабочий конфиг (всегда включается в архив).
   if [ -f /opt/zapret2/config ]; then
-    if ! cp -f /opt/zapret2/config "$stage/config"; then
-      rm -rf "$stage" "$tmp_list"
-      echo -e "${red}Ошибка копирования config.${plain}"
-      return 1
-    fi
+    cp -f /opt/zapret2/config "$stage/config" || { rm -rf "$stage" "$tmp_list"; return 1; }
   fi
 
-  # Пользовательские списки/стратегии.
   z2r_backup_state_files > "$tmp_list"
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     src="/opt/zator/$rel"
     [ -f "$src" ] || continue
     mkdir -p "$stage/$(dirname "$rel")"
-    if ! cp -f "$src" "$stage/$rel"; then
-      rm -rf "$stage" "$tmp_list"
-      echo -e "${red}Ошибка копирования $rel.${plain}"
-      return 1
-    fi
+    cp -f "$src" "$stage/$rel" || { rm -rf "$stage" "$tmp_list"; return 1; }
   done < "$tmp_list"
   rm -f "$tmp_list"
 
-  if ! mkdir -p "$Z2R_BACKUP_DIR"; then
-    rm -rf "$stage"
-    echo -e "${red}Не удалось создать каталог $Z2R_BACKUP_DIR.${plain}"
-    return 1
-  fi
+  mkdir -p "$Z2R_BACKUP_DIR" || { rm -rf "$stage"; return 1; }
 
-  if ! tar -cf "$archive" -C "$stage" . 2>/dev/null; then
-    rm -rf "$stage" "$archive"
-    echo -e "${red}Ошибка упаковки архива.${plain}"
-    return 1
-  fi
+  tar -cf "$archive" -C "$stage" . 2>/dev/null || { rm -rf "$stage" "$archive"; return 1; }
   rm -rf "$stage"
 
+  BACKUP_LAST_ARCHIVE="$archive"
+  printf '%s\n' "$archive"
+}
+
+backup_resolve_archive() {
+  local name="$1" list_file path rc
+  case "$name" in
+    z2r_backup_*.tar) ;;
+    *) return 1 ;;
+  esac
+  case "$name" in
+    */*|..*) return 1 ;;
+  esac
+  path="$Z2R_BACKUP_DIR/$name"
+  [ -f "$path" ] || return 1
+  list_file="/tmp/z2r_backup_resolve_$$"
+  backup_build_list_file "$list_file"
+  grep -qxF "$path" "$list_file"
+  rc=$?
+  rm -f "$list_file"
+  [ "$rc" -eq 0 ] || return 1
+  printf '%s\n' "$path"
+}
+
+backup_delete_core() {
+  local name="$1" path
+  path="$(backup_resolve_archive "$name")" || return 1
+  rm -f "$path" || return 1
+  printf '%s\n' "$path"
+}
+
+backup_import_core() {
+  local src="$1" orig="${2:-}" listing name="" ts n
+  [ -f "$src" ] || return 1
+  [ -s "$src" ] || return 1
+  listing="/tmp/z2r_backup_import_$$"
+  tar -tf "$src" > "$listing" 2>/dev/null || { rm -f "$listing"; return 1; }
+  grep -qE '(^|/)config$|/(lists|extra_strats)/' "$listing" || { rm -f "$listing"; return 1; }
+  rm -f "$listing"
+  case "$orig" in
+    z2r_backup_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9].tar)
+      [ -e "$Z2R_BACKUP_DIR/$orig" ] || name="$orig"
+      ;;
+  esac
+  if [ -z "$name" ]; then
+    ts="$(date +%Y%m%d_%H%M%S)"
+    name="z2r_backup_${ts}.tar"
+    n=0
+    while [ -e "$Z2R_BACKUP_DIR/$name" ]; do
+      n=$((n+1))
+      name="z2r_backup_${ts}_${n}.tar"
+    done
+  fi
+  mkdir -p "$Z2R_BACKUP_DIR" || return 1
+  mv -f "$src" "$Z2R_BACKUP_DIR/$name" || return 1
+  printf '%s\n' "$name"
+}
+
+menu_action_backup_create() {
+  local archive
+  if ! archive="$(backup_create_core 2>/dev/null)"; then
+    echo -e "${red}Не удалось создать бэкап.${plain}"
+    return 1
+  fi
+  # backup_create_core ставит BACKUP_LAST_ARCHIVE внутри command substitution
+  # (subshell), до вызывающего shell значение не доходит — восстанавливаем.
   BACKUP_LAST_ARCHIVE="$archive"
   echo -e "${green}Бэкап создан: $(basename "$archive")${plain}"
   echo -e "${yellow}Путь: $archive${plain}"

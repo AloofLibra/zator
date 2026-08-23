@@ -16,6 +16,25 @@ submenu_item() {
   fi
 }
 
+# Пункт подменю с нейтральным текстом и значением «Сейчас:» цветом статуса:
+# $1=ключ, $2=текст пункта, $3=значение (пусто — пункт без статуса), $4=статус
+# (green|red|yellow).
+submenu_status_item() {
+  local key="$1" text="$2" value="$3" status="${4:-yellow}"
+  local color="$yellow"
+  case "$status" in
+    green) color="$green" ;;
+    red) color="$red" ;;
+  esac
+  if [ "$key" = "0" ]; then
+    echo -e "${Fyellow}${key}.${plain} ${Fyellow}${text}${plain} ${value}"
+  elif [ -z "$value" ]; then
+    echo -e "${Fcyan}${key}.${plain} ${text}"
+  else
+    echo -e "${Fcyan}${key}.${plain} ${text} ${yellow}Сейчас: ${color}${value}${plain}"
+  fi
+}
+
 # Совместимость со старым кодом меню
 exit_to_menu() {
   pause_enter

@@ -85,10 +85,11 @@ Normal flow:
 - `z2r.sh`: top-level orchestration script. Sources runtime modules from `zapret2/z2r_lib` after deployment, while this repository stores their source versions in `lib/`.
 - `config.default`: main shipped `zapret2` config. This is now a large profile-driven config with `--lua-init`, `--lua-desync`, profile blocks, fallback blocks, blob declarations, and strategy numbering that other scripts depend on.
 - `lib/ui.sh`: generic menu and terminal UI helpers.
-- `lib/provider.sh`: ISP/provider and location detection, cache, and manual override.
+- `lib/provider.sh`: ASN-based ISP/provider detection (ipwho.is → ipinfo.io → ip-api), city, cache, and manual override. The ASN→brand table is layered: builtin minimal table in `PROVIDER_ASN_BUILTIN` merged with the updatable `data/providers/asn.txt` (remote-priority, see `provider_load_database`/`provider_update_database`, cache in `extra_strats/cache/provider_asn.txt`, TTL 7 days, GitHub is never a runtime dependency).
+- `data/providers/asn.txt`: maintainable ASN:BRAND:ALIASES database deployed to `/opt/zator/data/providers/asn.txt`; remote updates from the same path on the `zator` branch.
 - `lib/telemetry.sh`: telemetry enable/disable and stats sending.
 - `lib/recommendations.sh`: hint database and provider-based recommendations.
-- `lib/netcheck.sh`: connectivity tests, CDN tests, and YouTube cluster probing.
+- `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel single-attempt TLS 1.2/TLS 1.3 HEAD probes with `-L -k` + a Range download of up to 64KB when HEAD returns 2xx/3xx; classification by curl rc and HTTP code; any HTTP code including 4xx/5xx means the server answered → green ok, e.g. googlevideo root 404 is normal). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
 - `lib/premium.sh`: easter-egg and premium menu branches.
 - `lib/strategies.sh`: active strategy status, orchestra lock helpers, per-profile strategy trial flow, custom RKN domain handling.
 - `lib/submenus.sh`: menu wiring for strategies, provider, offload, and related actions.
@@ -136,8 +137,9 @@ Important practical consequence:
 - `z2r.sh` performs destructive operations on target machines, including removing or rebuilding `/opt/zapret2`.
 - Strategy lock files under `/opt/zator/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
-- `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs. Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
-- Fallback (безразборный режим) functions in `webui/cgi-bin/_lib.sh` (`_fallback_state`, `_fallback_set_state`) are local copies of CLI logic. Changes to `lib/actions.sh` (`backup_smart_set_fallback`) or `config.default` fallback blocks (`#Z2R_FALLBACK_BEGIN`/`#Z2R_FALLBACK_END`, `#Z2R_FALLBACK_HTTP_BEGIN`/`#Z2R_FALLBACK_HTTP_END`) require updating WebUI copies. Strategy selection for fallback profiles 8/9 goes through the shared `set-lock.cgi` → `api_set_lock()` path (writes `locked.manual.tsv`); the former `fallback_strategy` API and `_fallback_current_strategy`/`_fallback_set_strategy` helpers were removed as unused.
+- `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs (it sources `lib/config.sh`, `lib/orchestra_state.sh`, `lib/strategies.sh`, and `lib/netcheck.sh` for the shared TLS-check engine, plus `lib/actions.sh` and `lib/provider.sh` for shared setters). Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
+- `webui/cgi-bin/_lib.sh` reuses shared setters from `lib/actions.sh` (`backup_smart_set_*`, `ports_apply_add`/`ports_apply_remove`, `backup_create_core`) and `lib/provider.sh` (`provider_set_manual`) instead of duplicating sed logic. The local `_fallback_set_state` is only a legacy fallback used when `lib/actions.sh` is unavailable; `api_fallback_state_set` normally calls `backup_smart_set_fallback` with the same auto-rotation guard as CLI `toggle_fallback_mode`. Changes to those lib functions affect both CLI and WebUI.
+- WebUI settings (auto-rotation, hostlist, RST guard, reasm, QUIC443, NFQWS2 ports, provider, backups) are exposed via `settings.cgi`/`backups.cgi` and mirrored in `webui/dev/fake_router_server.py` and `webui/dev/API_CONTRACT.md` — keep all three in sync when changing behavior. Update/install actions stay CLI-only by design.
 
 ## Editing Guidelines
 
@@ -284,6 +286,103 @@ bash tests/uninstall_smoke.sh
 
 ```text
 uninstall smoke ok
+```
+
+```bash
+bash tests/webui_settings_smoke.sh
+```
+
+Тест новых настроек WebUI (тумблеры, порты, бэкапы, провайдер), тоже только во
+временной директории в `/tmp`:
+
+- не пишет в `/opt`; mock-config собирается из `config.default` с нормализацией
+  CRLF (работает и на LF-, и на CRLF-checkout);
+- проверяет синтаксис `lib/actions.sh`, `lib/provider.sh`, `_lib.sh`,
+  `settings.cgi`, `backups.cgi`, `app.js`, `fake_router_server.py`;
+- проверяет статический wiring: `_lib.sh` source-ит actions/provider, dispatcher
+  знает все новые ключи, `app.js`/`index.html` содержат все новые панели и вызовы;
+- проверяет логику ядер на mock-config: hostlist (+`<HOSTLIST>`), reasm,
+  QUIC443, RST guard, fallback c guard'ом авторотации и восстановлением
+  `#Z2R_AUTO_FALLBACK_WAS`, `config_set_auto_mode`, `ports_apply_add/remove`
+  (включая синхронизацию `--filter-tcp` RKN-блока и дубликаты), `backup_create_core`,
+  `provider_set_manual`.
+
+Успешный результат:
+
+```text
+webui settings smoke ok
+```
+
+```bash
+bash tests/provider_asn_smoke.sh
+```
+
+Тест внешней ASN-базы провайдеров (второй слой детекта), только во временной
+директории в `/tmp`, с моком `curl` в PATH:
+
+- 10 сценариев: remote доступен → cache обновился; remote недоступен → старый
+  cache цел; нет cache → builtin; битый remote → cache не затирается; живой TTL
+  → сетевого запроса нет; merge (remote приоритет, builtin не теряется);
+  remote-ASN + алиас → рекомендация находится; неизвестный ASN → fallback;
+  manual-провайдер не перезаписывается; fake-router redetect не менял формат;
+- плюс: `provider_init_once` при готовом provider.txt не делает сетевых запросов.
+
+Успешный результат:
+
+```text
+provider asn smoke ok
+```
+
+```bash
+bash tests/tls_check_smoke.sh
+```
+
+Тест TLS-проверок (пункт меню 01, перебор стратегий, WebUI), только во временной
+директории в `/tmp`, с моком `curl` в PATH:
+
+- не пишет в `/opt`;
+- движок `z2r_tls_*` из `lib/netcheck.sh`: HEAD-проба (`-L -k`, одна попытка,
+  следует за редиректами) с парсингом последней статусной строки из дампа
+  заголовков, классификация кодов возврата curl (DNS / таймаут / TLS / соединение,
+  rc=77 → TLS, нет CA-бандла в CGI);
+- этап докачки (Range до 64КБ, фактические байты) после успешного HEAD
+  с одним повтором при сбое (DPI режет выборочно: повтор прошёл — warn
+  «иногда срезается», оба среза — fail):
+  ok / zero / cut / fail (маленькая страница, целиком дошедшая за 206, — ok;
+  обрыв фиксируется только по ошибке curl после начавшихся байтов),
+  405 на HEAD считается работающим транспортом;
+- вердикты: `ok` — сервер ответил: 2xx/3xx и данные идут, либо любой HTTP-код
+  включая 4xx/5xx (сервер ответил, TLS пробит — googlevideo на корневом пути
+  отдаёт 404, это норма; зелёный, даже если TLS 1.2 не отвечает, пока работает
+  TLS 1.3); `warn` — только TLS 1.2 (жёлтый); `fail` — обе версии не ответили
+  транспортом либо данные не приходят (красный).
+  Строки версий: факт жёлтым/зелёным + подсказка «Проверьте доступность вручную.
+  Возможно ошибка теста.» красным (как в эталонном выводе старого меню);
+- CLI `check_access` (тексты итога, отсутствие старого «Таймаут 2сек») и WebUI
+  `check_one_target_json` (форма JSON: verdict / tls*_detail / download;
+  JSON обязан быть валидным — `code` без ведущих нулей);
+- автопрогон стратегий `orch_auto_sweep` (профили 1-4 и кастомные домены,
+  опция A в промптах перебора; диалог `orch_run_auto_sweep`: режим → требуемый
+  TLS (any|12|13|both, Enter - обе) → добавка к паузе; 0 на любом вопросе =
+  отмена): в строках прогона цветные статусы обеих версий TLS
+  (`z2r_tls_version_badge`; движок с `Z2R_TLS_WAIT_BOTH=1` ждёт обе пробы),
+  зелёность — по выбранным версиям (жёлтые «работает только TLS X» несут
+  статистику докачки), режимы «до первого успеха»/«полный»,
+  пауза между стратегиями против блока ТСПУ (база `${Z2R_SWEEP_PAUSE:-3}` сек
+  + добавка), сводка с «полными» (TLS 1.2 и 1.3), самой быстрой полной,
+  лучшей из жёлтых по скорости (если зелёных нет) и подсказкой перезапуска
+  с другой целью, когда нужная версия TLS не прошла ни одной стратегией,
+  Enter=лучшая / номер / 0=возврат прежних локов, Ctrl+C с восстановлением;
+- валидатор `lua/strategy-validator.sh`: одиночный таймаут (rc=28) → ERROR
+  (повтор разрешён), подряд идущие таймауты → FAIL (ротация), успех сбрасывает
+  счётчик (живёт 10 минут);
+- статический wiring: `_lib.sh` source-ит `netcheck.sh` и не содержит локальной
+  curl-логики TLS, `app.js`/`styles.css`/`fake_router_server.py` синхронны.
+
+Успешный результат:
+
+```text
+tls check smoke ok
 ```
 
 ## Local Inspection Notes

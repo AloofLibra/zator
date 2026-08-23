@@ -93,10 +93,9 @@ send_stats() {
     # 1. Провайдер (Читаем из provider.txt, который создает Provider detector)
     local my_isp="Unknown"
     if [ -s "$PROVIDER_TXT" ]; then
-        my_isp=$(cat "$PROVIDER_TXT")
-    else
-        # Фолбек: если provider.txt еще нет, пробуем быстро узнать
-        my_isp=$(curl -s --max-time 3 "http://ip-api.com/line?fields=org" | tr -cd '[:alnum:] ._-')
+        my_isp=$(head -n1 "$PROVIDER_TXT")
+    elif type _detect_api_simple >/dev/null 2>&1 && _detect_api_simple 2>/dev/null && [ -s "$PROVIDER_TXT" ]; then
+        my_isp=$(head -n1 "$PROVIDER_TXT")
     fi
 
     # Обрезаем до 60 символов и ставим заглушку если пусто

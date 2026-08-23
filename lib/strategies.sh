@@ -52,7 +52,19 @@ orch_profile_try() {
 
     echo "$title"
     echo "Текущее состояние: ${current_state/auto/def}"
-    read -re -p "Введите номер стратегии 1-${max_strat} (0 - отключить профиль, Enter - без изменений): " start_strat
+    local prompt_text="Введите номер стратегии 1-${max_strat} (0 - отключить профиль"
+    if printf '%s' "$test_url" | grep -q '^https://'; then
+        prompt_text="${prompt_text}, A - автопрогон"
+    fi
+    read -re -p "${prompt_text}, Enter - без изменений): " start_strat
+    case "$start_strat" in
+        a|A|а|А)
+            if printf '%s' "$test_url" | grep -q '^https://'; then
+                orch_run_auto_sweep "profile" "$profile" "$proto_list" "$test_url" 1 "$max_strat"
+            fi
+            return
+            ;;
+    esac
     if [ -z "$start_strat" ]; then
         echo "Без изменений."
         return
@@ -94,10 +106,10 @@ orch_profile_try() {
             fi
         elif printf "%s" "$test_url" | grep -q '^http://'; then
             echo "Проверка HTTP-доступа: $test_url"
-            if curl --max-time 2 -s -o /dev/null "$test_url"; then
+            if curl -L -k -A "$Z2R_CURL_UA" --connect-timeout 4 --max-time 8 -s -o /dev/null "$test_url"; then
                 echo -e "${green}Есть ответ по HTTP.${plain}"
             else
-                echo -e "${yellow}Нет ответа по HTTP. Проверьте доступность вручную.${plain}"
+                echo -e "${yellow}Нет ответа по HTTP. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
             fi
         elif [ -n "$test_url" ]; then
             echo "Проверка доступа: $test_url"
@@ -135,9 +147,367 @@ orch_profile_try() {
     pause_enter
 }
 
+# Запрос добавки к паузе между стратегиями автопрогона: базовая пауза нужна,
+# чтобы частыми переключениями не словить блок ТСПУ. Enter/неверный ввод = 0,
+# 0 = отмена (пустой вывод). Все пояснения — в stderr: stdout функции
+# захватывает вызывающий код, там должна быть только цифра.
+orch_ask_sweep_extra_delay() {
+    local extra
+    echo "Пауза между стратегиями снижает риск блока ТСПУ: больше пауза — дольше прогон, но безопаснее." >&2
+    read -re -p "Добавить секунд к базовой паузе 3 сек (Enter - без добавки, 0 - отмена): " extra
+    if [ "$extra" = "0" ]; then
+        return 0
+    fi
+    if [ -n "$extra" ]; then
+        case "$extra" in
+            *[!0-9]*)
+                echo -e "${yellow}Неверный ввод, будет базовая пауза 3 сек.${plain}" >&2
+                extra=0
+                ;;
+        esac
+    fi
+    echo "${extra:-0}"
+}
+
+# Запрос требуемых версий TLS для автопрогона: 12|13|both (Enter - both).
+# 0 = отмена (пустой вывод).
+orch_ask_sweep_tls_pref() {
+    local pref
+    echo "TLS 1.2 важен для ТВ и старых устройств, TLS 1.3 — для современных браузеров." >&2
+    read -re -p "Какой TLS должен работать: 1 - TLS 1.2, 2 - TLS 1.3, 3 - обе (Enter - 3, 0 - отмена): " pref
+    case "$pref" in
+        0) ;;
+        1) echo "12" ;;
+        2) echo "13" ;;
+        ''|3) echo "both" ;;
+        *)
+            echo -e "${yellow}Неверный ввод, требуются обе версии.${plain}" >&2
+            echo "both"
+            ;;
+    esac
+    return 0
+}
+
+# Диалог автопрогона (режим → требуемый TLS → добавка к паузе) и запуск.
+# 0 на любом вопросе = отмена.
+orch_run_auto_sweep() {
+    local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
+    local mode tls_pref extra_pause
+    read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1, 0 - отмена): " mode
+    if [ "$mode" = "0" ]; then
+        echo "Отмена."
+        pause_enter
+        return 0
+    fi
+    local sok=1
+    [ "$mode" = "2" ] && sok=0
+
+    tls_pref="$(orch_ask_sweep_tls_pref)"
+    if [ -z "$tls_pref" ]; then
+        echo "Отмена."
+        pause_enter
+        return 0
+    fi
+
+    extra_pause="$(orch_ask_sweep_extra_delay)"
+    if [ -z "$extra_pause" ]; then
+        echo "Отмена."
+        pause_enter
+        return 0
+    fi
+
+    orch_auto_sweep "$kind" "$key" "$proto_list" "$test_url" "$start" "$max" "$sok" "$extra_pause" "$tls_pref"
+    pause_enter
+}
+
+# Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
+# прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
+# и выбор сохранения. kind=profile|domain; key=профиль или домен.
+# $8 (extra_pause) — добавка к базовой паузе между стратегиями
+# (база ${Z2R_SWEEP_PAUSE:-3} сек), пауза нужна против срабатывания ТСПУ.
+# $9 (tls_pref: any|12|13|both) — какие версии TLS обязаны работать, чтобы
+# стратегия считалась зелёной (в диалоге по умолчанию обе).
+orch_auto_sweep() {
+    local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6" stop_on_ok="$7"
+    local s p out v12 v13 dl short token color vcolor
+    local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0
+    local ok_stats="" best="" best_short=""
+    local full_list="" full_stats="" best_full="" best_full_short=""
+    local warn_stats="" best_from_warn=0 n_a12=0 n_a13=0
+    local prev_str="" interrupted=0
+    local -A prev_map
+    local code12 code13 q12 q13 badge btxt bst bcol line12 line13
+
+    # case-проверка всей строки: grep -E '^[0-9]+$' построчный и пропускает
+    # многострочный мусор, у которого одна из строк — число.
+    local extra_pause="${8:-0}"
+    case "$extra_pause" in ''|*[!0-9]*) extra_pause=0 ;; esac
+    local base_pause="${Z2R_SWEEP_PAUSE:-3}"
+    case "$base_pause" in ''|*[!0-9]*) base_pause=3 ;; esac
+    local pause_sec=$((base_pause + extra_pause))
+
+    local tls_pref="${9:-any}"
+    case "$tls_pref" in
+        12|13|both) ;;
+        *) tls_pref="any" ;;
+    esac
+    local goal_txt="" goal_list=""
+    case "$tls_pref" in
+        12)   goal_txt=", цель TLS 1.2";      goal_list=" (нужен TLS 1.2)" ;;
+        13)   goal_txt=", цель TLS 1.3";      goal_list=" (нужен TLS 1.3)" ;;
+        both) goal_txt=", цель TLS 1.2+1.3";  goal_list=" (TLS 1.2 и 1.3)" ;;
+    esac
+
+    if [ "$kind" = "domain" ]; then
+        prev_str="$(orch_locked_get "$key" "tls")"
+    else
+        for p in $proto_list; do
+            prev_map["$p"]="$(orch_locked_get "$key" "$p")"
+        done
+    fi
+
+    local total=$((max - start + 1))
+    echo -e "${cyan}Автопрогон: стратегии ${start}-${max} (${total} шт., примерно $((total * 5 + (total - 1) * pause_sec)) сек, пауза ${pause_sec} сек между стратегиями${goal_txt}). Ctrl+C - прервать.${plain}"
+    # Ctrl+C не должен ронять скрипт: под set -e прерванный curl/sleep завершает
+    # всю функцию раньше флага. Отключаем -e на время прогона и восстанавливаем.
+    local had_e=0
+    case "$-" in *e*) had_e=1 ;; esac
+    set +e
+    trap 'orch_auto_sweep_interrupted=1' INT
+    orch_auto_sweep_interrupted=0
+    # В каждой строке нужен статус обеих версий TLS — движок не должен
+    # добивать медленную пробу (z2r_tls_check_target смотрит эту переменную).
+    local wait_both_prev="${Z2R_TLS_WAIT_BOTH:-}"
+    Z2R_TLS_WAIT_BOTH=1
+
+    for ((s=start; s<=max; s++)); do
+        if [ "$kind" = "domain" ]; then
+            orch_locked_set "$key" "tls" "$s"
+        else
+            for p in $proto_list; do
+                orch_locked_set "$key" "$p" "$s"
+            done
+        fi
+
+        out="$(z2r_tls_check_target "$test_url")"
+        if [ "$orch_auto_sweep_interrupted" = "1" ]; then
+            echo -e "${yellow}Прервано пользователем на стратегии ${s}.${plain}"
+            break
+        fi
+        v12="$(printf '%s\n' "$out" | sed -n 1p)"
+        v13="$(printf '%s\n' "$out" | sed -n 2p)"
+        dl="$(printf '%s\n' "$out" | sed -n 3p)"
+        short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+        token="${short%%|*}"; short="${short#*|}"
+
+        q12=0; q13=0
+        if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)"; then q12=1; fi
+        if z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then q13=1; fi
+        # Для подсказки «TLS X не прошёл ни одной стратегией» считаем ответившие
+        # версии (включая 4xx — googlevideo на корневой путь отвечает 404).
+        case "$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")" in
+            ok|http) n_a12=$((n_a12 + 1)) ;;
+        esac
+        case "$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")" in
+            ok|http) n_a13=$((n_a13 + 1)) ;;
+        esac
+
+        case "$token" in
+            ok)
+                color="$green"; disp="OK  "; n_ok=$((n_ok + 1)); ok_list="${ok_list}${ok_list:+ }${s}"
+                dlsize2="$(z2r_tls_field "$dl" 3)"; dltime2="$(z2r_tls_field "$dl" 4)"
+                if [ "$q12" = "1" ] && [ "$q13" = "1" ]; then
+                    full_list="${full_list}${full_list:+ }${s}"
+                fi
+                if [ "$dl" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                    ok_stats="${ok_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                    if [ "$q12" = "1" ] && [ "$q13" = "1" ]; then
+                        full_stats="${full_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                    fi
+                fi
+                ;;
+            warn)
+                color="$yellow"; disp="WARN"; n_warn=$((n_warn + 1)); warn_list="${warn_list}${warn_list:+ }${s}"
+                dlsize2="$(z2r_tls_field "$dl" 3)"; dltime2="$(z2r_tls_field "$dl" 4)"
+                if [ "$dl" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                    warn_stats="${warn_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                fi
+                ;;
+            *) color="$red"; disp="FAIL"; token="fail"; n_fail=$((n_fail + 1)) ;;
+        esac
+
+        badge="$(z2r_tls_version_badge "tls1.2" "$v12")"
+        btxt="${badge%%|*}"; bst="${badge#*|}"
+        case "$bst" in
+            ok) bcol="$green" ;;
+            http) bcol="$yellow" ;;
+            fail) bcol="$red" ;;
+            *) bcol="$plain" ;;
+        esac
+        line12="$(printf '%b%-17s%b' "$bcol" "$btxt" "$plain")"
+        badge="$(z2r_tls_version_badge "tls1.3" "$v13")"
+        btxt="${badge%%|*}"; bst="${badge#*|}"
+        case "$bst" in
+            ok) bcol="$green" ;;
+            http) bcol="$yellow" ;;
+            fail) bcol="$red" ;;
+            *) bcol="$plain" ;;
+        esac
+        line13="$(printf '%b%-17s%b' "$bcol" "$btxt" "$plain")"
+        printf '%s %3d: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
+            "${color}${disp}${plain}" "$line12" "$line13" "${color}${short}${plain}"
+
+        if [ "$stop_on_ok" = "1" ] && [ "$token" = "ok" ]; then
+            break
+        fi
+        # Пауза между стратегиями, чтобы частыми переключениями не словить блок ТСПУ.
+        if [ "$s" -lt "$max" ] && [ "$pause_sec" -gt 0 ]; then
+            sleep "$pause_sec"
+            [ "$orch_auto_sweep_interrupted" = "1" ] && break
+        fi
+    done
+    trap - INT
+    if [ "$had_e" = 1 ]; then set -e; fi
+    Z2R_TLS_WAIT_BOTH="$wait_both_prev"
+
+    # Лучшая = самая быстрая зелёная по скорости докачки (байт/с), а не первая
+    # попавшаяся; при равной скорости выигрывает меньший номер.
+    best=""
+    best_short=""
+    if [ -n "$ok_stats" ]; then
+        win="$(printf '%s' "$ok_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+        best="${win%%|*}"
+        best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+    fi
+    if [ -z "$best" ] && [ -n "$ok_list" ]; then
+        best="${ok_list%% *}"
+        best_short="сервер ответил (без докачки)"
+    fi
+    if [ -z "$best" ] && [ -n "$warn_list" ]; then
+        best_from_warn=1
+        best="${warn_list%% *}"
+        best_short="жёлтая (единственная без красных)"
+        if [ -n "$warn_stats" ]; then
+            win="$(printf '%s' "$warn_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+            best="${win%%|*}"
+            best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+        fi
+    fi
+
+    # Самая быстрая из «полных» (обе версии TLS + докачка) — та же метрика
+    # скорости, что и у главной лучшей.
+    best_full=""
+    best_full_short=""
+    if [ -n "$full_stats" ]; then
+        win="$(printf '%s' "$full_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+        best_full="${win%%|*}"
+        best_full_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+    fi
+
+    echo ""
+    echo "================================================"
+    echo -e " Итог автопрогона: ${green}OK ${n_ok}${plain}, ${yellow}жёлтых ${n_warn}${plain}, ${red}красных ${n_fail}${plain}"
+    [ -n "$ok_list" ] && echo -e " Зелёные стратегии${goal_list}: ${green}${ok_list}${plain}"
+    if [ -n "$full_list" ] && [ "$full_list" != "$ok_list" ]; then
+        echo -e " Полные (TLS 1.2 и 1.3): ${green}${full_list}${plain}"
+    fi
+    [ -n "$warn_list" ] && echo -e " Жёлтые стратегии: ${yellow}${warn_list}${plain}"
+    if [ -n "$best" ]; then
+        if [ "$best_from_warn" = "1" ]; then
+            echo -e " Лучшая из жёлтых (зелёных нет): ${yellow}${best}${plain} (${best_short})"
+        else
+            echo -e " Лучшая (самая быстрая из зелёных): ${Fgreen}${best}${plain} (${best_short})"
+        fi
+    else
+        echo -e " ${red}Рабочих стратегий не найдено.${plain}"
+    fi
+    if [ -n "$best_full" ] && [ "$best_full" != "$best" ]; then
+        echo -e " Самая быстрая полная (TLS 1.2 и 1.3): ${Fgreen}${best_full}${plain} (${best_full_short})"
+    fi
+    # Нужная версия TLS не прошла ни одной стратегией — это свойство сайта
+    # или блокировки, стратегии тут не помогут; подсказываем, что делать.
+    if [ "$n_a12" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "12" ]; }; then
+        echo -e " ${yellow}TLS 1.2 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
+        if [ "$tls_pref" = "both" ]; then
+            echo -e " ${yellow}Если TLS 1.2 не нужен, перезапустите автопрогон с целью TLS 1.3.${plain}"
+        fi
+    fi
+    if [ "$n_a13" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "13" ]; }; then
+        echo -e " ${yellow}TLS 1.3 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
+        if [ "$tls_pref" = "both" ]; then
+            echo -e " ${yellow}Если TLS 1.3 не нужен, перезапустите автопрогон с целью TLS 1.2.${plain}"
+        fi
+    fi
+    echo "================================================"
+
+    local answer
+    if [ -n "$best" ]; then
+        read -re -p "Enter - сохранить ${best}, номер - сохранить другую, 0 - вернуть как было: " answer || answer="0"
+    else
+        read -re -p "0 или Enter - вернуть как было: " answer || answer="0"
+    fi
+
+    if [ "$kind" = "domain" ]; then
+        if [ -n "$answer" ] && [ "$answer" != "0" ] && printf '%s' "$answer" | grep -Eq '^[0-9]+$' \
+            && [ "$answer" -ge 1 ] && [ "$answer" -le "$max" ]; then
+            orch_locked_set "$key" "tls" "$answer"
+            echo "Стратегия ${answer} сохранена для домена ${key}."
+            telemetry_notify
+        elif [ -z "$answer" ] && [ -n "$best" ]; then
+            orch_locked_set "$key" "tls" "$best"
+            echo "Стратегия ${best} сохранена для домена ${key}."
+            telemetry_notify
+        else
+            if [ -n "$prev_str" ] && [ "$prev_str" != "0" ]; then
+                orch_locked_set "$key" "tls" "$prev_str"
+            elif [ "$prev_str" = "0" ]; then
+                orch_locked_set "$key" "tls" 0
+            else
+                orch_locked_clear "$key" "tls"
+            fi
+            echo "Изменения отменены, прежняя стратегия домена возвращена."
+        fi
+    else
+        if [ -n "$answer" ] && [ "$answer" != "0" ] && printf '%s' "$answer" | grep -Eq '^[0-9]+$' \
+            && [ "$answer" -ge 1 ] && [ "$answer" -le "$max" ]; then
+            :
+        elif [ -z "$answer" ] && [ -n "$best" ]; then
+            answer="$best"
+        else
+            answer="0"
+        fi
+        if [ "$answer" != "0" ]; then
+            local cfg old_udp_ports
+            cfg="$(get_config_file)"
+            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+            if profile_state_set_and_apply "$key" "$proto_list" "$answer" "$cfg"; then
+                echo "Стратегия ${answer} сохранена для профиля ${key}."
+                profile_strategy_restart_if_needed "$key" "$cfg" "$old_udp_ports"
+            else
+                echo -e "${red}Не удалось сохранить стратегию ${answer} для профиля ${key}.${plain}"
+            fi
+            telemetry_notify
+        else
+            for p in $proto_list; do
+                if [ -n "${prev_map[$p]}" ] && [ "${prev_map[$p]}" -gt 0 ]; then
+                    orch_locked_set "$key" "$p" "${prev_map[$p]}"
+                elif [ "${prev_map[$p]}" = "0" ]; then
+                    orch_locked_set "$key" "$p" 0
+                else
+                    orch_locked_clear "$key" "$p"
+                fi
+            done
+            echo "Изменения отменены, прежние стратегии профиля возвращены."
+        fi
+    fi
+    return 0
+}
+
 get_orchestra_locks_info() {
     local output_var="${1:-}"
     local profile_state_file orch_lock_file
+    # fallback для автономного вызова (CGI/WebUI не наследует палитру z2r.sh)
+    [ -z "${gray:-}" ] && gray='\033[0;90m'
     profile_state_file="$PROFILE_STATE_FILE"
     orch_lock_file="$ORCH_LOCK_FILE"
 
@@ -170,7 +540,7 @@ get_orchestra_locks_info() {
                 ;;
             *)
                 eff="$raw"
-                printf -v colored "%b" "${Fcyan}${eff}${plain}"
+                printf -v colored "%b" "${Fgreen}${eff}${plain}"
                 ;;
         esac
         printf -v "${state_vars[i]}" "%s" "$eff"
@@ -501,7 +871,17 @@ manage_custom_rkn_domain() {
         prev_strat="$existing_strat"
     fi
 
-    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat): " strategy_num
+    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
+    case "$strategy_num" in
+        a|A|а|А)
+            test_url="$user_domain"
+            if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
+                test_url="https://$test_url"
+            fi
+            orch_run_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat"
+            return 0
+            ;;
+    esac
     if [ -z "$strategy_num" ]; then
         strategy_num="$current_strat"
     fi
@@ -518,7 +898,8 @@ manage_custom_rkn_domain() {
     for ((s=strategy_num; s<=max_strat; s++)); do
         orch_locked_set "$user_domain" "tls" "$s"
 
-        echo "Стратегия $s применена для домена $user_domain"
+        echo -e "Стратегия $s применена для домена ${cyan}${user_domain}${plain}"
+        echo -e "${yellow}Запускается проверка, пожалуйста подождите:${plain}"
         check_access "$test_url"
 
         read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer

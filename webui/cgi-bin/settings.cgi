@@ -17,6 +17,27 @@ case "${REQUEST_METHOD:-GET}" in
       udp-games)
         api_udp_games_get
         ;;
+      auto_mode)
+        api_auto_mode_get
+        ;;
+      hostlist)
+        api_hostlist_get
+        ;;
+      rst_guard)
+        api_rst_guard_get
+        ;;
+      reasm)
+        api_reasm_get
+        ;;
+      quic443)
+        api_quic443_get
+        ;;
+      ports)
+        api_ports_get
+        ;;
+      provider)
+        api_provider_get
+        ;;
       *)
         api_tls_blob_get
         ;;
@@ -42,6 +63,33 @@ case "${REQUEST_METHOD:-GET}" in
         ;;
       udp_games_state)
         api_udp_games_set
+        ;;
+      auto_mode_state)
+        api_auto_mode_set
+        ;;
+      hostlist_state)
+        api_hostlist_set
+        ;;
+      rst_guard_state)
+        api_rst_guard_set
+        ;;
+      reasm_state)
+        api_reasm_set
+        ;;
+      quic443_state)
+        api_quic443_set
+        ;;
+      ports_add)
+        api_ports_add
+        ;;
+      ports_remove)
+        api_ports_remove
+        ;;
+      provider_set)
+        api_provider_set
+        ;;
+      provider_redetect)
+        api_provider_redetect
         ;;
       *)
         send_error "400 Bad Request" "Неизвестная настройка"

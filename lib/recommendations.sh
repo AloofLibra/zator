@@ -14,11 +14,21 @@ update_recommendations() {
     return 0
   fi
 
-  # Если файла нет или он старый - качаем
+  # Скачиваем во временный файл и атомарно заменяем рабочий. При любой ошибке
+  # удаляется только .tmp — существующая рабочая база никогда не трогается.
+  local tmp
+  tmp="$(mktemp "${RECS_FILE}.tmp.XXXXXX" 2>/dev/null)" || tmp="${RECS_FILE}.tmp.$$"
+
   if command -v z2r_download_project_file >/dev/null 2>&1; then
-    z2r_download_project_file "$RECS_FILE" "recommendations.txt" || rm -f "$RECS_FILE"
+    if z2r_download_project_file "$tmp" "recommendations.txt" && [ -s "$tmp" ]; then
+      mv -f "$tmp" "$RECS_FILE"
+    else
+      rm -f "$tmp"
+    fi
+  elif curl -fsSL --max-time 5 "$RECS_URL" -o "$tmp" && [ -s "$tmp" ]; then
+    mv -f "$tmp" "$RECS_FILE"
   else
-    curl -s --max-time 5 "$RECS_URL" -o "$RECS_FILE" || rm -f "$RECS_FILE"
+    rm -f "$tmp"
   fi
   return 0
 }
@@ -29,8 +39,8 @@ show_hint() {
   local my_isp=""
 
   # А. Узнаем провайдера
-  if [ -s "/opt/zator/extra_strats/cache/provider.txt" ]; then
-    my_isp="$(cat "/opt/zator/extra_strats/cache/provider.txt")"
+  if [ -s "$PROVIDER_CACHE" ]; then
+    my_isp="$(head -n1 "$PROVIDER_CACHE")"
   fi
 
   # Б. Проверяем наличие базы
@@ -38,9 +48,33 @@ show_hint() {
     return 0
   fi
 
-  # В. Ищем строку (grep -F для безопасности спецсимволов)
-  local line
-  line="$(grep -F "$my_isp|" "$RECS_FILE" | head -n 1)"
+  # В. Ищем строку: сначала точное совпадение ключа первого поля, затем по
+  # бренду/алиасам из ASN-таблицы (ключи базы бывают "City - Org" и голые
+  # "Beeline"). Бренд и алиасы могут содержать пробелы и скобки, поэтому
+  # поиск литеральный (awk index), а не регулярным выражением.
+  local line brand city alias aliases
+  line="$(awk -F'|' -v key="$my_isp" '$1 == key {print; exit}' "$RECS_FILE")"
+  if [ -z "$line" ] && type provider_brand_aliases >/dev/null 2>&1; then
+    brand="${my_isp%% - *}"
+    city="${my_isp#* - }"
+    [ "$city" = "$my_isp" ] && city=""
+    if [ -n "$city" ]; then
+      line="$(awk -F'|' -v b="$brand" -v c="$city" 'index(tolower($1), tolower(b)) && index(tolower($1), tolower(c)) {print; exit}' "$RECS_FILE")"
+    fi
+    if [ -z "$line" ]; then
+      line="$(awk -F'|' -v b="$brand" 'index(tolower($1), tolower(b)) {print; exit}' "$RECS_FILE")"
+    fi
+    if [ -z "$line" ]; then
+      aliases="$(provider_brand_aliases "$brand" 2>/dev/null)"
+      while IFS= read -r alias; do
+        [ -n "$alias" ] || continue
+        line="$(awk -F'|' -v b="$alias" 'index(tolower($1), tolower(b)) {print; exit}' "$RECS_FILE")"
+        [ -n "$line" ] && break
+      done <<EOF
+$aliases
+EOF
+    fi
+  fi
   [ -z "$line" ] && return 0
 
   # Г. Парсим (актуальный формат у тебя: ISP|UDP:...|TCP:...|GV:...|RKN:...

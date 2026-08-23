@@ -1,5 +1,7 @@
 #!/bin/sh
 
+Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
+
 config_get_file() {
   if [ -n "$1" ] && [ -f "$1" ]; then
     echo "$1"
@@ -198,6 +200,29 @@ config_udp_games_active() {
     return 1
   fi
   printf "%s\n" "$blk" | grep -Eq '^[[:space:]]*--filter-udp=1026'
+}
+
+fwtype_nft_available() {
+  if [ "$OSystem" = "entware" ]; then
+    return 1
+  fi
+  command -v nft >/dev/null 2>&1 || return 1
+  nft list tables >/dev/null 2>&1
+}
+
+fwtype_iptables_available() {
+  command -v iptables >/dev/null 2>&1 || return 1
+  iptables -L -n >/dev/null 2>&1
+}
+
+fwtype_unavailable_reason() {
+  if [ "$1" = "nftables" ] && [ "$OSystem" = "entware" ]; then
+    echo "на Keenetic/Entware работает только iptables"
+  elif [ "$1" = "nftables" ]; then
+    echo "нет утилиты nft или поддержки nftables в ядре"
+  else
+    echo "нет утилиты iptables или поддержки iptables в ядре"
+  fi
 }
 
 config_mode_text() {
