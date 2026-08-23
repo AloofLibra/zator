@@ -263,7 +263,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 | `tls12`/`tls13` | legacy-булевы: транспорт ответил любым HTTP-кодом (включая 404/405) |
 | `verdict` | `ok` — сервер ответил: 2xx/3xx с данными, либо любой HTTP-код (4xx/5xx — сервер ответил, TLS пробит; googlevideo на корневом пути отдаёт 404 — это норма); `warn` — сайт отвечает только по TLS 1.2, либо поток срезается не каждый раз (первая докачка оборвалась, повтор прошёл); `fail` — обе версии не ответили транспортом либо данные не приходят |
 | `text` | сводный текст вердикта (тот же, что печатает CLI-меню) |
-| `tls12_detail`/`tls13_detail` | `code` (число, `0` = ответа нет), `proto` (например `HTTP/2`), `time` (сек), `ip`, `state` (`ok/http/dns/timeout/tls/conn/unsupported/none`), `text` |
+| `tls12_detail`/`tls13_detail` | `code` (число, `0` = ответа нет), `proto` (например `HTTP/2`), `time` (сек), `ip`, `state` (`ok/http/aborted/dns/timeout/tls/conn/unsupported/none`; `aborted` — проверка этой версии остановлена, т.к. сайт уже ответил по другой), `text` |
 | `download` | `null`, если этап пропущен; иначе `code`, `size` (байт), `time`, `state` (`ok/zero/cut/fail`), `text` |
 
 `get_yt_cluster_domain` делает `curl` к

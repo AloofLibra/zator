@@ -1107,6 +1107,9 @@ menu_action_backup_create() {
     echo -e "${red}Не удалось создать бэкап.${plain}"
     return 1
   fi
+  # backup_create_core ставит BACKUP_LAST_ARCHIVE внутри command substitution
+  # (subshell), до вызывающего shell значение не доходит — восстанавливаем.
+  BACKUP_LAST_ARCHIVE="$archive"
   echo -e "${green}Бэкап создан: $(basename "$archive")${plain}"
   echo -e "${yellow}Путь: $archive${plain}"
   pause_enter

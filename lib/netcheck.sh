@@ -118,6 +118,7 @@ z2r_tls_version_state() {
         return
     fi
     case "$rc" in
+        X) echo aborted ;;
         6) echo dns ;;
         28) echo timeout ;;
         7) echo conn ;;
@@ -180,8 +181,10 @@ z2r_tls_check_target() {
     wait
     v12="$(cat "$tmp/v12" 2>/dev/null)" || v12=""
     v13="$(cat "$tmp/v13" 2>/dev/null)" || v13=""
-    [ -n "$v12" ] || v12="28|000|-|-|-"
-    [ -n "$v13" ] || v13="28|000|-|-|-"
+    # Пустой файл = проба добита досрочно (вторая версия уже ответила)
+    # или упала — помечаем "aborted", а не ложным таймаутом 28.
+    [ -n "$v12" ] || v12="X|000|-|-|-"
+    [ -n "$v13" ] || v13="X|000|-|-|-"
     dl="skip"
     if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
         z2r_tls_probe_download "$url" >"$tmp/d1" 2>/dev/null </dev/null &
@@ -219,6 +222,7 @@ z2r_tls_version_parts() {
     hint="Проверьте доступность вручную. Возможно ошибка теста."
     case "$state" in
         ok|http) fact="Есть ответ по TLS $ver ($why): $proto $code за $time с"; hint="" ;;
+        aborted) fact="Проверка остановлена: сайт уже ответил по другой версии TLS"; hint="" ;;
         dns) fact="Нет ответа по TLS $ver ($why) Домен не разрешается (DNS)." ;;
         timeout) fact="Нет ответа по TLS $ver ($why) Таймаут ${Z2R_TLS_MAX_TIME}сек." ;;
         tls) fact="Нет ответа по TLS $ver ($why) Ошибка TLS-рукопожатия." ;;
@@ -403,6 +407,7 @@ check_access() {
 
     case "$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")" in
         ok|http) c12="$green" ;;
+        aborted) c12="${plain}" ;;
         *) c12="$yellow" ;;
     esac
     parts="$(z2r_tls_version_parts 1.2 "$v12")"
@@ -415,6 +420,7 @@ check_access() {
 
     case "$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")" in
         ok|http) c13="$green" ;;
+        aborted) c13="${plain}" ;;
         *) c13="$yellow" ;;
     esac
     parts="$(z2r_tls_version_parts 1.3 "$v13")"

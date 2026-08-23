@@ -662,6 +662,7 @@ function checkVerdictClass(verdict) {
 
 function checkLineClass(state) {
   if (state === 'ok' || state === 'http') return 'ok';
+  if (state === 'aborted') return '';
   return 'bad';
 }
 

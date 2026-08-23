@@ -17,6 +17,9 @@ mkdir -p "$TMP_DIR/bin" "$TMP_DIR/counter"
 
 cat > "$TMP_DIR/bin/curl" <<'MOCK'
 #!/bin/sh
+if [ -n "${MOCK_VALIDATOR_RC:-}" ]; then
+  exit "$MOCK_VALIDATOR_RC"
+fi
 hdr=""
 head=0
 ver=""
@@ -127,8 +130,11 @@ out="$(target_out)"
 elapsed=$(( $(date +%s) - t0 ))
 unset MOCK_SLOW_12
 [ "$elapsed" -lt 5 ] || fail "сценарий 1b: зависшая версия держала этап ${elapsed}с (должно быть ~2с)"
-[ "$(printf '%s\n' "$out" | sed -n 1p)" = "28|000|-|-|-" ] \
-  || fail "сценарий 1b: добитая версия должна быть 28|000, получено: $(printf '%s\n' "$out" | sed -n 1p)"
+[ "$(printf '%s\n' "$out" | sed -n 1p)" = "X|000|-|-|-" ] \
+  || fail "сценарий 1b: добитая версия должна быть X|000 (aborted), получено: $(printf '%s\n' "$out" | sed -n 1p)"
+[ "$(z2r_tls_version_state X 000)" = "aborted" ] || fail "сценарий 1b: X|000 должен давать состояние aborted"
+z2r_tls_version_text 1.2 "X|000|-|-|-" | grep -q "Проверка остановлена" \
+  || fail "сценарий 1b: текст добитой версии должен говорить об остановке проверки"
 v="$(verdict_of "$out")"
 [ "${v%%|*}" = "ok" ] || fail "сценарий 1b: вердикт по TLS 1.3 должен быть ok, получено: $v"
 
@@ -381,6 +387,34 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   printf '%s' "$json" | grep -q 'Проверьте доступность вручную\|проверьте вручную' || fail "сценарий 15: в тексте TLS 1.2 нет подсказки проверить вручную"
   printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
     || fail "сценарий 15: JSON доменной проверки невалиден: $json"
+)
+
+# == 17. валидатор: одиночный таймаут ERROR, повторный FAIL, OK сбрасывает ==
+(
+  export Z2R_VALIDATION_QUEUE="$TMP_DIR/valq"
+  export COUNTER_DIR="$TMP_DIR/counter"
+  export PATH="$TMP_DIR/bin:$PATH"
+  rm -rf "$Z2R_VALIDATION_QUEUE"; mkdir -p "$Z2R_VALIDATION_QUEUE"
+  mk_req() { printf '%s	%s	%s	%s	%s
+' "$1" as1 host1 7 example.org > "$Z2R_VALIDATION_QUEUE/request.$1"; }
+  run_val() { sh "$REPO_DIR/lua/strategy-validator.sh" "$Z2R_VALIDATION_QUEUE/request.$1" >/dev/null 2>&1; }
+  res_status() { cut -f2 "$Z2R_VALIDATION_QUEUE/result.$1"; }
+
+  export MOCK_VALIDATOR_RC=28
+  mk_req 1; run_val 1
+  [ "$(res_status 1)" = "ERROR" ] || fail "сценарий 17: первый таймаут должен быть ERROR, получено: $(res_status 1)"
+  mk_req 2; run_val 2
+  [ "$(res_status 2)" = "FAIL" ] || fail "сценарий 17: повторный таймаут должен быть FAIL, получено: $(res_status 2)"
+  [ ! -f "$Z2R_VALIDATION_QUEUE/to.host1.7" ] || fail "сценарий 17: счётчик таймаутов не сброшен после FAIL"
+
+  export MOCK_VALIDATOR_RC=0
+  mk_req 3; run_val 3
+  [ "$(res_status 3)" = "OK" ] || fail "сценарий 17: успешная проверка должна быть OK"
+
+  export MOCK_VALIDATOR_RC=28
+  mk_req 4; run_val 4
+  [ "$(res_status 4)" = "ERROR" ] || fail "сценарий 17: после OK счётчик должен считаться заново (ERROR)"
+  unset MOCK_VALIDATOR_RC
 )
 
 # == 16. статический wiring ==
