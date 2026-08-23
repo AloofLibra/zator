@@ -60,11 +60,12 @@ orch_profile_try() {
     case "$start_strat" in
         a|A|а|А)
             if printf '%s' "$test_url" | grep -q '^https://'; then
-                local mode
+                local mode extra_pause
                 read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1): " mode
                 local sok=1
                 [ "$mode" = "2" ] && sok=0
-                orch_auto_sweep "profile" "$profile" "$proto_list" "$test_url" 1 "$max_strat" "$sok"
+                extra_pause="$(orch_ask_sweep_extra_delay)"
+                orch_auto_sweep "profile" "$profile" "$proto_list" "$test_url" 1 "$max_strat" "$sok" "$extra_pause"
                 pause_enter
             fi
             return
@@ -152,9 +153,29 @@ orch_profile_try() {
     pause_enter
 }
 
+# Запрос добавки к паузе между стратегиями автопрогона: базовая пауза нужна,
+# чтобы частыми переключениями не словить блок ТСПУ. Enter/неверный ввод = 0.
+orch_ask_sweep_extra_delay() {
+    local extra
+    # Пояснение — в stderr: stdout функции захватывает вызывающий код, там должна быть только цифра.
+    echo "Пауза между стратегиями снижает риск блока ТСПУ: больше пауза — дольше прогон, но безопаснее." >&2
+    read -re -p "Добавить секунд к базовой паузе 3 сек (Enter - 0): " extra
+    if [ -n "$extra" ]; then
+        case "$extra" in
+            *[!0-9]*)
+                echo -e "${yellow}Неверный ввод, будет базовая пауза 3 сек.${plain}" >&2
+                extra=0
+                ;;
+        esac
+    fi
+    echo "${extra:-0}"
+}
+
 # Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
 # прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
 # и выбор сохранения. kind=profile|domain; key=профиль или домен.
+# $8 (extra_pause) — добавка к базовой паузе между стратегиями
+# (база ${Z2R_SWEEP_PAUSE:-3} сек), пауза нужна против срабатывания ТСПУ.
 orch_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6" stop_on_ok="$7"
     local s p out v12 v13 dl short token color vcolor
@@ -162,6 +183,14 @@ orch_auto_sweep() {
     local ok_stats="" best="" best_short=""
     local prev_str="" interrupted=0
     local -A prev_map
+
+    # case-проверка всей строки: grep -E '^[0-9]+$' построчный и пропускает
+    # многострочный мусор, у которого одна из строк — число.
+    local extra_pause="${8:-0}"
+    case "$extra_pause" in ''|*[!0-9]*) extra_pause=0 ;; esac
+    local base_pause="${Z2R_SWEEP_PAUSE:-3}"
+    case "$base_pause" in ''|*[!0-9]*) base_pause=3 ;; esac
+    local pause_sec=$((base_pause + extra_pause))
 
     if [ "$kind" = "domain" ]; then
         prev_str="$(orch_locked_get "$key" "tls")"
@@ -172,7 +201,7 @@ orch_auto_sweep() {
     fi
 
     local total=$((max - start + 1))
-    echo -e "${cyan}Автопрогон: стратегии ${start}-${max} (${total} шт., примерно $((total * 5)) сек). Ctrl+C - прервать.${plain}"
+    echo -e "${cyan}Автопрогон: стратегии ${start}-${max} (${total} шт., примерно $((total * 5 + (total - 1) * pause_sec)) сек, пауза ${pause_sec} сек между стратегиями). Ctrl+C - прервать.${plain}"
     # Ctrl+C не должен ронять скрипт: под set -e прерванный curl/sleep завершает
     # всю функцию раньше флага. Отключаем -e на время прогона и восстанавливаем.
     local had_e=0
@@ -216,6 +245,11 @@ orch_auto_sweep() {
 
         if [ "$stop_on_ok" = "1" ] && [ "$token" = "ok" ]; then
             break
+        fi
+        # Пауза между стратегиями, чтобы частыми переключениями не словить блок ТСПУ.
+        if [ "$s" -lt "$max" ] && [ "$pause_sec" -gt 0 ]; then
+            sleep "$pause_sec"
+            [ "$orch_auto_sweep_interrupted" = "1" ] && break
         fi
     done
     trap - INT
@@ -685,14 +719,15 @@ manage_custom_rkn_domain() {
     read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
     case "$strategy_num" in
         a|A|а|А)
-            local mode sok=1
+            local mode sok=1 extra_pause
             read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1): " mode
             [ "$mode" = "2" ] && sok=0
+            extra_pause="$(orch_ask_sweep_extra_delay)"
             test_url="$user_domain"
             if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
                 test_url="https://$test_url"
             fi
-            orch_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat" "$sok"
+            orch_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat" "$sok" "$extra_pause"
             pause_enter
             return 0
             ;;

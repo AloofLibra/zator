@@ -299,6 +299,8 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
 (
   export ORCH_LOCK_FILE="$TMP_DIR/locked_auto.tsv"
   export PROFILE_STATE_FILE="$TMP_DIR/profile_auto.lock"
+  # базовая пауза прогона 0 сек: проверки замоканы, ждать незачем
+  export Z2R_SWEEP_PAUSE=0
   : > "$ORCH_LOCK_FILE"
   reset_counter
   export MOCK_HEAD_12=timeout MOCK_HEAD_13=seq_ok3 MOCK_DL=ok206
@@ -337,6 +339,18 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   [ "$(orch_locked_get 1 tls)" = "5" ] \
     || fail "сценарий 14c: профиль-вид с ответом 0 должен вернуть прежний лок"
   printf '%s' "$out" | grep -q "прежние стратегии профиля возвращены" || fail "сценарий 14c: нет сообщения возврата"
+
+  # добавка к паузе ($8) попадает в баннер; успех на 1-й стратегии -> без sleep
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  export MOCK_HEAD_13=ok200
+  out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 2 1 5)"
+  printf '%s' "$out" | grep -q "пауза 5 сек" \
+    || fail "сценарий 14c: добавка к паузе не попала в баннер: $out"
+  cap="$(printf '5\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
+  [ "$cap" = "5" ] || fail "сценарий 14c: хеллер должен вернуть только число: $cap"
+  cap="$(printf 'abc\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
+  [ "$cap" = "0" ] || fail "сценарий 14c: неверный ввод хеллера должен давать 0: $cap"
+  export MOCK_HEAD_13=seq_ok3
 
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   orch_locked_set example.org tls 7
