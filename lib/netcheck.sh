@@ -380,7 +380,34 @@ z2r_tls_short_result() {
     fi
     if [ "$q12" -eq 0 ] && [ "$q13" -eq 0 ]; then
         if [ "$t12" -eq 1 ]; then best="$code12"; else best="$code13"; fi
-        printf 'ok|сервер ответил кодом %s\n' "$best"
+        case "$pref" in
+            both)
+                if [ "$t12" -eq 1 ] && [ "$t13" -eq 1 ]; then
+                    printf 'ok|сервер ответил кодом %s (обе версии)\n' "$best"
+                elif [ "$t12" -eq 1 ]; then
+                    printf 'warn|работает только TLS 1.2, код %s\n' "$best"
+                else
+                    printf 'warn|работает только TLS 1.3, код %s\n' "$best"
+                fi
+                ;;
+            12)
+                if [ "$t12" -eq 1 ]; then
+                    printf 'ok|сервер ответил кодом %s\n' "$best"
+                else
+                    printf 'warn|работает только TLS 1.3, код %s\n' "$best"
+                fi
+                ;;
+            13)
+                if [ "$t13" -eq 1 ]; then
+                    printf 'ok|сервер ответил кодом %s\n' "$best"
+                else
+                    printf 'warn|работает только TLS 1.2, код %s\n' "$best"
+                fi
+                ;;
+            *)
+                printf 'ok|сервер ответил кодом %s\n' "$best"
+                ;;
+        esac
         return
     fi
     if [ "$dl" != "skip" ]; then
@@ -437,14 +464,24 @@ z2r_tls_short_result() {
 
 # Статус одной версии TLS для таблицы автопрогона: "текст|состояние"
 # (ok|http|fail|aborted — состояние выбирает цвет вызывающий).
+# Для ответивших версий добавляем время ответа, как в выводе пункта 01.
 z2r_tls_version_badge() {
-    local label="$1" raw="$2" rc code state
+    local label="$1" raw="$2" rc code state time int frac btime
     rc="$(z2r_tls_field "$raw" 1)"
     code="$(z2r_tls_field "$raw" 2)"
     state="$(z2r_tls_version_state "$rc" "$code")"
+    btime=""
+    time="$(z2r_tls_field "$raw" 4)"
+    case "$time" in
+        [0-9]*)
+            int="${time%.*}"; frac="${time#*.}"
+            [ "$frac" = "$time" ] && frac=""
+            btime="${int}.${frac:0:1}с"
+            ;;
+    esac
     case "$state" in
-        ok) printf '%s OK|ok\n' "$label" ;;
-        http) printf '%s %s|http\n' "$label" "$code" ;;
+        ok) printf '%s OK %s|ok\n' "$label" "$btime" ;;
+        http) printf '%s %s %s|http\n' "$label" "$code" "$btime" ;;
         aborted) printf '%s -|aborted\n' "$label" ;;
         *) printf '%s FAIL|fail\n' "$label" ;;
     esac

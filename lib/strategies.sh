@@ -233,7 +233,7 @@ orch_auto_sweep() {
     local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0
     local ok_stats="" best="" best_short=""
     local full_list="" full_stats="" best_full="" best_full_short=""
-    local warn_stats="" best_from_warn=0 n_q12=0 n_q13=0
+    local warn_stats="" best_from_warn=0 n_a12=0 n_a13=0
     local prev_str="" interrupted=0
     local -A prev_map
     local code12 code13 q12 q13 badge btxt bst bcol line12 line13
@@ -303,8 +303,14 @@ orch_auto_sweep() {
         q12=0; q13=0
         if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)"; then q12=1; fi
         if z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then q13=1; fi
-        if [ "$q12" = "1" ]; then n_q12=$((n_q12 + 1)); fi
-        if [ "$q13" = "1" ]; then n_q13=$((n_q13 + 1)); fi
+        # Для подсказки «TLS X не прошёл ни одной стратегией» считаем ответившие
+        # версии (включая 4xx — googlevideo на корневой путь отвечает 404).
+        case "$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")" in
+            ok|http) n_a12=$((n_a12 + 1)) ;;
+        esac
+        case "$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")" in
+            ok|http) n_a13=$((n_a13 + 1)) ;;
+        esac
 
         case "$token" in
             ok)
@@ -338,7 +344,7 @@ orch_auto_sweep() {
             fail) bcol="$red" ;;
             *) bcol="$plain" ;;
         esac
-        line12="$(printf '%b%-11s%b' "$bcol" "$btxt" "$plain")"
+        line12="$(printf '%b%-17s%b' "$bcol" "$btxt" "$plain")"
         badge="$(z2r_tls_version_badge "tls1.3" "$v13")"
         btxt="${badge%%|*}"; bst="${badge#*|}"
         case "$bst" in
@@ -347,7 +353,7 @@ orch_auto_sweep() {
             fail) bcol="$red" ;;
             *) bcol="$plain" ;;
         esac
-        line13="$(printf '%b%-11s%b' "$bcol" "$btxt" "$plain")"
+        line13="$(printf '%b%-17s%b' "$bcol" "$btxt" "$plain")"
         printf '%s %3d: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
             "${color}${disp}${plain}" "$line12" "$line13" "${color}${short}${plain}"
 
@@ -420,13 +426,13 @@ orch_auto_sweep() {
     fi
     # Нужная версия TLS не прошла ни одной стратегией — это свойство сайта
     # или блокировки, стратегии тут не помогут; подсказываем, что делать.
-    if [ "$n_q12" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "12" ]; }; then
+    if [ "$n_a12" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "12" ]; }; then
         echo -e " ${yellow}TLS 1.2 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
         if [ "$tls_pref" = "both" ]; then
             echo -e " ${yellow}Если TLS 1.2 не нужен, перезапустите автопрогон с целью TLS 1.3.${plain}"
         fi
     fi
-    if [ "$n_q13" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "13" ]; }; then
+    if [ "$n_a13" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "13" ]; }; then
         echo -e " ${yellow}TLS 1.3 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
         if [ "$tls_pref" = "both" ]; then
             echo -e " ${yellow}Если TLS 1.3 не нужен, перезапустите автопрогон с целью TLS 1.2.${plain}"
