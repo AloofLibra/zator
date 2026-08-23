@@ -233,6 +233,7 @@ orch_auto_sweep() {
     local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0
     local ok_stats="" best="" best_short=""
     local full_list="" full_stats="" best_full="" best_full_short=""
+    local warn_stats="" best_from_warn=0 n_q12=0 n_q13=0
     local prev_str="" interrupted=0
     local -A prev_map
     local code12 code13 q12 q13 badge btxt bst bcol line12 line13
@@ -302,6 +303,8 @@ orch_auto_sweep() {
         q12=0; q13=0
         if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)"; then q12=1; fi
         if z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then q13=1; fi
+        if [ "$q12" = "1" ]; then n_q12=$((n_q12 + 1)); fi
+        if [ "$q13" = "1" ]; then n_q13=$((n_q13 + 1)); fi
 
         case "$token" in
             ok)
@@ -317,7 +320,13 @@ orch_auto_sweep() {
                     fi
                 fi
                 ;;
-            warn) color="$yellow"; disp="WARN"; n_warn=$((n_warn + 1)); warn_list="${warn_list}${warn_list:+ }${s}" ;;
+            warn)
+                color="$yellow"; disp="WARN"; n_warn=$((n_warn + 1)); warn_list="${warn_list}${warn_list:+ }${s}"
+                dlsize2="$(z2r_tls_field "$dl" 3)"; dltime2="$(z2r_tls_field "$dl" 4)"
+                if [ "$dl" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                    warn_stats="${warn_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                fi
+                ;;
             *) color="$red"; disp="FAIL"; token="fail"; n_fail=$((n_fail + 1)) ;;
         esac
 
@@ -369,8 +378,14 @@ orch_auto_sweep() {
         best_short="сервер ответил (без докачки)"
     fi
     if [ -z "$best" ] && [ -n "$warn_list" ]; then
+        best_from_warn=1
         best="${warn_list%% *}"
         best_short="жёлтая (единственная без красных)"
+        if [ -n "$warn_stats" ]; then
+            win="$(printf '%s' "$warn_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+            best="${win%%|*}"
+            best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+        fi
     fi
 
     # Самая быстрая из «полных» (обе версии TLS + докачка) — та же метрика
@@ -392,12 +407,30 @@ orch_auto_sweep() {
     fi
     [ -n "$warn_list" ] && echo -e " Жёлтые стратегии: ${yellow}${warn_list}${plain}"
     if [ -n "$best" ]; then
-        echo -e " Лучшая (самая быстрая из зелёных): ${Fgreen}${best}${plain} (${best_short})"
+        if [ "$best_from_warn" = "1" ]; then
+            echo -e " Лучшая из жёлтых (зелёных нет): ${yellow}${best}${plain} (${best_short})"
+        else
+            echo -e " Лучшая (самая быстрая из зелёных): ${Fgreen}${best}${plain} (${best_short})"
+        fi
     else
         echo -e " ${red}Рабочих стратегий не найдено.${plain}"
     fi
     if [ -n "$best_full" ] && [ "$best_full" != "$best" ]; then
         echo -e " Самая быстрая полная (TLS 1.2 и 1.3): ${Fgreen}${best_full}${plain} (${best_full_short})"
+    fi
+    # Нужная версия TLS не прошла ни одной стратегией — это свойство сайта
+    # или блокировки, стратегии тут не помогут; подсказываем, что делать.
+    if [ "$n_q12" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "12" ]; }; then
+        echo -e " ${yellow}TLS 1.2 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
+        if [ "$tls_pref" = "both" ]; then
+            echo -e " ${yellow}Если TLS 1.2 не нужен, перезапустите автопрогон с целью TLS 1.3.${plain}"
+        fi
+    fi
+    if [ "$n_q13" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "13" ]; }; then
+        echo -e " ${yellow}TLS 1.3 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
+        if [ "$tls_pref" = "both" ]; then
+            echo -e " ${yellow}Если TLS 1.3 не нужен, перезапустите автопрогон с целью TLS 1.2.${plain}"
+        fi
     fi
     echo "================================================"
 

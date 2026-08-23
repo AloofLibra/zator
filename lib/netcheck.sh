@@ -401,23 +401,23 @@ z2r_tls_short_result() {
                         if [ "$q12" -eq 1 ] && [ "$q13" -eq 1 ]; then
                             printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
                         elif [ "$q12" -eq 1 ]; then
-                            printf 'warn|работает только TLS 1.2\n'
+                            printf 'warn|работает только TLS 1.2, данные %s байт за %s с\n' "$dlsize" "$dltime"
                         else
-                            printf 'warn|работает только TLS 1.3\n'
+                            printf 'warn|работает только TLS 1.3, данные %s байт за %s с\n' "$dlsize" "$dltime"
                         fi
                         ;;
                     12)
                         if [ "$q12" -eq 1 ]; then
                             printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
                         else
-                            printf 'warn|TLS 1.2 не работает\n'
+                            printf 'warn|работает только TLS 1.3, данные %s байт за %s с\n' "$dlsize" "$dltime"
                         fi
                         ;;
                     13)
                         if [ "$q13" -eq 1 ]; then
                             printf 'ok|данные %s байт за %s с\n' "$dlsize" "$dltime"
                         else
-                            printf 'warn|TLS 1.3 не работает\n'
+                            printf 'warn|работает только TLS 1.2, данные %s байт за %s с\n' "$dlsize" "$dltime"
                         fi
                         ;;
                     *)
