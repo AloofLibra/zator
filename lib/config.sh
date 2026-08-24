@@ -979,6 +979,8 @@ z2r_service_action() {
   if command -v setsid >/dev/null 2>&1; then
     setsid "$ZAPRET2_INIT" "$action"
   else
-    ( trap '' INT QUIT; exec "$ZAPRET2_INIT" "$action" )
+    # без setsid init-скрипт и его демоны наследуют SIG_IGN для INT/QUIT/HUP:
+    # Ctrl+C не убьёт рестарт посреди stop/start и не убьёт демона после старта
+    ( trap '' INT QUIT HUP; exec "$ZAPRET2_INIT" "$action" )
   fi
 }

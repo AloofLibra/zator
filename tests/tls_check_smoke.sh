@@ -520,6 +520,10 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: оверрайд run_daemon должен идти после source functions"
   grep -q 'setsid "\$2"' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: run_daemon без setsid-спавна"
+  grep -q "trap '' INT QUIT HUP" "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: нет fallback-спавна с игнором INT/QUIT/HUP (роутеры без setsid)"
+  grep -q '>/dev/null 2>&1 &' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: спавн демона не глушит stderr (пайп рестарта виснет)"
   grep -q 'PIDFILE=\$PIDDIR/\${DAEMONBASE}_\$1.pid' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: формат pid-файлов разошёлся с апстримом"
   grep -q '^z2r_service_action()' "$REPO_DIR/lib/config.sh" \

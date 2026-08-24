@@ -34,10 +34,15 @@ run_daemon()
 	if [ -n "$PID" ]; then
 		echo already running
 	else
+		# 2>&1 обязателен: открытый stderr демона держит пайп вызывающего
+		# (restart | tail висит вечно). Отрыв от терминала: setsid; если его
+		# нет — демон наследует SIG_IGN для INT/QUIT/HUP (игнор переживает
+		# fork+exec), Ctrl+C и обрыв SSH его не убивают; TERM для stop
+		# работает как раньше. $! = pid демона в обеих ветках (exec).
 		if command -v setsid >/dev/null 2>&1; then
-			setsid "$2" $3 >/dev/null &
+			setsid "$2" $3 >/dev/null 2>&1 &
 		else
-			"$2" $3 >/dev/null &
+			( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>&1 &
 		fi
 		PID=$!
 		if [ -n "$PID" ]; then
