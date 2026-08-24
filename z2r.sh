@@ -1120,8 +1120,6 @@ remove_zapret() {
  fi
  # Удаляем ТОЛЬКО zapret2-native ($ZAPRET2_ROOT). zator-контент ($ZATOR_ROOT)
  # НЕ трогается — он переживает обновление/переустановку zapret2.
- # Web-панель живёт в $ZATOR_ROOT: файлы не удаляем, только останавливаем
- # сервис (CGI читает /opt/zapret2/config, которого пару минут нет).
  if [ -d "$ZAPRET2_ROOT" ]; then
      echo "Удаляем папку zapret2"
      webui_stop_service >/dev/null 2>&1 || true
@@ -1131,8 +1129,6 @@ remove_zapret() {
      echo "Папка zapret2 не существует."
  fi
  if [[ "$OSystem" == "entware" ]]; then
- 	# 000-zapret.sh — имя хука старого zapret; удаляем его только если там
- 	# остался наш прежний хук (миграция на 000-zapret2.sh), чужой не трогаем
  	if [ -f /opt/etc/ndm/netfilter.d/000-zapret.sh ] \
  	   && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
  		rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
@@ -1378,8 +1374,6 @@ entware_fixes() {
   z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/zapret2" "Entware/zapret" || return 1
   chmod +x "$ZAPRET2_ROOT/init.d/sysv/zapret2"
   echo "Права выданы $ZAPRET2_ROOT/init.d/sysv/zapret2"
-  # Хук живёт под именем zapret2: путь 000-zapret.sh принадлежит старому
-  # zapret — при сосуществовании проектов они перезаписывали хук друг друга.
   if [ -f /opt/etc/ndm/netfilter.d/000-zapret.sh ] \
      && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
     rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
@@ -2165,15 +2159,12 @@ fi
 mkdir -p /opt
 cd /tmp
 
-#Перед сносом zapret2 (вместе с /opt/zapret2/config) предлагаем бэкап
 if [ -f "$ZAPRET2_ROOT/config" ]; then
   backup_helper_ask_and_create
 fi
-# сервис панели остановится в remove_zapret: помним, был ли он запущен
 WEBUI_WAS_RUNNING=0
 webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
 
-#Удаление старого запрета, если есть
 remove_zapret
 
 #Запрос желаемой версии zapret2
@@ -2198,8 +2189,7 @@ if [ ! -s "$ORCH_LUA_LOCKED" ]; then
   fi
 fi
 
-# Web-панель живёт в $ZATOR_ROOT и переустановкой zapret2 не затрагивается:
-# при наличии предлагаем обновление, при отсутствии — установку
+# Web-панель: при наличии — обновление, при отсутствии — установка
 if [ -d "$WEBUI_ROOT" ]; then
   read -re -p $'\033[33mWeb-панель управления уже установлена. Обновить её файлы из репозитория? 1 - Да, Enter - нет\033[0m\n' webui_answer
   case "$webui_answer" in
@@ -2222,8 +2212,6 @@ else
   esac
 fi
 
-# Панель не переустанавливали — но её сервис был остановлен на время сноса
-# zapret2 (remove_zapret). Возвращаем прежнее состояние.
 if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
   webui_start_service >/dev/null 2>&1 || true
 fi
@@ -2247,5 +2235,4 @@ if [ "$hardware" = "keenetic" ]; then
 	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
 fi
 install_zapret_reboot
-# установка закончена — сразу открываем меню, не заставляя перезапускать z2r
 get_menu

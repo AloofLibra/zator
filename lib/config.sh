@@ -969,18 +969,12 @@ profile_apply_all() {
   return 0
 }
 
-# Единая точка запуска init-скрипта zapret2. Рестарт из интерактивного
-# меню/SSH оставляет демонов в группе процессов терминала: Ctrl+C или обрыв
-# сессии убивают nfqws2. setsid (fallback — погашенный SIGINT/SIGQUIT)
-# отрывает init-скрипт и его демонов от группы терминала.
 z2r_service_action() {
   local action="$1"
   [ -n "${ZAPRET2_INIT:-}" ] || return 1
   if command -v setsid >/dev/null 2>&1; then
     setsid "$ZAPRET2_INIT" "$action"
   else
-    # без setsid init-скрипт и его демоны наследуют SIG_IGN для INT/QUIT/HUP:
-    # Ctrl+C не убьёт рестарт посреди stop/start и не убьёт демона после старта
     ( trap '' INT QUIT HUP; exec "$ZAPRET2_INIT" "$action" )
   fi
 }

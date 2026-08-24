@@ -279,8 +279,6 @@ orch_auto_sweep() {
     # добивать медленную пробу (z2r_tls_check_target смотрит эту переменную).
     local wait_both_prev="${Z2R_TLS_WAIT_BOTH:-}"
     Z2R_TLS_WAIT_BOTH=1
-    # Ctrl+C бьёт всю группу процессов терминала: если nfqws2 был запущен
-    # из этой сессии, он умирает вместе с проверочными curl/sleep.
     zapret2_running && svc_was_running=1
 
     for ((s=start; s<=max; s++)); do
@@ -376,8 +374,6 @@ orch_auto_sweep() {
     if [ "$had_e" = "1" ]; then set -e; fi
     Z2R_TLS_WAIT_BOTH="$wait_both_prev"
 
-    # Демон убило посреди прогона (Ctrl+C/SIGHUP в этой сессии) — локи
-    # вернулись бы в файл, а обход остался бы мёртвым. Поднимаем сразу.
     if [ "$svc_was_running" = "1" ] && ! zapret2_running; then
         echo -e "${red}zapret2 был остановлен: процесс nfqws2 убит (похоже, Ctrl+C). Перезапускаю...${plain}"
         z2r_service_action restart >/dev/null 2>&1 || true

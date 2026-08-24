@@ -12,10 +12,7 @@ EXEDIR=$(dirname "$SCRIPT")
 ZAPRET_BASE=$(readlink -f "$EXEDIR/../..")
 . "$EXEDIR/functions"
 
-# z2r: оверрайд апстримного contains из base.sh. Оригинал ([ "${1#*$2}" != "$1" ])
-# на busybox/mipsel квадратичен по длине строки: 7 проверок has_bad_ws_options
-# по 37КБ конфига стоили ~14 сек каждая (~95 сек на каждый рестарт).
-# case ищет подстроку линейно, семантика та же (подстрока $2 в $1).
+# z2r: оверрайды апстримных contains и run_daemon — см. AGENTS.md (High-Risk Areas).
 contains()
 {
 	case "$1" in
@@ -24,11 +21,7 @@ contains()
 	return 1
 }
 
-# z2r: оверрайд апстримного run_daemon из functions. Запуск демонов простым
-# "&" из интерактивной сессии (меню z2r, автопрогон, ручной рестарт по SSH)
-# оставляет их в группе процессов терминала — Ctrl+C/SIGHUP убивают nfqws2/tpws2.
-# setsid отрывает демона в отдельную сессию; формат pid-файлов ${DAEMONBASE}_N.pid
-# сохранён, поэтому апстримный stop_daemon продолжает работать.
+# z2r: оверрайд run_daemon — см. AGENTS.md (High-Risk Areas).
 run_daemon()
 {
 	# $1 - daemon number : 1,2,3,...
@@ -46,11 +39,6 @@ run_daemon()
 	if [ -n "$PID" ]; then
 		echo already running
 	else
-		# 2>&1 обязателен: открытый stderr демона держит пайп вызывающего
-		# (restart | tail висит вечно). Отрыв от терминала: setsid; если его
-		# нет — демон наследует SIG_IGN для INT/QUIT/HUP (игнор переживает
-		# fork+exec), Ctrl+C и обрыв SSH его не убивают; TERM для stop
-		# работает как раньше. $! = pid демона в обеих ветках (exec).
 		if command -v setsid >/dev/null 2>&1; then
 			setsid "$2" $3 >/dev/null 2>&1 &
 		else
