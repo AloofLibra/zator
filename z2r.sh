@@ -2125,9 +2125,10 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -q .; then
       logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | tail -20
       echo ""
-      echo -e "${yellow}Источник: syslog (logread). Пусто после обновления zapret2 на OpenWRT — обновитесь ещё раз (wrt_fixes).${plain}"
+      echo -e "${yellow}Источник: syslog (logread), последние 20 строк.${plain}"
     else
       echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
+      command -v logread >/dev/null 2>&1 && echo -e "${yellow}Если проблемы точно есть, а здесь пусто — обновите zapret2 ещё раз (wrt_fixes включает журнал ошибок).${plain}"
     fi
     pause_enter
     ;;
