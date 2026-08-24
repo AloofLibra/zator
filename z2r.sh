@@ -1133,7 +1133,7 @@ remove_zapret() {
  	   && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
  		rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
  	fi
- 	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/ndm/netfilter.d/000-zapret2.sh /opt/etc/init.d/S00fix
+ 	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/init.d/S90-zapret2 /opt/etc/ndm/netfilter.d/000-zapret2.sh /opt/etc/init.d/S00fix
  fi
 }
 

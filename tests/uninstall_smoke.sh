@@ -214,7 +214,9 @@ printf '%s\n' "$body" | grep -q 'webui_remove' \
   && fail "remove_zapret удаляет файлы Web-панели из \$ZATOR_ROOT при переустановке zapret2"
 printf '%s\n' "$body" | grep -q 'webui_stop_service' \
   || fail "remove_zapret не останавливает сервис Web-панели на время сноса zapret2"
-ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса)"
+printf '%s\n' "$body" | grep -q 'S90-zapret2' \
+  || fail "remove_zapret не удаляет симлинк автозапуска S90-zapret2 (после п.44 останется dangling symlink)"
+ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса); S90-zapret2 чистится"
 
 # ===========================================================================
 # 5. post-install меню: Enter→5 из него снова запускает переустановку
