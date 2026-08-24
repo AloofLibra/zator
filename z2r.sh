@@ -1865,9 +1865,12 @@ get_menu() {
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
     MENU_ERR_LINE=""
+    MENU_ERR_STATE=""
     if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
-      MENU_ERR_LINE="${red}Ошибки nfqws2: $(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .) — посмотрите п.666 меню${yellow}
+      MENU_ERR_N="$(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .)"
+      MENU_ERR_LINE="${red}Ошибки nfqws2: ${MENU_ERR_N} — посмотрите п.666 меню${yellow}
 "
+      MENU_ERR_STATE="${red} (ошибок: ${MENU_ERR_N})${yellow}"
     fi
 	TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
@@ -1918,6 +1921,7 @@ ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас
 ${Fcyan}19.${yellow} Доп. настройки (reasm, WG, QUIC-fakes, keenetic)
 ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}
 ${Fcyan}21.${yellow} Управление бэкапами (создание/восстановление/удаление архивов)
+${Fcyan}666.${yellow} Ошибки nfqws2 — журнал последнего запуска${MENU_ERR_STATE}
 ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
 	if [[ -f "$PREMIUM_FLAG" ]]; then
