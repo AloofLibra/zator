@@ -39,10 +39,12 @@ run_daemon()
 	if [ -n "$PID" ]; then
 		echo already running
 	else
+		ERRLOG="/tmp/${DAEMONBASE}_$1.err"
+		: > "$ERRLOG"
 		if command -v setsid >/dev/null 2>&1; then
-			setsid "$2" $3 >/dev/null 2>&1 &
+			setsid "$2" $3 >/dev/null 2>>"$ERRLOG" &
 		else
-			( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>&1 &
+			( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>>"$ERRLOG" &
 		fi
 		PID=$!
 		if [ -n "$PID" ]; then
