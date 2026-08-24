@@ -1859,7 +1859,6 @@ get_menu() {
     init_telemetry
     update_recommendations  
   while true; do
-  	trap 'echo -e "\n${yellow}Прервано (Ctrl+C) — возврат в меню${plain}"' INT
   	local strategies_status
     strategies_status=$(get_orchestra_locks_info)
     local _cfg_file

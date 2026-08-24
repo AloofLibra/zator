@@ -44,12 +44,7 @@ run_daemon()
 		if command -v setsid >/dev/null 2>&1; then
 			setsid "$2" $3 >/dev/null 2>>"$ERRLOG" &
 		else
-			BB="$(command -v busybox 2>/dev/null)"
-			if [ -n "$BB" ] && "$BB" --list 2>/dev/null | grep -qx setsid; then
-				"$BB" setsid "$2" $3 >/dev/null 2>>"$ERRLOG" &
-			else
-				( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>>"$ERRLOG" &
-			fi
+			( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>>"$ERRLOG" &
 		fi
 		PID=$!
 		if [ -n "$PID" ]; then
