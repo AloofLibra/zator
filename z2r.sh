@@ -2164,92 +2164,94 @@ fi
     get_menu
  fi
  
-#entware keenetic and merlin preinstal env.
-if [ "$hardware" = "keenetic" ]; then
- opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
- opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "${red}Не удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.${plain}"
-elif [ "$hardware" = "merlin" ]; then
- opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
-fi
-
-#Проверка наличия каталога opt и его создание при необходиомости (для некоторых роутеров), переход в tmp
-mkdir -p /opt
-cd /tmp
-
-if [ -f "$ZAPRET2_ROOT/config" ]; then
-  backup_helper_ask_and_create
-fi
-WEBUI_WAS_RUNNING=0
-webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
-
-remove_zapret
-
-#Запрос желаемой версии zapret2
-if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
- echo -e "${yellow}Конфиг будет установлен из локального архива.${plain}"
-else
- echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
-fi
-version_select
-
-#Скачивание, распаковка архива zapret2 и его удаление
-zapret_get
-
-#Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
-get_repo
-if [ ! -s "$ORCH_LUA_LOCKED" ]; then
-  echo "Повторная попытка загрузки locked.lua..."
-  if locked_lua_update_from_repo; then
-    echo -e "${green}Повторная загрузка locked.lua успешна.${plain}"
-  else
-    echo -e "${red}Повторная загрузка locked.lua не удалась.${plain}"
-  fi
-fi
-
-# Web-панель: при наличии — обновление, при отсутствии — установка
-if [ -d "$WEBUI_ROOT" ]; then
-  read -re -p $'\033[33mWeb-панель управления уже установлена. Обновить её файлы из репозитория? 1 - Да, Enter - нет\033[0m\n' webui_answer
-  case "$webui_answer" in
-    "1")
-      webui_install
-    ;;
-    *)
-      echo "Пропуск обновления Web-панели (текущие файлы не тронуты)"
-    ;;
-  esac
-else
-  read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
-  case "$webui_answer" in
-    "1")
-      webui_install
-    ;;
-    *)
-      echo "Пропуск установки Web-панели"
-    ;;
-  esac
-fi
-
-if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
-  webui_start_service >/dev/null 2>&1 || true
-fi
-
-#Для Keenetic и merlin
-if [[ "$OSystem" == "entware" ]]; then
- entware_fixes
- # На Keenetic прописываем IFACE_WAN по default route до запуска install_easy.sh.
- config_keenetic_set_wan_iface_all
-fi
-
-profile_apply_all "$ZAPRET2_ROOT/config.default"
-
-#Для x-wrt
-if [[ "$release" == "x-wrt" ]]; then
-	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' "$ZAPRET2_ROOT/common/installer.sh"
-fi
-
-#Запуск установочных скриптов и перезагрузка
-if [ "$hardware" = "keenetic" ]; then
-	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
-fi
-install_zapret_reboot
-get_menu
+while true; do
+ #entware keenetic and merlin preinstal env.
+ if [ "$hardware" = "keenetic" ]; then
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+  opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "${red}Не удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.${plain}"
+ elif [ "$hardware" = "merlin" ]; then
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+ fi
+ 
+ #Проверка наличия каталога opt и его создание при необходиомости (для некоторых роутеров), переход в tmp
+ mkdir -p /opt
+ cd /tmp
+ 
+ if [ -f "$ZAPRET2_ROOT/config" ]; then
+   backup_helper_ask_and_create
+ fi
+ WEBUI_WAS_RUNNING=0
+ webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
+ 
+ remove_zapret
+ 
+ #Запрос желаемой версии zapret2
+ if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
+  echo -e "${yellow}Конфиг будет установлен из локального архива.${plain}"
+ else
+  echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
+ fi
+ version_select
+ 
+ #Скачивание, распаковка архива zapret2 и его удаление
+ zapret_get
+ 
+ #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
+ get_repo
+ if [ ! -s "$ORCH_LUA_LOCKED" ]; then
+   echo "Повторная попытка загрузки locked.lua..."
+   if locked_lua_update_from_repo; then
+     echo -e "${green}Повторная загрузка locked.lua успешна.${plain}"
+   else
+     echo -e "${red}Повторная загрузка locked.lua не удалась.${plain}"
+   fi
+ fi
+ 
+ # Web-панель: при наличии — обновление, при отсутствии — установка
+ if [ -d "$WEBUI_ROOT" ]; then
+   read -re -p $'\033[33mWeb-панель управления уже установлена. Обновить её файлы из репозитория? 1 - Да, Enter - нет\033[0m\n' webui_answer
+   case "$webui_answer" in
+     "1")
+       webui_install
+     ;;
+     *)
+       echo "Пропуск обновления Web-панели (текущие файлы не тронуты)"
+     ;;
+   esac
+ else
+   read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
+   case "$webui_answer" in
+     "1")
+       webui_install
+     ;;
+     *)
+       echo "Пропуск установки Web-панели"
+     ;;
+   esac
+ fi
+ 
+ if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
+   webui_start_service >/dev/null 2>&1 || true
+ fi
+ 
+ #Для Keenetic и merlin
+ if [[ "$OSystem" == "entware" ]]; then
+  entware_fixes
+  # На Keenetic прописываем IFACE_WAN по default route до запуска install_easy.sh.
+  config_keenetic_set_wan_iface_all
+ fi
+ 
+ profile_apply_all "$ZAPRET2_ROOT/config.default"
+ 
+ #Для x-wrt
+ if [[ "$release" == "x-wrt" ]]; then
+ 	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' "$ZAPRET2_ROOT/common/installer.sh"
+ fi
+ 
+ #Запуск установочных скриптов и перезагрузка
+ if [ "$hardware" = "keenetic" ]; then
+ 	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
+ fi
+ install_zapret_reboot
+ get_menu
+done

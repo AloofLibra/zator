@@ -216,6 +216,23 @@ printf '%s\n' "$body" | grep -q 'webui_stop_service' \
   || fail "remove_zapret не останавливает сервис Web-панели на время сноса zapret2"
 ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса)"
 
+# ===========================================================================
+# 5. post-install меню: Enter→5 из него снова запускает переустановку
+# ===========================================================================
+echo "== 5. post-install меню зациклено на установочный блок =="
+cmt_line="$(grep -n '#entware keenetic and merlin preinstal env' "$REPO_DIR/z2r.sh" | head -1 | cut -d: -f1)"
+[ -n "$cmt_line" ] || fail "не найден установочный блок z2r.sh"
+tail_block="$(sed -n "$((cmt_line - 1)),\$p" "$REPO_DIR/z2r.sh")"
+printf '%s\n' "$tail_block" | sed -n '1p' | grep -qx 'while true; do' \
+  || fail "установочный блок не обёрнут в цикл: Enter→5 из post-install меню завершает скрипт вместо переустановки"
+printf '%s\n' "$tail_block" | grep -qx ' install_zapret_reboot' \
+  || fail "install_zapret_reboot должен быть внутри цикла"
+last2="$(printf '%s\n' "$tail_block" | tail -2 | tr -d '\r')"
+expected="$(printf ' get_menu\ndone')"
+[ "$last2" = "$expected" ] \
+  || fail "цикл должен заканчиваться ' get_menu' + 'done' (возврат из меню = повторная установка), а не голым get_menu в EOF"
+ok "post-install меню: возврат из get_menu повторяет установочный блок"
+
 echo ""
 echo "============================="
 printf 'uninstall smoke ok (assertions: %d)\n' "$PASS"
