@@ -1120,9 +1120,11 @@ remove_zapret() {
  fi
  # Удаляем ТОЛЬКО zapret2-native ($ZAPRET2_ROOT). zator-контент ($ZATOR_ROOT)
  # НЕ трогается — он переживает обновление/переустановку zapret2.
+ # Web-панель живёт в $ZATOR_ROOT: файлы не удаляем, только останавливаем
+ # сервис (CGI читает /opt/zapret2/config, которого пару минут нет).
  if [ -d "$ZAPRET2_ROOT" ]; then
      echo "Удаляем папку zapret2"
-     webui_remove >/dev/null 2>&1 || true
+     webui_stop_service >/dev/null 2>&1 || true
      strategy_validator_remove_service
      rm -rf "$ZAPRET2_ROOT"
  else
@@ -1136,19 +1138,6 @@ remove_zapret() {
  		rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
  	fi
  	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/ndm/netfilter.d/000-zapret2.sh /opt/etc/init.d/S00fix
- fi
-
- if [ -d "$WEBUI_ROOT" ]; then
-     read -re -p $'\033[33mУдалить Web-панель управления (webui)? Enter - Да, 1 - нет\033[0m\n' webui_answer_del
-     case "$webui_answer_del" in
-         "1")
-             echo "Пропущено"
-         ;;
-         *)
-             webui_remove || true
-             echo "Процесс удаления завершён"
-         ;;
-     esac
  fi
 }
 
@@ -1376,9 +1365,10 @@ install_zapret_reboot() {
  z2r_service_action restart
  if pidof nfqws2 >/dev/null; then
   check_access_list
-  echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Если требуется меню (например не работают какие-то ресурсы) - введите скрипт ещё раз или просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
+  echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Открываю меню управления. Если меню закрылось или что-то пошло не так — просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
  else
   echo -e "${yellow}zapret2 полностью установлен, но не обнаружен после запуска в исполняемых задачах через pidof\nСаппорт: tg: zee4r${plain}"
+  pause_enter
  fi
 }
 
@@ -1989,12 +1979,17 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "44")
-    echo -e "${yellow}Внимание! Это удалит только zapret2 (каталог zator и его данные останутся).${plain}"
+    echo -e "${yellow}Внимание! Это удалит только zapret2 (каталог zator и его данные, включая Web-панель, останутся).${plain}"
     read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        WEBUI_WAS_RUNNING=0
+        webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
+        if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
+          webui_start_service >/dev/null 2>&1 || true
+        fi
         echo -e "${yellow}zapret2 удалён${plain}"
         ;;
       *)
@@ -2174,6 +2169,9 @@ cd /tmp
 if [ -f "$ZAPRET2_ROOT/config" ]; then
   backup_helper_ask_and_create
 fi
+# сервис панели остановится в remove_zapret: помним, был ли он запущен
+WEBUI_WAS_RUNNING=0
+webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
 
 #Удаление старого запрета, если есть
 remove_zapret
@@ -2224,6 +2222,12 @@ else
   esac
 fi
 
+# Панель не переустанавливали — но её сервис был остановлен на время сноса
+# zapret2 (remove_zapret). Возвращаем прежнее состояние.
+if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
+  webui_start_service >/dev/null 2>&1 || true
+fi
+
 #Для Keenetic и merlin
 if [[ "$OSystem" == "entware" ]]; then
  entware_fixes
@@ -2243,3 +2247,5 @@ if [ "$hardware" = "keenetic" ]; then
 	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
 fi
 install_zapret_reboot
+# установка закончена — сразу открываем меню, не заставляя перезапускать z2r
+get_menu

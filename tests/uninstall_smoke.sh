@@ -204,12 +204,17 @@ ok "сбой rm локализован: предупреждение видно,
 # 4. статика: перед сносом zapret2 в теле установщика предлагается бэкап
 # ===========================================================================
 echo "== 4. статика: бэкап перед remove_zapret в теле установщика =="
-ctx="$(grep -B6 -E '^[[:space:]]*remove_zapret$' "$REPO_DIR/z2r.sh")"
+ctx="$(grep -B8 -E '^[[:space:]]*remove_zapret$' "$REPO_DIR/z2r.sh")"
 printf '%s\n' "$ctx" | grep -q 'backup_helper_ask_and_create' \
   || fail "переустановка сносит /opt/zapret2/config без предложения бэкапа"
 printf '%s\n' "$ctx" | grep -q 'ZAPRET2_ROOT/config' \
   || fail "предложение бэкапа не ограничено наличием config"
-ok "бэкап предлагается до удаления zapret2 (только при наличии config)"
+body="$(sed -n '/^remove_zapret()/,/^}/p' "$REPO_DIR/z2r.sh")"
+printf '%s\n' "$body" | grep -q 'webui_remove' \
+  && fail "remove_zapret удаляет файлы Web-панели из \$ZATOR_ROOT при переустановке zapret2"
+printf '%s\n' "$body" | grep -q 'webui_stop_service' \
+  || fail "remove_zapret не останавливает сервис Web-панели на время сноса zapret2"
+ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса)"
 
 echo ""
 echo "============================="

@@ -162,20 +162,20 @@ grep -qF 'submenu_item "4" "Удалить Web UI"' "$REPO_DIR/z2r.sh" \
 grep -qF 'webui_restart || echo -e "${red}Перезапуск Web UI не удался.${plain}"' "$REPO_DIR/z2r.sh" \
   || fail "вызов webui_restart в подменю не защищён (|| echo)"
 
-# Промпт удаления — только под guard'ом существования /opt/zator/webui.
+# remove_zapret (переустановка/удаление zapret2) НЕ трогает файлы Web-панели:
+# она живёт в $ZATOR_ROOT. Полное удаление панели — только в zator_remove (п.4).
 RP_BLOCK="$(sed -n '/^remove_zapret() {/,/^}/p' "$REPO_DIR/z2r.sh")"
 [ -n "$RP_BLOCK" ] || fail "не найдена функция remove_zapret в z2r.sh"
-printf '%s\n' "$RP_BLOCK" | grep -qF 'if [ -d "$WEBUI_ROOT" ]; then' \
-  || fail "промпт удаления Web-панели не под guard'ом [ -d \$WEBUI_ROOT ]"
+printf '%s\n' "$RP_BLOCK" | grep -q 'webui_remove' \
+  && fail "remove_zapret удаляет Web-панель: переустановка zapret2 не должна её трогать"
 printf '%s\n' "$RP_BLOCK" | grep -qF 'Удалить Web-панель управления (webui)?' \
-  || fail "в remove_zapret нет промпта удаления Web-панели"
-printf '%s\n' "$RP_BLOCK" | grep -qF 'webui_remove || true' \
-  || fail "вызов webui_remove в remove_zapret не защищён (|| true)"
-printf '%s\n' "$RP_BLOCK" | awk '
-  /if \[ -d "\$WEBUI_ROOT" \]; then/ {guard=NR}
-  /Удалить Web-панель управления/    {prompt=NR}
-  END {exit !(guard > 0 && prompt > guard)}
-' || fail "guard [ -d \$WEBUI_ROOT ] должен идти ДО промпта удаления"
+  && fail "в remove_zapret не должно быть промпта удаления Web-панели"
+printf '%s\n' "$RP_BLOCK" | grep -q 'webui_stop_service' \
+  || fail "remove_zapret должен останавливать сервис Web-панели на время сноса zapret2"
+ZR_BLOCK="$(sed -n '/^zator_remove() {/,/^}/p' "$REPO_DIR/z2r.sh")"
+[ -n "$ZR_BLOCK" ] || fail "не найдена функция zator_remove в z2r.sh"
+printf '%s\n' "$ZR_BLOCK" | grep -q 'webui_remove' \
+  || fail "zator_remove (полное удаление) должен удалять Web-панель"
 
 # webui_restart обязан локализовать сбои.
 RR_BLOCK="$(cat "$TMP_DIR/webui_restart.fn")"
