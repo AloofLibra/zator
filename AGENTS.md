@@ -367,7 +367,8 @@ bash tests/tls_check_smoke.sh
   `check_one_target_json` (форма JSON: verdict / tls*_detail / download;
   JSON обязан быть валидным — `code` без ведущих нулей);
 - автопрогон стратегий `orch_auto_sweep` (профили 1-4 и кастомные домены,
-  опция A в промптах перебора; диалог `orch_run_auto_sweep`: режим → требуемый
+  опция A в промптах перебора; диалог `orch_run_auto_sweep`: режим (Enter -
+  полный прогон) → требуемый
   TLS (any|12|13|both, Enter - обе) → добавка к паузе; 0 на любом вопросе =
   отмена): в строках прогона цветные статусы обеих версий TLS
   (`z2r_tls_version_badge`; движок с `Z2R_TLS_WAIT_BOTH=1` ждёт обе пробы),
