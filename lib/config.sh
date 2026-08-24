@@ -969,12 +969,22 @@ profile_apply_all() {
   return 0
 }
 
+z2r_setsid_wrap() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@"
+  else
+    local bb
+    bb="$(command -v busybox 2>/dev/null)"
+    if [ -n "$bb" ] && "$bb" --list 2>/dev/null | grep -qx setsid; then
+      "$bb" setsid "$@"
+    else
+      ( trap '' INT QUIT HUP; exec "$@" )
+    fi
+  fi
+}
+
 z2r_service_action() {
   local action="$1"
   [ -n "${ZAPRET2_INIT:-}" ] || return 1
-  if command -v setsid >/dev/null 2>&1; then
-    setsid "$ZAPRET2_INIT" "$action"
-  else
-    ( trap '' INT QUIT HUP; exec "$ZAPRET2_INIT" "$action" )
-  fi
+  z2r_setsid_wrap "$ZAPRET2_INIT" "$action"
 }

@@ -544,6 +544,14 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: wrt_fixes не вызывается в установочном потоке WRT"
   grep -q 'logread' "$REPO_DIR/z2r.sh" \
     || fail "сценарий 14e: нет fallback на logread в п.666 (OpenWRT)"
+  # nfqws2 ставит свои sigaction на INT/TERM/HUP (nfqws.c catch_signals):
+  # унаследованный игнор затирается — демон обязан уходить в свою сессию.
+  grep -q '"\$BB" setsid\|\$BB setsid' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: нет busybox-setsid ветки в спавне демона (Keenetic без /usr/bin/setsid)"
+  grep -q '^z2r_setsid_wrap()' "$REPO_DIR/lib/config.sh" \
+    || fail "сценарий 14e: нет z2r_setsid_wrap (busybox-setsid для z2r_service_action)"
+  grep -q "Прервано (Ctrl+C) — возврат в меню" "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: Ctrl+C в главном меню должен возвращать в меню, а не ронять z2r.sh"
   # contains: апстримный ${1#*$2} на busybox/mipsel квадратичен по 37КБ конфига
   # (7 проверок has_bad_ws_options = ~95 сек на рестарт) — заменён на case
   grep -q '^contains()' "$REPO_DIR/Entware/zapret" \
