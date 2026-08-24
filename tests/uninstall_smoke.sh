@@ -200,6 +200,41 @@ grep -q '^webui$' "$MOCK_SVC_LOG" \
   || fail "при сбое rm панель всё равно должна быть остановлена"
 ok "сбой rm локализован: предупреждение видно, меню живо"
 
+# ===========================================================================
+# 4. статика: перед сносом zapret2 в теле установщика предлагается бэкап
+# ===========================================================================
+echo "== 4. статика: бэкап перед remove_zapret в теле установщика =="
+ctx="$(grep -B8 -E '^[[:space:]]*remove_zapret$' "$REPO_DIR/z2r.sh")"
+printf '%s\n' "$ctx" | grep -q 'backup_helper_ask_and_create' \
+  || fail "переустановка сносит /opt/zapret2/config без предложения бэкапа"
+printf '%s\n' "$ctx" | grep -q 'ZAPRET2_ROOT/config' \
+  || fail "предложение бэкапа не ограничено наличием config"
+body="$(sed -n '/^remove_zapret()/,/^}/p' "$REPO_DIR/z2r.sh")"
+printf '%s\n' "$body" | grep -q 'webui_remove' \
+  && fail "remove_zapret удаляет файлы Web-панели из \$ZATOR_ROOT при переустановке zapret2"
+printf '%s\n' "$body" | grep -q 'webui_stop_service' \
+  || fail "remove_zapret не останавливает сервис Web-панели на время сноса zapret2"
+printf '%s\n' "$body" | grep -q 'S90-zapret2' \
+  || fail "remove_zapret не удаляет симлинк автозапуска S90-zapret2 (после п.44 останется dangling symlink)"
+ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса); S90-zapret2 чистится"
+
+# ===========================================================================
+# 5. post-install меню: Enter→5 из него снова запускает переустановку
+# ===========================================================================
+echo "== 5. post-install меню зациклено на установочный блок =="
+cmt_line="$(grep -n '#entware keenetic and merlin preinstal env' "$REPO_DIR/z2r.sh" | head -1 | cut -d: -f1)"
+[ -n "$cmt_line" ] || fail "не найден установочный блок z2r.sh"
+tail_block="$(sed -n "$((cmt_line - 1)),\$p" "$REPO_DIR/z2r.sh")"
+printf '%s\n' "$tail_block" | sed -n '1p' | grep -qx 'while true; do' \
+  || fail "установочный блок не обёрнут в цикл: Enter→5 из post-install меню завершает скрипт вместо переустановки"
+printf '%s\n' "$tail_block" | grep -qx ' install_zapret_reboot' \
+  || fail "install_zapret_reboot должен быть внутри цикла"
+last2="$(printf '%s\n' "$tail_block" | tail -2 | tr -d '\r')"
+expected="$(printf ' get_menu\ndone')"
+[ "$last2" = "$expected" ] \
+  || fail "цикл должен заканчиваться ' get_menu' + 'done' (возврат из меню = повторная установка), а не голым get_menu в EOF"
+ok "post-install меню: возврат из get_menu повторяет установочный блок"
+
 echo ""
 echo "============================="
 printf 'uninstall smoke ok (assertions: %d)\n' "$PASS"

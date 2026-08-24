@@ -12,6 +12,50 @@ EXEDIR=$(dirname "$SCRIPT")
 ZAPRET_BASE=$(readlink -f "$EXEDIR/../..")
 . "$EXEDIR/functions"
 
+# z2r: оверрайды апстримных contains и run_daemon — см. AGENTS.md (High-Risk Areas).
+contains()
+{
+	case "$1" in
+		*"$2"*) return 0 ;;
+	esac
+	return 1
+}
+
+# z2r: оверрайд run_daemon — см. AGENTS.md (High-Risk Areas).
+run_daemon()
+{
+	# $1 - daemon number : 1,2,3,...
+	# $2 - daemon
+	# $3 - daemon args
+	local DAEMONBASE="$(basename "$2")"
+	local PID= PIDFILE=$PIDDIR/${DAEMONBASE}_$1.pid
+	echo "Starting daemon $1: $2 $3"
+
+	[ -f "$PIDFILE" ] && {
+		read PID <"$PIDFILE"
+		[ -d "/proc/$PID" ] || PID=
+	}
+
+	if [ -n "$PID" ]; then
+		echo already running
+	else
+		ERRLOG="/tmp/${DAEMONBASE}_$1.err"
+		: > "$ERRLOG"
+		if command -v setsid >/dev/null 2>&1; then
+			setsid "$2" $3 >/dev/null 2>>"$ERRLOG" &
+		else
+			( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>>"$ERRLOG" &
+		fi
+		PID=$!
+		if [ -n "$PID" ]; then
+			echo $PID >$PIDFILE
+		else
+			echo could not start daemon $1 : $2 $3
+			false
+		fi
+	fi
+}
+
 NAME=zapret
 DESC=anti-zapret
 

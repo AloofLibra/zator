@@ -733,7 +733,7 @@ change_user() {
 }
 
 ensure_nfqws2_stopped() {
-  "$ZAPRET2_INIT" stop
+  z2r_service_action stop
   sleep 1
   if pidof nfqws2 >/dev/null; then
     if command -v killall >/dev/null 2>&1; then
@@ -853,7 +853,7 @@ blockcheck2_run_summary() {
   fi
 
   if [ "$was_running" -eq 1 ]; then
-    "$ZAPRET2_INIT" restart
+    z2r_service_action restart
     echo -e "${green}zapret2 восстановлен (restart)${plain}"
   fi
 
@@ -1109,7 +1109,7 @@ mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 #Удаление старого запрета, если есть
 remove_zapret() {
  if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
- 	"$ZAPRET2_INIT" stop
+ 	z2r_service_action stop
  fi
  if [ -f "$ZAPRET2_ROOT/config" ] && [ -f "$ZAPRET2_ROOT/uninstall_easy.sh" ]; then
      echo "Выполняем zapret2/uninstall_easy.sh"
@@ -1122,27 +1122,18 @@ remove_zapret() {
  # НЕ трогается — он переживает обновление/переустановку zapret2.
  if [ -d "$ZAPRET2_ROOT" ]; then
      echo "Удаляем папку zapret2"
-     webui_remove >/dev/null 2>&1 || true
+     webui_stop_service >/dev/null 2>&1 || true
      strategy_validator_remove_service
      rm -rf "$ZAPRET2_ROOT"
  else
      echo "Папка zapret2 не существует."
  fi
  if [[ "$OSystem" == "entware" ]]; then
- 	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/ndm/netfilter.d/000-zapret.sh /opt/etc/init.d/S00fix
- fi
-
- if [ -d "$WEBUI_ROOT" ]; then
-     read -re -p $'\033[33mУдалить Web-панель управления (webui)? Enter - Да, 1 - нет\033[0m\n' webui_answer_del
-     case "$webui_answer_del" in
-         "1")
-             echo "Пропущено"
-         ;;
-         *)
-             webui_remove || true
-             echo "Процесс удаления завершён"
-         ;;
-     esac
+ 	if [ -f /opt/etc/ndm/netfilter.d/000-zapret.sh ] \
+ 	   && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
+ 		rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
+ 	fi
+ 	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/init.d/S90-zapret2 /opt/etc/ndm/netfilter.d/000-zapret2.sh /opt/etc/init.d/S00fix
  fi
 }
 
@@ -1367,12 +1358,13 @@ z2r_prune_staged_sources() {
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh"
  cleanup_zapret2_init_dirs
- "$ZAPRET2_INIT" restart
+ z2r_service_action restart
  if pidof nfqws2 >/dev/null; then
   check_access_list
-  echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Если требуется меню (например не работают какие-то ресурсы) - введите скрипт ещё раз или просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
+  echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Открываю меню управления. Если меню закрылось или что-то пошло не так — просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
  else
   echo -e "${yellow}zapret2 полностью установлен, но не обнаружен после запуска в исполняемых задачах через pidof\nСаппорт: tg: zee4r${plain}"
+  pause_enter
  fi
 }
 
@@ -1382,9 +1374,13 @@ entware_fixes() {
   z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/zapret2" "Entware/zapret" || return 1
   chmod +x "$ZAPRET2_ROOT/init.d/sysv/zapret2"
   echo "Права выданы $ZAPRET2_ROOT/init.d/sysv/zapret2"
-  z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret.sh "Entware/000-zapret.sh" || return 1
-  chmod +x /opt/etc/ndm/netfilter.d/000-zapret.sh
-  echo "Права выданы /opt/etc/ndm/netfilter.d/000-zapret.sh"
+  if [ -f /opt/etc/ndm/netfilter.d/000-zapret.sh ] \
+     && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
+    rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
+  fi
+  z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret2.sh "Entware/000-zapret2.sh" || return 1
+  chmod +x /opt/etc/ndm/netfilter.d/000-zapret2.sh
+  echo "Права выданы /opt/etc/ndm/netfilter.d/000-zapret2.sh"
   z2r_download_project_file /opt/etc/init.d/S00fix "Entware/S00fix" || return 1
   chmod +x /opt/etc/init.d/S00fix
   echo "Права выданы /opt/etc/init.d/S00fix"
@@ -1848,6 +1844,11 @@ get_menu() {
     local _cfg_file
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
+    MENU_ERR_LINE=""
+    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
+      MENU_ERR_LINE="${red}Ошибки nfqws2: $(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .) — посмотрите п.666 меню${yellow}
+"
+    fi
 	TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
       TITLE_MENU_LINE="\n${pink}Титул:${plain} $(cat "$PREMIUM_TITLE_FILE")${yellow}\n"
@@ -1872,7 +1873,7 @@ ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
-${TITLE_MENU_LINE}
+${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
 Enter (без цифр) - переустановка/обновление zapret2
 ${Fyellow}0.${yellow} Выход
@@ -1941,7 +1942,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       ensure_nfqws2_stopped
       echo -e "${green}Выполнена команда остановки zapret2${plain}"
     else
-      "$ZAPRET2_INIT" start
+      z2r_service_action start
       echo -e "${green}Выполнена команда запуска zapret2${plain}"
     fi
     pause_enter
@@ -1949,7 +1950,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "22")
     ensure_nfqws2_stopped
-    "$ZAPRET2_INIT" start
+    z2r_service_action start
     echo -e "${green}Выполнена быстрая перезагрузка zapret2 (остановка + запуск)${plain}"
     pause_enter
     ;;
@@ -1977,12 +1978,17 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "44")
-    echo -e "${yellow}Внимание! Это удалит только zapret2 (каталог zator и его данные останутся).${plain}"
+    echo -e "${yellow}Внимание! Это удалит только zapret2 (каталог zator и его данные, включая Web-панель, останутся).${plain}"
     read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        WEBUI_WAS_RUNNING=0
+        webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
+        if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
+          webui_start_service >/dev/null 2>&1 || true
+        fi
         echo -e "${yellow}zapret2 удалён${plain}"
         ;;
       *)
@@ -2037,7 +2043,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "12")
     toggle_hostlist_mode
     if pidof nfqws2 >/dev/null; then
-      "$ZAPRET2_INIT" restart
+      z2r_service_action restart
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2046,7 +2052,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "13")
     toggle_fallback_mode
     if pidof nfqws2 >/dev/null; then
-      "$ZAPRET2_INIT" restart
+      z2r_service_action restart
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2070,7 +2076,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "18")
     if toggle_rst_guard_mode && pidof nfqws2 >/dev/null; then
-      "$ZAPRET2_INIT" restart
+      z2r_service_action restart
       echo -e "${green}zapret2 перезапущен для применения RST-защиты${plain}"
     fi
     echo -e "${green}RST-защита: $(config_mode_text rst_guard).${plain}"
@@ -2087,6 +2093,18 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "21")
     backup_submenu
+    ;;
+
+  "666")
+    echo "--- Ошибки nfqws2 (последний запуск) ---"
+    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
+      grep -v '^seccomp:' /tmp/nfqws2_1.err
+      echo ""
+      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2)${plain}"
+    else
+      echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
+    fi
+    pause_enter
     ;;
 
   "777")
@@ -2146,69 +2164,94 @@ fi
     get_menu
  fi
  
-#entware keenetic and merlin preinstal env.
-if [ "$hardware" = "keenetic" ]; then
- opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
- opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "${red}Не удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.${plain}"
-elif [ "$hardware" = "merlin" ]; then
- opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
-fi
-
-#Проверка наличия каталога opt и его создание при необходиомости (для некоторых роутеров), переход в tmp
-mkdir -p /opt
-cd /tmp
-
-#Удаление старого запрета, если есть
-remove_zapret
-
-#Запрос желаемой версии zapret2
-if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
- echo -e "${yellow}Конфиг будет установлен из локального архива.${plain}"
-else
- echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
-fi
-version_select
-
-#Скачивание, распаковка архива zapret2 и его удаление
-zapret_get
-
-#Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
-get_repo
-if [ ! -s "$ORCH_LUA_LOCKED" ]; then
-  echo "Повторная попытка загрузки locked.lua..."
-  if locked_lua_update_from_repo; then
-    echo -e "${green}Повторная загрузка locked.lua успешна.${plain}"
-  else
-    echo -e "${red}Повторная загрузка locked.lua не удалась.${plain}"
-  fi
-fi
-
-read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
-case "$webui_answer" in
-	"1")
-		webui_install
-	;;
-	*)
-		echo "Пропуск (пере)установки Web-панели"
-	;;
-esac
-
-#Для Keenetic и merlin
-if [[ "$OSystem" == "entware" ]]; then
- entware_fixes
- # На Keenetic прописываем IFACE_WAN по default route до запуска install_easy.sh.
- config_keenetic_set_wan_iface_all
-fi
-
-profile_apply_all "$ZAPRET2_ROOT/config.default"
-
-#Для x-wrt
-if [[ "$release" == "x-wrt" ]]; then
-	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' "$ZAPRET2_ROOT/common/installer.sh"
-fi
-
-#Запуск установочных скриптов и перезагрузка
-if [ "$hardware" = "keenetic" ]; then
-	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
-fi
-install_zapret_reboot
+while true; do
+ #entware keenetic and merlin preinstal env.
+ if [ "$hardware" = "keenetic" ]; then
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+  opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "${red}Не удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.${plain}"
+ elif [ "$hardware" = "merlin" ]; then
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+ fi
+ 
+ #Проверка наличия каталога opt и его создание при необходиомости (для некоторых роутеров), переход в tmp
+ mkdir -p /opt
+ cd /tmp
+ 
+ if [ -f "$ZAPRET2_ROOT/config" ]; then
+   backup_helper_ask_and_create
+ fi
+ WEBUI_WAS_RUNNING=0
+ webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
+ 
+ remove_zapret
+ 
+ #Запрос желаемой версии zapret2
+ if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
+  echo -e "${yellow}Конфиг будет установлен из локального архива.${plain}"
+ else
+  echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
+ fi
+ version_select
+ 
+ #Скачивание, распаковка архива zapret2 и его удаление
+ zapret_get
+ 
+ #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
+ get_repo
+ if [ ! -s "$ORCH_LUA_LOCKED" ]; then
+   echo "Повторная попытка загрузки locked.lua..."
+   if locked_lua_update_from_repo; then
+     echo -e "${green}Повторная загрузка locked.lua успешна.${plain}"
+   else
+     echo -e "${red}Повторная загрузка locked.lua не удалась.${plain}"
+   fi
+ fi
+ 
+ # Web-панель: при наличии — обновление, при отсутствии — установка
+ if [ -d "$WEBUI_ROOT" ]; then
+   read -re -p $'\033[33mWeb-панель управления уже установлена. Обновить её файлы из репозитория? 1 - Да, Enter - нет\033[0m\n' webui_answer
+   case "$webui_answer" in
+     "1")
+       webui_install
+     ;;
+     *)
+       echo "Пропуск обновления Web-панели (текущие файлы не тронуты)"
+     ;;
+   esac
+ else
+   read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
+   case "$webui_answer" in
+     "1")
+       webui_install
+     ;;
+     *)
+       echo "Пропуск установки Web-панели"
+     ;;
+   esac
+ fi
+ 
+ if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
+   webui_start_service >/dev/null 2>&1 || true
+ fi
+ 
+ #Для Keenetic и merlin
+ if [[ "$OSystem" == "entware" ]]; then
+  entware_fixes
+  # На Keenetic прописываем IFACE_WAN по default route до запуска install_easy.sh.
+  config_keenetic_set_wan_iface_all
+ fi
+ 
+ profile_apply_all "$ZAPRET2_ROOT/config.default"
+ 
+ #Для x-wrt
+ if [[ "$release" == "x-wrt" ]]; then
+ 	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' "$ZAPRET2_ROOT/common/installer.sh"
+ fi
+ 
+ #Запуск установочных скриптов и перезагрузка
+ if [ "$hardware" = "keenetic" ]; then
+ 	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
+ fi
+ install_zapret_reboot
+ get_menu
+done

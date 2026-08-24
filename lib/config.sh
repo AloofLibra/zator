@@ -968,3 +968,13 @@ profile_apply_all() {
   done < "$file"
   return 0
 }
+
+z2r_service_action() {
+  local action="$1"
+  [ -n "${ZAPRET2_INIT:-}" ] || return 1
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$ZAPRET2_INIT" "$action"
+  else
+    ( trap '' INT QUIT HUP; exec "$ZAPRET2_INIT" "$action" )
+  fi
+}

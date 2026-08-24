@@ -265,7 +265,7 @@ flowoffload_submenu() {
         esac
         config_set_var /opt/zapret2/config FLOWOFFLOAD "$val"
         /opt/zapret2/install_prereq.sh
-        "$ZAPRET2_INIT" restart
+        z2r_service_action restart
         echo -e "${green}FLOWOFFLOAD=$val применён.${plain}"
         pause_enter
         ;;
@@ -362,12 +362,12 @@ tcp443_submenu() {
             pause_enter
             continue
           fi
-          "$ZAPRET2_INIT" restart
+          z2r_service_action restart
           echo -e "${green}Выполнена команда перезапуска zapret. ${yellow}Безразборный режим активирован на $answer_bezr стратегии для TCP-443. Проверка доступа к meduza.io${plain}"
           check_access_list
         else
           config_tcp443_set_strategy 0 "$cfg"
-          "$ZAPRET2_INIT" restart
+          z2r_service_action restart
           echo -e "${green}Выполнена команда перезапуска zapret${plain}"
           echo "Безразборный режим отключен"
         fi
@@ -569,7 +569,7 @@ advanced_settings_submenu() {
       "1")
         if menu_action_toggle_reasm_disable; then
           if pidof nfqws2 >/dev/null; then
-            "$ZAPRET2_INIT" restart
+            z2r_service_action restart
             echo -e "${green}zapret2 перезапущен для применения изменений.${plain}"
           fi
         fi

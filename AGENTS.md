@@ -135,6 +135,10 @@ Important practical consequence:
 - `lib/config.sh` is shared by the menu and WebUI. Changes to mode detection or profile counting can affect both surfaces.
 - `lib/orchestra_state.sh` reads and writes `locked.tsv`; `z2r.sh` also temporarily switches `ORCH_LOCK_FILE` to `locked.manual.tsv`.
 - `z2r.sh` performs destructive operations on target machines, including removing or rebuilding `/opt/zapret2`.
+- All zapret2 init-script invocations must go through `z2r_service_action` (`lib/config.sh`): it detaches the init script from the terminal's process group (setsid, INT/QUIT/HUP-ignored fallback) so Ctrl+C/SIGHUP in an interactive session cannot kill a restart midway or the daemon itself. `Entware/zapret` overrides upstream `run_daemon` (setsid spawn, upstream pidfile format `${DAEMONBASE}_N.pid`; daemon stderr goes to `/tmp/${DAEMONBASE}_N.err`, truncated on each start (harmless `seccomp:` lines are filtered out); the main menu header shows a persistent red error-count line when the log contains real errors — never print daemon errors to the terminal by timeout from the init script, it pops over the menu and confuses users; stdout stays at /dev/null as upstream) and upstream `contains` (busybox `${1#*$2}` is quadratic on the 37KB config string — ~95s per restart on mipsel; the `case`-based override is linear) — keep both overrides after `. "$EXEDIR/functions"` and in sync with upstream when it changes.
+- `orch_auto_sweep` remembers whether nfqws2 was running before the sweep and restarts it (with a red warning) if Ctrl+C killed it mid-sweep; interruption during the inter-strategy pause must still print «Прервано пользователем…» (covered by `tests/tls_check_smoke.sh` scenarios 14c–14e).
+- Reinstall/update flow invariants (z2r.sh body, menu 2/44): before `remove_zapret` a backup is offered via `backup_helper_ask_and_create` (only when `$ZAPRET2_ROOT/config` exists) and `WEBUI_WAS_RUNNING` is captured from `webui_status_text`. `remove_zapret` must NEVER delete WebUI files (`$ZATOR_ROOT/webui`) — it only calls `webui_stop_service` while zapret2 is being wiped; the service is restored after the WebUI prompt and in menu 44. Full WebUI removal belongs exclusively to `zator_remove` (menu 4). The WebUI install prompt is presence-aware («уже установлена. Обновить?» vs «Установить?»), and `get_menu` is opened right after `install_zapret_reboot`.
+- Keenetic netfilter hook must be installed under its own name `/opt/etc/ndm/netfilter.d/000-zapret2.sh` (source `Entware/000-zapret2.sh`); the legacy name `000-zapret.sh` belongs to the old zapret project and must only be removed when its content references zapret2 (migration guard greps for `zapret2`) — both in `entware_fixes` and in `remove_zapret`. `remove_zapret` must also delete the autostart symlink `/opt/etc/init.d/S90-zapret2` (recreated by `entware_fixes` on each install) — otherwise a dangling symlink is left after menu 44/full removal and Entware tries to run it at boot.
 - Strategy lock files under `/opt/zator/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
 - `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs (it sources `lib/config.sh`, `lib/orchestra_state.sh`, `lib/strategies.sh`, and `lib/netcheck.sh` for the shared TLS-check engine, plus `lib/actions.sh` and `lib/provider.sh` for shared setters). Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
@@ -373,6 +377,11 @@ bash tests/tls_check_smoke.sh
   лучшей из жёлтых по скорости (если зелёных нет) и подсказкой перезапуска
   с другой целью, когда нужная версия TLS не прошла ни одной стратегией,
   Enter=лучшая / номер / 0=возврат прежних локов, Ctrl+C с восстановлением;
+  safety net: если nfqws2 был жив до прогона и умер (Ctrl+C убил процесс) —
+  предупреждение + рестарт через `z2r_service_action` до сводки; прерывание
+  в паузе между стратегиями тоже печатает «Прервано пользователем…» (14d),
+  статика: рестарты только через `z2r_service_action`, оверрайд `run_daemon`
+  в `Entware/zapret` после source functions, pid-формат как в апстриме (14e);
 - валидатор `lua/strategy-validator.sh`: одиночный таймаут (rc=28) → ERROR
   (повтор разрешён), подряд идущие таймауты → FAIL (ротация), успех сбрасывает
   счётчик (живёт 10 минут);

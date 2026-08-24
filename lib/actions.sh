@@ -47,7 +47,7 @@ menu_action_set_keenetic_policy_name() {
   fi
   config_set_var /opt/zapret2/config POLICY_NAME "$name"
   config_set_var /opt/zapret2/config POLICY_MARK "$mark"
-  "$ZAPRET2_INIT" restart
+  z2r_service_action restart
   [ -n "$name" ] && echo -e "${green}Установлена Keenetic-политика:${plain} $name" || echo -e "${yellow}Ограничение по Keenetic-политике отключено.${plain}"
 }
 
@@ -57,14 +57,14 @@ menu_action_toggle_keenetic_policy_mode() {
   value="$(sed -n 's/^POLICY_EXCLUDE=//p' /opt/zapret2/config | tail -n1)"
   [ "$value" = "1" ] && { next=0; value="Только устройства из политики"; } || { next=1; value="Все, кроме устройств из политики"; }
   sed -i "s/^POLICY_EXCLUDE=.*/POLICY_EXCLUDE=$next/" /opt/zapret2/config
-  "$ZAPRET2_INIT" restart
+  z2r_service_action restart
   echo -e "${green}Режим Keenetic-политики изменён:${plain} $value"
 }
 
 menu_action_update_config_reset() {
   echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
 
-  "$ZAPRET2_INIT" stop
+  z2r_service_action stop
 
   rm -f /opt/zapret2/init.d/{sysv,openwrt}/custom.d/{50-discord-media,50-stun4all}
   rm -rf /opt/zator/lists /opt/zator/extra_strats
@@ -81,7 +81,7 @@ menu_action_update_config_reset() {
   # сервис обратно, иначе zapret2 останется остановленным на полуобновлённом состоянии.
   if ! get_repo; then
     echo -e "${red}Не удалось обновить компоненты (сеть). Операция отменена.${plain}"
-    "$ZAPRET2_INIT" start >/dev/null 2>&1 || true
+    z2r_service_action start >/dev/null 2>&1 || true
     return 1
   fi
 
@@ -109,7 +109,7 @@ menu_action_update_config_reset() {
   fi
 
   if [ "$BACKUP_HELPER_CREATED" != "1" ] || [ ! -f "$BACKUP_LAST_ARCHIVE" ]; then
-    "$ZAPRET2_INIT" start
+    z2r_service_action start
   fi
 
   echo -e "${green}Config файл обновлён. Листы подбора стратегий и исключений сброшены в дефолт, если не просили сохранить. Фейк файлы обновлены.${plain}"
@@ -138,7 +138,7 @@ fwtype_apply() {
 
   config_set_var "$cfg" FWTYPE "$target"
   /opt/zapret2/install_prereq.sh
-  "$ZAPRET2_INIT" restart
+  z2r_service_action restart
   echo -e "${green}Zapret mode: $target.${plain}"
   return 0
 }
@@ -167,7 +167,7 @@ menu_action_toggle_udp_range() {
     return 0
   fi
 
-  "$ZAPRET2_INIT" restart
+  z2r_service_action restart
   echo -e "${green}Выполнение переключений завершено.${plain}"
   return 0
 }
@@ -615,7 +615,7 @@ toggle_auto_mode() {
 
   echo -e "${green}Авторежим: $(config_mode_text auto_mode /opt/zapret2/config).${plain}"
   if pidof nfqws2 >/dev/null 2>&1; then
-    if "$ZAPRET2_INIT" restart; then
+    if z2r_service_action restart; then
       echo -e "${green}zapret2 перезапущен для применения авторежима.${plain}"
     else
       echo -e "${red}Не удалось перезапустить zapret2.${plain}"
@@ -1165,7 +1165,7 @@ backup_update_offer_restore() {
         ;;
     esac
     if ! pidof nfqws2 >/dev/null 2>&1; then
-      "$ZAPRET2_INIT" start >/dev/null 2>&1 || true
+      z2r_service_action start >/dev/null 2>&1 || true
       echo -e "${green}zapret2 запущен.${plain}"
     fi
     return 0
@@ -1658,7 +1658,7 @@ menu_action_backup_restore() {
   if pidof nfqws2 >/dev/null 2>&1; then
     was_running=1
   fi
-  "$ZAPRET2_INIT" stop 2>/dev/null || true
+  z2r_service_action stop 2>/dev/null || true
 
   # Режим 1: config — все переключения пользователя физически живут внутри config.
   if [ "$mode" = "1" ]; then
@@ -1707,7 +1707,7 @@ menu_action_backup_restore() {
 
   # Перезапуск, если zapret2 был активен.
   if [ "$was_running" = "1" ]; then
-    "$ZAPRET2_INIT" start 2>/dev/null || true
+    z2r_service_action start 2>/dev/null || true
     echo -e "${green}zapret2 перезапущен для применения восстановленных настроек.${plain}"
   fi
 
