@@ -193,7 +193,7 @@ service_zapret2() {
   [ -f "$ZAPRET2_INIT" ] || return 1
   case "$action" in
     start|stop|restart)
-      "$ZAPRET2_INIT" "$action" >/dev/null 2>&1
+      z2r_service_action "$action" >/dev/null 2>&1
       ;;
     *)
       return 2

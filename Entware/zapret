@@ -12,6 +12,43 @@ EXEDIR=$(dirname "$SCRIPT")
 ZAPRET_BASE=$(readlink -f "$EXEDIR/../..")
 . "$EXEDIR/functions"
 
+# z2r: оверрайд апстримного run_daemon из functions. Запуск демонов простым
+# "&" из интерактивной сессии (меню z2r, автопрогон, ручной рестарт по SSH)
+# оставляет их в группе процессов терминала — Ctrl+C/SIGHUP убивают nfqws2/tpws2.
+# setsid отрывает демона в отдельную сессию; формат pid-файлов ${DAEMONBASE}_N.pid
+# сохранён, поэтому апстримный stop_daemon продолжает работать.
+run_daemon()
+{
+	# $1 - daemon number : 1,2,3,...
+	# $2 - daemon
+	# $3 - daemon args
+	local DAEMONBASE="$(basename "$2")"
+	local PID= PIDFILE=$PIDDIR/${DAEMONBASE}_$1.pid
+	echo "Starting daemon $1: $2 $3"
+
+	[ -f "$PIDFILE" ] && {
+		read PID <"$PIDFILE"
+		[ -d "/proc/$PID" ] || PID=
+	}
+
+	if [ -n "$PID" ]; then
+		echo already running
+	else
+		if command -v setsid >/dev/null 2>&1; then
+			setsid "$2" $3 >/dev/null &
+		else
+			"$2" $3 >/dev/null &
+		fi
+		PID=$!
+		if [ -n "$PID" ]; then
+			echo $PID >$PIDFILE
+		else
+			echo could not start daemon $1 : $2 $3
+			false
+		fi
+	fi
+}
+
 NAME=zapret
 DESC=anti-zapret
 

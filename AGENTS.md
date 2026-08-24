@@ -135,6 +135,8 @@ Important practical consequence:
 - `lib/config.sh` is shared by the menu and WebUI. Changes to mode detection or profile counting can affect both surfaces.
 - `lib/orchestra_state.sh` reads and writes `locked.tsv`; `z2r.sh` also temporarily switches `ORCH_LOCK_FILE` to `locked.manual.tsv`.
 - `z2r.sh` performs destructive operations on target machines, including removing or rebuilding `/opt/zapret2`.
+- All zapret2 init-script invocations must go through `z2r_service_action` (`lib/config.sh`): it detaches the init script from the terminal's process group (setsid, INT/QUIT-ignored fallback) so Ctrl+C/SIGHUP in an interactive session cannot kill a restart midway or the daemon itself. `Entware/zapret` overrides upstream `run_daemon` (setsid spawn, upstream pidfile format `${DAEMONBASE}_N.pid`) for the same reason — keep the override after `. "$EXEDIR/functions"` and in sync with upstream when it changes.
+- `orch_auto_sweep` remembers whether nfqws2 was running before the sweep and restarts it (with a red warning) if Ctrl+C killed it mid-sweep; interruption during the inter-strategy pause must still print «Прервано пользователем…» (covered by `tests/tls_check_smoke.sh` scenarios 14c–14e).
 - Strategy lock files under `/opt/zator/extra_strats/cache/orchestra` are read by Lua at runtime. Moving paths can break manual strategy locking.
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
 - `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs (it sources `lib/config.sh`, `lib/orchestra_state.sh`, `lib/strategies.sh`, and `lib/netcheck.sh` for the shared TLS-check engine, plus `lib/actions.sh` and `lib/provider.sh` for shared setters). Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
@@ -373,6 +375,11 @@ bash tests/tls_check_smoke.sh
   лучшей из жёлтых по скорости (если зелёных нет) и подсказкой перезапуска
   с другой целью, когда нужная версия TLS не прошла ни одной стратегией,
   Enter=лучшая / номер / 0=возврат прежних локов, Ctrl+C с восстановлением;
+  safety net: если nfqws2 был жив до прогона и умер (Ctrl+C убил процесс) —
+  предупреждение + рестарт через `z2r_service_action` до сводки; прерывание
+  в паузе между стратегиями тоже печатает «Прервано пользователем…» (14d),
+  статика: рестарты только через `z2r_service_action`, оверрайд `run_daemon`
+  в `Entware/zapret` после source functions, pid-формат как в апстриме (14e);
 - валидатор `lua/strategy-validator.sh`: одиночный таймаут (rc=28) → ERROR
   (повтор разрешён), подряд идущие таймауты → FAIL (ротация), успех сбрасывает
   счётчик (живёт 10 минут);

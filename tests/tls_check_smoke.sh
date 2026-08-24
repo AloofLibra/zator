@@ -443,6 +443,102 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14c: нет сообщения о прерывании"
 )
 
+# == 14d. Ctrl+C убил nfqws2 посреди прогона -> предупреждение + рестарт;
+#          прерывание в паузе между стратегиями тоже печатает сообщение ==
+(
+  export ORCH_LOCK_FILE="$TMP_DIR/locked_safety.tsv"
+  export PROFILE_STATE_FILE="$TMP_DIR/profile_safety.lock"
+  export Z2R_SWEEP_PAUSE=0
+  : > "$ORCH_LOCK_FILE"
+  reset_counter
+  export MOCK_HEAD_12=timeout MOCK_HEAD_13=timeout
+  plain="" green="" yellow="" red="" cyan="" Fgreen=""
+  export plain green yellow red cyan Fgreen
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/lib/orchestra_state.sh"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/lib/strategies.sh"
+
+  svc_calls="$TMP_DIR/svc_calls"; : > "$svc_calls"
+  svc_actions="$TMP_DIR/svc_actions"; : > "$svc_actions"
+  # 1-й вызов (до цикла) — демон жив; дальше мёртв, пока нет записи restart
+  zapret2_running() {
+    echo x >> "$svc_calls"
+    [ "$(wc -l < "$svc_calls")" = 1 ] && return 0
+    grep -q restart "$svc_actions" 2>/dev/null
+  }
+  z2r_service_action() {
+    echo "$1" >> "$svc_actions"
+  }
+
+  orch_locked_set example.org tls 7
+  out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 2 0)"
+  printf '%s' "$out" | grep -q "zapret2 был остановлен" \
+    || fail "сценарий 14d: смерть nfqws2 в прогоне не замечена"
+  printf '%s' "$out" | grep -q "zapret2 снова работает" \
+    || fail "сценарий 14d: нет подтверждения восстановления"
+  [ "$(cat "$svc_actions")" = "restart" ] \
+    || fail "сценарий 14d: сервис не перезапущен: $(cat "$svc_actions")"
+  [ "$(orch_locked_get example.org tls)" = "7" ] \
+    || fail "сценарий 14d: лок не восстановлен после смерти демона"
+
+  # рестарт не помог -> красная подсказка, прогон не падает
+  : > "$svc_calls"; : > "$svc_actions"
+  zapret2_running() {
+    echo x >> "$svc_calls"
+    [ "$(wc -l < "$svc_calls")" = 1 ] && return 0
+    return 1
+  }
+  z2r_service_action() { echo "$1" >> "$svc_actions"; return 1; }
+  out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 2 0)"
+  printf '%s' "$out" | grep -q "Не удалось перезапустить zapret2" \
+    || fail "сценарий 14d: нет подсказки при неудачном рестарте"
+
+  # прерывание во время паузы: sleep >= 1 сек «прерывается» по флагу,
+  # короткие паузы опроса движка (0.3) не трогаем
+  export Z2R_SWEEP_PAUSE=2
+  sleep() {
+    case "${1:-}" in
+      0.*|"") return 0 ;;
+      *) orch_auto_sweep_interrupted=1 ;;
+    esac
+  }
+  orch_locked_set example.org tls 7
+  out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 3 0)"
+  printf '%s' "$out" | grep -q "Прервано пользователем на стратегии 1" \
+    || fail "сценарий 14d: нет сообщения о прерывании в паузе"
+  printf '%s' "$out" | grep -q "  2:" && fail "сценарий 14d: после прерывания в паузе прогон продолжился"
+  [ "$(orch_locked_get example.org tls)" = "7" ] \
+    || fail "сценарий 14d: лок не восстановлен после прерывания в паузе"
+)
+
+# == 14e. статика: рестарты через z2r_service_action, run_daemon отвязан от терминала ==
+(
+  src_line="$(grep -n '^\. "\$EXEDIR/functions"' "$REPO_DIR/Entware/zapret" | cut -d: -f1)"
+  rd_line="$(grep -n '^run_daemon()' "$REPO_DIR/Entware/zapret" | head -n1 | cut -d: -f1)"
+  [ -n "$src_line" ] && [ -n "$rd_line" ] && [ "$rd_line" -gt "$src_line" ] \
+    || fail "сценарий 14e: оверрайд run_daemon должен идти после source functions"
+  grep -q 'setsid "\$2"' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: run_daemon без setsid-спавна"
+  grep -q 'PIDFILE=\$PIDDIR/\${DAEMONBASE}_\$1.pid' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: формат pid-файлов разошёлся с апстримом"
+  grep -q '^z2r_service_action()' "$REPO_DIR/lib/config.sh" \
+    || fail "сценарий 14e: нет хелпера z2r_service_action в config.sh"
+  bad="$(grep -rn '"\$ZAPRET2_INIT" \(restart\|start\|stop\)' \
+    "$REPO_DIR/z2r.sh" "$REPO_DIR/lib" "$REPO_DIR/webui/cgi-bin" 2>/dev/null || true)"
+  [ -z "$bad" ] || fail "сценарий 14e: прямые вызовы init-скрипта: $bad"
+  # хук Keenetic живёт под именем zapret2 (старое 000-zapret.sh — чужое имя)
+  [ -f "$REPO_DIR/Entware/000-zapret2.sh" ] \
+    || fail "сценарий 14e: нет Entware/000-zapret2.sh"
+  grep -q 'zapret2 restart-fw' "$REPO_DIR/Entware/000-zapret2.sh" \
+    || fail "сценарий 14e: хук не дёргает zapret2 restart-fw"
+  grep -q 'z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret2.sh "Entware/000-zapret2.sh"' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: хук деплоится не под именем 000-zapret2.sh"
+  mig="$(grep -c "grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh" "$REPO_DIR/z2r.sh" || true)"
+  [ "$mig" -ge 2 ] \
+    || fail "сценарий 14e: миграция старого имени хука должна быть и в entware_fixes, и в remove_zapret"
+)
+
 # == 15. WebUI-обёртка: JSON с вердиктом и деталями ==
 (
   export COUNTER_DIR="$TMP_DIR/counter"

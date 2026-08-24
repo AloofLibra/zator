@@ -733,7 +733,7 @@ change_user() {
 }
 
 ensure_nfqws2_stopped() {
-  "$ZAPRET2_INIT" stop
+  z2r_service_action stop
   sleep 1
   if pidof nfqws2 >/dev/null; then
     if command -v killall >/dev/null 2>&1; then
@@ -853,7 +853,7 @@ blockcheck2_run_summary() {
   fi
 
   if [ "$was_running" -eq 1 ]; then
-    "$ZAPRET2_INIT" restart
+    z2r_service_action restart
     echo -e "${green}zapret2 восстановлен (restart)${plain}"
   fi
 
@@ -1109,7 +1109,7 @@ mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 #Удаление старого запрета, если есть
 remove_zapret() {
  if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
- 	"$ZAPRET2_INIT" stop
+ 	z2r_service_action stop
  fi
  if [ -f "$ZAPRET2_ROOT/config" ] && [ -f "$ZAPRET2_ROOT/uninstall_easy.sh" ]; then
      echo "Выполняем zapret2/uninstall_easy.sh"
@@ -1129,7 +1129,13 @@ remove_zapret() {
      echo "Папка zapret2 не существует."
  fi
  if [[ "$OSystem" == "entware" ]]; then
- 	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/ndm/netfilter.d/000-zapret.sh /opt/etc/init.d/S00fix
+ 	# 000-zapret.sh — имя хука старого zapret; удаляем его только если там
+ 	# остался наш прежний хук (миграция на 000-zapret2.sh), чужой не трогаем
+ 	if [ -f /opt/etc/ndm/netfilter.d/000-zapret.sh ] \
+ 	   && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
+ 		rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
+ 	fi
+ 	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/ndm/netfilter.d/000-zapret2.sh /opt/etc/init.d/S00fix
  fi
 
  if [ -d "$WEBUI_ROOT" ]; then
@@ -1367,7 +1373,7 @@ z2r_prune_staged_sources() {
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh"
  cleanup_zapret2_init_dirs
- "$ZAPRET2_INIT" restart
+ z2r_service_action restart
  if pidof nfqws2 >/dev/null; then
   check_access_list
   echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Если требуется меню (например не работают какие-то ресурсы) - введите скрипт ещё раз или просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
@@ -1382,9 +1388,15 @@ entware_fixes() {
   z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/zapret2" "Entware/zapret" || return 1
   chmod +x "$ZAPRET2_ROOT/init.d/sysv/zapret2"
   echo "Права выданы $ZAPRET2_ROOT/init.d/sysv/zapret2"
-  z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret.sh "Entware/000-zapret.sh" || return 1
-  chmod +x /opt/etc/ndm/netfilter.d/000-zapret.sh
-  echo "Права выданы /opt/etc/ndm/netfilter.d/000-zapret.sh"
+  # Хук живёт под именем zapret2: путь 000-zapret.sh принадлежит старому
+  # zapret — при сосуществовании проектов они перезаписывали хук друг друга.
+  if [ -f /opt/etc/ndm/netfilter.d/000-zapret.sh ] \
+     && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
+    rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
+  fi
+  z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret2.sh "Entware/000-zapret2.sh" || return 1
+  chmod +x /opt/etc/ndm/netfilter.d/000-zapret2.sh
+  echo "Права выданы /opt/etc/ndm/netfilter.d/000-zapret2.sh"
   z2r_download_project_file /opt/etc/init.d/S00fix "Entware/S00fix" || return 1
   chmod +x /opt/etc/init.d/S00fix
   echo "Права выданы /opt/etc/init.d/S00fix"
@@ -1941,7 +1953,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       ensure_nfqws2_stopped
       echo -e "${green}Выполнена команда остановки zapret2${plain}"
     else
-      "$ZAPRET2_INIT" start
+      z2r_service_action start
       echo -e "${green}Выполнена команда запуска zapret2${plain}"
     fi
     pause_enter
@@ -1949,7 +1961,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "22")
     ensure_nfqws2_stopped
-    "$ZAPRET2_INIT" start
+    z2r_service_action start
     echo -e "${green}Выполнена быстрая перезагрузка zapret2 (остановка + запуск)${plain}"
     pause_enter
     ;;
@@ -2037,7 +2049,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "12")
     toggle_hostlist_mode
     if pidof nfqws2 >/dev/null; then
-      "$ZAPRET2_INIT" restart
+      z2r_service_action restart
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2046,7 +2058,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "13")
     toggle_fallback_mode
     if pidof nfqws2 >/dev/null; then
-      "$ZAPRET2_INIT" restart
+      z2r_service_action restart
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2070,7 +2082,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "18")
     if toggle_rst_guard_mode && pidof nfqws2 >/dev/null; then
-      "$ZAPRET2_INIT" restart
+      z2r_service_action restart
       echo -e "${green}zapret2 перезапущен для применения RST-защиты${plain}"
     fi
     echo -e "${green}RST-защита: $(config_mode_text rst_guard).${plain}"
