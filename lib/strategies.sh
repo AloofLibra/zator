@@ -193,14 +193,14 @@ orch_ask_sweep_tls_pref() {
 orch_run_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
     local mode tls_pref extra_pause
-    read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 1, 0 - отмена): " mode
+    read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 2, 0 - отмена): " mode
     if [ "$mode" = "0" ]; then
         echo "Отмена."
         pause_enter
         return 0
     fi
-    local sok=1
-    [ "$mode" = "2" ] && sok=0
+    local sok=0
+    [ "$mode" = "1" ] && sok=1
 
     tls_pref="$(orch_ask_sweep_tls_pref)"
     if [ -z "$tls_pref" ]; then
