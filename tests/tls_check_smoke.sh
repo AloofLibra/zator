@@ -526,8 +526,12 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     && fail "сценарий 14e: stderr демона глушится — ошибки конфига теряются"
   grep -q 'ERRLOG="/tmp/\${DAEMONBASE}_\$1.err"' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: stderr демона должен идти в /tmp/*.err (ошибки конфига)"
-  grep -q 'cat "\$ERRLOG".* >/dev/tty' "$REPO_DIR/Entware/zapret" \
-    || fail "сценарий 14e: ошибки конфига не показываются в терминале (/dev/tty)"
+  grep -q '>/dev/tty' "$REPO_DIR/Entware/zapret" \
+    && fail "сценарий 14e: вывод ошибок по таймауту в терминал запрещён (смущает пользователей); показ — строкой в меню"
+  grep -q 'MENU_ERR_LINE' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: в главном меню нет строки об ошибках nfqws2"
+  grep -q "grep -v '\^seccomp:'" "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: безвредный seccomp-шум должен фильтроваться из строки ошибок"
   # contains: апстримный ${1#*$2} на busybox/mipsel квадратичен по 37КБ конфига
   # (7 проверок has_bad_ws_options = ~95 сек на рестарт) — заменён на case
   grep -q '^contains()' "$REPO_DIR/Entware/zapret" \

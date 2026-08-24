@@ -47,7 +47,6 @@ run_daemon()
 			( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>>"$ERRLOG" &
 		fi
 		PID=$!
-		( sleep 10; [ -s "$ERRLOG" ] && { echo ""; echo "=== ошибки nfqws2 ($ERRLOG): ==="; cat "$ERRLOG"; } ) >/dev/tty 2>/dev/null &
 		if [ -n "$PID" ]; then
 			echo $PID >$PIDFILE
 		else

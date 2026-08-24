@@ -1844,6 +1844,11 @@ get_menu() {
     local _cfg_file
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
+    MENU_ERR_LINE=""
+    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
+      MENU_ERR_LINE="${red}Ошибки nfqws2: $(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .) — подробнее: cat /tmp/nfqws2_1.err${yellow}
+"
+    fi
 	TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
       TITLE_MENU_LINE="\n${pink}Титул:${plain} $(cat "$PREMIUM_TITLE_FILE")${yellow}\n"
@@ -1868,7 +1873,7 @@ ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
-${TITLE_MENU_LINE}
+${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
 Enter (без цифр) - переустановка/обновление zapret2
 ${Fyellow}0.${yellow} Выход
