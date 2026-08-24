@@ -2170,6 +2170,11 @@ fi
 mkdir -p /opt
 cd /tmp
 
+#Перед сносом zapret2 (вместе с /opt/zapret2/config) предлагаем бэкап
+if [ -f "$ZAPRET2_ROOT/config" ]; then
+  backup_helper_ask_and_create
+fi
+
 #Удаление старого запрета, если есть
 remove_zapret
 
@@ -2195,15 +2200,29 @@ if [ ! -s "$ORCH_LUA_LOCKED" ]; then
   fi
 fi
 
-read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
-case "$webui_answer" in
-	"1")
-		webui_install
-	;;
-	*)
-		echo "Пропуск (пере)установки Web-панели"
-	;;
-esac
+# Web-панель живёт в $ZATOR_ROOT и переустановкой zapret2 не затрагивается:
+# при наличии предлагаем обновление, при отсутствии — установку
+if [ -d "$WEBUI_ROOT" ]; then
+  read -re -p $'\033[33mWeb-панель управления уже установлена. Обновить её файлы из репозитория? 1 - Да, Enter - нет\033[0m\n' webui_answer
+  case "$webui_answer" in
+    "1")
+      webui_install
+    ;;
+    *)
+      echo "Пропуск обновления Web-панели (текущие файлы не тронуты)"
+    ;;
+  esac
+else
+  read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
+  case "$webui_answer" in
+    "1")
+      webui_install
+    ;;
+    *)
+      echo "Пропуск установки Web-панели"
+    ;;
+  esac
+fi
 
 #Для Keenetic и merlin
 if [[ "$OSystem" == "entware" ]]; then
