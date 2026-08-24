@@ -1416,6 +1416,26 @@ entware_fixes() {
  echo "Добавлено в автозагрузку: /opt/etc/init.d/S90-zapret2 > $ZAPRET2_INIT"
 }
 
+#Патчи апстримного procd-инициализатора под OpenWRT (см. AGENTS.md, High-Risk Areas)
+wrt_fixes() {
+ local f="$ZAPRET2_ROOT/init.d/openwrt/zapret2"
+ [ -f "$f" ] || { echo -e "${yellow}init.d/openwrt/zapret2 не найден — патчи OpenWRT пропущены.${plain}"; return 0; }
+ cp -a "$f" "$f.z2r_bak" || return 1
+ if ! grep -q 'procd_set_param stderr 1' "$f"; then
+  sed -i '/procd_set_param pidfile/a\	procd_set_param stderr 1' "$f" || true
+ fi
+ if ! grep -q '^contains()' "$f"; then
+  sed -i '/^\. "\$ZAPRET_BASE\/init\.d\/openwrt\/functions"/a\contains() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }' "$f" || true
+ fi
+ if ! sh -n "$f"; then
+  echo -e "${red}Патч OpenWRT сломал синтаксис init-скрипта — откат.${plain}"
+  mv -f "$f.z2r_bak" "$f"
+  return 1
+ fi
+ rm -f "$f.z2r_bak"
+ echo "Патчи OpenWRT применены (stderr->syslog, линейный contains)."
+}
+
 #Запрос на установку 3x-ui или аналогов
 get_panel() {
  read -re -p $'\033[33mУстановить ПО для туннелирования?\033[0m \033[32m(3xui, marzban, wg, 3proxy или Enter для пропуска): \033[0m' answer_panel
@@ -2101,6 +2121,11 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       grep -v '^seccomp:' /tmp/nfqws2_1.err
       echo ""
       echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2)${plain}"
+    elif command -v logread >/dev/null 2>&1 \
+      && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -q .; then
+      logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | tail -20
+      echo ""
+      echo -e "${yellow}Источник: syslog (logread). Пусто после обновления zapret2 на OpenWRT — обновитесь ещё раз (wrt_fixes).${plain}"
     else
       echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
     fi
@@ -2239,6 +2264,10 @@ while true; do
   entware_fixes
   # На Keenetic прописываем IFACE_WAN по default route до запуска install_easy.sh.
   config_keenetic_set_wan_iface_all
+ fi
+
+ if [[ "$OSystem" == "WRT" ]]; then
+  wrt_fixes || true
  fi
  
  profile_apply_all "$ZAPRET2_ROOT/config.default"

@@ -534,6 +534,16 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: нет скрытого п.666 для просмотра ошибок nfqws2"
   grep -q "grep -v '\^seccomp:'" "$REPO_DIR/z2r.sh" \
     || fail "сценарий 14e: безвредный seccomp-шум должен фильтроваться из строки ошибок"
+  # OpenWRT: wrt_fixes патчит procd-инит (stderr->syslog + линейный contains),
+  # 666 умеет fallback на logread
+  grep -q '^wrt_fixes()' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: нет wrt_fixes для патчей procd-инита OpenWRT"
+  grep -q "procd_set_param stderr 1" "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: wrt_fixes не включает stderr демона в syslog"
+  grep -q 'wrt_fixes || true' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: wrt_fixes не вызывается в установочном потоке WRT"
+  grep -q 'logread' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: нет fallback на logread в п.666 (OpenWRT)"
   # contains: апстримный ${1#*$2} на busybox/mipsel квадратичен по 37КБ конфига
   # (7 проверок has_bad_ws_options = ~95 сек на рестарт) — заменён на case
   grep -q '^contains()' "$REPO_DIR/Entware/zapret" \
