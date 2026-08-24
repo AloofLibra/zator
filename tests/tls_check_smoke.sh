@@ -524,6 +524,10 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: нет fallback-спавна с игнором INT/QUIT/HUP (роутеры без setsid)"
   grep -q '>/dev/null 2>&1 &' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: спавн демона не глушит stderr (пайп рестарта виснет)"
+  # contains: апстримный ${1#*$2} на busybox/mipsel квадратичен по 37КБ конфига
+  # (7 проверок has_bad_ws_options = ~95 сек на рестарт) — заменён на case
+  grep -q '^contains()' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: нет оверрайда contains (квадратичный поиск подстроки)"
   grep -q 'PIDFILE=\$PIDDIR/\${DAEMONBASE}_\$1.pid' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: формат pid-файлов разошёлся с апстримом"
   grep -q '^z2r_service_action()' "$REPO_DIR/lib/config.sh" \
