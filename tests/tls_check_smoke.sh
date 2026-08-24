@@ -526,6 +526,8 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     && fail "сценарий 14e: stderr демона глушится — ошибки конфига теряются"
   grep -q 'ERRLOG="/tmp/\${DAEMONBASE}_\$1.err"' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: stderr демона должен идти в /tmp/*.err (ошибки конфига)"
+  grep -q 'cat "\$ERRLOG".* >/dev/tty' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: ошибки конфига не показываются в терминале (/dev/tty)"
   # contains: апстримный ${1#*$2} на busybox/mipsel квадратичен по 37КБ конфига
   # (7 проверок has_bad_ws_options = ~95 сек на рестарт) — заменён на case
   grep -q '^contains()' "$REPO_DIR/Entware/zapret" \
