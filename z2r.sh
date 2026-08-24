@@ -1846,7 +1846,7 @@ get_menu() {
     menu_config_snapshot "$_cfg_file"
     MENU_ERR_LINE=""
     if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
-      MENU_ERR_LINE="${red}Ошибки nfqws2: $(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .) — подробнее: cat /tmp/nfqws2_1.err${yellow}
+      MENU_ERR_LINE="${red}Ошибки nfqws2: $(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .) — посмотрите п.666 меню${yellow}
 "
     fi
 	TITLE_MENU_LINE=""
@@ -2093,6 +2093,18 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "21")
     backup_submenu
+    ;;
+
+  "666")
+    echo "--- Ошибки nfqws2 (последний запуск) ---"
+    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
+      grep -v '^seccomp:' /tmp/nfqws2_1.err
+      echo ""
+      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2)${plain}"
+    else
+      echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
+    fi
+    pause_enter
     ;;
 
   "777")
