@@ -1109,6 +1109,10 @@ get_repo() {
  z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default" || return 1
   # Add new optional settings without breaking an older deployed template.
   config_client_scope_ensure "$ZAPRET2_ROOT/config.default" || return 1
+  mkdir -p "$ZATOR_ROOT/firewall"
+  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh" || return 1
+  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
+  chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
   if [ "$hardware" = "keenetic" ]; then
     z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
@@ -1131,9 +1135,23 @@ client_scope_enabled_from_active_config() {
  grep -Eq '^[[:space:]]*CLIENT_SCOPE_ENABLE[[:space:]]*=[[:space:]]*1([[:space:]]*#.*)?$' "$ZAPRET2_ROOT/config"
 }
 
+client_scope_firewall_apply_active_config() {
+ [ -f "$ZAPRET2_ROOT/config" ] || return 0
+ CLIENT_SCOPE_ENABLE="$(sed -n -n 's/^[[:space:]]*CLIENT_SCOPE_ENABLE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
+ FWTYPE="$(sed -n -n 's/^[[:space:]]*FWTYPE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
+ POSTNAT="$(sed -n -n 's/^[[:space:]]*POSTNAT[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
+ client_scope_firewall_action apply || true
+}
+
 remove_zapret() {
- if client_scope_enabled_from_active_config && [ -x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" ]; then
-     "$ZATOR_ROOT/firewall/client-scope-iptables.sh" cleanup || true
+ # Cleanup is independent of the feature flag. Prefer the active config's
+ # backend; when config is already absent, clean both isolated backends.
+ if [ -f "$ZAPRET2_ROOT/config" ]; then
+  FWTYPE="$(sed -n -n 's/^[[:space:]]*FWTYPE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
+  client_scope_firewall_action cleanup || true
+ else
+  CLIENT_SCOPE_FIREWALL_BACKEND=nftables client_scope_firewall_action cleanup || true
+  CLIENT_SCOPE_FIREWALL_BACKEND=iptables client_scope_firewall_action cleanup || true
  fi
  if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
  	z2r_service_action stop
@@ -1385,6 +1403,7 @@ z2r_prune_staged_sources() {
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh"
  cleanup_zapret2_init_dirs
+ client_scope_firewall_apply_active_config
  z2r_service_action restart
  if pidof nfqws2 >/dev/null; then
   check_access_list

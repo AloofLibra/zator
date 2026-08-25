@@ -309,6 +309,29 @@ fwtype_unavailable_reason() {
   fi
 }
 
+# Client-scope firewall is isolated from zapret/policy rules. Missing backends
+# are a safe no-op so legacy installs keep working.
+client_scope_firewall_script() {
+  local backend="${CLIENT_SCOPE_FIREWALL_BACKEND:-${FWTYPE:-iptables}}"
+  case "$backend" in
+    nftables|nft) echo "${ZATOR_ROOT:-/opt/zator}/firewall/client-scope-nft.sh" ;;
+    iptables|*) echo "${ZATOR_ROOT:-/opt/zator}/firewall/client-scope-iptables.sh" ;;
+  esac
+}
+
+client_scope_firewall_action() {
+  local action="$1" script
+  # Cleanup is safe and must run after the feature is disabled. Only apply is
+  # gated by the feature flag.
+  [ "$action" = cleanup ] || [ "${CLIENT_SCOPE_ENABLE:-0}" = 1 ] || return 0
+  script="$(client_scope_firewall_script)"
+  [ -x "$script" ] || return 0
+  "$script" "$action" || {
+    echo "client-scope firewall $action failed; continuing safely" >&2
+    return 0
+  }
+}
+
 config_mode_text() {
   local mode="$1"
   local cfg="$2"
