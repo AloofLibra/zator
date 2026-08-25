@@ -35,13 +35,17 @@ _client_scope_mark_value() {
 }
 
 _client_scope_delete_owned() {
-  local line rule_chain
+  local line rule_chain rule
   # Read only our chain. Never flush a table or a chain belonging to another
   # component; each generated rule carries a stable comment as a second guard.
   while IFS= read -r line; do
     case "$line" in
-      "-A $CLIENT_SCOPE_CHAIN "*"--comment $CLIENT_SCOPE_COMMENT"*)
+      "-A $CLIENT_SCOPE_CHAIN "*"--comment $CLIENT_SCOPE_COMMENT"*|\
+      "-A $CLIENT_SCOPE_CHAIN "*"--comment \"$CLIENT_SCOPE_COMMENT\""*)
         rule=${line#-A "$CLIENT_SCOPE_CHAIN" }
+        # iptables -S shell-quotes comment values.  Strip only our known
+        # comment quotes before word-splitting the locally generated rule.
+        rule=${rule//--comment \"$CLIENT_SCOPE_COMMENT\"/--comment $CLIENT_SCOPE_COMMENT}
         # shellcheck disable=SC2086 -- rule is emitted by iptables -S locally.
         _client_scope_iptables -D "$CLIENT_SCOPE_CHAIN" $rule || true
         ;;

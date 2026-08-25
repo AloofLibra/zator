@@ -1120,8 +1120,17 @@ mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 }
 
 #Удаление старого запрета, если есть
+client_scope_enabled_from_active_config() {
+ if [ "${CLIENT_SCOPE_ENABLE+x}" = "x" ]; then
+  [ "$CLIENT_SCOPE_ENABLE" = "1" ]
+  return
+ fi
+ [ -f "$ZAPRET2_ROOT/config" ] || return 1
+ grep -Eq '^[[:space:]]*CLIENT_SCOPE_ENABLE[[:space:]]*=[[:space:]]*1([[:space:]]*#.*)?$' "$ZAPRET2_ROOT/config"
+}
+
 remove_zapret() {
- if [ "${CLIENT_SCOPE_ENABLE:-0}" = "1" ] && [ -x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" ]; then
+ if client_scope_enabled_from_active_config && [ -x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" ]; then
      "$ZATOR_ROOT/firewall/client-scope-iptables.sh" cleanup || true
  fi
  if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then

@@ -16,7 +16,7 @@ case "$1" in
   -C) grep -Fxq "rule:-A ${args#-C }" "$state" ;;
   -A) printf 'rule:-A %s\n' "${args#-A }" >> "$state" ;;
   -D) line="rule:-A ${args#-D }"; tmp="${state}.tmp"; awk -v x="$line" '$0 != x { print }' "$state" > "$tmp"; mv "$tmp" "$state" ;;
-  -S) chain=${2:-}; sed -n "s/^rule:-A ${chain} /-A ${chain} /p" "$state" ;;
+  -S) chain=${2:-}; sed -n "s/^rule:-A ${chain} /-A ${chain} /p" "$state" | sed 's/--comment zator-client-scope/--comment "zator-client-scope"/g' ;;
   *) exit 0 ;;
 esac
 MOCK
@@ -47,4 +47,21 @@ grep -q 'FOREIGN' "$STATE" || fail 'foreign rules were removed'
 CLIENT_SCOPE_ENABLE=0 apply
 [ "$(grep -c '^rule:' "$STATE" || true)" -eq 1 ] || fail 'disabled mode changed firewall'
 PATH="$TMP/empty" apply || fail 'missing iptables was not a safe no-op'
+
+# Lifecycle integration: remove_zapret must honor the active config even when
+# CLIENT_SCOPE_ENABLE is not exported by the caller.
+CONFIG_ROOT="$TMP/config-root"
+mkdir -p "$CONFIG_ROOT"
+printf 'CLIENT_SCOPE_ENABLE=1\n' > "$CONFIG_ROOT/config"
+unset CLIENT_SCOPE_ENABLE
+eval "$(sed -n '/^client_scope_enabled_from_active_config() {/,/^}/p' "$ROOT/z2r.sh")"
+ZAPRET2_ROOT="$CONFIG_ROOT"
+client_scope_enabled_from_active_config || fail 'active config enable was not detected'
+printf 'CLIENT_SCOPE_ENABLE=0\n' > "$CONFIG_ROOT/config"
+if client_scope_enabled_from_active_config; then
+  fail 'disabled active config was treated as enabled'
+fi
+REMOVE_BLOCK=$(sed -n '/^remove_zapret() {/,/^}/p' "$ROOT/z2r.sh")
+printf '%s\n' "$REMOVE_BLOCK" | grep -q 'client_scope_enabled_from_active_config' \
+  || fail 'remove_zapret does not use active config gate'
 printf 'client scope firewall smoke ok\n'
