@@ -26,6 +26,7 @@ export CLIENT_SCOPE_MAP_FILE="$TMP/clients.tsv" CLIENT_SCOPE_CHAIN=ZATOR_CLIENT_
 cat > "$CLIENT_SCOPE_MAP_FILE" <<'MAP'
 mark:1	192.0.2.10
 mark:2	198.51.100.20
+mark:3	2001:db8::10
 MAP
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 [ -f "$ROOT/firewall/client-scope-iptables.sh" ] || fail 'firewall integration script missing'
@@ -47,6 +48,34 @@ grep -q 'FOREIGN' "$STATE" || fail 'foreign rules were removed'
 CLIENT_SCOPE_ENABLE=0 apply
 [ "$(grep -c '^rule:' "$STATE" || true)" -eq 1 ] || fail 'disabled mode changed firewall'
 PATH="$TMP/empty" apply || fail 'missing iptables was not a safe no-op'
+
+# nft backend: canonical ruleset is replaced atomically and cleanup owns only
+# the private table. POSTNAT=1 must select postrouting, never prerouting.
+NFT_STATE="$TMP/nft.state"
+cat > "$MOCK/nft" <<'MOCK'
+#!/usr/bin/env bash
+state=${NFT_STATE:?}
+if [ "$1" = -f ]; then cp "$2" "$state"; exit 0; fi
+if [ "$1" = delete ] && [ "$2" = table ]; then
+  [ "${3:-}" = inet ] && [ "${4:-}" = zator_client_scope ] && printf 'foreign table inet other\n' > "$state"
+fi
+MOCK
+chmod +x "$MOCK/nft"
+# Source the nft backend in a subshell to keep the iptables test variables tidy.
+(
+  export PATH="$MOCK:$PATH" NFT_STATE CLIENT_SCOPE_ENABLE=1 POSTNAT=1 CLIENT_SCOPE_NFT_TABLE=zator_client_scope
+  source "$ROOT/firewall/client-scope-nft.sh"
+  apply
+  first=$(cat "$NFT_STATE")
+  printf '%s\n' "$first" | grep -q 'hook postrouting' || fail 'POSTNAT did not select postrouting'
+  ! printf '%s\n' "$first" | grep -q 'hook prerouting' || fail 'POSTNAT enabled pre-NAT'
+  printf '%s\n' "$first" | grep -q 'ip6 saddr 2001:db8::10' || fail 'IPv6 client rule missing'
+  apply
+  [ "$(cat "$NFT_STATE")" = "$first" ] || fail 'nft apply/apply was not idempotent'
+  cleanup
+  grep -q 'foreign table inet other' "$NFT_STATE" || fail 'nft cleanup removed a foreign table'
+  CLIENT_SCOPE_ENABLE=0 apply
+)
 
 # Lifecycle integration: remove_zapret must honor the active config even when
 # CLIENT_SCOPE_ENABLE is not exported by the caller.
