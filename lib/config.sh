@@ -2,6 +2,20 @@
 
 Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
+orch_scope_validate() {
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" max
+  printf '%s' "$scope$profile$proto$strategy" | grep -q '[[:cntrl:]]' && { echo "Lock values must not contain tabs or newlines" >&2; return 1; }
+  printf '%s' "$scope" | grep -Eq '^(default|mark:[0-9]+)$' || { echo "Invalid lock scope: $scope" >&2; return 1; }
+  [ -n "$(config_profile_proto_list "$profile")" ] || { echo "Invalid lock profile: $profile" >&2; return 1; }
+  printf '%s\n' "$(config_profile_proto_list "$profile")" | tr ' ' '\n' | grep -Fxq "$proto" || { echo "Protocol $proto is not valid for profile $profile" >&2; return 1; }
+  case "$strategy" in auto|clear|0) return 0 ;; esac
+  printf '%s' "$strategy" | grep -Eq '^[1-9][0-9]*$' || { echo "Invalid lock strategy: $strategy" >&2; return 1; }
+  max="$(config_profile_max_strategy "$profile" "${CONFIG_FILE:-}")"
+  if [ "$max" -gt 0 ] 2>/dev/null; then
+    [ "$strategy" -le "$max" ] 2>/dev/null || { echo "Strategy $strategy is outside profile $profile range" >&2; return 1; }
+  fi
+}
+
 config_get_file() {
   if [ -n "$1" ] && [ -f "$1" ]; then
     echo "$1"
@@ -854,7 +868,7 @@ profile_config_orch_set() {
   if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
     ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
   fi
-  orch_locked_set "$profile" "$proto" "$strategy" || rc=$?
+  orch_scoped_locked_set default "$profile" "$proto" "$strategy" || rc=$?
   ORCH_LOCK_FILE="$saved_lock_file"
   return "$rc"
 }
@@ -868,7 +882,7 @@ profile_config_orch_clear() {
   if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
     ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
   fi
-  orch_locked_clear "$profile" "$proto" || rc=$?
+  orch_scoped_locked_clear default "$profile" "$proto" || rc=$?
   ORCH_LOCK_FILE="$saved_lock_file"
   return "$rc"
 }
