@@ -129,6 +129,63 @@ orch_scoped_list_scopes() {
   awk -F '\t' '$1 ~ /^mark:[0-9]+$/ {print $1}' "$ORCH_LOCK_FILE"
 }
 
+# CLI-managed client mapping: one canonical row is scope<TAB>IP.
+client_scope_map_file() {
+  printf '%s\n' "${CLIENT_SCOPE_MAP_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/client_scope.tsv}"
+}
+
+client_scope_ip_validate() {
+  local ip="$1" part count=0 old_ifs
+  if printf '%s\n' "$ip" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+    old_ifs="$IFS"; IFS=.
+    read -r -a parts <<EOF
+$ip
+EOF
+    IFS="$old_ifs"
+    for part in "${parts[@]}"; do
+      [ "$part" -le 255 ] 2>/dev/null || return 1
+      count=$((count + 1))
+    done
+    [ "$count" -eq 4 ]
+    return
+  fi
+  printf '%s\n' "$ip" | grep -Eq '^[0-9A-Fa-f:]+$' && printf '%s\n' "$ip" | grep -q ':'
+}
+
+client_scope_mark_validate() {
+  printf '%s\n' "${1:-}" | grep -Eq '^mark:[1-9][0-9]*$'
+}
+
+client_scope_ip_get() {
+  local ip="$1" file="$(client_scope_map_file)"
+  [ -f "$file" ] || return 0
+  awk -F '\t' -v ip="$ip" '$2==ip {print $1; exit}' "$file"
+}
+
+client_scope_ip_set() {
+  local ip="$1" scope="$2" file tmp
+  client_scope_ip_validate "$ip" || return 2
+  client_scope_mark_validate "$scope" || return 2
+  file="$(client_scope_map_file)"; tmp="${file}.tmp.$$"
+  mkdir -p "$(dirname "$file")" || return 1
+  [ -f "$file" ] || : > "$file" || return 1
+  awk -F '\t' -v OFS='\t' -v ip="$ip" -v sc="$scope" '$2==ip {if (!seen) {print sc,ip; seen=1}; next} {print} END{if (!seen) print sc,ip}' "$file" > "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
+client_scope_ip_clear() {
+  local ip="$1" file tmp
+  client_scope_ip_validate "$ip" || return 2
+  file="$(client_scope_map_file)"; tmp="${file}.tmp.$$"
+  [ -f "$file" ] || return 0
+  awk -F '\t' -v ip="$ip" '$2!=ip' "$file" > "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
+client_scope_ip_list() {
+  local file="$(client_scope_map_file)"
+  [ -f "$file" ] || return 0
+  awk -F '\t' 'NF>=2 && $1 ~ /^mark:[1-9][0-9]*$/ {print $2 " -> " $1}' "$file"
+}
+
 # Backward-compatible default-scope wrappers.
 orch_locked_get() { orch_scoped_locked_get default "$1" "$2"; }
 orch_locked_set() { orch_scoped_locked_set default "$1" "$2" "$3"; }

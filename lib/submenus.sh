@@ -3,24 +3,52 @@
 
 # Управление lock scopes клиента. Legacy без scope остаётся default.
 client_scopes_submenu() {
-  local scope profile proto strategy
+  local scope profile proto strategy ip
   while true; do
     clear -x
     echo -e "${cyan}--- Client scopes ---${plain}"
     echo "Доступные scopes: $(orch_scoped_list_scopes 2>/dev/null | sort -u | tr '\n' ' ')"
-    echo "1. Установить lock (scope, профиль, протокол, стратегия)"
-    echo "2. Сбросить scoped lock"
+    echo "IP-маппинги:"
+    client_scope_ip_list 2>/dev/null || true
+    echo "1. Добавить/изменить IP → mark:N"
+    echo "2. Удалить IP-маппинг"
+    echo "3. Установить lock (scope, профиль, протокол, стратегия)"
+    echo "4. Сбросить scoped lock"
     echo "0. Назад"
     read -re -p "Ваш выбор: " ans
     case "$ans" in
       1)
+        read -re -p "IP клиента: " ip
+        read -re -p "Scope (mark:N): " scope
+        if client_scope_ip_set "$ip" "$scope"; then
+          CLIENT_SCOPE_ENABLE=1
+          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 1
+          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_MASK 0xff00
+          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_SHIFT 8
+          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_MAX 255
+          client_scope_firewall_action apply || true
+          echo "IP-маппинг сохранён."
+        else echo -e "${red}Некорректный IP или scope.${plain}"; fi
+        pause_enter ;;
+      2)
+        read -re -p "IP клиента: " ip
+        if client_scope_ip_clear "$ip"; then
+          if [ -z "$(client_scope_ip_list)" ]; then
+            config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 0
+            CLIENT_SCOPE_ENABLE=0
+          fi
+          client_scope_firewall_action apply || true
+          echo "IP-маппинг удалён."
+        else echo -e "${red}Не удалось удалить IP-маппинг.${plain}"; fi
+        pause_enter ;;
+      3)
         read -re -p "Scope (default или mark:N): " scope
         read -re -p "Профиль: " profile
         read -re -p "Протокол (tls/http/udp): " proto
         read -re -p "Стратегия (0..N): " strategy
         if orch_scoped_locked_set "${scope:-default}" "$profile" "$proto" "$strategy"; then echo "Lock сохранён."; else echo -e "${red}Некорректные параметры или конфликт.${plain}"; fi
         pause_enter ;;
-      2)
+      4)
         read -re -p "Scope: " scope
         read -re -p "Профиль: " profile
         read -re -p "Протокол: " proto

@@ -9,7 +9,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 export ORCH_DIR="$TMP_DIR/orchestra"
 export ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
 export CONFIG_FILE="$TMP_DIR/config"
-mkdir -p "$ORCH_DIR"
+export ZATOR_ROOT="$TMP_DIR/zator"
+export CLIENT_SCOPE_MAP_FILE="$ZATOR_ROOT/extra_strats/cache/client_scope.tsv"
+mkdir -p "$ORCH_DIR" "$(dirname "$CLIENT_SCOPE_MAP_FILE")"
 tr -d '\r' < "$REPO_DIR/config.default" > "$CONFIG_FILE"
 
 # shellcheck source=/dev/null
@@ -44,6 +46,17 @@ expect_fail orch_scoped_locked_set nope 2 tls 1
 # Every persisted row must be tab-separated and writes must be complete.
 orch_scoped_locked_set mark:7 2 tls 5
 awk -F '\t' '$1 ~ /^mark:/ && NF != 4 { exit 1 }' "$ORCH_LOCK_FILE" || fail "scoped row is not 4-column TSV"
+
+# Every persisted row must be tab-separated and writes must be complete.
+client_scope_ip_set 192.0.2.10 mark:101 || fail "IP mapping set"
+[ "$(client_scope_ip_get 192.0.2.10)" = "mark:101" ] || fail "IP mapping get"
+client_scope_ip_set 192.0.2.10 mark:102 || fail "IP mapping update"
+[ "$(client_scope_ip_get 192.0.2.10)" = "mark:102" ] || fail "IP mapping update failed"
+client_scope_ip_set 2001:db8::10 mark:103 || fail "IPv6 mapping set"
+expect_fail client_scope_ip_set 999.1.1.1 mark:104
+expect_fail client_scope_ip_set 192.0.2.11 default
+client_scope_ip_clear 192.0.2.10 || fail "IP mapping clear"
+[ -z "$(client_scope_ip_get 192.0.2.10)" ] || fail "IP mapping clear failed"
 
 # Legacy custom-domain keys remain valid and their old two-column TLS rows
 # are removed by the compatibility clear wrapper.
