@@ -50,8 +50,8 @@ CLIENT_SCOPE_ENABLE=0 apply
 [ "$(grep -c '^rule:' "$STATE" || true)" -eq 1 ] || fail 'disabled mode changed firewall'
 PATH="$TMP/empty" apply || fail 'missing iptables was not a safe no-op'
 
-# nft backend: canonical ruleset is replaced atomically and cleanup owns only
-# the private table. POSTNAT=1 must select postrouting, never prerouting.
+# nft backend always classifies the LAN client before NAT, independently of
+# POSTNAT=1 and without requiring CLIENT_SCOPE_PRENAT.
 NFT_STATE="$TMP/nft.state"
 cat > "$MOCK/nft" <<'MOCK'
 #!/usr/bin/env bash
@@ -64,12 +64,12 @@ MOCK
 chmod +x "$MOCK/nft"
 # Source the nft backend in a subshell to keep the iptables test variables tidy.
 (
-  export PATH="$MOCK:$PATH" NFT_STATE CLIENT_SCOPE_ENABLE=1 POSTNAT=1 CLIENT_SCOPE_NFT_TABLE='foreign; delete table inet other'
+  export PATH="$MOCK:$PATH" NFT_STATE CLIENT_SCOPE_ENABLE=1 POSTNAT=1 CLIENT_SCOPE_PRENAT=0 CLIENT_SCOPE_NFT_TABLE='foreign; delete table inet other'
   source "$ROOT/firewall/client-scope-nft.sh"
   apply
   first=$(cat "$NFT_STATE")
-  printf '%s\n' "$first" | grep -q 'hook postrouting' || fail 'POSTNAT did not select postrouting'
-  ! printf '%s\n' "$first" | grep -q 'hook prerouting' || fail 'POSTNAT enabled pre-NAT'
+  printf '%s\n' "$first" | grep -q 'hook prerouting' || fail 'client scope did not select prerouting'
+  ! printf '%s\n' "$first" | grep -q 'hook postrouting' || fail 'client scope selected postrouting'
   printf '%s\n' "$first" | grep -q 'ip6 saddr 2001:db8::10' || fail 'IPv6 client rule missing'
   ! printf '%s\n' "$first" | grep -q '999.1.1.1' || fail 'invalid IPv4 client rule was emitted'
   apply

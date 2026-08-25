@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Apply client marks in a private nftables table without touching other rules.
+# Client scopes are classified in prerouting because the mapping is based on
+# the LAN source IP. This is independent of zapret2's global POSTNAT mode.
 
 # Keep the table canonical so cleanup cannot be redirected to arbitrary state.
 CLIENT_SCOPE_NFT_TABLE=zator_client_scope
@@ -63,16 +64,12 @@ apply() {
   # Validate all interpolated nft identifiers before replacing the table.
   _valid_nft_name "$CLIENT_SCOPE_NFT_CHAIN" || return 0
   _valid_comment "$CLIENT_SCOPE_COMMENT" || return 0
-  # POSTNAT=1 is the existing post-NAT mode. Never silently switch it to
-  # pre-NAT; pre-NAT requires an explicit opt-in for this firewall backend.
-  local hook
-  if [ -z "${POSTNAT:-}" ] || [ "$POSTNAT" = 1 ]; then
-    hook=postrouting
-  elif [ "${CLIENT_SCOPE_PRENAT:-0}" = 1 ]; then
-    hook=prerouting
-  else
-    return 0
-  fi
+  # Client scopes are derived from the LAN source IP. That information exists
+  # before NAT, so this isolated table must always use prerouting. The global
+  # zapret2 POSTNAT setting controls zapret2's own flow, not client mapping.
+  # Do not require CLIENT_SCOPE_PRENAT or silently create a postrouting table:
+  # postrouting is too late and cannot reliably identify the LAN client.
+  local hook=prerouting
   _nft "delete table inet $CLIENT_SCOPE_NFT_TABLE" 2>/dev/null || true
   _apply_ruleset "$hook"
 }

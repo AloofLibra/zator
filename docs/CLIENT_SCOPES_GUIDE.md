@@ -111,13 +111,19 @@ CLIENT_SCOPE_MARK_MAX=255
 
 Без IP-маппинга режим не включается.
 
-Для OpenWrt с nftables правило создаётся в отдельной таблице:
+Для OpenWrt с nftables правило всегда создаётся в отдельной таблице:
 
 ```text
 inet zator_client_scope
 ```
 
-Оно не должно смешиваться с таблицами zapret2, fw4 или сторонних сервисов.
+и в hook:
+
+```text
+prerouting
+```
+
+Это специально: client scope определяется по LAN source IP до NAT и не зависит от общего режима `POSTNAT` zapret2.
 
 ## 5. Scoped lock для клиента
 
