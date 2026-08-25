@@ -98,7 +98,7 @@ orch_scoped_locked_clear() {
   _orch_scope_basic_validate "$scope" || return 2
   if type orch_scope_validate >/dev/null 2>&1; then orch_scope_validate "$scope" "$profile" "$proto" clear || return 2; fi
   [ -f "$ORCH_LOCK_FILE" ] || return 0
-  awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '!((NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po)) {print}' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; return 1; }
+  awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '!((NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && $1==pr && NF==2)) {print}' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; return 1; }
 }
 
 orch_scoped_locked_list() {
