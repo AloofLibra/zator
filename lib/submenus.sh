@@ -1,6 +1,37 @@
 # submenus.sh
 # Единый стиль: loop + return на 0/Enter
 
+# Управление lock scopes клиента. Legacy без scope остаётся default.
+client_scopes_submenu() {
+  local scope profile proto strategy
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Client scopes ---${plain}"
+    echo "Доступные scopes: $(orch_scoped_list_scopes 2>/dev/null | sort -u | tr '\n' ' ')"
+    echo "1. Установить lock (scope, профиль, протокол, стратегия)"
+    echo "2. Сбросить scoped lock"
+    echo "0. Назад"
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      1)
+        read -re -p "Scope (default или mark:N): " scope
+        read -re -p "Профиль: " profile
+        read -re -p "Протокол (tls/http/udp): " proto
+        read -re -p "Стратегия (0..N): " strategy
+        if orch_scoped_locked_set "${scope:-default}" "$profile" "$proto" "$strategy"; then echo "Lock сохранён."; else echo -e "${red}Некорректные параметры или конфликт.${plain}"; fi
+        pause_enter ;;
+      2)
+        read -re -p "Scope: " scope
+        read -re -p "Профиль: " profile
+        read -re -p "Протокол: " proto
+        if orch_scoped_locked_clear "${scope:-default}" "$profile" "$proto"; then echo "Scoped lock сброшен."; else echo -e "${red}Не удалось сбросить lock.${plain}"; fi
+        pause_enter ;;
+      0|"") return ;;
+      *) ui_invalid_input ;;
+    esac
+  done
+}
+
 #функция меню "1. Сменить стратегии"
 strategies_submenu() {
   while true; do
@@ -51,8 +82,9 @@ strategies_submenu() {
       submenu_item "	8" "Fallback TLS (безразборный блок)" "" "$STRATEGY_STATE_FB_TLS"
       submenu_item "	9" "Fallback HTTP (безразборный блок) [${MENU_PROFILE_MAX_9:-0}]" "" "$STRATEGY_STATE_FB_HTTP"
     fi
-    submenu_item "	10" "Авторотация TCP/HTTP [${auto_state}]"
-    submenu_item "	0" "Назад"
+    submenu_item "10" "Авторотация TCP/HTTP [${auto_state}]"
+    submenu_item "11" "Client scopes (lock по mark)"
+    submenu_item "0" "Назад"
     echo ""
 
     read -re -p "Ваш выбор: " ans
@@ -119,6 +151,9 @@ strategies_submenu() {
       "10")
         toggle_auto_mode
         pause_enter
+        ;;
+      "11")
+        client_scopes_submenu
         ;;
       "0"|"")
         return

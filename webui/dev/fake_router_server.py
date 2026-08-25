@@ -128,7 +128,7 @@ ERR_SERVICE = "Не удалось выполнить команду zapret2"
 AUTO_MODE_GATED_PROFILES = (1, 2, 3, 4)
 
 # Допустимые эндпоинты для --simulate-error
-SIMULATABLE = {"status", "service", "check", "set-lock", "clear-lock", "settings", "domains", "backups"}
+SIMULATABLE = {"status", "scopes", "service", "check", "set-lock", "clear-lock", "settings", "domains", "backups"}
 
 RST_GUARD_KEYS = ("1", "2", "3", "4", "8", "9")
 
@@ -540,6 +540,51 @@ def _write_tsv(path, rows):
         for r in rows:
             fh.write("\t".join(str(x) for x in r) + "\n")
     os.replace(tmp, path)
+
+
+def orch_scoped_set(lock_file, scope, profile, proto, strategy):
+    """Scoped four-column equivalent of orch_scoped_locked_set()."""
+    if not re.match(r"^(default|mark:[0-9]+)$", str(scope)):
+        raise ValueError("Некорректный scope")
+    rows = [line.split("\t") for line in _read_lines(lock_file) if line]
+    key = [str(scope), str(profile), proto]
+    if scope == "default":
+        key = [str(profile), proto]
+    rows = [r for r in rows if not ((len(r) >= 4 and r[:3] == key) or (scope == "default" and len(r) >= 2 and r[:2] == key))]
+    rows.append(key + [str(strategy)] if scope != "default" else key + [str(strategy)])
+    _write_tsv(lock_file, rows)
+
+
+def orch_scoped_clear(lock_file, scope, profile, proto):
+    rows = [line.split("\t") for line in _read_lines(lock_file) if line]
+    rows = [r for r in rows if not ((scope != "default" and len(r) >= 4 and r[:3] == [scope, str(profile), proto]) or (scope == "default" and ((len(r) >= 3 and r[:2] == [str(profile), proto]) or (len(r) == 2 and r[0] == str(profile) and proto == "tls"))))]
+    _write_tsv(lock_file, rows)
+
+
+def orch_scoped_source(lock_file, scope, profile, proto):
+    rows = [r for r in (line.split("\t") for line in _read_lines(lock_file) if line) if r]
+    exact = [r for r in rows if len(r) >= 4 and r[:3] == [scope, str(profile), proto]]
+    if len(exact) > 1: return "conflict"
+    if exact: return "scoped"
+    default = [r for r in rows if (len(r) >= 3 and r[:2] == [str(profile), proto]) or (len(r) == 2 and r[0] == str(profile) and proto == "tls")]
+    if len(default) > 1: return "conflict"
+    return "default" if default else "auto"
+
+
+def orch_scoped_effective(lock_file, scope, profile, proto):
+    """Return current_lock for a selected scope, matching _lib.sh."""
+    source = orch_scoped_source(lock_file, scope, profile, proto)
+    rows = [r for r in (line.split("\t") for line in _read_lines(lock_file) if line) if r]
+    if source == "scoped":
+        for row in rows:
+            if len(row) >= 4 and row[:3] == [scope, str(profile), proto]:
+                return row[3]
+    if source == "default":
+        for row in rows:
+            if (len(row) >= 3 and row[:2] == [str(profile), proto]) or (len(row) == 2 and row[0] == str(profile) and proto == "tls"):
+                return row[-1]
+    return "conflict" if source == "conflict" else "auto"
+
 
 
 def orch_locked_set(lock_file, profile, proto, strategy):
@@ -2180,6 +2225,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if d and d > 0:
             time.sleep(d)
 
+    @staticmethod
+    def _valid_scope(scope):
+        """Match the CGI scope validator for every scope-aware endpoint."""
+        return scope == "default" or bool(re.match(r"^mark:[0-9]+$", scope))
+
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         reason = _HTTP_STATUS.get(code, (code, ""))[1]
@@ -2254,12 +2304,36 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._send_error_json(500, "Симуляция ошибки эндпоинта '{0}'".format(endpoint))
             return
 
+        if endpoint == "scopes":
+            requested_scope = params.get("scope", "default") or "default"
+            if not self._valid_scope(requested_scope):
+                self._send_error_json(400, "Некорректный scope")
+                return
+            scopes = {"default"}
+            for line in _read_lines(self.state.lock_file):
+                fields = line.split("\t")
+                if fields and re.match(r"^mark:[0-9]+$", fields[0]): scopes.add(fields[0])
+            enabled = bool(getattr(self.state, "client_scope_enable", False))
+            warning = "Client scope включён, но firewall mapping не задан." if enabled and not getattr(self.state, "client_scope_mark_mask", "") else ""
+            self._send_json({"enabled": enabled, "warning": warning, "scopes": sorted(scopes)})
+            return
+
         if endpoint == "status":
             self._sleep_for("status")
+            requested_scope = params.get("scope", "default") or "default"
+            if not self._valid_scope(requested_scope):
+                self._send_error_json(400, "Некорректный scope")
+                return
             self._log("GET {0} | nfqws2={1} locks={2}".format(
                 parsed.path, running, locks))
             with self.state.lock:
-                self._send_json(self.state.build_status())
+                payload = self.state.build_status()
+                for item in payload.get("profiles", []):
+                    item["scope"] = requested_scope
+                    lock_file = self.state.lock_manual_file if item["profile"] in FALLBACK_PROFILES else self.state.lock_file
+                    item["lock_source"] = orch_scoped_source(lock_file, requested_scope, item["profile"], profile_proto(item["profile"]))
+                    item["current_lock"] = orch_scoped_effective(lock_file, requested_scope, item["profile"], profile_proto(item["profile"]))
+                self._send_json(payload)
             return
 
         if endpoint == "check":
@@ -2337,6 +2411,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if not re.match(r"^[0-9]+$", strategy):
             self._send_error_json(400, ERR_BAD_STRATEGY)
             return
+        scope = params.get("scope", "default") or "default"
+        if not self._valid_scope(scope):
+            self._send_error_json(400, "Некорректный scope")
+            return
         if int(profile) in AUTO_MODE_GATED_PROFILES and \
                 config_mode_text("auto_mode", self.state.cfg_text) == "включен":
             self._log("{0} {1} | profile={2} -> 409 (auto mode)".format(
@@ -2358,7 +2436,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
         self._sleep_for("set-lock")
         with self.state.lock:
-            ok = profile_state_set_and_apply(self.state, int(profile), pl, strategy)
+            if scope == "default":
+                ok = profile_state_set_and_apply(self.state, int(profile), pl, strategy)
+            else:
+                orch_scoped_set(self.state.lock_file, scope, profile, profile_proto(int(profile)), strategy)
+                ok = True
             if not ok:
                 self._send_error_json(500, ERR_SAVE_STATE)
                 return
@@ -2375,6 +2457,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if not re.match(r"^[1-9]$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
+        scope = params.get("scope", "default") or "default"
+        if not self._valid_scope(scope):
+            self._send_error_json(400, "Некорректный scope")
+            return
         if int(profile) in AUTO_MODE_GATED_PROFILES and \
                 config_mode_text("auto_mode", self.state.cfg_text) == "включен":
             self._send_error_json(
@@ -2387,7 +2473,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
         self._sleep_for("clear-lock")
         with self.state.lock:
-            ok = profile_state_set_and_apply(self.state, int(profile), pl, "auto")
+            if scope == "default":
+                ok = profile_state_set_and_apply(self.state, int(profile), pl, "auto")
+            else:
+                orch_scoped_clear(self.state.lock_file, scope, profile, profile_proto(int(profile)))
+                ok = True
             if not ok:
                 self._send_error_json(500, ERR_RESET_STATE)
                 return
