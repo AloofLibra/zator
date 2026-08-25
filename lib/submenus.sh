@@ -60,6 +60,34 @@ client_scopes_submenu() {
   done
 }
 
+client_scope_mode_text() {
+  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ "$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)" = 1 ] && printf 'включен' || printf 'выключен'
+}
+
+toggle_client_scope_mode() {
+  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  local current="$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
+  if [ "$current" = 1 ]; then
+    config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0 || return 1
+    CLIENT_SCOPE_ENABLE=0
+    client_scope_firewall_action cleanup || true
+    echo -e "${yellow}Client scopes (Beta) выключены.${plain}"
+    return 0
+  fi
+  if [ -z "$(client_scope_ip_list 2>/dev/null)" ]; then
+    echo -e "${red}Нельзя включить Client scopes (Beta): сначала добавьте IP-маппинг.${plain}"
+    return 1
+  fi
+  config_set_var "$cfg" CLIENT_SCOPE_ENABLE 1 || return 1
+  config_set_var "$cfg" CLIENT_SCOPE_MARK_MASK 0xff00 || return 1
+  config_set_var "$cfg" CLIENT_SCOPE_MARK_SHIFT 8 || return 1
+  config_set_var "$cfg" CLIENT_SCOPE_MARK_MAX 255 || return 1
+  CLIENT_SCOPE_ENABLE=1
+  client_scope_firewall_action apply || true
+  echo -e "${green}Client scopes (Beta) включены.${plain}"
+}
+
 #функция меню "1. Сменить стратегии"
 strategies_submenu() {
   while true; do
@@ -111,7 +139,8 @@ strategies_submenu() {
       submenu_item "	9" "Fallback HTTP (безразборный блок) [${MENU_PROFILE_MAX_9:-0}]" "" "$STRATEGY_STATE_FB_HTTP"
     fi
     submenu_item "10" "Авторотация TCP/HTTP [${auto_state}]"
-    submenu_item "11" "Client scopes (lock по mark)"
+    submenu_item "11" "Client scopes: IP и lock"
+    submenu_item "22" "Client scopes (Beta): $(client_scope_mode_text)"
     submenu_item "0" "Назад"
     echo ""
 
@@ -182,6 +211,10 @@ strategies_submenu() {
         ;;
       "11")
         client_scopes_submenu
+        ;;
+      "22")
+        toggle_client_scope_mode
+        pause_enter
         ;;
       "0"|"")
         return
