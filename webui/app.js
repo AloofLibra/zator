@@ -442,9 +442,13 @@ function renderStatus() {
   const providerName = providerCut > 0 ? providerRaw.slice(0, providerCut) : providerRaw;
   const providerCity = providerCut > 0 ? providerRaw.slice(providerCut + 3) : '';
 
+  const scopeDiagnostics = state.status.client_scope || {};
+  const scopeMode = scopeDiagnostics.mode === 'mark' ? 'mark' : 'disabled';
+  const scopeSubText = `mask: ${scopeDiagnostics.mask || '—'} / shift: ${scopeDiagnostics.shift ?? 0} / max: ${scopeDiagnostics.max_scope ?? 0} · последний scope: ${scopeDiagnostics.last_seen_scope || 'unavailable'} · locks: ${scopeDiagnostics.scoped_lock_count ?? 0} · conflicts: ${scopeDiagnostics.conflicts ?? 0} · fallback: ${scopeDiagnostics.fallback_reason || '—'}`;
   const cards = [
     ['zapret2', state.status.zapret2_running ? 'Запущен' : 'Остановлен', state.status.zapret2_running ? 'ok' : 'bad'],
     ['Локи стратегий', state.status.strategy_locks_status],
+    ['Client scopes', scopeMode, scopeMode === 'mark' ? 'ok' : '', scopeSubText],
     ['Авторотация', state.status.auto_mode, state.status.auto_mode === 'включен' ? 'ok' : ''],
     ['Фильтр', state.status.hostlist_mode],
     ['FW', state.status.fwtype],

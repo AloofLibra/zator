@@ -7,6 +7,7 @@ local LOCKED_HTTP = {}
 local LOCKED_UDP = {}
 local LOCKED_CONFLICTS = {}
 local LOCKED_CONFLICTS_TOTAL = 0
+local CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
 local LOCKED_TEST_LINES = nil
 local EXCLUDE_HOSTLISTS = {}
 local SUBSTRING_HOSTLISTS = {}
@@ -69,7 +70,10 @@ end
 local function load_locked_lines(lines)
   for _, line in ipairs(lines) do
     local scope, profile, proto, strategy = locked_parse_line(line)
-    if scope then store_locked(scope, profile, proto, strategy) end
+    if scope then
+      if scope ~= "default" then CLIENT_SCOPE_SCOPED_LOCK_COUNT = CLIENT_SCOPE_SCOPED_LOCK_COUNT + 1 end
+      store_locked(scope, profile, proto, strategy)
+    end
   end
 end
 
@@ -91,6 +95,7 @@ local function load_locked_tables()
   LOCKED_UDP = {}
   LOCKED_CONFLICTS = {}
   LOCKED_CONFLICTS_TOTAL = 0
+  CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
 
   if LOCKED_TEST_LINES then
     load_locked_lines(LOCKED_TEST_LINES)
@@ -244,6 +249,8 @@ local CLIENT_SCOPE_DEFAULT = "default"
 local CLIENT_SCOPE_DEFAULT_MARK = 0x40000000
 local CLIENT_SCOPE_DEFAULT_POSTNAT_MARK = 0x20000000
 local CLIENT_SCOPE_UINT32_MAX = 4294967295
+local CLIENT_SCOPE_LAST_SEEN = CLIENT_SCOPE_DEFAULT
+local CLIENT_SCOPE_LAST_REASON = "disabled"
 
 local function client_scope_number(value)
   local number
@@ -271,18 +278,31 @@ local function client_scope_band(left, right)
   return result
 end
 
-local function client_scope_config()
+local function client_scope_config_status()
   local enabled = rawget(_G, "CLIENT_SCOPE_ENABLE")
-  if not (enabled == 1 or enabled == "1" or enabled == true) then return nil end
-  local mask = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_MASK")) or 0
-  local shift = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_SHIFT")) or 0
-  local max_scope = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_MAX")) or 255
-  if mask == 0 or shift > 31 or max_scope == 0 then return nil end
+  if not (enabled == 1 or enabled == "1" or enabled == true) then return nil, "disabled" end
+  local mask = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_MASK"))
+  local shift = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_SHIFT"))
+  local max_scope = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_MAX"))
+  if not mask or mask == 0 then return nil, "missing-mask" end
+  if not shift or shift > 31 or not max_scope or max_scope == 0 then return nil, "invalid-mask" end
   local service_mark = client_scope_number(rawget(_G, "DESYNC_MARK")) or CLIENT_SCOPE_DEFAULT_MARK
   local postnat_mark = client_scope_number(rawget(_G, "DESYNC_MARK_POSTNAT")) or CLIENT_SCOPE_DEFAULT_POSTNAT_MARK
-  if client_scope_band(mask, service_mark) ~= 0 or client_scope_band(mask, postnat_mark) ~= 0 then return nil end
-  if mask % (2 ^ shift) ~= 0 then return nil end
-  return { mask = mask, shift = shift, max_scope = max_scope }
+  if client_scope_band(mask, service_mark) ~= 0 or client_scope_band(mask, postnat_mark) ~= 0 then
+    return nil, "mask-conflict"
+  end
+  if mask % (2 ^ shift) ~= 0 then return nil, "invalid-mask" end
+  return { mask = mask, shift = shift, max_scope = max_scope }, nil
+end
+
+local function client_scope_config()
+  local config = client_scope_config_status()
+  return config
+end
+
+local function client_scope_record(scope, reason)
+  CLIENT_SCOPE_LAST_SEEN = scope or CLIENT_SCOPE_DEFAULT
+  CLIENT_SCOPE_LAST_REASON = reason or "no-scoped-lock"
 end
 
 local function client_scope_store(desync, scope)
@@ -294,21 +314,81 @@ local function client_scope_store(desync, scope)
 end
 
 function desync_client_scope(desync)
-  if type(desync) ~= "table" then return CLIENT_SCOPE_DEFAULT end
-  local config = client_scope_config()
-  if not config then return client_scope_store(desync, CLIENT_SCOPE_DEFAULT) end
+  if type(desync) ~= "table" then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, "missing-mark")
+    return CLIENT_SCOPE_DEFAULT
+  end
+  local config, config_reason = client_scope_config_status()
+  if not config then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, config_reason)
+    return client_scope_store(desync, CLIENT_SCOPE_DEFAULT)
+  end
   local state = type(desync.track) == "table" and desync.track.lua_state
-  if type(state) == "table" and state.client_scope == CLIENT_SCOPE_DEFAULT then return state.client_scope end
+  if type(state) == "table" and state.client_scope == CLIENT_SCOPE_DEFAULT then
+    client_scope_record(state.client_scope, "missing-mark")
+    return state.client_scope
+  end
   if type(state) == "table" then
     local saved = string.match(tostring(state.client_scope), "^mark:(%d+)$")
     local number = client_scope_number(saved)
-    if number and number > 0 and number <= config.max_scope then return state.client_scope end
+    if number and number > 0 and number <= config.max_scope then
+      client_scope_record(state.client_scope, "no-scoped-lock")
+      return state.client_scope
+    end
   end
   local fwmark = client_scope_number(desync.fwmark)
-  if not fwmark then return client_scope_store(desync, CLIENT_SCOPE_DEFAULT) end
+  if not fwmark then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, "missing-mark")
+    return client_scope_store(desync, CLIENT_SCOPE_DEFAULT)
+  end
   local scope_number = math.floor(client_scope_band(fwmark, config.mask) / (2 ^ config.shift))
-  if scope_number == 0 or scope_number > config.max_scope then return client_scope_store(desync, CLIENT_SCOPE_DEFAULT) end
-  return client_scope_store(desync, "mark:" .. tostring(scope_number))
+  if scope_number == 0 or scope_number > config.max_scope then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, "invalid-mark")
+    return client_scope_store(desync, CLIENT_SCOPE_DEFAULT)
+  end
+  local scope = "mark:" .. tostring(scope_number)
+  client_scope_record(scope, "no-scoped-lock")
+  return client_scope_store(desync, scope)
+end
+
+local function client_scope_count_locks(values)
+  local count = 0
+  for scope, profiles in pairs(values) do
+    if scope ~= CLIENT_SCOPE_DEFAULT then
+      for _ in pairs(profiles) do count = count + 1 end
+    end
+  end
+  return count
+end
+
+local function client_scope_count_conflicts()
+  local count = 0
+  for scope, protocols in pairs(LOCKED_CONFLICTS) do
+    if scope ~= CLIENT_SCOPE_DEFAULT then
+      for _, profiles in pairs(protocols) do
+        for _ in pairs(profiles) do count = count + 1 end
+      end
+    end
+  end
+  return count
+end
+
+-- Deliberately returns only aggregate, scope-safe fields.  Payloads and source
+-- addresses must never become part of normal diagnostics.
+function client_scope_diagnostics()
+  local config, reason = client_scope_config_status()
+  load_locked_tables()
+  local mode = config and "mark" or "disabled"
+  return {
+    mode = mode,
+    mask = config and config.mask or 0,
+    shift = config and config.shift or 0,
+    max_scope = config and config.max_scope or 0,
+    scoped_lock_count = CLIENT_SCOPE_SCOPED_LOCK_COUNT,
+    conflicts = LOCKED_CONFLICTS_TOTAL,
+    last_seen_scope = CLIENT_SCOPE_LAST_SEEN,
+    fallback_reason = config and (CLIENT_SCOPE_LAST_REASON == "disabled" and "no-scoped-lock" or CLIENT_SCOPE_LAST_REASON) or reason,
+  }
 end
 
 function desync_profile_key(desync)

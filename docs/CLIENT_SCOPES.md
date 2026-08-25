@@ -1,6 +1,6 @@
 # Client scopes: контракт и ограничения
 
-Этот документ фиксирует MVP-контракт для стратегий, выбираемых по устройству-клиенту. Он описывает формат, который должны реализовать Lua, shell API и firewall-интеграции в следующих этапах. В рамках текущего этапа runtime-код не меняется: существующая схема остаётся глобальной, а client scope выключен.
+Этот документ фиксирует MVP-контракт для стратегий, выбираемых по устройству-клиенту. Он описывает формат Lua, shell API и firewall-интеграций. Runtime уже публикует privacy-safe диагностику scope, но включение client scope по умолчанию по-прежнему запрещено.
 
 ## Статус и совместимость
 
@@ -16,7 +16,7 @@
 - [`lib/orchestra_state.sh`](../lib/orchestra_state.sh) сейчас предоставляет глобальные shell-обёртки для lock-файла.
 - Полный план последующих изменений хранится в рабочем дереве задач: `.hermes/plans/2026-08-25_031946-client-scoped-strategies.md`.
 
-Этот документ не утверждает, что перечисленные `CLIENT_SCOPE_*` параметры уже поддерживаются текущим runtime. Они являются единым целевым именованием для следующих этапов.
+Runtime поддерживает чтение и диагностику перечисленных `CLIENT_SCOPE_*` параметров; это не означает автоматического включения scope-маршрутизации: без явного `CLIENT_SCOPE_ENABLE=1` сохраняется legacy global/default поведение.
 
 ## Канонические scopes MVP
 
@@ -40,7 +40,8 @@
 Целевая конфигурация должна иметь один источник параметров для firewall и Lua:
 
 ```ini
-# Целевые имена MVP; в текущем runtime ещё не реализованы.
+# Параметры MVP читаются runtime для diagnostics; scope-маршрутизация
+# по умолчанию не включена.
 CLIENT_SCOPE_ENABLE=0
 CLIENT_SCOPE_MARK_MASK=
 CLIENT_SCOPE_MARK_SHIFT=0
@@ -203,6 +204,26 @@ mark:102	3	tls	3
 - `mask-conflict` — маска пересекается со служебным mark;
 - `scope-conflict` — одинаково специфичные lock-записи конфликтуют;
 - `no-scoped-lock` — client scope корректен, но scoped lock отсутствует, поэтому использован `default`.
+
+### Runtime diagnostics
+
+`client_scope_diagnostics()` в `orchestra/locked.lua` и поле `client_scope` в
+WebUI `status.cgi`/`scopes.cgi` дают только безопасный агрегат:
+
+- `mode`: `disabled` или `mark`;
+- `mask`, `shift`, `max_scope`;
+- `scoped_lock_count` и `conflicts`;
+- `last_seen_scope` и `fallback_reason`.
+
+Lua обновляет `last_seen_scope` при обработке flow и хранит только scope в
+`track.lua_state`. Shell/WebUI не притворяются runtime-событиями: пока нет
+канала чтения Lua-состояния, `last_seen_scope` там имеет значение
+`unavailable`. Обычный UI/API не возвращает payload, source IP, MAC или список
+клиентов; маска показывается как конфигурационное значение. Поэтому
+`mask-conflict`, `missing-mask`, `invalid-mask`, `missing-mark`,
+`invalid-mark`, `scope-conflict` и `no-scoped-lock` можно отличить без утечки
+сетевых данных. Полные данные допустимы только в явно включённом стендовом
+debug-режиме и не входят в этот контракт.
 
 ## Проверки перед реализацией
 

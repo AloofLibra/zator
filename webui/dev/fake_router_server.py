@@ -417,6 +417,17 @@ def config_set_var(cfg_text, var, val):
     return "\n".join(lines) + "\n"
 
 
+def config_scope_number(value, default=0):
+    """Parse client-mark numbers exactly like the shell/config contract."""
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return default
+        return int(text, 16) if text.lower().startswith("0x") else int(text, 10)
+    except (TypeError, ValueError):
+        return default
+
+
 def config_client_scope_state(cfg_text):
     """Safe client-mark settings, mirroring config_client_scope_ensure()."""
     vals = {name: config_get_var(cfg_text, name) for name in (
@@ -435,8 +446,9 @@ def config_client_scope_state(cfg_text):
              int(vals["CLIENT_SCOPE_MARK_SHIFT"]) <= 31 and
              int(vals["CLIENT_SCOPE_MARK_MAX"]) <= 255 and
              (bool(mask) and re.match(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$", mask) is not None)))
+    mask_conflict = False
     if valid and mask:
-        mask_value = int(mask, 0) if mask.lower().startswith("0x") else int(mask, 10)
+        mask_value = config_scope_number(mask)
         desync_mark = config_get_var(cfg_text, "DESYNC_MARK") or "0"
         desync_postnat = config_get_var(cfg_text, "DESYNC_MARK_POSTNAT") or "0"
         def parse_num(value):
@@ -444,12 +456,15 @@ def config_client_scope_state(cfg_text):
                 return int(value, 0) if value.lower().startswith("0x") else int(value, 10)
             except (AttributeError, ValueError):
                 return 0
-        valid = (mask_value & parse_num(desync_mark)) == 0 and (mask_value & parse_num(desync_postnat)) == 0
+        mask_conflict = ((mask_value & parse_num(desync_mark)) != 0 or
+                         (mask_value & parse_num(desync_postnat)) != 0)
+        valid = not mask_conflict
     enabled = vals["CLIENT_SCOPE_ENABLE"] == "1" and valid
     if not valid:
         enabled = False
     vals["enabled"] = enabled
     vals["valid"] = valid
+    vals["mask_conflict"] = mask_conflict
     return vals
 
 
@@ -1389,7 +1404,37 @@ class FakeRouterState:
                 return "Есть"
         return "Нет"
 
-    def profile_json(self, pid, label, desc):
+    def client_scope_diagnostics(self):
+        cfg = config_client_scope_state(self.cfg_text)
+        rows = _read_lines(self.lock_file) + _read_lines(self.lock_manual_file)
+        scoped = [line.split("\t") for line in rows
+                  if len(line.split("\t")) >= 4 and re.match(r"^mark:[0-9]+$", line.split("\t")[0])]
+        keys = {}
+        for fields in scoped:
+            key = tuple(fields[:3])
+            keys.setdefault(key, set()).add(fields[3])
+        conflicts = sum(1 for strategies in keys.values() if len(strategies) > 1)
+        if not cfg["enabled"]:
+            if cfg["CLIENT_SCOPE_ENABLE"] != "1":
+                reason = "disabled"
+            elif not cfg["CLIENT_SCOPE_MARK_MASK"]:
+                reason = "missing-mask"
+            else:
+                reason = "mask-conflict" if cfg.get("mask_conflict") else "invalid-mask"
+        else:
+            reason = "no-scoped-lock"
+        return {
+            "mode": "mark" if cfg["enabled"] else "disabled",
+            "mask": config_scope_number(cfg["CLIENT_SCOPE_MARK_MASK"]),
+            "shift": config_scope_number(cfg["CLIENT_SCOPE_MARK_SHIFT"]),
+            "max_scope": config_scope_number(cfg["CLIENT_SCOPE_MARK_MAX"]),
+            "scoped_lock_count": len(scoped),
+            "conflicts": conflicts,
+            "last_seen_scope": "unavailable",
+            "fallback_reason": reason,
+        }
+
+    def profile_json(self, pid, label, desc, scope="default"):
         proto = profile_proto(pid)
         is_fallback = pid in FALLBACK_PROFILES
         is_udp_games = (pid == UDP_GAMES_PROFILE)
@@ -1398,7 +1443,12 @@ class FakeRouterState:
         # живёт в locked.manual.tsv (profile_config_orch_set); config-блок не
         # хранит выбор стратегии (его делает runtime circular_locked:key=N).
         orch_file = self.lock_manual_file if is_fallback else self.lock_file
-        current = profile_state_get(self.profile_lock, orch_file, pid, proto)
+        if scope == "default":
+            # Preserve profile.lock precedence for the legacy/default view.
+            current = profile_state_get(self.profile_lock, orch_file, pid, proto)
+        else:
+            current = orch_scoped_effective(orch_file, scope, pid, proto)
+        lock_source = orch_scoped_source(orch_file, scope, pid, proto)
         fallback_enabled = (_fallback_state(self.cfg_text) == "включен") if is_fallback else None
         udp_games_enabled = (config_mode_text("udp_games", self.cfg_text) == "Включен") if is_udp_games else None
         maxstrat = config_profile_max_strategy(pid, self.cfg_text)
@@ -1407,6 +1457,8 @@ class FakeRouterState:
             "label": label,
             "description": desc,
             "current_lock": current,
+            "scope": scope,
+            "lock_source": lock_source,
             "max_strategy": maxstrat,
         }
         if is_fallback:
@@ -1417,10 +1469,10 @@ class FakeRouterState:
             result["udp_games_enabled"] = udp_games_enabled
         return result
 
-    def all_profiles_json(self):
-        return [self.profile_json(p, l, d) for (p, l, d) in PROFILES]
+    def all_profiles_json(self, scope="default"):
+        return [self.profile_json(p, l, d, scope) for (p, l, d) in PROFILES]
 
-    def build_status(self):
+    def build_status(self, scope="default"):
         wg_raw = config_wg_state(self.cfg_text)
         if wg_raw == "1":
             wg_state = "включено"
@@ -1441,7 +1493,8 @@ class FakeRouterState:
             "reasm": config_mode_text("reasm_disable", self.cfg_text),
             "quic443": config_quic443_state_text(self.cfg_text),
             "provider": self.provider,
-            "profiles": self.all_profiles_json(),
+            "client_scope": self.client_scope_diagnostics(),
+            "profiles": self.all_profiles_json(scope),
         }
 
     # --- генерация результатов проверок ----------------------------------
@@ -2310,12 +2363,23 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(400, "Некорректный scope")
                 return
             scopes = {"default"}
-            for line in _read_lines(self.state.lock_file):
+            for line in (_read_lines(self.state.lock_file) +
+                         _read_lines(self.state.lock_manual_file)):
                 fields = line.split("\t")
                 if fields and re.match(r"^mark:[0-9]+$", fields[0]): scopes.add(fields[0])
-            enabled = bool(getattr(self.state, "client_scope_enable", False))
-            warning = "Client scope включён, но firewall mapping не задан." if enabled and not getattr(self.state, "client_scope_mark_mask", "") else ""
-            self._send_json({"enabled": enabled, "warning": warning, "scopes": sorted(scopes)})
+            diagnostics = self.state.client_scope_diagnostics()
+            reason = diagnostics.get("fallback_reason", "")
+            warning = ""
+            if reason == "missing-mask":
+                warning = "Client scope включён, но firewall mapping не задан."
+            elif reason == "mask-conflict":
+                warning = "Маска client scope пересекается со служебной mark-маской; включён безопасный fallback."
+            elif reason == "invalid-mask":
+                warning = "Маска client scope некорректна; включён безопасный fallback."
+            self._send_json({"enabled": diagnostics.get("mode") == "mark",
+                             "warning": warning,
+                             "scopes": sorted(scopes),
+                             "diagnostics": diagnostics})
             return
 
         if endpoint == "status":
@@ -2327,12 +2391,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._log("GET {0} | nfqws2={1} locks={2}".format(
                 parsed.path, running, locks))
             with self.state.lock:
-                payload = self.state.build_status()
-                for item in payload.get("profiles", []):
-                    item["scope"] = requested_scope
-                    lock_file = self.state.lock_manual_file if item["profile"] in FALLBACK_PROFILES else self.state.lock_file
-                    item["lock_source"] = orch_scoped_source(lock_file, requested_scope, item["profile"], profile_proto(item["profile"]))
-                    item["current_lock"] = orch_scoped_effective(lock_file, requested_scope, item["profile"], profile_proto(item["profile"]))
+                payload = self.state.build_status(requested_scope)
                 self._send_json(payload)
             return
 

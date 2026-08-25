@@ -12,7 +12,9 @@ grep -q ' Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || g
 grep -q 'scopes' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake router scopes'
 bash -n "$REPO_DIR/webui/cgi-bin/_lib.sh" "$REPO_DIR/webui/cgi-bin/scopes.cgi"
 PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
-import ast, importlib.util, pathlib
+import ast, importlib.util, json, pathlib, threading
+from http.server import ThreadingHTTPServer
+from urllib.request import urlopen
 path = pathlib.Path("webui/dev/fake_router_server.py")
 ast.parse(path.read_text(encoding="utf-8"))
 spec = importlib.util.spec_from_file_location("fake_router_server", path)
@@ -22,8 +24,52 @@ valid = mod.FakeRouterHandler._valid_scope
 assert valid("default") and valid("mark:0") and valid("mark:123"), "valid scopes rejected"
 for bad in ("bad", "mark:", "mark:-1", "mark:1x", "mark:1\t"):
     assert not valid(bad), "invalid scope accepted: %r" % bad
+assert mod.config_scope_number("08") == 8, "decimal leading-zero mask must parse"
+assert mod.config_scope_number("0x08") == 8, "hex mask must parse"
+assert mod.config_scope_number("bad") == 0, "invalid mask must use safe default"
+state = mod.FakeRouterState(
+    config_default_path=str(pathlib.Path("config.default")),
+    service_state="running", lock_state="none", check_result="ok",
+    simulate_error=[], provider="test", fake_dir=str(pathlib.Path("fake")),
+    repo_root=str(pathlib.Path(".")), delay=0, status_delay=0)
+server = ThreadingHTTPServer(("127.0.0.1", 0), mod.FakeRouterHandler)
+server.router_state = state
+server.webui_root = str(pathlib.Path("webui"))
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+try:
+  with urlopen("http://127.0.0.1:%d/cgi-bin/scopes.cgi" % server.server_port) as response:
+    payload = json.load(response)
+  diagnostics = payload.get("diagnostics")
+  assert isinstance(diagnostics, dict), "scopes endpoint omitted diagnostics"
+  assert set(("mode", "mask", "shift", "max_scope", "scoped_lock_count",
+              "conflicts", "last_seen_scope", "fallback_reason")) <= set(diagnostics), \
+      "scopes endpoint diagnostics fields incomplete"
+  assert not any(key in diagnostics for key in ("payload", "source_ip", "client_ip", "mac")), \
+      "scopes endpoint leaked private diagnostics"
+finally:
+  server.shutdown()
+  server.server_close()
+  thread.join(timeout=2)
+  import shutil
+  shutil.rmtree(state.tmpdir, ignore_errors=True)
+source = pathlib.Path("webui/dev/fake_router_server.py").read_text(encoding="utf-8")
+for field in ("mode", "mask", "shift", "max_scope", "scoped_lock_count", "conflicts", "last_seen_scope", "fallback_reason"):
+  assert '"diagnostics": diagnostics' in source and field in source, "fake scopes diagnostics contract missing: %s" % field
+for private in ("payload", "source_ip", "client_ip", "mac"):
+  assert private not in source.split('if endpoint == "scopes":', 1)[1].split('if endpoint == "status":', 1)[0], "private scope data leaked: %s" % private
 PY
 test ! -e "$REPO_DIR/webui/dev/__pycache__/fake_router_server.cpython-311.pyc" || fail 'compiled pyc artifact'
 grep -q 'profile_scoped_state_display' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scoped effective lock reader'
 grep -q 'orch_scoped_effective' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake effective lock reader'
+grep -q 'client_scope_diagnostics' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake diagnostics contract'
+grep -q 'client_scope_diagnostics_json' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scope diagnostics API'
+grep -q 'fallback_reason' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'fallback reason API'
+grep -q 'last_seen_scope' "$REPO_DIR/webui/app.js" || fail 'scope diagnostics UI'
+PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
+from pathlib import Path
+text = Path('webui/cgi-bin/_lib.sh').read_text(encoding='utf-8')
+body = text.split('client_scope_diagnostics_json() {', 1)[1].split('\n}\n\nclient_scopes_json()', 1)[0]
+assert 'payload' not in body and 'source_ip' not in body and 'client_ip' not in body, 'scope diagnostics leak private data'
+PY
 printf 'client scope webui smoke ok\n'

@@ -45,14 +45,21 @@ G.locked_load_lines_for_tests({"client-a\t3\ttls\t7", "client-a\t3\ttls\t8"})
 assert(G.locked_strategy_for_profile("3", "tls", "client-a") == nil,
   "conflicting duplicate must be rejected, not last-write-wins")
 assert(G.locked_conflict_count() == 1, "conflict must be diagnosable")
-
--- Exercise the real circular_locked selection path: two clients use the same
--- hostname/profile but must select different scoped locks.  The stubs only
--- replace nfqws2's orchestration and plan executor, not the selection logic.
+assert(type(G.client_scope_diagnostics) == "function", "scope diagnostics must be exported")
 G.CLIENT_SCOPE_ENABLE = 1
 G.CLIENT_SCOPE_MARK_MASK = 0xff00
 G.CLIENT_SCOPE_MARK_SHIFT = 8
 G.CLIENT_SCOPE_MARK_MAX = 255
+local diagnostics = G.client_scope_diagnostics()
+assert(diagnostics.mode == "mark", "enabled scope mode must be visible")
+assert(diagnostics.scoped_lock_count == 2, "diagnostics must count scoped locks without payload")
+assert(diagnostics.conflicts == 1, "diagnostics must expose scoped conflicts")
+assert(diagnostics.last_seen_scope == "default", "diagnostics must start with a safe default scope")
+assert(diagnostics.fallback_reason == "no-scoped-lock", "diagnostics must explain default fallback")
+
+-- Exercise the real circular_locked selection path: two clients use the same
+-- hostname/profile but must select different scoped locks.  The stubs only
+-- replace nfqws2's orchestration and plan executor, not the selection logic.
 G.DESYNC_MARK = 0x40000000
 G.DESYNC_MARK_POSTNAT = 0x20000000
 G.VERDICT_PASS = 0
@@ -95,5 +102,14 @@ G.CLIENT_SCOPE_ENABLE = nil
 G.locked_load_lines_for_tests({"example.com\ttls\t2"})
 strategy, scope = run_circular(nil, "example.com", "example.com")
 assert(strategy == 2 and scope == "default", "legacy lock must remain the default-scope behavior")
+diagnostics = G.client_scope_diagnostics()
+assert(diagnostics.mode == "disabled" and diagnostics.fallback_reason == "disabled",
+  "disabled scopes must report the safe fallback reason")
+
+G.CLIENT_SCOPE_ENABLE = 1
+G.CLIENT_SCOPE_MARK_MASK = 0x40000000
+diagnostics = G.client_scope_diagnostics()
+assert(diagnostics.mode == "disabled" and diagnostics.fallback_reason == "mask-conflict",
+  "overlapping service marks must disable scopes with a diagnostic")
 
 print("client scope parser ok")
