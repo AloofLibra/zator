@@ -251,6 +251,12 @@ local CLIENT_SCOPE_DEFAULT_POSTNAT_MARK = 0x20000000
 local CLIENT_SCOPE_UINT32_MAX = 4294967295
 local CLIENT_SCOPE_LAST_SEEN = CLIENT_SCOPE_DEFAULT
 local CLIENT_SCOPE_LAST_REASON = "disabled"
+local function client_scope_value(name)
+  local value = rawget(_G, name)
+  if value ~= nil then return value end
+  local injected = rawget(_G, "CLIENT_SCOPE_CONFIG_VALUES")
+  return type(injected) == "table" and injected[name] or nil
+end
 
 local function client_scope_number(value)
   local number
@@ -278,16 +284,30 @@ local function client_scope_band(left, right)
   return result
 end
 
-local function client_scope_config_status()
-  local enabled = rawget(_G, "CLIENT_SCOPE_ENABLE")
+local function client_scope_config_status(desync)
+  local enabled = client_scope_value("CLIENT_SCOPE_ENABLE")
+  local mask_value = client_scope_value("CLIENT_SCOPE_MARK_MASK")
+  local shift_value = client_scope_value("CLIENT_SCOPE_MARK_SHIFT")
+  local max_value = client_scope_value("CLIENT_SCOPE_MARK_MAX")
+  -- nfqws2 may run Lua in a restricted environment where io.open is not
+  -- available.  The firewall backend is the authoritative opt-in: it can
+  -- only produce a non-zero client namespace mark when scopes are enabled.
+  -- Use the documented default namespace as a runtime-safe fallback.
+  if enabled == nil and type(desync) == "table" then
+    local mark = client_scope_number(desync.fwmark)
+    local fallback_mask = 0xff00
+    if mark and client_scope_band(mark, fallback_mask) ~= 0 then
+      enabled, mask_value, shift_value, max_value = 1, fallback_mask, 8, 255
+    end
+  end
   if not (enabled == 1 or enabled == "1" or enabled == true) then return nil, "disabled" end
-  local mask = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_MASK"))
-  local shift = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_SHIFT"))
-  local max_scope = client_scope_number(rawget(_G, "CLIENT_SCOPE_MARK_MAX"))
+  local mask = client_scope_number(mask_value)
+  local shift = client_scope_number(shift_value)
+  local max_scope = client_scope_number(max_value)
   if not mask or mask == 0 then return nil, "missing-mask" end
   if not shift or shift > 31 or not max_scope or max_scope == 0 then return nil, "invalid-mask" end
-  local service_mark = client_scope_number(rawget(_G, "DESYNC_MARK")) or CLIENT_SCOPE_DEFAULT_MARK
-  local postnat_mark = client_scope_number(rawget(_G, "DESYNC_MARK_POSTNAT")) or CLIENT_SCOPE_DEFAULT_POSTNAT_MARK
+  local service_mark = client_scope_number(client_scope_value("DESYNC_MARK")) or CLIENT_SCOPE_DEFAULT_MARK
+  local postnat_mark = client_scope_number(client_scope_value("DESYNC_MARK_POSTNAT")) or CLIENT_SCOPE_DEFAULT_POSTNAT_MARK
   if client_scope_band(mask, service_mark) ~= 0 or client_scope_band(mask, postnat_mark) ~= 0 then
     return nil, "mask-conflict"
   end
@@ -318,7 +338,7 @@ function desync_client_scope(desync)
     client_scope_record(CLIENT_SCOPE_DEFAULT, "missing-mark")
     return CLIENT_SCOPE_DEFAULT
   end
-  local config, config_reason = client_scope_config_status()
+  local config, config_reason = client_scope_config_status(desync)
   if not config then
     client_scope_record(CLIENT_SCOPE_DEFAULT, config_reason)
     return client_scope_store(desync, CLIENT_SCOPE_DEFAULT)
