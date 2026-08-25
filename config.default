@@ -121,7 +121,7 @@ NFQWS2_OPT="
 --lua-desync=hostfakesplit:tcp_md5:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:strategy=13
 --lua-desync=hostfakesplit:disorder_after:tcp_ack=-66000:tcp_ts_up:ip6_dest:strategy=14
 --lua-desync=hostfakesplit:disorder_after:tcp_ack=-66000:tcp_ts_up:strategy=15
---lua-desync=multisplit:blob=fake_default_tls:tcp_seq=-3000:pos=2:nodrop:strategy=16 --lua-desync=fakedsplit:pos=midsld:tcp_seq=-3000:strategy=16
+--lua-desync=fake:blob=fake_default_tls:tcp_ack=1:repeats=2:strategy=16 --lua-desync=multisplit:pos=1,midsld:strategy=16
 --lua-desync=multisplit:blob=fake_default_tls:tcp_seq=-3000:pos=2:nodrop:strategy=17 --lua-desync=fakedsplit:pos=midsld:tcp_seq=-3000:strategy=17
 --lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=2:nodrop:strategy=18 --lua-desync=fakeddisorder:pos=endsld:tcp_ts=-1000:strategy=18
 --lua-desync=multisplit:blob=fake_default_tls:tcp_ts=-1000:pos=2:nodrop:strategy=19 --lua-desync=fakeddisorder:pos=midsld:tcp_ts=-1000:nofake1:nofake3:strategy=19
