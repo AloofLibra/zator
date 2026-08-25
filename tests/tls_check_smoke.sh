@@ -520,8 +520,13 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: оверрайд run_daemon должен идти после source functions"
   grep -q 'setsid "\$2"' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: run_daemon без setsid-спавна"
-  grep -q "trap '' INT QUIT HUP" "$REPO_DIR/Entware/zapret" \
-    || fail "сценарий 14e: нет fallback-спавна с игнором INT/QUIT/HUP (роутеры без setsid)"
+  # nfqws2 ставит свои sigaction на INT/TERM/HUP — унаследованный игнор затирается;
+  # без setsid демон обязан получать собственную группу через job control (set -m),
+  # проверено на Keenetic busybox ash в неинтерактивном скрипте
+  grep -q 'set -m 2>/dev/null' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: нет set -m ветки (собственная pgid демона без setsid)"
+  grep -q 'set +m 2>/dev/null' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: set -m не гасится сразу после спавна (риск tcsetpgrp-побочек)"
   grep -q '>/dev/null 2>&1 &' "$REPO_DIR/Entware/zapret" \
     && fail "сценарий 14e: stderr демона глушится — ошибки конфига теряются"
   grep -q 'ERRLOG="/tmp/\${DAEMONBASE}_\$1.err"' "$REPO_DIR/Entware/zapret" \
