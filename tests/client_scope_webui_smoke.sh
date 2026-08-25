@@ -11,7 +11,18 @@ grep -q 'lock_source' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'effective sourc
 grep -q ' Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || grep -q 'Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'invalid scope response'
 grep -q 'scopes' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake router scopes'
 bash -n "$REPO_DIR/webui/cgi-bin/_lib.sh" "$REPO_DIR/webui/cgi-bin/scopes.cgi"
-python -c 'import ast, pathlib; ast.parse(pathlib.Path("webui/dev/fake_router_server.py").read_text(encoding="utf-8"))'
+PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
+import ast, importlib.util, pathlib
+path = pathlib.Path("webui/dev/fake_router_server.py")
+ast.parse(path.read_text(encoding="utf-8"))
+spec = importlib.util.spec_from_file_location("fake_router_server", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+valid = mod.FakeRouterHandler._valid_scope
+assert valid("default") and valid("mark:0") and valid("mark:123"), "valid scopes rejected"
+for bad in ("bad", "mark:", "mark:-1", "mark:1x", "mark:1\t"):
+    assert not valid(bad), "invalid scope accepted: %r" % bad
+PY
 test ! -e "$REPO_DIR/webui/dev/__pycache__/fake_router_server.cpython-311.pyc" || fail 'compiled pyc artifact'
 grep -q 'profile_scoped_state_display' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scoped effective lock reader'
 grep -q 'orch_scoped_effective' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake effective lock reader'

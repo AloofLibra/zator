@@ -2173,6 +2173,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if d and d > 0:
             time.sleep(d)
 
+    @staticmethod
+    def _valid_scope(scope):
+        """Match the CGI scope validator for every scope-aware endpoint."""
+        return scope == "default" or bool(re.match(r"^mark:[0-9]+$", scope))
+
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         reason = _HTTP_STATUS.get(code, (code, ""))[1]
@@ -2248,6 +2253,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
 
         if endpoint == "scopes":
+            requested_scope = params.get("scope", "default") or "default"
+            if not self._valid_scope(requested_scope):
+                self._send_error_json(400, "Некорректный scope")
+                return
             scopes = {"default"}
             for line in _read_lines(self.state.lock_file):
                 fields = line.split("\t")
@@ -2259,11 +2268,14 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 
         if endpoint == "status":
             self._sleep_for("status")
+            requested_scope = params.get("scope", "default") or "default"
+            if not self._valid_scope(requested_scope):
+                self._send_error_json(400, "Некорректный scope")
+                return
             self._log("GET {0} | nfqws2={1} locks={2}".format(
                 parsed.path, running, locks))
             with self.state.lock:
                 payload = self.state.build_status()
-                requested_scope = params.get("scope", "default") or "default"
                 for item in payload.get("profiles", []):
                     item["scope"] = requested_scope
                     lock_file = self.state.lock_manual_file if item["profile"] in FALLBACK_PROFILES else self.state.lock_file
@@ -2348,7 +2360,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._send_error_json(400, ERR_BAD_STRATEGY)
             return
         scope = params.get("scope", "default") or "default"
-        if not re.match(r"^(default|mark:[0-9]+)$", scope):
+        if not self._valid_scope(scope):
             self._send_error_json(400, "Некорректный scope")
             return
         if int(profile) in AUTO_MODE_GATED_PROFILES and \
@@ -2394,7 +2406,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
         scope = params.get("scope", "default") or "default"
-        if not re.match(r"^(default|mark:[0-9]+)$", scope):
+        if not self._valid_scope(scope):
             self._send_error_json(400, "Некорректный scope")
             return
         if int(profile) in AUTO_MODE_GATED_PROFILES and \

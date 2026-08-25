@@ -341,17 +341,23 @@ client_scopes_json() {
   printf ']}'
 }
 
+scope_param_valid() {
+  case "${1:-default}" in
+    default) return 0 ;;
+    mark:*) [[ "${1#mark:}" =~ ^[0-9]+$ ]] && return 0 ;;
+  esac
+  return 1
+}
+
 api_scopes() {
   parse_params
-  case "${PARAM_SCOPE:-default}" in
-    default|mark:[0-9]*) ;;
-    *) send_error "400 Bad Request" "Некорректный scope" ;;
-  esac
+  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
   send_json "200 OK" "$(client_scopes_json)"
 }
 
 api_status() {
   parse_params
+  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
   local running wg_raw wg_state
   if zapret2_running; then running=true; else running=false; fi
   wg_raw="$(_wg_state_get "$CONFIG_FILE")"
