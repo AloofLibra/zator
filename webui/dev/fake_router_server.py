@@ -534,6 +534,21 @@ def orch_scoped_source(lock_file, scope, profile, proto):
     return "default" if default else "auto"
 
 
+def orch_scoped_effective(lock_file, scope, profile, proto):
+    """Return current_lock for a selected scope, matching _lib.sh."""
+    source = orch_scoped_source(lock_file, scope, profile, proto)
+    rows = [r for r in (line.split("\t") for line in _read_lines(lock_file) if line) if r]
+    if source == "scoped":
+        for row in rows:
+            if len(row) >= 4 and row[:3] == [scope, str(profile), proto]:
+                return row[3]
+    if source == "default":
+        for row in rows:
+            if (len(row) >= 3 and row[:2] == [str(profile), proto]) or (len(row) == 2 and row[0] == str(profile) and proto == "tls"):
+                return row[-1]
+    return "conflict" if source == "conflict" else "auto"
+
+
 
 def orch_locked_set(lock_file, profile, proto, strategy):
     """orch_locked_set() — orchestra_state.sh:28."""
@@ -2251,7 +2266,9 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 requested_scope = params.get("scope", "default") or "default"
                 for item in payload.get("profiles", []):
                     item["scope"] = requested_scope
-                    item["lock_source"] = orch_scoped_source(self.state.lock_manual_file if item["profile"] in FALLBACK_PROFILES else self.state.lock_file, requested_scope, item["profile"], profile_proto(item["profile"]))
+                    lock_file = self.state.lock_manual_file if item["profile"] in FALLBACK_PROFILES else self.state.lock_file
+                    item["lock_source"] = orch_scoped_source(lock_file, requested_scope, item["profile"], profile_proto(item["profile"]))
+                    item["current_lock"] = orch_scoped_effective(lock_file, requested_scope, item["profile"], profile_proto(item["profile"]))
                 self._send_json(payload)
             return
 

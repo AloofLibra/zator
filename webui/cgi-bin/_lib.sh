@@ -130,11 +130,29 @@ profile_proto() {
   echo "${list%% *}"
 }
 
+# Resolve the selected client scope, falling back to the legacy default state.
+profile_scoped_state_display() {
+  local scope="$1" profile="$2" proto="$3" source scoped
+  if [ "${scope:-default}" = default ]; then
+    profile_state_display "$profile" "$proto"
+    return
+  fi
+  source="$(orch_scoped_lock_source "$scope" "$profile" "$proto" 2>/dev/null || printf auto)"
+  case "$source" in
+    scoped)
+      scoped="$(orch_scoped_locked_get "$scope" "$profile" "$proto" 2>/dev/null || printf 0)"
+      profile_state_normalize "$scoped" 2>/dev/null || printf auto
+      ;;
+    conflict) printf 'conflict\n' ;;
+    *) profile_state_display "$profile" "$proto" ;;
+  esac
+}
+
 profile_json() {
   local id="$1" label="$2" desc="$3" proto current max scope source
   scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  current="$(profile_state_display "$id" "$proto")"
+  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
   source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
   max="$(orch_max_strategy_for_profile "$id")"
   printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s"}' \
@@ -164,31 +182,35 @@ all_profiles_json() {
 }
 
 profile_json_udp_games() {
-  local id="$1" label="$2" desc="$3" proto current max games_state
+  local id="$1" label="$2" desc="$3" proto current max games_state scope source
+  scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  current="$(profile_state_display "$id" "$proto")"
+  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
   max="$(orch_max_strategy_for_profile "$id")"
   games_state="$(config_mode_text udp_games "$CONFIG_FILE")"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"is_udp_games":true,"udp_games_enabled":%s}' \
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_udp_games":true,"udp_games_enabled":%s}' \
     "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
-    "$([ "$games_state" = "Включен" ] && echo true || echo false)"
+    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$games_state" = "Включен" ] && echo true || echo false)"
 }
 
 profile_json_fallback() {
-  local id="$1" label="$2" desc="$3" proto current max fallback_state
+  local id="$1" label="$2" desc="$3" proto current max fallback_state scope source
   local saved_lock_file
+  scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
   # Для профилей 8/9 (fallback) состояние стратегии хранится в locked.manual.tsv,
   # а не в locked.tsv. Временно переключаем ORCH_LOCK_FILE для чтения.
   saved_lock_file="$ORCH_LOCK_FILE"
   ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
-  current="$(profile_state_display "$id" "$proto")"
+  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
   ORCH_LOCK_FILE="$saved_lock_file"
   max="$(orch_max_strategy_for_profile "$id")"
   fallback_state="$(_fallback_state "$CONFIG_FILE")"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"is_fallback":true,"fallback_enabled":%s}' \
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_fallback":true,"fallback_enabled":%s}' \
     "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
-    "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
+    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
 }
 
 service_zapret2() {

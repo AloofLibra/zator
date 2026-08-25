@@ -11,5 +11,8 @@ grep -q 'lock_source' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'effective sourc
 grep -q ' Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || grep -q 'Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'invalid scope response'
 grep -q 'scopes' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake router scopes'
 bash -n "$REPO_DIR/webui/cgi-bin/_lib.sh" "$REPO_DIR/webui/cgi-bin/scopes.cgi"
-python -m py_compile "$(cygpath -w "$REPO_DIR/webui/dev/fake_router_server.py")"
+python -c 'import ast, pathlib; ast.parse(pathlib.Path("webui/dev/fake_router_server.py").read_text(encoding="utf-8"))'
+test ! -e "$REPO_DIR/webui/dev/__pycache__/fake_router_server.cpython-311.pyc" || fail 'compiled pyc artifact'
+grep -q 'profile_scoped_state_display' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scoped effective lock reader'
+grep -q 'orch_scoped_effective' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake effective lock reader'
 printf 'client scope webui smoke ok\n'
