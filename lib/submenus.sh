@@ -10,36 +10,25 @@ client_scopes_submenu() {
     echo "Доступные scopes: $(orch_scoped_list_scopes 2>/dev/null | sort -u | tr '\n' ' ')"
     echo "IP-маппинги:"
     client_scope_ip_list 2>/dev/null || true
-    echo "1. Добавить/изменить IP → mark:N"
-    echo "2. Удалить IP-маппинг"
-    echo "3. Установить lock (scope, профиль, протокол, стратегия)"
-    echo "4. Сбросить scoped lock"
-    echo "0. Назад"
+    submenu_item "1" "Добавить/изменить IP → mark:N"
+    submenu_item "2" "Удалить IP-маппинг"
+    submenu_item "3" "Установить lock (scope, профиль, протокол, стратегия)"
+    submenu_item "4" "Сбросить scoped lock"
+    submenu_item "0" "Назад"
     read -re -p "Ваш выбор: " ans
     case "$ans" in
       1)
         read -re -p "IP клиента: " ip
         read -re -p "Scope (mark:N): " scope
-        if client_scope_ip_set "$ip" "$scope"; then
-          CLIENT_SCOPE_ENABLE=1
-          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 1
-          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_MASK 0xff00
-          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_SHIFT 8
-          config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_MAX 255
-          client_scope_firewall_action apply || true
+        if client_scope_ip_add "$ip" "$scope"; then
           echo "IP-маппинг сохранён."
-        else echo -e "${red}Некорректный IP или scope.${plain}"; fi
+        else echo -e "${red}Некорректный IP, scope или firewall backend.${plain}"; fi
         pause_enter ;;
       2)
         read -re -p "IP клиента: " ip
-        if client_scope_ip_clear "$ip"; then
-          if [ -z "$(client_scope_ip_list)" ]; then
-            config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 0
-            CLIENT_SCOPE_ENABLE=0
-          fi
-          client_scope_firewall_action apply || true
+        if client_scope_ip_remove "$ip"; then
           echo "IP-маппинг удалён."
-        else echo -e "${red}Не удалось удалить IP-маппинг.${plain}"; fi
+        else echo -e "${red}Не удалось удалить IP-маппинг или применить firewall.${plain}"; fi
         pause_enter ;;
       3)
         read -re -p "Scope (default или mark:N): " scope
@@ -71,7 +60,7 @@ toggle_client_scope_mode() {
   if [ "$current" = 1 ]; then
     config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0 || return 1
     CLIENT_SCOPE_ENABLE=0
-    client_scope_firewall_action cleanup || true
+    client_scope_firewall_reconcile
     echo -e "${yellow}Client scopes (Beta) выключены.${plain}"
     return 0
   fi
@@ -80,11 +69,9 @@ toggle_client_scope_mode() {
     return 1
   fi
   config_set_var "$cfg" CLIENT_SCOPE_ENABLE 1 || return 1
-  config_set_var "$cfg" CLIENT_SCOPE_MARK_MASK 0xff00 || return 1
-  config_set_var "$cfg" CLIENT_SCOPE_MARK_SHIFT 8 || return 1
-  config_set_var "$cfg" CLIENT_SCOPE_MARK_MAX 255 || return 1
+  client_scope_config_prepare "$cfg" || return 1
   CLIENT_SCOPE_ENABLE=1
-  client_scope_firewall_action apply || true
+  client_scope_firewall_reconcile
   echo -e "${green}Client scopes (Beta) включены.${plain}"
 }
 

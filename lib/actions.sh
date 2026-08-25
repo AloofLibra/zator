@@ -62,6 +62,8 @@ menu_action_toggle_keenetic_policy_mode() {
 }
 
 menu_action_update_config_reset() {
+  local old_scope_cfg="/tmp/z2r_client_scope_config_$$"
+  cp -f /opt/zapret2/config "$old_scope_cfg" 2>/dev/null || true
   echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
 
   z2r_service_action stop
@@ -81,6 +83,7 @@ menu_action_update_config_reset() {
   # сервис обратно, иначе zapret2 останется остановленным на полуобновлённом состоянии.
   if ! get_repo; then
     echo -e "${red}Не удалось обновить компоненты (сеть). Операция отменена.${plain}"
+    rm -f "$old_scope_cfg"
     z2r_service_action start >/dev/null 2>&1 || true
     return 1
   fi
@@ -102,7 +105,12 @@ menu_action_update_config_reset() {
   profile_apply_all /opt/zapret2/config.default
 
   cp -f /opt/zapret2/config.default /opt/zapret2/config
+  if [ -f "$old_scope_cfg" ]; then
+    config_client_scope_apply "$old_scope_cfg" /opt/zapret2/config || true
+    rm -f "$old_scope_cfg"
+  fi
   config_client_scope_ensure /opt/zapret2/config || true
+  client_scope_lua_config_sync /opt/zapret2/config || true
   [ "$hardware" = "keenetic" ] && ensure_keenetic_policy_config /opt/zapret2/config
   # После копирования синхронизируем рабочий конфиг, чтобы reset не терял IFACE_WAN.
   if [ "$hardware" = "keenetic" ]; then

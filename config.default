@@ -89,6 +89,7 @@ NFQWS2_UDP_PKT_IN=3
 # <HOSTLIST_NOAUTO> appends ipset/zapret-hosts-auto.txt as normal list
 NFQWS2_OPT="
 
+--lua-init=@/opt/zator/lua/client-scope-config.lua
 --lua-init=@/opt/zator/lua/locked.lua
 --lua-init=@/opt/zator/lua/rst-guard.lua
 --lua-init=@/opt/zator/lua/strategy-lock-manager.lua

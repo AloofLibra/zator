@@ -591,6 +591,13 @@ circular_runtime_update_from_repo() {
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
 }
 
+# client-scope-config.lua is a persistent generated state file. Download the
+# default only for a fresh install; updates must not overwrite user settings.
+client_scope_lua_config_install_default() {
+  local dest="$ZATOR_ROOT/lua/client-scope-config.lua"
+  [ -f "$dest" ] || z2r_download_project_file "$dest" "lua/client-scope-config.lua" || return 1
+}
+
 # Deploy the optional client-scope helper without applying firewall changes.
 client_scope_firewall_update_from_repo() {
   local dest="$ZATOR_ROOT/firewall/client-scope-iptables.sh"
@@ -1053,6 +1060,7 @@ get_repo() {
   mkdir -p "$ZATOR_ROOT/lists" "$ZATOR_ROOT/extra_strats" "$ZATOR_ROOT/extra_strats/cache" "$ZATOR_ROOT/files/fake"
   mkdir -p "$ORCH_DIR"
   z2r_install_runtime_libs_from_archive || return 1
+  client_scope_lua_config_install_default || return 1
   client_scope_firewall_update_from_repo || return 1
   chmod 777 "$ORCH_DIR" 2>/dev/null || true
   locked_lua_update_from_repo || true
@@ -1125,6 +1133,23 @@ mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
 }
 
+# Client-scope config snapshot survives the destructive zapret2 reinstall.
+CLIENT_SCOPE_CONFIG_SNAPSHOT="/tmp/z2r_client_scope_config.$$"
+client_scope_config_snapshot() {
+  rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
+  [ -f "$ZAPRET2_ROOT/config" ] || return 0
+  cp -f "$ZAPRET2_ROOT/config" "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
+}
+
+client_scope_config_restore() {
+  [ -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT" ] || return 0
+  [ -f "$ZAPRET2_ROOT/config" ] || { rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"; return 0; }
+  config_client_scope_apply "$CLIENT_SCOPE_CONFIG_SNAPSHOT" "$ZAPRET2_ROOT/config" || true
+  config_client_scope_ensure "$ZAPRET2_ROOT/config" || true
+  client_scope_lua_config_sync "$ZAPRET2_ROOT/config" || true
+  rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
+}
+
 #Удаление старого запрета, если есть
 client_scope_enabled_from_active_config() {
  if [ "${CLIENT_SCOPE_ENABLE+x}" = "x" ]; then
@@ -1137,10 +1162,8 @@ client_scope_enabled_from_active_config() {
 
 client_scope_firewall_apply_active_config() {
  [ -f "$ZAPRET2_ROOT/config" ] || return 0
- CLIENT_SCOPE_ENABLE="$(sed -n -n 's/^[[:space:]]*CLIENT_SCOPE_ENABLE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
  FWTYPE="$(sed -n -n 's/^[[:space:]]*FWTYPE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
- POSTNAT="$(sed -n -n 's/^[[:space:]]*POSTNAT[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
- client_scope_firewall_action apply || true
+ client_scope_firewall_reconcile || true
 }
 
 remove_zapret() {
@@ -2258,6 +2281,7 @@ while true; do
  fi
  WEBUI_WAS_RUNNING=0
  webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
+ client_scope_config_snapshot
  
  remove_zapret
  
@@ -2272,9 +2296,10 @@ while true; do
  #Скачивание, распаковка архива zapret2 и его удаление
  zapret_get
  
- #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
- get_repo
- if [ ! -s "$ORCH_LUA_LOCKED" ]; then
+ # Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
+  get_repo
+  client_scope_config_restore
+  if [ ! -s "$ORCH_LUA_LOCKED" ]; then
    echo "Повторная попытка загрузки locked.lua..."
    if locked_lua_update_from_repo; then
      echo -e "${green}Повторная загрузка locked.lua успешна.${plain}"

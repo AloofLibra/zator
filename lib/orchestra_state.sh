@@ -186,6 +186,23 @@ client_scope_ip_list() {
   awk -F '\t' 'NF>=2 && $1 ~ /^mark:[1-9][0-9]*$/ {print $2 " -> " $1}' "$file"
 }
 
+client_scope_ip_add() {
+  local ip="$1" scope="$2" enabled
+  client_scope_ip_set "$ip" "$scope" || return $?
+  enabled="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
+  [ "$enabled" = 1 ] || return 0
+  client_scope_firewall_reconcile
+}
+
+client_scope_ip_remove() {
+  local ip="$1"
+  client_scope_ip_clear "$ip" || return $?
+  if [ -z "$(client_scope_ip_list)" ]; then
+    config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 0 || return 1
+  fi
+  client_scope_firewall_reconcile
+}
+
 # Backward-compatible default-scope wrappers.
 orch_locked_get() { orch_scoped_locked_get default "$1" "$2"; }
 orch_locked_set() { orch_scoped_locked_set default "$1" "$2" "$3"; }

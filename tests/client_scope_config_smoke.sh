@@ -41,4 +41,17 @@ config_set_var "$old" DESYNC_MARK 0x100
 config_set_var "$new" DESYNC_MARK 0x100
 config_client_scope_apply "$old" "$new"
 grep -q '^CLIENT_SCOPE_ENABLE=0$' "$new"
+
+export ZATOR_ROOT="$TMP/zator"
+mkdir -p "$ZATOR_ROOT/lua"
+client_scope_lua_config_sync "$new"
+grep -q '^CLIENT_SCOPE_ENABLE=0$' "$ZATOR_ROOT/lua/client-scope-config.lua"
+grep -q '^CLIENT_SCOPE_MARK_MASK=256$' "$ZATOR_ROOT/lua/client-scope-config.lua"
+grep -q '^DESYNC_MARK=256$' "$ZATOR_ROOT/lua/client-scope-config.lua"
+config_set_var "$new" CLIENT_SCOPE_ENABLE 1
+config_set_var "$new" CLIENT_SCOPE_MARK_MASK 0xff00
+config_set_var "$new" CLIENT_SCOPE_MARK_SHIFT 8
+client_scope_lua_config_sync "$new"
+grep -q '^CLIENT_SCOPE_ENABLE=1$' "$ZATOR_ROOT/lua/client-scope-config.lua"
+grep -q '^CLIENT_SCOPE_MARK_MASK=65280$' "$ZATOR_ROOT/lua/client-scope-config.lua"
 printf 'client scope config smoke ok\n'

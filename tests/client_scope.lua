@@ -112,13 +112,18 @@ diagnostics = G.client_scope_diagnostics()
 assert(diagnostics.mode == "disabled" and diagnostics.fallback_reason == "mask-conflict",
   "overlapping service marks must disable scopes with a diagnostic")
 
--- Production nfqws2 does not export arbitrary config variables as Lua globals.
--- Verify the explicit test injection path and the runtime mark fallback.
-G.CLIENT_SCOPE_CONFIG_VALUES = {
-  CLIENT_SCOPE_ENABLE = "1", CLIENT_SCOPE_MARK_MASK = "0xff00",
-  CLIENT_SCOPE_MARK_SHIFT = "8", CLIENT_SCOPE_MARK_MAX = "255",
-  DESYNC_MARK = "0x40000000", DESYNC_MARK_POSTNAT = "0x20000000",
-}
+-- Production nfqws2 receives explicit client-scope values from the generated
+-- lua config init file. Missing globals must remain the safe default.
+G.CLIENT_SCOPE_ENABLE = 1
+G.CLIENT_SCOPE_MARK_MASK = 0xff00
+G.CLIENT_SCOPE_MARK_SHIFT = 8
+G.CLIENT_SCOPE_MARK_MAX = 255
+G.DESYNC_MARK = 0x40000000
+G.DESYNC_MARK_POSTNAT = 0x20000000
+G.locked_load_lines_for_tests({"mark:1\texample.com\ttls\t2", "default\texample.com\ttls\t1"})
+strategy, scope = run_circular(0x0100, "example.com", "example.com")
+assert(strategy == 2 and scope == "mark:1",
+  "explicit runtime config must enable scope selection from desync.fwmark")
 G.CLIENT_SCOPE_ENABLE = nil
 G.CLIENT_SCOPE_MARK_MASK = nil
 G.CLIENT_SCOPE_MARK_SHIFT = nil
@@ -127,12 +132,7 @@ G.DESYNC_MARK = nil
 G.DESYNC_MARK_POSTNAT = nil
 G.locked_load_lines_for_tests({"mark:1\texample.com\ttls\t2", "default\texample.com\ttls\t1"})
 strategy, scope = run_circular(0x0100, "example.com", "example.com")
-assert(strategy == 2 and scope == "mark:1",
-  "injected runtime config must enable scope selection from desync.fwmark")
-G.CLIENT_SCOPE_CONFIG_VALUES = nil
-G.locked_load_lines_for_tests({"mark:1\texample.com\ttls\t2", "default\texample.com\ttls\t1"})
-strategy, scope = run_circular(0x0100, "example.com", "example.com")
-assert(strategy == 2 and scope == "mark:1",
-  "mark namespace must remain usable when config globals are unavailable")
+assert(strategy == 1 and scope == "default",
+  "missing runtime config must preserve the safe default scope")
 
 print("client scope parser ok")
