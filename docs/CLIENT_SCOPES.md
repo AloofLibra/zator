@@ -14,7 +14,7 @@
 - [`config.default`](../config.default) задаёт режим NAT и служебные zapret2 marks.
 - [`orchestra/locked.lua`](../orchestra/locked.lua) сейчас читает глобальные `locked.tsv` и `locked.manual.tsv` по ключу profile/proto.
 - [`lib/orchestra_state.sh`](../lib/orchestra_state.sh) сейчас предоставляет глобальные shell-обёртки для lock-файла.
-- Полный план последующих изменений хранится в рабочем дереве задач: `.hermes/plans/2026-08-25_031946-client-scoped-strategies.md`.
+- Реализация и smoke-проверки находятся в этом репозитории; отдельный план-файл в поставку не входит.
 
 Runtime поддерживает чтение и диагностику перечисленных `CLIENT_SCOPE_*` параметров; это не означает автоматического включения scope-маршрутизации: без явного `CLIENT_SCOPE_ENABLE=1` сохраняется legacy global/default поведение.
 
@@ -243,3 +243,26 @@ debug-режиме и не входят в этот контракт.
 12. privacy-диагностика не содержит payload и лишние пользовательские адреса.
 
 До прохождения Lua/shell smoke-тестов и проверки хотя бы на предусмотренных iptables и nftables стендах значение остаётся `CLIENT_SCOPE_ENABLE=0`.
+
+## Release-gate: фактические результаты и ограничения
+
+На момент выпуска проверены локальные изолированные сценарии:
+
+- `tests/client_scope_config_smoke.sh` — OK: значения по умолчанию, перенос параметров и конфликт служебной маски.
+- `tests/client_scope_shell_smoke.sh` — OK: legacy/scoped TSV, `strategy=0`, очистка и валидация.
+- `tests/client_scope_firewall_smoke.sh` — OK: идемпотентный apply/cleanup для mock iptables и mock nft, IPv4/IPv6, сохранение чужих правил и безопасный no-op при отключении.
+- `tests/client_scope_webui_smoke.sh` — OK: CGI/fake-router diagnostics, effective source и privacy-safe поля.
+- `tests/profile_lock_smoke.sh`, `tests/webui_smoke.sh`, `tests/uninstall_smoke.sh`, `tests/provider_asn_smoke.sh`, `tests/telemetry_smoke.sh`, `tests/ui_validation_smoke.sh` — OK.
+
+Эти тесты не применяют реальные firewall-правила: iptables/nft вызываются только через локальные mock-команды и временные файлы. Они не заменяют проверку на физических роутерах и не доказывают работу pre-NAT/NAT, connmark, обратного направления, `desync.fwmark`, Lua выбора стратегии или flow-offload.
+
+Оставшиеся ограничения release gate:
+
+- Полный тест `tests/tls_check_smoke.sh` в текущем окружении не завершился за 300 секунд; результат не считается успешным.
+- `tests/backup_smart_smoke.sh` не запустился, потому что окружение не разрешает создавать временные файлы в жёстко заданном `/opt/zator/files/fake`; результат не считается успешным.
+- `tests/webui_settings_smoke.sh` остановился на проверке `node --check`: Windows/MSYS передал нативному Node путь `/c/...` как `C:\c\...`; это ограничение запуска теста, а не доказательство корректности проверки.
+- Реальный стенд доступен только для OpenWRT `192.168.10.1`; стенды OpenWRT iptables, OpenWRT nftables IPv4/IPv6, Merlin и Keenetic/Entware отсутствуют. Поэтому hardware/NAT gate остаётся невыполненным.
+
+Внешний launcher `AloofLibra/z4r:z2r` проверен по ветке `z2r`: он загружает `z2r.sh` и zator-библиотеки в `/opt/zator`, а `z2r.sh` сам загружает firewall helpers. Изменение launcher для текущего контракта не требуется. Это не является стендовой проверкой runtime.
+
+До закрытия перечисленных ограничений client scopes не включаются автоматически: `CLIENT_SCOPE_ENABLE=0` остаётся обязательным default и release-safe fallback — `default`/legacy global behavior.
