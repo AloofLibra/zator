@@ -40,7 +40,8 @@ Runtime поддерживает чтение и диагностику пере
 Целевая конфигурация должна иметь один источник параметров для firewall и Lua:
 
 ```ini
-# Целевые имена MVP; в текущем runtime ещё не реализованы.
+# Параметры MVP читаются runtime для diagnostics; scope-маршрутизация
+# по умолчанию не включена.
 CLIENT_SCOPE_ENABLE=0
 CLIENT_SCOPE_MARK_MASK=
 CLIENT_SCOPE_MARK_SHIFT=0
