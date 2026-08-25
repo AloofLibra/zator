@@ -1129,8 +1129,14 @@ client_scope_firewall_apply_active_config() {
 }
 
 remove_zapret() {
- if client_scope_enabled_from_active_config; then
-     client_scope_firewall_action cleanup || true
+ # Cleanup is independent of the feature flag. Prefer the active config's
+ # backend; when config is already absent, clean both isolated backends.
+ if [ -f "$ZAPRET2_ROOT/config" ]; then
+  FWTYPE="$(sed -n -n 's/^[[:space:]]*FWTYPE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
+  client_scope_firewall_action cleanup || true
+ else
+  CLIENT_SCOPE_FIREWALL_BACKEND=nftables client_scope_firewall_action cleanup || true
+  CLIENT_SCOPE_FIREWALL_BACKEND=iptables client_scope_firewall_action cleanup || true
  fi
  if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
  	z2r_service_action stop

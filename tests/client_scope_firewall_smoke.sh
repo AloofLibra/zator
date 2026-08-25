@@ -27,6 +27,7 @@ cat > "$CLIENT_SCOPE_MAP_FILE" <<'MAP'
 mark:1	192.0.2.10
 mark:2	198.51.100.20
 mark:3	2001:db8::10
+mark:4	999.1.1.1
 MAP
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 [ -f "$ROOT/firewall/client-scope-iptables.sh" ] || fail 'firewall integration script missing'
@@ -63,18 +64,23 @@ MOCK
 chmod +x "$MOCK/nft"
 # Source the nft backend in a subshell to keep the iptables test variables tidy.
 (
-  export PATH="$MOCK:$PATH" NFT_STATE CLIENT_SCOPE_ENABLE=1 POSTNAT=1 CLIENT_SCOPE_NFT_TABLE=zator_client_scope
+  export PATH="$MOCK:$PATH" NFT_STATE CLIENT_SCOPE_ENABLE=1 POSTNAT=1 CLIENT_SCOPE_NFT_TABLE='foreign; delete table inet other'
   source "$ROOT/firewall/client-scope-nft.sh"
   apply
   first=$(cat "$NFT_STATE")
   printf '%s\n' "$first" | grep -q 'hook postrouting' || fail 'POSTNAT did not select postrouting'
   ! printf '%s\n' "$first" | grep -q 'hook prerouting' || fail 'POSTNAT enabled pre-NAT'
   printf '%s\n' "$first" | grep -q 'ip6 saddr 2001:db8::10' || fail 'IPv6 client rule missing'
+  ! printf '%s\n' "$first" | grep -q '999.1.1.1' || fail 'invalid IPv4 client rule was emitted'
   apply
   [ "$(cat "$NFT_STATE")" = "$first" ] || fail 'nft apply/apply was not idempotent'
   cleanup
   grep -q 'foreign table inet other' "$NFT_STATE" || fail 'nft cleanup removed a foreign table'
   CLIENT_SCOPE_ENABLE=0 apply
+  cleanup
+  grep -q 'foreign table inet other' "$NFT_STATE" || fail 'disabled cleanup did not preserve foreign state'
+  CLIENT_SCOPE_COMMENT='owned"; delete table inet other' apply
+  grep -q 'foreign table inet other' "$NFT_STATE" || fail 'invalid comment changed nft state'
 )
 
 # Lifecycle integration: remove_zapret must honor the active config even when
@@ -91,6 +97,9 @@ if client_scope_enabled_from_active_config; then
   fail 'disabled active config was treated as enabled'
 fi
 REMOVE_BLOCK=$(sed -n '/^remove_zapret() {/,/^}/p' "$ROOT/z2r.sh")
-printf '%s\n' "$REMOVE_BLOCK" | grep -q 'client_scope_enabled_from_active_config' \
-  || fail 'remove_zapret does not use active config gate'
+printf '%s\n' "$REMOVE_BLOCK" | grep -q 'client_scope_firewall_action cleanup' \
+  || fail 'remove_zapret does not always clean up client scope firewall'
+if printf '%s\n' "$REMOVE_BLOCK" | grep -q 'if client_scope_enabled_from_active_config'; then
+  fail 'remove_zapret still gates cleanup on enabled config'
+fi
 printf 'client scope firewall smoke ok\n'
