@@ -12,7 +12,9 @@ JSON, `Content-Type: application/json; charset=utf-8`.
 для `GET` — из `QUERY_STRING`, для `POST` — из тела (`Content-Length`,
 `application/x-www-form-urlencoded`). Распознаются ключи `profile`,
 `strategy`, `action`, `setting`, `value`, `list`, `domain`, `name`, `city`,
-`proto`. Значения URL-декодируются (`%xx` → символ, `+` → пробел).
+`proto`, `scope`. Значения URL-декодируются (`%xx` → символ, `+` → пробел).
+
+Client scope: `scope` необязателен и по умолчанию равен `default`; допустимы только `default` и `mark:<decimal>`. Эндпоинт `GET /cgi-bin/scopes.cgi` возвращает `{enabled, warning, scopes}`. Поля профиля `scope` и `lock_source` показывают effective layer: `scoped`, `default`, `auto` или `conflict`.
 
 ---
 

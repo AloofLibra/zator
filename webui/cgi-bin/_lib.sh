@@ -85,6 +85,7 @@ parse_params() {
   PARAM_NAME=""
   PARAM_CITY=""
   PARAM_PROTO=""
+  PARAM_SCOPE="default"
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
@@ -102,6 +103,7 @@ parse_params() {
       name) PARAM_NAME="$value" ;;
       city) PARAM_CITY="$value" ;;
       proto) PARAM_PROTO="$value" ;;
+      scope) PARAM_SCOPE="${value:-default}" ;;
     esac
   done
 }
@@ -129,12 +131,14 @@ profile_proto() {
 }
 
 profile_json() {
-  local id="$1" label="$2" desc="$3" proto current max
+  local id="$1" label="$2" desc="$3" proto current max scope source
+  scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
   current="$(profile_state_display "$id" "$proto")"
+  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
   max="$(orch_max_strategy_for_profile "$id")"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s}' \
-    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}"
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s"}' \
+    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" "$(json_escape "$scope")" "$(json_escape "$source")"
 }
 
 all_profiles_json() {
@@ -297,7 +301,35 @@ _provider_cache_text() {
   fi
 }
 
+client_scopes_json() {
+  local scopes scope first=1 enabled warning
+  scopes="$(orch_scoped_list_scopes 2>/dev/null | sort -u)"
+  enabled=false; warning=""
+  [ "${CLIENT_SCOPE_ENABLE:-0}" = 1 ] && enabled=true
+  if [ "$enabled" = true ] && [ -z "${CLIENT_SCOPE_MARK_MASK:-}" ]; then
+    warning="Client scope включён, но firewall mapping не задан."
+  fi
+  printf '{"enabled":%s,"warning":"%s","scopes":[' "$enabled" "$(json_escape "$warning")"
+  while IFS= read -r scope; do
+    [ -n "$scope" ] || continue
+    [ "$first" = 1 ] || printf ','
+    printf '"%s"' "$(json_escape "$scope")"
+    first=0
+  done <<< "$scopes"
+  printf ']}'
+}
+
+api_scopes() {
+  parse_params
+  case "${PARAM_SCOPE:-default}" in
+    default|mark:[0-9]*) ;;
+    *) send_error "400 Bad Request" "Некорректный scope" ;;
+  esac
+  send_json "200 OK" "$(client_scopes_json)"
+}
+
 api_status() {
+  parse_params
   local running wg_raw wg_state
   if zapret2_running; then running=true; else running=false; fi
   wg_raw="$(_wg_state_get "$CONFIG_FILE")"
@@ -316,6 +348,8 @@ api_set_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   [[ "${PARAM_STRATEGY:-}" =~ ^[0-9]+$ ]] || send_error "400 Bad Request" "Некорректная стратегия"
+  local requested_scope="${PARAM_SCOPE:-default}"
+  orch_scope_validate "$requested_scope" "$PARAM_PROFILE" "$(profile_proto "$PARAM_PROFILE")" "$PARAM_STRATEGY" || send_error "400 Bad Request" "Некорректный scope или lock"
   case "$PARAM_PROFILE" in
     1|2|3|4)
       [ "$(config_mode_text auto_mode "$CONFIG_FILE")" = "включен" ] && \
@@ -330,7 +364,11 @@ api_set_lock() {
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
   old_udp_ports="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_UDP)"
-  profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$PARAM_STRATEGY" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
+  if [ "$requested_scope" = default ]; then
+    profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$PARAM_STRATEGY" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
+  else
+    orch_scoped_locked_set "$requested_scope" "$PARAM_PROFILE" "${proto_list%% *}" "$PARAM_STRATEGY" || send_error "500 Internal Server Error" "Не удалось сохранить scoped lock"
+  fi
   profile_config_voice_ports_changed "$PARAM_PROFILE" "$CONFIG_FILE" "$old_udp_ports" && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
   send_json "200 OK" "{\"ok\":true}"
@@ -345,11 +383,16 @@ api_clear_lock() {
         send_error "409 Conflict" "Профиль $PARAM_PROFILE управляется авторотацией TCP/HTTP. Сначала выключите авторотацию."
       ;;
   esac
-  local proto_list old_udp_ports
+  local requested_scope="${PARAM_SCOPE:-default}" proto_list old_udp_ports
+  orch_scope_validate "$requested_scope" "$PARAM_PROFILE" "$(profile_proto "$PARAM_PROFILE")" clear || send_error "400 Bad Request" "Некорректный scope"
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
   old_udp_ports="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_UDP)"
-  profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "auto" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сбросить состояние профиля"
+  if [ "$requested_scope" = default ]; then
+    profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "auto" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сбросить состояние профиля"
+  else
+    orch_scoped_locked_clear "$requested_scope" "$PARAM_PROFILE" "${proto_list%% *}" || send_error "500 Internal Server Error" "Не удалось сбросить scoped lock"
+  fi
   profile_config_voice_ports_changed "$PARAM_PROFILE" "$CONFIG_FILE" "$old_udp_ports" && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
   send_json "200 OK" "{\"ok\":true}"

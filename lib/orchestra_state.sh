@@ -109,6 +109,26 @@ orch_scoped_locked_list() {
   awk -F '\t' -v sc="$scope" '$1==sc || (sc=="default" && NF==3) {print}' "$ORCH_LOCK_FILE"
 }
 
+# Explain where an effective lock came from for CLI/WebUI diagnostics.
+orch_scoped_lock_source() {
+  local scope="${1:-default}" profile="${2:-}" proto="${3:-}" file="${ORCH_LOCK_FILE:-}"
+  local exact_count default_count
+  _orch_scope_basic_validate "$scope" || return 2
+  [ -n "$profile" ] && [ -n "$proto" ] || return 2
+  [ -f "$file" ] || { printf 'auto\n'; return 0; }
+  exact_count="$(awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" 'NF>=4 && $1==sc && $2==pr && $3==po {n++} END{print n+0}' "$file")"
+  [ "$exact_count" -gt 1 ] && { printf 'conflict\n'; return 0; }
+  [ "$exact_count" -eq 1 ] && { printf 'scoped\n'; return 0; }
+  default_count="$(awk -F '\t' -v pr="$profile" -v po="$proto" '((NF==3 && $1==pr && $2==po) || (NF==2 && po=="tls" && $1==pr)) {n++} END{print n+0}' "$file")"
+  [ "$default_count" -gt 1 ] && printf 'conflict\n' || { [ "$default_count" -eq 1 ] && printf 'default\n' || printf 'auto\n'; }
+}
+
+orch_scoped_list_scopes() {
+  printf 'default\n'
+  [ -f "$ORCH_LOCK_FILE" ] || return 0
+  awk -F '\t' '$1 ~ /^mark:[0-9]+$/ {print $1}' "$ORCH_LOCK_FILE"
+}
+
 # Backward-compatible default-scope wrappers.
 orch_locked_get() { orch_scoped_locked_get default "$1" "$2"; }
 orch_locked_set() { orch_scoped_locked_set default "$1" "$2" "$3"; }
