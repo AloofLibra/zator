@@ -435,6 +435,7 @@ def config_client_scope_state(cfg_text):
              int(vals["CLIENT_SCOPE_MARK_SHIFT"]) <= 31 and
              int(vals["CLIENT_SCOPE_MARK_MAX"]) <= 255 and
              (bool(mask) and re.match(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$", mask) is not None)))
+    mask_conflict = False
     if valid and mask:
         mask_value = int(mask, 0) if mask.lower().startswith("0x") else int(mask, 10)
         desync_mark = config_get_var(cfg_text, "DESYNC_MARK") or "0"
@@ -444,12 +445,15 @@ def config_client_scope_state(cfg_text):
                 return int(value, 0) if value.lower().startswith("0x") else int(value, 10)
             except (AttributeError, ValueError):
                 return 0
-        valid = (mask_value & parse_num(desync_mark)) == 0 and (mask_value & parse_num(desync_postnat)) == 0
+        mask_conflict = ((mask_value & parse_num(desync_mark)) != 0 or
+                         (mask_value & parse_num(desync_postnat)) != 0)
+        valid = not mask_conflict
     enabled = vals["CLIENT_SCOPE_ENABLE"] == "1" and valid
     if not valid:
         enabled = False
     vals["enabled"] = enabled
     vals["valid"] = valid
+    vals["mask_conflict"] = mask_conflict
     return vals
 
 
@@ -1389,6 +1393,36 @@ class FakeRouterState:
                 return "Есть"
         return "Нет"
 
+    def client_scope_diagnostics(self):
+        cfg = config_client_scope_state(self.cfg_text)
+        rows = _read_lines(self.lock_file) + _read_lines(self.lock_manual_file)
+        scoped = [line.split("\t") for line in rows
+                  if len(line.split("\t")) >= 4 and re.match(r"^mark:[0-9]+$", line.split("\t")[0])]
+        keys = {}
+        for fields in scoped:
+            key = tuple(fields[:3])
+            keys.setdefault(key, set()).add(fields[3])
+        conflicts = sum(1 for strategies in keys.values() if len(strategies) > 1)
+        if not cfg["enabled"]:
+            if cfg["CLIENT_SCOPE_ENABLE"] != "1":
+                reason = "disabled"
+            elif not cfg["CLIENT_SCOPE_MARK_MASK"]:
+                reason = "missing-mask"
+            else:
+                reason = "mask-conflict" if cfg.get("mask_conflict") else "invalid-mask"
+        else:
+            reason = "no-scoped-lock"
+        return {
+            "mode": "mark" if cfg["enabled"] else "disabled",
+            "mask": int(cfg["CLIENT_SCOPE_MARK_MASK"], 0) if cfg["CLIENT_SCOPE_MARK_MASK"] else 0,
+            "shift": int(cfg["CLIENT_SCOPE_MARK_SHIFT"] or 0),
+            "max_scope": int(cfg["CLIENT_SCOPE_MARK_MAX"] or 0),
+            "scoped_lock_count": len(scoped),
+            "conflicts": conflicts,
+            "last_seen_scope": "unavailable",
+            "fallback_reason": reason,
+        }
+
     def profile_json(self, pid, label, desc):
         proto = profile_proto(pid)
         is_fallback = pid in FALLBACK_PROFILES
@@ -1441,6 +1475,7 @@ class FakeRouterState:
             "reasm": config_mode_text("reasm_disable", self.cfg_text),
             "quic443": config_quic443_state_text(self.cfg_text),
             "provider": self.provider,
+            "client_scope": self.client_scope_diagnostics(),
             "profiles": self.all_profiles_json(),
         }
 

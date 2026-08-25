@@ -26,4 +26,14 @@ PY
 test ! -e "$REPO_DIR/webui/dev/__pycache__/fake_router_server.cpython-311.pyc" || fail 'compiled pyc artifact'
 grep -q 'profile_scoped_state_display' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scoped effective lock reader'
 grep -q 'orch_scoped_effective' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake effective lock reader'
+grep -q 'client_scope_diagnostics' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake diagnostics contract'
+grep -q 'client_scope_diagnostics_json' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scope diagnostics API'
+grep -q 'fallback_reason' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'fallback reason API'
+grep -q 'last_seen_scope' "$REPO_DIR/webui/app.js" || fail 'scope diagnostics UI'
+PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
+from pathlib import Path
+text = Path('webui/cgi-bin/_lib.sh').read_text(encoding='utf-8')
+body = text.split('client_scope_diagnostics_json() {', 1)[1].split('\n}\n\nclient_scopes_json()', 1)[0]
+assert 'payload' not in body and 'source_ip' not in body and 'client_ip' not in body, 'scope diagnostics leak private data'
+PY
 printf 'client scope webui smoke ok\n'

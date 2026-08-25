@@ -323,14 +323,66 @@ _provider_cache_text() {
   fi
 }
 
-client_scopes_json() {
-  local scopes scope first=1 enabled warning
-  scopes="$(orch_scoped_list_scopes 2>/dev/null | sort -u)"
-  enabled=false; warning=""
-  [ "${CLIENT_SCOPE_ENABLE:-0}" = 1 ] && enabled=true
-  if [ "$enabled" = true ] && [ -z "${CLIENT_SCOPE_MARK_MASK:-}" ]; then
-    warning="Client scope включён, но firewall mapping не задан."
+client_scope_diagnostics_json() {
+  local enabled mask shift max desync postnat mask_n shift_n max_n desync_n postnat_n mode reason
+  local mask_json shift_json max_json scoped_count conflicts file manual_file
+  enabled="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
+  mask="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_MARK_MASK 2>/dev/null || true)"
+  shift="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_MARK_SHIFT 2>/dev/null || printf 0)"
+  max="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_MARK_MAX 2>/dev/null || printf 255)"
+  desync="$(config_get_var "$CONFIG_FILE" DESYNC_MARK 2>/dev/null || printf 0x40000000)"
+  postnat="$(config_get_var "$CONFIG_FILE" DESYNC_MARK_POSTNAT 2>/dev/null || printf 0x20000000)"
+  mask_json=0; shift_json=0; max_json=0
+  mode=disabled; reason=disabled
+  if [ "$enabled" = 1 ]; then
+    if [ -z "$mask" ]; then
+      reason=missing-mask
+    elif mask_n="$(config_client_scope_num "$mask" 2>/dev/null)"; then
+      mask_json="$mask_n"
+      shift_n="$(config_client_scope_num "$shift" 2>/dev/null || true)"
+      max_n="$(config_client_scope_num "$max" 2>/dev/null || true)"
+      [ -n "$shift_n" ] && shift_json="$shift_n"
+      [ -n "$max_n" ] && max_json="$max_n"
+      if [ -n "$shift_n" ] && [ -n "$max_n" ] &&
+         desync_n="$(config_client_scope_num "$desync" 2>/dev/null)" &&
+         postnat_n="$(config_client_scope_num "$postnat" 2>/dev/null)" &&
+         [ "$mask_n" -gt 0 ] && [ "$shift_n" -le 31 ] && [ "$max_n" -gt 0 ] &&
+         [ "$max_n" -le 255 ] && [ $((mask_n % (2 ** shift_n))) -eq 0 ]; then
+        if [ $((mask_n & desync_n)) -ne 0 ] || [ $((mask_n & postnat_n)) -ne 0 ]; then
+          reason=mask-conflict
+        else
+          mode=mark; reason=no-scoped-lock
+        fi
+      else
+        reason=invalid-mask
+      fi
+    else
+      reason=invalid-mask
+    fi
+  elif mask_n="$(config_client_scope_num "$mask" 2>/dev/null)" &&
+       shift_n="$(config_client_scope_num "$shift" 2>/dev/null)" &&
+       max_n="$(config_client_scope_num "$max" 2>/dev/null)"; then
+    mask_json="$mask_n"; shift_json="$shift_n"; max_json="$max_n"
   fi
+  file="$ORCH_DIR/locked.tsv"; manual_file="$ORCH_DIR/locked.manual.tsv"
+  scoped_count="$(awk -F '\t' '$1 ~ /^mark:[0-9]+$/ && NF >= 4 {n++} END {print n+0}' "$file" "$manual_file" 2>/dev/null)"
+  conflicts="$(awk -F '\t' '$1 ~ /^mark:[0-9]+$/ && NF >= 4 {key=$1 SUBSEP $2 SUBSEP $3; seen[key SUBSEP $4]=1} END {for (item in seen) {split(item, fields, SUBSEP); keys[fields[1] SUBSEP fields[2] SUBSEP fields[3]]++} for (key in keys) if (keys[key] > 1) n++} END {print n+0}' "$file" "$manual_file" 2>/dev/null)"
+  printf '{"mode":"%s","mask":%s,"shift":%s,"max_scope":%s,"scoped_lock_count":%s,"conflicts":%s,"last_seen_scope":"unavailable","fallback_reason":"%s"}' \
+    "$mode" "$mask_json" "$shift_json" "$max_json" "${scoped_count:-0}" "${conflicts:-0}" "$reason"
+}
+
+client_scopes_json() {
+  local scopes scope first=1 enabled warning diagnostics reason
+  scopes="$(orch_scoped_list_scopes 2>/dev/null | sort -u)"
+  diagnostics="$(client_scope_diagnostics_json)"
+  enabled=false; warning=""
+  reason="$(printf '%s' "$diagnostics" | sed -n 's/.*"fallback_reason":"\([^"]*\)".*/\1/p')"
+  [ "$(printf '%s' "$diagnostics" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')" = mark ] && enabled=true
+  case "$reason" in
+    missing-mask) warning="Client scope включён, но firewall mapping не задан." ;;
+    mask-conflict) warning="Маска client scope пересекается со служебной mark-маской; включён безопасный fallback." ;;
+    invalid-mask) warning="Маска client scope некорректна; включён безопасный fallback." ;;
+  esac
   printf '{"enabled":%s,"warning":"%s","scopes":[' "$enabled" "$(json_escape "$warning")"
   while IFS= read -r scope; do
     [ -n "$scope" ] || continue
@@ -338,7 +390,7 @@ client_scopes_json() {
     printf '"%s"' "$(json_escape "$scope")"
     first=0
   done <<< "$scopes"
-  printf ']}'
+  printf '],"diagnostics":%s}' "$diagnostics"
 }
 
 scope_param_valid() {
@@ -367,7 +419,7 @@ api_status() {
     *) wg_state="недоступно" ;;
   esac
   send_json "200 OK" "$(cat <<EOF
-{"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","auto_mode":"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")","rst_guard":"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")","reasm":"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")","quic443":"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")","provider":"$(json_escape "$(_provider_cache_text)")","profiles":$(all_profiles_json)}
+{"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","auto_mode":"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")","rst_guard":"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")","reasm":"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")","quic443":"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")","provider":"$(json_escape "$(_provider_cache_text)")","client_scope":$(client_scope_diagnostics_json),"profiles":$(all_profiles_json)}
 EOF
 )"
 }

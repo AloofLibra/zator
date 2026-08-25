@@ -204,6 +204,26 @@ mark:102	3	tls	3
 - `scope-conflict` — одинаково специфичные lock-записи конфликтуют;
 - `no-scoped-lock` — client scope корректен, но scoped lock отсутствует, поэтому использован `default`.
 
+### Runtime diagnostics
+
+`client_scope_diagnostics()` в `orchestra/locked.lua` и поле `client_scope` в
+WebUI `status.cgi`/`scopes.cgi` дают только безопасный агрегат:
+
+- `mode`: `disabled` или `mark`;
+- `mask`, `shift`, `max_scope`;
+- `scoped_lock_count` и `conflicts`;
+- `last_seen_scope` и `fallback_reason`.
+
+Lua обновляет `last_seen_scope` при обработке flow и хранит только scope в
+`track.lua_state`. Shell/WebUI не притворяются runtime-событиями: пока нет
+канала чтения Lua-состояния, `last_seen_scope` там имеет значение
+`unavailable`. Обычный UI/API не возвращает payload, source IP, MAC или список
+клиентов; маска показывается как конфигурационное значение. Поэтому
+`mask-conflict`, `missing-mask`, `invalid-mask`, `missing-mark`,
+`invalid-mark`, `scope-conflict` и `no-scoped-lock` можно отличить без утечки
+сетевых данных. Полные данные допустимы только в явно включённом стендовом
+debug-режиме и не входят в этот контракт.
+
 ## Проверки перед реализацией
 
 Контракт считается зафиксированным, если последующие реализации и тесты подтверждают:
