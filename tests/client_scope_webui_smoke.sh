@@ -22,6 +22,9 @@ valid = mod.FakeRouterHandler._valid_scope
 assert valid("default") and valid("mark:0") and valid("mark:123"), "valid scopes rejected"
 for bad in ("bad", "mark:", "mark:-1", "mark:1x", "mark:1\t"):
     assert not valid(bad), "invalid scope accepted: %r" % bad
+assert mod.config_scope_number("08") == 8, "decimal leading-zero mask must parse"
+assert mod.config_scope_number("0x08") == 8, "hex mask must parse"
+assert mod.config_scope_number("bad") == 0, "invalid mask must use safe default"
 PY
 test ! -e "$REPO_DIR/webui/dev/__pycache__/fake_router_server.cpython-311.pyc" || fail 'compiled pyc artifact'
 grep -q 'profile_scoped_state_display' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scoped effective lock reader'
