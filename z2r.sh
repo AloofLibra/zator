@@ -1094,6 +1094,8 @@ get_repo() {
   fi
   # config.default и keenetic-policy.sh — zapret2-native, остаются в $ZAPRET2_ROOT.
  z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default" || return 1
+  # Add new optional settings without breaking an older deployed template.
+  config_client_scope_ensure "$ZAPRET2_ROOT/config.default" || return 1
   if [ "$hardware" = "keenetic" ]; then
     z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"

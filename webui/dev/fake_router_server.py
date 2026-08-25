@@ -417,6 +417,43 @@ def config_set_var(cfg_text, var, val):
     return "\n".join(lines) + "\n"
 
 
+def config_client_scope_state(cfg_text):
+    """Safe client-mark settings, mirroring config_client_scope_ensure()."""
+    vals = {name: config_get_var(cfg_text, name) for name in (
+        "CLIENT_SCOPE_ENABLE", "CLIENT_SCOPE_MARK_MASK",
+        "CLIENT_SCOPE_MARK_SHIFT", "CLIENT_SCOPE_MARK_MAX")}
+    defaults = {"CLIENT_SCOPE_ENABLE": "0", "CLIENT_SCOPE_MARK_MASK": "",
+                "CLIENT_SCOPE_MARK_SHIFT": "0", "CLIENT_SCOPE_MARK_MAX": "255"}
+    for name, default in defaults.items():
+        if vals[name] is None:
+            vals[name] = default
+    mask = vals["CLIENT_SCOPE_MARK_MASK"] or ""
+    empty_noop = vals["CLIENT_SCOPE_ENABLE"] == "0" and not mask
+    valid = (empty_noop or (vals["CLIENT_SCOPE_ENABLE"] in ("0", "1") and
+             vals["CLIENT_SCOPE_MARK_SHIFT"].isdigit() and
+             vals["CLIENT_SCOPE_MARK_MAX"].isdigit() and
+             int(vals["CLIENT_SCOPE_MARK_SHIFT"]) <= 31 and
+             int(vals["CLIENT_SCOPE_MARK_MAX"]) <= 255 and
+             (bool(mask) and re.match(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$", mask) is not None)))
+    if valid and mask:
+        mask_value = int(mask, 0) if mask.lower().startswith("0x") else int(mask, 10)
+        desync_mark = config_get_var(cfg_text, "DESYNC_MARK") or "0"
+        desync_postnat = config_get_var(cfg_text, "DESYNC_MARK_POSTNAT") or "0"
+        def parse_num(value):
+            try:
+                return int(value, 0) if value.lower().startswith("0x") else int(value, 10)
+            except (AttributeError, ValueError):
+                return 0
+        valid = (mask_value & parse_num(desync_mark)) == 0 and (mask_value & parse_num(desync_postnat)) == 0
+    enabled = vals["CLIENT_SCOPE_ENABLE"] == "1" and valid
+    if not valid:
+        enabled = False
+    vals["enabled"] = enabled
+    vals["valid"] = valid
+    return vals
+
+
+
 def config_profile_voice_ports_apply(cfg_text, state):
     """config_profile_voice_ports_apply() — lib/config.sh:438."""
     cur = config_get_var(cfg_text, "NFQWS2_PORTS_UDP") or ""
@@ -1684,6 +1721,8 @@ class FakeRouterState:
 
     def build_mode_settings(self, setting):
         """api_*_get() — _lib.sh."""
+        if setting == "client_scope":
+            return config_client_scope_state(self.cfg_text)
         if setting == "auto_mode":
             s = config_mode_text("auto_mode", self.cfg_text)
             return {"state": s, "enabled": s == "включен"}
@@ -1700,6 +1739,19 @@ class FakeRouterState:
             return {"state": config_quic443_state_text(self.cfg_text),
                     "enabled": config_quic443_state(self.cfg_text) == "1"}
         raise ValueError("Неизвестная настройка")
+
+    def apply_client_scope(self, params):
+        """Apply client scope values; invalid masks are a safe disabled no-op."""
+        for name in ("CLIENT_SCOPE_ENABLE", "CLIENT_SCOPE_MARK_MASK",
+                     "CLIENT_SCOPE_MARK_SHIFT", "CLIENT_SCOPE_MARK_MAX"):
+            key = name.lower()
+            if key in params:
+                self.cfg_text = config_set_var(self.cfg_text, name, params[key])
+        state = config_client_scope_state(self.cfg_text)
+        if not state["valid"]:
+            self.cfg_text = config_set_var(self.cfg_text, "CLIENT_SCOPE_ENABLE", "0")
+        self._save_config()
+        return {"ok": True, "reboot_required": True, **config_client_scope_state(self.cfg_text)}
 
     def apply_mode_setting(self, setting, value):
         """api_*_set() — _lib.sh: переиспользуют сеттеры lib/actions.sh."""
@@ -2372,7 +2424,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 elif setting == "udp-games":
                     self._log("GET {0} | udp-games settings".format(parsed.path))
                     self._send_json(self.state.build_udp_games_settings())
-                elif setting in ("auto_mode", "hostlist", "rst_guard", "reasm", "quic443"):
+                elif setting in ("client_scope", "auto_mode", "hostlist", "rst_guard", "reasm", "quic443"):
                     self._log("GET {0} | mode settings {1}".format(parsed.path, setting))
                     self._send_json(self.state.build_mode_settings(setting))
                 elif setting == "ports":
@@ -2455,6 +2507,15 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     with self.state.lock:
                         result = self.state.apply_udp_games_state(value)
                         self._log("POST {0} | udp_games_state={1}".format(parsed.path, value))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "client_scope":
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_client_scope(params)
+                        self._log("POST {0} | client_scope".format(parsed.path))
                         self._send_json(result)
                 except ValueError as e:
                     self._send_error_json(400, str(e))

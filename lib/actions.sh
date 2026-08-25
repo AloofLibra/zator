@@ -102,6 +102,7 @@ menu_action_update_config_reset() {
   profile_apply_all /opt/zapret2/config.default
 
   cp -f /opt/zapret2/config.default /opt/zapret2/config
+  config_client_scope_ensure /opt/zapret2/config || true
   [ "$hardware" = "keenetic" ] && ensure_keenetic_policy_config /opt/zapret2/config
   # После копирования синхронизируем рабочий конфиг, чтобы reset не терял IFACE_WAN.
   if [ "$hardware" = "keenetic" ]; then
@@ -1457,6 +1458,10 @@ backup_smart_apply_flags() {
   local s_old s_new v_old v_new
 
   [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+
+  # Client mark scope is configuration state too. Legacy backups simply have
+  # no variables and therefore leave the new defaults untouched.
+  config_client_scope_apply "$old_cfg" "$new_cfg"
 
   # --- Авторотация TCP/HTTP ---
   s_old="$(config_mode_text auto_mode "$old_cfg")"

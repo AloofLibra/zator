@@ -389,6 +389,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 | `ports_remove` | `proto=tcp\|udp&value=<порт>` | удалить пользовательский порт (`ports_apply_remove`) |
 | `provider_set` | `name=<строка>&city=<строка>` | ручная установка провайдера (`provider_set_manual`) |
 | `provider_redetect` | — | переопределить провайдера по IP (`provider_force_redetect`, до ~20 с) |
+| `client_scope` | `client_scope_enable=0|1`, `client_scope_mark_mask=0x...|`, `client_scope_mark_shift=0..31`, `client_scope_mark_max=0..255` | настройка scoped client mark; пустая/конфликтующая маска безопасно отключает scope |
 
 Успех (`200 OK`):
 

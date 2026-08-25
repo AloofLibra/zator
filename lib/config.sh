@@ -83,6 +83,59 @@ config_set_var() {
   fi
 }
 
+# Parse a non-negative decimal or hexadecimal config number without eval.
+config_client_scope_num() {
+  local value="$1" digits
+  case "$value" in
+    0x[0-9a-fA-F]*|0X[0-9a-fA-F]*) printf '%u\n' "$((value))" 2>/dev/null ;;
+    ''|*[!0-9]*) return 1 ;;
+    *)
+      digits="$(printf '%s' "$value" | sed 's/^0*//')"
+      [ -n "$digits" ] || digits=0
+      printf '%u\n' "$((digits))" 2>/dev/null
+      ;;
+  esac
+}
+
+# Ensure optional client-mark settings exist in fresh and legacy configs.
+# Invalid or conflicting masks are disabled so nfqws2 keeps the safe no-op path.
+config_client_scope_ensure() {
+  local cfg="$1" enable mask shift max desync_mark desync_postnat
+  local mask_n shift_n max_n desync_mark_n desync_postnat_n
+  [ -f "$cfg" ] || return 1
+  config_var_exists "$cfg" CLIENT_SCOPE_ENABLE || printf '%s\n' 'CLIENT_SCOPE_ENABLE=0' >> "$cfg"
+  config_var_exists "$cfg" CLIENT_SCOPE_MARK_MASK || printf '%s\n' 'CLIENT_SCOPE_MARK_MASK=' >> "$cfg"
+  config_var_exists "$cfg" CLIENT_SCOPE_MARK_SHIFT || printf '%s\n' 'CLIENT_SCOPE_MARK_SHIFT=0' >> "$cfg"
+  config_var_exists "$cfg" CLIENT_SCOPE_MARK_MAX || printf '%s\n' 'CLIENT_SCOPE_MARK_MAX=255' >> "$cfg"
+  enable="$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE)"; mask="$(config_get_var "$cfg" CLIENT_SCOPE_MARK_MASK)"
+  shift="$(config_get_var "$cfg" CLIENT_SCOPE_MARK_SHIFT)"; max="$(config_get_var "$cfg" CLIENT_SCOPE_MARK_MAX)"
+  [ "$enable" = 0 ] && [ -z "$mask" ] && return 0
+  case "$enable" in 0|1) ;; *) config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0;; esac
+  mask_n="$(config_client_scope_num "$mask")" || { config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0; }
+  shift_n="$(config_client_scope_num "$shift")" || { config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0; }
+  max_n="$(config_client_scope_num "$max")" || { config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0; }
+  desync_mark="$(config_get_var "$cfg" DESYNC_MARK)"
+  desync_postnat="$(config_get_var "$cfg" DESYNC_MARK_POSTNAT)"
+  desync_mark_n="$(config_client_scope_num "$desync_mark")" || desync_mark_n=0
+  desync_postnat_n="$(config_client_scope_num "$desync_postnat")" || desync_postnat_n=0
+  if [ "$shift_n" -gt 31 ] || [ "$max_n" -gt 255 ] ||
+     [ $((mask_n & desync_mark_n)) -ne 0 ] ||
+     [ $((mask_n & desync_postnat_n)) -ne 0 ]; then
+    config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0
+  fi
+}
+
+config_client_scope_apply() {
+  local old_cfg="$1" new_cfg="$2" v
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+  config_client_scope_ensure "$new_cfg"
+  for v in ENABLE MARK_MASK MARK_SHIFT MARK_MAX; do
+    config_var_exists "$old_cfg" "CLIENT_SCOPE_$v" || continue
+    config_set_var "$new_cfg" "CLIENT_SCOPE_$v" "$(config_get_var "$old_cfg" "CLIENT_SCOPE_$v")"
+  done
+  config_client_scope_ensure "$new_cfg"
+}
+
 config_sed_ereg() {
   if printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
     printf '%s' "-E"
