@@ -2363,12 +2363,23 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(400, "Некорректный scope")
                 return
             scopes = {"default"}
-            for line in _read_lines(self.state.lock_file):
+            for line in (_read_lines(self.state.lock_file) +
+                         _read_lines(self.state.lock_manual_file)):
                 fields = line.split("\t")
                 if fields and re.match(r"^mark:[0-9]+$", fields[0]): scopes.add(fields[0])
-            enabled = bool(getattr(self.state, "client_scope_enable", False))
-            warning = "Client scope включён, но firewall mapping не задан." if enabled and not getattr(self.state, "client_scope_mark_mask", "") else ""
-            self._send_json({"enabled": enabled, "warning": warning, "scopes": sorted(scopes)})
+            diagnostics = self.state.client_scope_diagnostics()
+            reason = diagnostics.get("fallback_reason", "")
+            warning = ""
+            if reason == "missing-mask":
+                warning = "Client scope включён, но firewall mapping не задан."
+            elif reason == "mask-conflict":
+                warning = "Маска client scope пересекается со служебной mark-маской; включён безопасный fallback."
+            elif reason == "invalid-mask":
+                warning = "Маска client scope некорректна; включён безопасный fallback."
+            self._send_json({"enabled": diagnostics.get("mode") == "mark",
+                             "warning": warning,
+                             "scopes": sorted(scopes),
+                             "diagnostics": diagnostics})
             return
 
         if endpoint == "status":
