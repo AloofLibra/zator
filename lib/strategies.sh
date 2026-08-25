@@ -2,6 +2,12 @@ telemetry_notify() {
     type send_stats >/dev/null 2>&1 && send_stats || true
 }
 
+# Strategy flows use the explicit default scope; client-scoped callers can use
+# orch_scoped_locked_* directly without changing menu semantics.
+orch_strategy_locked_get() { orch_scoped_locked_get default "$1" "$2"; }
+orch_strategy_locked_set() { orch_scoped_locked_set default "$1" "$2" "$3"; }
+orch_strategy_locked_clear() { orch_scoped_locked_clear default "$1" "$2"; }
+
 orch_max_strategy_for_profile() {
     config_profile_max_strategy "$1"
 }

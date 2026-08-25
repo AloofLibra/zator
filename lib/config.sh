@@ -2,6 +2,37 @@
 
 Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
+orch_scope_validate() {
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" max custom_domain=0
+  printf '%s' "$scope$profile$proto$strategy" | grep -q '[[:cntrl:]]' && { echo "Lock values must not contain tabs or newlines" >&2; return 1; }
+  printf '%s' "$scope" | grep -Eq '^(default|mark:[0-9]+)$' || { echo "Invalid lock scope: $scope" >&2; return 1; }
+  # Legacy custom-domain wrappers use the hostname as profile and TLS only.
+  # Keep this explicit and restrictive instead of treating arbitrary strings
+  # as profile identifiers.
+  if [ "$scope" = "default" ] && printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
+    custom_domain=1
+    case "$strategy:$proto" in
+      auto:*|clear:*) ;;
+      *:tls) ;;
+      *) echo "Protocol $proto is not valid for custom domain $profile" >&2; return 1 ;;
+    esac
+  else
+    [ -n "$(config_profile_proto_list "$profile")" ] || { echo "Invalid lock profile: $profile" >&2; return 1; }
+    printf '%s\n' "$(config_profile_proto_list "$profile")" | tr ' ' '\n' | grep -Fxq "$proto" || { echo "Protocol $proto is not valid for profile $profile" >&2; return 1; }
+  fi
+  case "$strategy" in auto|clear|0) return 0 ;; esac
+  printf '%s' "$strategy" | grep -Eq '^[1-9][0-9]*$' || { echo "Invalid lock strategy: $strategy" >&2; return 1; }
+  if [ "$custom_domain" -eq 1 ]; then
+    # Custom-domain probing uses the TCP_Custom/profile-3 strategy range.
+    max="$(config_profile_max_strategy 3 "${CONFIG_FILE:-}")"
+  else
+    max="$(config_profile_max_strategy "$profile" "${CONFIG_FILE:-}")"
+  fi
+  if [ "$max" -gt 0 ] 2>/dev/null; then
+    [ "$strategy" -le "$max" ] 2>/dev/null || { echo "Strategy $strategy is outside profile $profile range" >&2; return 1; }
+  fi
+}
+
 config_get_file() {
   if [ -n "$1" ] && [ -f "$1" ]; then
     echo "$1"
@@ -854,7 +885,7 @@ profile_config_orch_set() {
   if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
     ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
   fi
-  orch_locked_set "$profile" "$proto" "$strategy" || rc=$?
+  orch_scoped_locked_set default "$profile" "$proto" "$strategy" || rc=$?
   ORCH_LOCK_FILE="$saved_lock_file"
   return "$rc"
 }
@@ -868,7 +899,7 @@ profile_config_orch_clear() {
   if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
     ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
   fi
-  orch_locked_clear "$profile" "$proto" || rc=$?
+  orch_scoped_locked_clear default "$profile" "$proto" || rc=$?
   ORCH_LOCK_FILE="$saved_lock_file"
   return "$rc"
 }

@@ -17,7 +17,7 @@ _orch_locked_read() {
   } END{if (!found) print d}' "$ORCH_LOCK_FILE"
 }
 
-orch_locked_get() {
+_orch_legacy_locked_get() {
   _orch_locked_read "$1" "$2" "0"
 }
 
@@ -25,7 +25,7 @@ orch_locked_state_get() {
   _orch_locked_read "$1" "$2" "auto"
 }
 
-orch_locked_set() {
+_orch_legacy_locked_set() {
   local profile="$1"
   local proto="$2"
   local strategy="$3"
@@ -40,7 +40,7 @@ orch_locked_set() {
   }' "$ORCH_LOCK_FILE" > "$tmp" && mv "$tmp" "$ORCH_LOCK_FILE"
 }
 
-orch_locked_clear() {
+_orch_legacy_locked_clear() {
   local profile="$1"
   local proto="$2"
   local tmp="${ORCH_LOCK_FILE}.tmp"
@@ -50,6 +50,69 @@ orch_locked_clear() {
     print
   }' "$ORCH_LOCK_FILE" > "$tmp" && mv "$tmp" "$ORCH_LOCK_FILE"
 }
+
+# Scoped locks retain legacy three-column rows for default and use
+# scope/profile/proto/strategy rows for mark:<decimal> client scopes.
+_orch_scope_basic_validate() {
+  local scope="${1:-}"
+  case "$scope" in *$'\t'*|*$'\n'*) return 1 ;; esac
+  printf '%s' "$scope" | grep -Eq '^(default|mark:[0-9]+)$'
+}
+
+orch_scoped_locked_get() {
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}"
+  _orch_scope_basic_validate "$scope" || return 2
+  [ -n "$profile" ] && [ -n "$proto" ] || return 2
+  [ -f "$ORCH_LOCK_FILE" ] || { printf '0\n'; return 0; }
+  awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '
+    $1==sc && $2==pr && $3==po && NF>=4 {print $4; found=1; exit}
+    sc=="default" && $1==pr && $2==po && NF==3 {print $3; found=1; exit}
+    sc=="default" && po=="tls" && $1==pr && NF==2 {print $2; found=1; exit}
+    END {if (!found) print "0"}
+  ' "$ORCH_LOCK_FILE"
+}
+
+orch_scoped_locked_set() {
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" tmp="${ORCH_LOCK_FILE}.tmp.$$" matches
+  _orch_scope_basic_validate "$scope" || { echo "Invalid lock scope: $scope" >&2; return 2; }
+  if type orch_scope_validate >/dev/null 2>&1; then
+    orch_scope_validate "$scope" "$profile" "$proto" "$strategy" || return 2
+  else
+    [ -n "$profile" ] && [ -n "$proto" ] || return 2
+    printf '%s' "$strategy" | grep -Eq '^(auto|clear|0|[1-9][0-9]*)$' || return 2
+  fi
+  case "$strategy" in auto|clear) orch_scoped_locked_clear "$scope" "$profile" "$proto"; return $? ;; esac
+  mkdir -p "$(dirname "$ORCH_LOCK_FILE")" || return 1
+  [ -f "$ORCH_LOCK_FILE" ] || : > "$ORCH_LOCK_FILE" || return 1
+  matches="$(awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '((NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && NF==2 && $1==pr)) {n++} END {print n+0}' "$ORCH_LOCK_FILE")"
+  [ "$matches" -le 1 ] || { echo "Conflicting duplicate lock rows for $scope/$profile/$proto" >&2; return 3; }
+  awk -F '\t' -v OFS='\t' -v sc="$scope" -v pr="$profile" -v po="$proto" -v st="$strategy" '
+    function same() { return (NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && NF==2 && $1==pr) }
+    {if (same()) {if (!seen) {print (sc=="default" ? pr OFS po OFS st : sc OFS pr OFS po OFS st); seen=1}; next} print}
+    END {if (!seen) print (sc=="default" ? pr OFS po OFS st : sc OFS pr OFS po OFS st)}
+  ' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; echo "Unable to update lock file" >&2; return 1; }
+}
+
+orch_scoped_locked_clear() {
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" tmp="${ORCH_LOCK_FILE}.tmp.$$"
+  _orch_scope_basic_validate "$scope" || return 2
+  if type orch_scope_validate >/dev/null 2>&1; then orch_scope_validate "$scope" "$profile" "$proto" clear || return 2; fi
+  [ -f "$ORCH_LOCK_FILE" ] || return 0
+  awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '!((NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && $1==pr && NF==2)) {print}' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; return 1; }
+}
+
+orch_scoped_locked_list() {
+  local scope="${1:-}"
+  [ -f "$ORCH_LOCK_FILE" ] || return 0
+  [ -z "$scope" ] && { awk 'NF>=3 && $0 !~ /^[[:space:]]*#/ {print}' "$ORCH_LOCK_FILE"; return; }
+  _orch_scope_basic_validate "$scope" || return 2
+  awk -F '\t' -v sc="$scope" '$1==sc || (sc=="default" && NF==3) {print}' "$ORCH_LOCK_FILE"
+}
+
+# Backward-compatible default-scope wrappers.
+orch_locked_get() { orch_scoped_locked_get default "$1" "$2"; }
+orch_locked_set() { orch_scoped_locked_set default "$1" "$2" "$3"; }
+orch_locked_clear() { orch_scoped_locked_clear default "$1" "$2"; }
 
 zapret2_running() {
   pidof nfqws2 >/dev/null 2>&1
