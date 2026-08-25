@@ -55,6 +55,7 @@ client_scope_ip_set 192.0.2.10 mark:102 || fail "IP mapping update"
 client_scope_ip_set 2001:db8::10 mark:103 || fail "IPv6 mapping set"
 expect_fail client_scope_ip_set 999.1.1.1 mark:104
 expect_fail client_scope_ip_set 192.0.2.11 default
+expect_fail client_scope_ip_set 192.0.2.12 mark:256
 client_scope_ip_clear 192.0.2.10 || fail "IP mapping clear"
 [ -z "$(client_scope_ip_get 192.0.2.10)" ] || fail "IP mapping clear failed"
 

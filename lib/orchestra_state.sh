@@ -153,7 +153,11 @@ EOF
 }
 
 client_scope_mark_validate() {
-  printf '%s\n' "${1:-}" | grep -Eq '^mark:[1-9][0-9]*$'
+  local scope="${1:-}" id max
+  printf '%s\n' "$scope" | grep -Eq '^mark:[1-9][0-9]*$' || return 1
+  id="${scope#mark:}"
+  max="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_MAX 2>/dev/null || printf 255)"
+  [ "$id" -le "$max" ] 2>/dev/null
 }
 
 client_scope_ip_get() {
@@ -188,6 +192,13 @@ client_scope_ip_list() {
 
 client_scope_ip_add() {
   local ip="$1" scope="$2" enabled
+  client_scope_ip_validate "$ip" || return 2
+  client_scope_mark_validate "$scope" || return 2
+  case "$(client_scope_firewall_script)" in
+    *client-scope-iptables.sh)
+      printf '%s\n' "$ip" | grep -Eq ':' && { echo "IPv6 mapping requires nftables" >&2; return 2; }
+      ;;
+  esac
   client_scope_ip_set "$ip" "$scope" || return $?
   enabled="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
   [ "$enabled" = 1 ] || return 0

@@ -7,14 +7,17 @@ pause_enter() {
 submenu_item() {
   local key="$1"
   local state="${4:-auto}"
+  local indent=""
   local clean_key="${key//$'\t'/}"
-  local key_display=$'\t'"${clean_key}. "
+  clean_key="${clean_key//\\t/}"
+  [ "${SUBMENU_ITEM_INDENT:-0}" = 1 ] && indent=$'\t'
+  local key_display="${indent}${clean_key}."
   if [ "$clean_key" = "0" ]; then
-    echo -e "${Fyellow}${key_display}${plain}${Fyellow}$2${plain} $3"
+    echo -e "${Fyellow}${key_display}${plain} ${Fyellow}$2${plain} $3"
   elif [ "$state" = "0" ]; then
-    echo -e "${Fcyan}${key_display}${plain}${red}$2${plain} ${red}$3${plain}"
+    echo -e "${Fcyan}${key_display}${plain} ${red}$2${plain} ${red}$3${plain}"
   else
-    echo -e "${Fcyan}${key_display}${plain}${green}$2${plain} $3"
+    echo -e "${Fcyan}${key_display}${plain} ${green}$2${plain} $3"
   fi
 }
 

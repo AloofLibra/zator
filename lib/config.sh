@@ -312,40 +312,40 @@ fwtype_unavailable_reason() {
 # Client-scope firewall is isolated from zapret/policy rules. Missing backends
 # are a safe no-op so legacy installs keep working.
 client_scope_firewall_script() {
-  local backend="${CLIENT_SCOPE_FIREWALL_BACKEND:-${FWTYPE:-iptables}}"
-  case "$backend" in
+  local backend="${CLIENT_SCOPE_FIREWALL_BACKEND:-${FWTYPE:-}}" cfg
+  if [ -z "$backend" ]; then
+    cfg="$(config_get_file 2>/dev/null || true)"
+    [ -n "$cfg" ] && backend="$(config_get_var "$cfg" FWTYPE 2>/dev/null || true)"
+  fi
+  case "${backend:-iptables}" in
     nftables|nft) echo "${ZATOR_ROOT:-/opt/zator}/firewall/client-scope-nft.sh" ;;
     iptables|*) echo "${ZATOR_ROOT:-/opt/zator}/firewall/client-scope-iptables.sh" ;;
   esac
 }
 
 client_scope_firewall_action() {
-  local action="$1" script shell path_saved
-  # Cleanup is safe and must run after the feature is disabled. Only apply is
-  # gated by the feature flag.
+  local action="$1" script shell rc
   [ "$action" = cleanup ] || [ "${CLIENT_SCOPE_ENABLE:-0}" = 1 ] || return 0
   script="$(client_scope_firewall_script)"
   [ -f "$script" ] || return 0
-  # Entware keeps bash under /opt/bin, while OpenWrt normally has it in /bin.
-  # Do not rely on the script's /usr/bin/env shebang: config.sh may run with a
-  # restricted PATH that does not contain /opt/bin.
-  path_saved="$PATH"
-  PATH="/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH"
-  shell="$(command -v bash 2>/dev/null || true)"
-  if [ -n "$shell" ] && [ -x "$shell" ]; then
-    "$shell" "$script" "$action"
-  elif [ -x "$script" ]; then
-    "$script" "$action"
-  else
-    return 0
-  fi
-  local rc=$?
-  PATH="$path_saved"
+  # Run in a subshell so Entware's /opt/bin PATH does not leak to the caller.
+  (
+    PATH="/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${PATH:-}"
+    export PATH
+    shell="$(command -v bash 2>/dev/null || true)"
+    if [ -n "$shell" ] && [ -x "$shell" ]; then
+      "$shell" "$script" "$action"
+    elif [ -x "$script" ]; then
+      "$script" "$action"
+    else
+      exit 127
+    fi
+  )
+  rc=$?
   [ "$rc" -eq 0 ] || {
     echo "client-scope firewall $action failed; continuing safely" >&2
     return "$rc"
   }
-  return 0
 }
 
 client_scope_lua_config_sync() {
