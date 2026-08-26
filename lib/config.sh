@@ -6,10 +6,10 @@ orch_scope_validate() {
   local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" max custom_domain=0
   printf '%s' "$scope$profile$proto$strategy" | grep -q '[[:cntrl:]]' && { echo "Lock values must not contain tabs or newlines" >&2; return 1; }
   printf '%s' "$scope" | grep -Eq '^(default|mark:[0-9]+)$' || { echo "Invalid lock scope: $scope" >&2; return 1; }
-  # Legacy custom-domain wrappers use the hostname as profile and TLS only.
-  # Keep this explicit and restrictive instead of treating arbitrary strings
-  # as profile identifiers.
-  if [ "$scope" = "default" ] && printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
+  # Custom-domain locks use the hostname as profile and TLS only. Домен
+  # попадает в лист глобально, а стратегия для него может быть закреплена
+  # за любым client scope (per-mark файл).
+  if printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
     custom_domain=1
     case "$strategy:$proto" in
       auto:*|clear:*) ;;

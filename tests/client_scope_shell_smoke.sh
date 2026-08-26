@@ -117,10 +117,25 @@ orch_locked_set 2 tls 3 || fail "default wrapper set"
 [ "$(orch_scoped_locked_get default 2 tls)" = 3 ] || fail "default wrapper must write locked.tsv"
 [ ! -f "$ORCH_DIR/scopes/mark_5.tsv" ] || fail "default wrapper must not write per-mark files"
 
+# Доменные локи в контексте клиента + очистка из всех scope (удаление домена).
+(
+  export ORCH_ACTIVE_SCOPE="mark:9"
+  orch_locked_set example.net tls 4 || fail "domain scoped set"
+)
+grep -q $'example.net\ttls\t4' "$ORCH_DIR/scopes/mark_9.tsv" || fail "domain lock must live in per-mark file"
+orch_locked_set example.net tls 6 || fail "domain default set"
+orch_locked_clear_everywhere example.net tls || fail "clear everywhere"
+if grep -q '^example\.net' "$ORCH_LOCK_FILE"; then
+  fail "clear everywhere must drop the default row"
+fi
+[ ! -f "$ORCH_DIR/scopes/mark_9.tsv" ] || fail "clear everywhere must drop per-mark rows"
+
 # Статика: гейт меню стратегий и статус по активному scope на месте.
 grep -q 'client_scopes_ask_scope_for_strategies' "$REPO_DIR/lib/submenus.sh" \
   || fail "strategies menu lost client scope gate"
 grep -q 'ORCH_ACTIVE_SCOPE' "$REPO_DIR/lib/strategies.sh" \
   || fail "locks info lost active scope awareness"
+grep -q 'client_scopes_ask_scope_for_strategies' "$REPO_DIR/lib/strategies.sh" \
+  || fail "domain strategy flow lost client scope selection"
 
 printf 'client scope shell smoke ok\n'

@@ -366,6 +366,20 @@ orch_locked_get() { orch_scoped_locked_get "${ORCH_ACTIVE_SCOPE:-default}" "$1" 
 orch_locked_set() { orch_scoped_locked_set "${ORCH_ACTIVE_SCOPE:-default}" "$1" "$2" "$3"; }
 orch_locked_clear() { orch_scoped_locked_clear "${ORCH_ACTIVE_SCOPE:-default}" "$1" "$2"; }
 
+# Удаление лока из всех scope сразу (default + каждый per-mark файл).
+# Нужно при удалении домена из списка: стратегия для него могла быть
+# назначена разным клиентам.
+orch_locked_clear_everywhere() {
+  local profile="$1" proto="$2" scope
+  orch_scoped_locked_clear default "$profile" "$proto" || true
+  orch_scoped_list_scopes | while IFS= read -r scope; do
+    if [ "$scope" != default ] && [ -n "$scope" ]; then
+      orch_scoped_locked_clear "$scope" "$profile" "$proto" || true
+    fi
+  done
+  return 0
+}
+
 zapret2_running() {
   pidof nfqws2 >/dev/null 2>&1
 }

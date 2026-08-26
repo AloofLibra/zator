@@ -660,10 +660,19 @@ client_scopes_toggle_mode() {
 #функция меню "1. Сменить стратегии"
 strategies_submenu() {
   local SUBMENU_ITEM_INDENT=1
-  # Client scopes (Beta): меню всегда открывается как раньше — без вопросов.
-  # При включённом режиме активный клиент показывается в шапке и переключается
-  # пунктом 12 (по умолчанию — default, все клиенты).
+  # Client scopes (Beta): при включённом режиме сначала выбираем/создаём
+  # клиента (mark), под которого настраиваем стратегии, и проваливаемся
+  # в привычное меню уже в его контексте. При выключенном режиме меню
+  # открывается сразу, как раньше, без вопросов. Сменить клиента внутри —
+  # пункт 12.
   ORCH_ACTIVE_SCOPE="default"
+  if [ "$(client_scope_mode_text)" = "включен" ]; then
+    if client_scopes_ask_scope_for_strategies; then
+      ORCH_ACTIVE_SCOPE="$CLIENT_SCOPE_ASK_RESULT"
+    else
+      return 0
+    fi
+  fi
   while true; do
     clear -x
     local strategies_status cfg
