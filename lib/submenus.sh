@@ -153,6 +153,42 @@ client_scopes_print_table() {
   return 0
 }
 
+# Значение scoped-лока или пусто, если записи нет. В отличие от
+# orch_scoped_locked_get, не подменяет «нет записи» на 0 — для сброса
+# нужен именно факт отсутствия записи.
+_client_scopes_scoped_value() {
+  local scope="$1" profile="$2" proto="$3"
+  [ -f "$ORCH_LOCK_FILE" ] || return 0
+  if [ "$scope" = default ]; then
+    awk -F '\t' -v pr="$profile" -v po="$proto" '
+      $1==pr && $2==po && NF==3 {print $3; exit}
+      $1==pr && po=="tls" && NF==2 {print $2; exit}
+    ' "$ORCH_LOCK_FILE"
+  else
+    awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" \
+      '$1==sc && $2==pr && $3==po && NF>=4 {print $4; exit}' "$ORCH_LOCK_FILE"
+  fi
+}
+
+# Краткая подсказка «tls=28», «http=выкл», «udp=2 от default» (наследованный
+# лок показывается со source-пометкой, 0 — как «выкл»).
+_client_scopes_lock_hint() {
+  local scope="$1" profile="$2" proto="$3" v src=""
+  v="$(_client_scopes_scoped_value "$scope" "$profile" "$proto")"
+  if [ -z "$v" ] && [ "$scope" != default ]; then
+    v="$(_client_scopes_scoped_value default "$profile" "$proto")"
+    src=" от default"
+  fi
+  if [ -z "$v" ]; then
+    printf '%s=—' "$proto"
+  else
+    if [ "$v" = 0 ]; then
+      v="выкл"
+    fi
+    printf '%s=%s%s' "$proto" "$v" "$src"
+  fi
+}
+
 # Выбор scope из таблицы. Результат — $CLIENT_SCOPE_ASK_RESULT.
 # $1 — опциональный preset (вопрос пропускается). 1 — отмена.
 client_scopes_ask_scope() {
@@ -173,9 +209,9 @@ client_scopes_ask_scope() {
     fi
   done <<< "$list"
   while true; do
-    read -re -p "Выберите scope (1..$count, или mark:N, q — назад): " ans || return 1
+    read -re -p "Выберите scope (1..$count, или mark:N, 0 — назад): " ans || return 1
     case "$ans" in
-      q|Q) return 1 ;;
+      0) return 1 ;;
       default) CLIENT_SCOPE_ASK_RESULT="default"; return 0 ;;
       mark:*)
         if client_scope_mark_validate "$ans" && printf '%s\n' "$list" | grep -Fqx "$ans"; then
@@ -193,37 +229,66 @@ client_scopes_ask_scope() {
   done
 }
 
-# Выбор профиля (1..7 — основные профили со стратегиями).
-# Результат — $CLIENT_SCOPE_ASK_PROFILE. 1 — отмена.
+# Выбор профиля (1..7 — основные профили со стратегиями), с текущими локами.
+# $1 — scope, для которого показываем локи. Результат — $CLIENT_SCOPE_ASK_PROFILE.
+# 1 — отмена.
 client_scopes_ask_profile() {
-  local p max ans cfg
+  local p max ans cfg hint
   cfg="$(client_scopes_cfg)"
   for p in 1 2 3 4 5 6 7; do
     max="$(config_profile_max_strategy "$p" "$cfg" 2>/dev/null || echo 0)"
-    echo "  $p. $(config_profile_title "$p") [${max}]"
+    hint="$(_client_scopes_locks_hint "${1:-default}" "$p")"
+    if [ -n "$hint" ]; then
+      echo "  $p. $(config_profile_title "$p") [$max] — $hint"
+    else
+      echo "  $p. $(config_profile_title "$p") [$max]"
+    fi
   done
   while true; do
-    read -re -p "Выберите профиль (1..7, q — назад): " ans || return 1
+    read -re -p "Выберите профиль (1..7, 0 — назад): " ans || return 1
     if ui_is_number_in_range "$ans" 1 7; then
       CLIENT_SCOPE_ASK_PROFILE="$ans"
       return 0
     fi
-    case "$ans" in q|Q) return 1 ;; esac
+    case "$ans" in 0) return 1 ;; esac
     echo -e "${red}Неверный ввод.${plain}"
   done
 }
 
-# Выбор протокола, если у профиля их несколько. Результат — $CLIENT_SCOPE_ASK_PROTO.
+# Текущие локи профиля одной строкой: "tls=выкл, http=28 от default".
+_client_scopes_locks_hint() {
+  local scope="$1" profile="$2" proto hint=""
+  for proto in $(config_profile_proto_list "$profile"); do
+    if [ -n "$hint" ]; then
+      hint="$hint, "
+    fi
+    hint="$hint$(_client_scopes_lock_hint "$scope" "$profile" "$proto")"
+  done
+  printf '%s\n' "$hint"
+}
+
+# Выбор протокола. Если у профиля их несколько — можно оба сразу.
+# Результат — $CLIENT_SCOPE_ASK_PROTO (один протокол или список через пробел).
+# 1 — отмена.
 client_scopes_ask_proto() {
   local list="$1" proto ans n=0 i=1
   for proto in $list; do n=$((n + 1)); done
+  if [ "$n" -eq 1 ]; then
+    CLIENT_SCOPE_ASK_PROTO="$list"
+    return 0
+  fi
   i=1
   for proto in $list; do
     echo "  $i. $proto"
     i=$((i + 1))
   done
+  echo "  $((n + 1)). оба протокола"
   while true; do
-    read -re -p "Выберите протокол (1..$n, q — назад): " ans || return 1
+    read -re -p "Протокол (1..$((n + 1)), Enter - оба, 0 — назад): " ans || return 1
+    if [ -z "$ans" ] || [ "$ans" = "$((n + 1))" ]; then
+      CLIENT_SCOPE_ASK_PROTO="$list"
+      return 0
+    fi
     if ui_is_number_in_range "$ans" 1 "$n"; then
       i=1
       for proto in $list; do
@@ -234,32 +299,44 @@ client_scopes_ask_proto() {
         i=$((i + 1))
       done
     fi
-    case "$ans" in q|Q) return 1 ;; esac
+    case "$ans" in 0) return 1 ;; esac
     echo -e "${red}Неверный ввод.${plain}"
   done
 }
 
-# Выбор стратегии 0..max. Enter — текущее значение. Результат — $CLIENT_SCOPE_ASK_STRATEGY.
+# Выбор стратегии по конвенции проекта: 0 - выкл диссинка, Enter - без
+# изменений. C — сброс лока (удалить запись, наследовать default).
+# $1 — профиль, $2 — список протоколов, $3 — scope.
+# Результат — $CLIENT_SCOPE_ASK_STRATEGY (число 1..max, 0 или "clear").
 # 1 — отмена (ничего не сохраняется).
 client_scopes_ask_strategy() {
-  local profile="$1" proto="$2" scope="$3"
-  local max current cur_label ans cfg
+  local profile="$1" proto_list="$2" scope="$3"
+  local max ans cfg proto hint_line
   cfg="$(client_scopes_cfg)"
   max="$(config_profile_max_strategy "$profile" "$cfg" 2>/dev/null || echo 0)"
-  current="$(orch_scoped_locked_get "$scope" "$profile" "$proto" 2>/dev/null || echo 0)"
-  # 0 — не «отключить сайт», а выключить диссинк: трафик идёт без обработки.
-  cur_label="$current"
-  if [ "$current" = 0 ]; then
-    cur_label="выкл"
-  fi
+  hint_line=""
+  for proto in $proto_list; do
+    if [ -n "$hint_line" ]; then
+      hint_line="$hint_line, "
+    fi
+    hint_line="$hint_line$(_client_scopes_lock_hint "$scope" "$profile" "$proto")"
+  done
+  echo "Сейчас: $hint_line"
   while true; do
-    read -re -p "Стратегия (0..$max, 0 — выкл диссинка, Enter = $cur_label, q — назад): " ans || return 1
-    [ -n "$ans" ] || ans="$current"
-    if ui_is_number_in_range "$ans" 0 "$max"; then
+    read -re -p "Номер стратегии 1..$max (0 - выкл диссинка, C - сброс, Enter - без изменений): " ans || return 1
+    [ -n "$ans" ] || return 1
+    case "$ans" in
+      0)
+        CLIENT_SCOPE_ASK_STRATEGY="0"
+        return 0 ;;
+      c|C|с|С)
+        CLIENT_SCOPE_ASK_STRATEGY="clear"
+        return 0 ;;
+    esac
+    if ui_is_number_in_range "$ans" 1 "$max"; then
       CLIENT_SCOPE_ASK_STRATEGY="$ans"
       return 0
     fi
-    case "$ans" in q|Q) return 1 ;; esac
     echo -e "${red}Неверный ввод.${plain}"
   done
 }
@@ -334,49 +411,57 @@ client_scopes_wizard_add() {
   esac
 }
 
-# Мастер: настроить lock (scope → профиль → протокол → стратегия).
-# $1 — опциональный preset scope.
+# Мастер: настроить lock (scope → профиль → протокол(ы) → стратегия).
+# $1 — опциональный preset scope (таблица не печатается, scope не спрашивается).
 client_scopes_wizard_lock() {
-  local scope profile proto_list proto strategy
-  client_scopes_print_table
-  if ! client_scopes_ask_scope "${1:-}"; then
-    return 0
+  local scope profile proto_list proto strategy saved
+  if [ -z "${1:-}" ]; then
+    client_scopes_print_table
+    if ! client_scopes_ask_scope; then
+      return 0
+    fi
+  else
+    client_scopes_ask_scope "$1" || return 0
   fi
   scope="$CLIENT_SCOPE_ASK_RESULT"
-  if ! client_scopes_ask_profile; then
+  if ! client_scopes_ask_profile "$scope"; then
     return 0
   fi
   profile="$CLIENT_SCOPE_ASK_PROFILE"
-  proto_list="$(config_profile_proto_list "$profile")"
-  if [ -z "$proto_list" ]; then
-    echo -e "${red}Не удалось определить протокол профиля $profile.${plain}"
+  if ! client_scopes_ask_proto "$(config_profile_proto_list "$profile")"; then
+    echo -e "${red}Не удалось определить протоколы профиля $profile.${plain}"
     return 1
   fi
-  if [ "${proto_list#* }" = "$proto_list" ]; then
-    proto="$proto_list"
-  elif ! client_scopes_ask_proto "$proto_list"; then
-    return 0
-  else
-    proto="$CLIENT_SCOPE_ASK_PROTO"
-  fi
-  if ! client_scopes_ask_strategy "$profile" "$proto" "$scope"; then
+  proto_list="$CLIENT_SCOPE_ASK_PROTO"
+  if ! client_scopes_ask_strategy "$profile" "$proto_list" "$scope"; then
     return 0
   fi
   strategy="$CLIENT_SCOPE_ASK_STRATEGY"
-  local saved="$strategy"
-  if [ "$strategy" = 0 ]; then
-    saved="0 (выкл)"
-  fi
-  if orch_scoped_locked_set "$scope" "$profile" "$proto" "$strategy"; then
-    echo -e "${green}Lock сохранён: $scope / профиль $profile ($(config_profile_title "$profile")) / $proto → $saved.${plain}"
-    if [ "$strategy" = 0 ]; then
-      echo "Диссинк по этому профилю у клиента выключен: трафик идёт без обработки. Это не блокировка сайта."
+  for proto in $proto_list; do
+    if [ "$strategy" = clear ]; then
+      if ! orch_scoped_locked_clear "$scope" "$profile" "$proto"; then
+        echo -e "${red}Не удалось сбросить lock ($proto).${plain}"
+        return 1
+      fi
+    elif ! orch_scoped_locked_set "$scope" "$profile" "$proto" "$strategy"; then
+      echo -e "${red}Не удалось сохранить lock ($proto): некорректные параметры или конфликт.${plain}"
+      return 1
     fi
-    echo "Lock'и scope: $(_client_scopes_lock_line "$scope")"
+  done
+  if [ "$strategy" = clear ]; then
+    if [ "$scope" = default ]; then
+      echo -e "${green}Lock сброшен: профиль $profile ($(config_profile_title "$profile")) вернётся к авторотации оркестра.${plain}"
+    else
+      echo -e "${green}Lock сброшен: $scope / профиль $profile ($(config_profile_title "$profile")) наследует default.${plain}"
+    fi
   else
-    echo -e "${red}Не удалось сохранить lock (некорректные параметры или конфликт).${plain}"
-    return 1
+    saved="$strategy"
+    if [ "$strategy" = 0 ]; then
+      saved="выкл (диссинк не применяется)"
+    fi
+    echo -e "${green}Lock сохранён: $scope / профиль $profile ($(config_profile_title "$profile")) / $proto_list → $saved.${plain}"
   fi
+  echo "Lock'и scope: $(_client_scopes_lock_line "$scope")"
 }
 
 # Мастер: удалить клиента (все IP scope + опционально его lock'и).

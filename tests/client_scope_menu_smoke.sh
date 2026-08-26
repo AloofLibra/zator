@@ -246,6 +246,36 @@ client_scope_ip_set 192.0.2.70 mark:10 || fail 'set mark:10 for lock test'
 printf 'mark:10\n5\n1\n' | client_scopes_wizard_lock || fail 'wizard_lock standalone'
 [ "$(orch_scoped_locked_get mark:10 5 udp)" = 1 ] || fail 'wizard_lock should store mark:10/5/udp=1'
 
+# --- Фаза L: UX выбора стратегии — 0/Enter/C, оба протокола ---
+# max профиля 1 в мок-конфиге = 3, поэтому стратегии 3/2.
+client_scope_ip_set 192.0.2.80 mark:5 || fail 'set mark:5 for lock ux test'
+# Enter на вопросе протокола = оба протокола сразу.
+printf 'mark:5\n1\n\n3\n' | client_scopes_wizard_lock || fail 'wizard_lock both protos'
+[ "$(orch_scoped_locked_get mark:5 1 tls)" = 3 ] || fail 'both protos should set tls=3'
+[ "$(orch_scoped_locked_get mark:5 1 http)" = 3 ] || fail 'both protos should set http=3'
+# 0 — выкл диссинка для одного протокола.
+printf 'mark:5\n1\n2\n0\n' | client_scopes_wizard_lock || fail 'wizard_lock выкл http'
+[ "$(orch_scoped_locked_get mark:5 1 http)" = 0 ] || fail '0 should set http=0'
+[ "$(orch_scoped_locked_get mark:5 1 tls)" = 3 ] || fail 'tls must stay 3'
+# Enter — без изменений.
+printf 'mark:5\n1\n\n2\n' | client_scopes_wizard_lock || fail 'wizard_lock set 2'
+[ "$(orch_scoped_locked_get mark:5 1 tls)" = 2 ] || fail 'set 2 should update tls'
+printf 'mark:5\n1\n\n\n' | client_scopes_wizard_lock || fail 'wizard_lock Enter no change'
+[ "$(orch_scoped_locked_get mark:5 1 tls)" = 2 ] || fail 'Enter must not change tls lock'
+[ "$(orch_scoped_locked_get mark:5 1 http)" = 2 ] || fail 'Enter must not change http lock'
+# C — сброс: запись удаляется (наследование default), а не пишется 0.
+printf 'mark:5\n1\n\nC\n' | client_scopes_wizard_lock || fail 'wizard_lock сброс'
+[ -z "$(_client_scopes_scoped_value mark:5 1 tls)" ] || fail 'сброс должен удалить tls lock'
+[ -z "$(_client_scopes_scoped_value mark:5 1 http)" ] || fail 'сброс должен удалить http lock'
+# 0 — назад в промптах scope/профиля: отмена без изменений.
+if printf '0\n' | client_scopes_ask_scope >/dev/null 2>&1; then
+  fail 'ask_scope 0 should cancel'
+fi
+if printf '0\n' | client_scopes_ask_profile mark:5 >/dev/null 2>&1; then
+  fail 'ask_profile 0 should cancel'
+fi
+client_scope_ip_remove 192.0.2.80 || fail 'clear mark:5'
+
 # --- Фаза J: wizard_remove (IP + lock'и; режим гаснет только на последнем) ---
 printf 'mark:2\ny\ny\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:2'
 [ -z "$(client_scope_ip_get 192.0.2.21)" ] || fail 'wizard_remove should clear IP'
@@ -271,7 +301,7 @@ unset ZAPRET2_INIT
 
 # --- Фаза K: меню 11 (сводка + мастера) ---
 # Ручной ввод разрешает только существующий scope.
-if printf 'mark:999\nq\n' | client_scopes_ask_scope >/dev/null 2>&1; then
+if printf 'mark:999\n0\n' | client_scopes_ask_scope >/dev/null 2>&1; then
   fail 'ask_scope must reject a non-existent mark'
 fi
 printf '9\n0\n' | client_scopes_submenu || fail 'submenu should exit on 0 after invalid input'
