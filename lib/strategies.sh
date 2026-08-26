@@ -512,6 +512,7 @@ orch_auto_sweep() {
                 fi
             done
             echo "Изменения отменены, прежние стратегии профиля возвращены."
+            client_scope_daemon_reload
         fi
     fi
     return 0
@@ -953,6 +954,8 @@ manage_custom_rkn_domain() {
                 echo "Стратегия $s сохранена для $user_domain."
             fi
             telemetry_notify
+            # Изменение scoped-локов требует рестарта nfqws2 (Keenetic).
+            client_scope_daemon_reload
             pause_enter
             return 0
         elif [ "$answer" = "0" ]; then
@@ -966,6 +969,7 @@ manage_custom_rkn_domain() {
         orch_locked_clear "$user_domain" "tls"
     fi
     echo "Изменения по стратегии для домена отменены."
+    client_scope_daemon_reload
     pause_enter
 }
 

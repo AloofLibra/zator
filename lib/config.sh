@@ -1201,6 +1201,9 @@ profile_state_set_and_apply() {
         orch_scoped_locked_set "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" "$normalized" || return 1
       fi
     done
+    # nfqws2 не всегда подхватывает изменение scoped-локов TTL-перечитыванием
+    # (замерено на Keenetic): перезапускаем демон, если он работал.
+    client_scope_daemon_reload
     return 0
   fi
 
