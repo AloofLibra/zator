@@ -281,8 +281,9 @@ client_scope_ip_remove() {
   client_scope_firewall_reconcile
 }
 
-# Следующий свободный mark (1..CLIENT_SCOPE_MARK_MAX), не занятый в маппинге.
-# Печатает "mark:N"; 1 если все заняты.
+# Следующий свободный mark (2..CLIENT_SCOPE_MARK_MAX), не занятый в маппинге.
+# mark:1 зарезервирован под собственный трафик роутера (тесты/автоподбор),
+# mark:0 использовать нельзя (0 = «метки нет»). Печатает "mark:N"; 1 если все заняты.
 client_scope_next_mark() {
   local max file used id
   max="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_MAX 2>/dev/null || printf 255)"
@@ -290,7 +291,7 @@ client_scope_next_mark() {
   file="$(client_scope_map_file)"
   used=""
   [ -f "$file" ] && used="$(awk -F '\t' '$1 ~ /^mark:[1-9][0-9]*$/ {print substr($1,6)}' "$file" | sort -n | tr '\n' ' ')"
-  id=1
+  id=2
   while [ "$id" -le "$max" ]; do
     case " $used " in
       *" $id "*) id=$((id + 1)) ;;

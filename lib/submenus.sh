@@ -300,6 +300,50 @@ client_scopes_ask_ip() {
   done
 }
 
+# Выбор mark для нового клиента: Enter — следующий свободный (автоназначение
+# со 2-го: mark:1 зарезервирован под роутер, 0 использовать нельзя),
+# mark:N/число — добавить в уже существующую группу или создать с этим номером.
+# Результат — $CLIENT_SCOPE_ASK_MARK. 1 — отмена.
+client_scopes_ask_mark() {
+  local next ans n ips
+  if ! next="$(client_scope_next_mark)"; then
+    next=""
+    echo -e "${yellow}Свободных mark нет — можно добавить только в существующую группу.${plain}"
+  fi
+  while true; do
+    if [ -n "$next" ]; then
+      read -re -p "Mark (Enter = $next — новая группа, или mark:N существующей, 0 — отмена): " ans || return 1
+      [ -n "$ans" ] || ans="$next"
+    else
+      read -re -p "Mark (mark:N — свободных номеров нет, только существующая группа, 0 — отмена): " ans || return 1
+    fi
+    case "$ans" in
+      0) return 1 ;;
+      mark:*) ;;
+      [0-9]*) ans="mark:$ans" ;;
+      *)
+        echo -e "${red}Некорректный mark (ожидается mark:N).${plain}"
+        continue
+        ;;
+    esac
+    n="${ans#mark:}"
+    if [ "$n" = "1" ]; then
+      echo -e "${yellow}mark:1 зарезервирован для собственного трафика роутера — выберите другой номер.${plain}"
+      continue
+    fi
+    if ! client_scope_mark_validate "$ans"; then
+      echo -e "${red}Некорректный mark (ожидается mark:N).${plain}"
+      continue
+    fi
+    ips="$(awk -F '\t' -v sc="$ans" '$1==sc { printf "%s%s", sep, $2; sep="," }' "$(client_scope_map_file)" 2>/dev/null)"
+    if [ -n "$ips" ]; then
+      echo -e "${yellow}IP добавляется в существующую группу $ans (уже там: $ips).${plain}"
+    fi
+    CLIENT_SCOPE_ASK_MARK="$ans"
+    return 0
+  done
+}
+
 # Выбор scope для меню стратегий: существующий (default/mark:N) или создание
 # нового клиента IP → mark. Результат — $CLIENT_SCOPE_ASK_RESULT. 1 — отмена.
 client_scopes_ask_scope_for_strategies() {
@@ -332,16 +376,12 @@ client_scopes_ask_scope_for_strategies() {
           continue
         fi
         ip="$CLIENT_SCOPE_ASK_IP"
-        scope="$(client_scope_ip_get "$ip")"
-        if [ -z "$scope" ]; then
-          if ! scope="$(client_scope_next_mark)"; then
-            echo -e "${red}Нет свободных mark: диапазон исчерпан.${plain}"
-            continue
-          fi
+        if ! client_scopes_ask_mark; then
+          continue
         fi
-        if client_scope_ip_add "$ip" "$scope"; then
-          echo -e "${green}Сохранено: $ip → $scope.${plain}"
-          CLIENT_SCOPE_ASK_RESULT="$scope"
+        if client_scope_ip_add "$ip" "$CLIENT_SCOPE_ASK_MARK"; then
+          echo -e "${green}Сохранено: $ip → $CLIENT_SCOPE_ASK_MARK.${plain}"
+          CLIENT_SCOPE_ASK_RESULT="$CLIENT_SCOPE_ASK_MARK"
           return 0
         fi
         echo -e "${red}Не удалось сохранить маппинг (проверьте IP и firewall backend).${plain}"
@@ -499,35 +539,11 @@ client_scopes_wizard_add() {
       y|Y|да|Д|д) ;;
       *) return 0 ;;
     esac
-  else
-    if ! scope="$(client_scope_next_mark)"; then
-      echo -e "${red}Нет свободных scope: все mark в разрешённом диапазоне уже заняты.${plain}"
-      return 1
-    fi
   fi
-  while true; do
-    read -re -p "Scope (Enter = $scope): " ans || return 1
-    [ -n "$ans" ] || ans="$scope"
-    case "$ans" in
-      mark:*)
-        if client_scope_mark_validate "$ans"; then
-          scope="$ans"
-          break
-        fi
-        ;;
-      *)
-        case "$ans" in
-          [0-9]*)
-            if client_scope_mark_validate "mark:$ans"; then
-              scope="mark:$ans"
-              break
-            fi
-            ;;
-        esac
-        ;;
-    esac
-    echo -e "${red}Некорректный scope (ожидается mark:N).${plain}"
-  done
+  if ! client_scopes_ask_mark; then
+    return 1
+  fi
+  scope="$CLIENT_SCOPE_ASK_MARK"
   if ! client_scope_ip_add "$ip" "$scope"; then
     echo -e "${red}Не удалось сохранить маппинг (проверьте IP, scope и firewall backend).${plain}"
     return 1

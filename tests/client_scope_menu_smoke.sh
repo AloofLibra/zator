@@ -92,13 +92,13 @@ grep -qx cleanup "$FIREWALL_EVENTS" || fail 'disable toggle did not cleanup fire
 client_scope_ip_remove 192.0.2.10 || fail 'mapping clear'
 [ ! -s "$FIREWALL_EVENTS" ] || [ "$(tail -n1 "$FIREWALL_EVENTS")" = cleanup ] || fail 'mapping clear changed disabled firewall incorrectly'
 
-# --- Фаза B: client_scope_next_mark ---
-[ "$(client_scope_next_mark)" = "mark:1" ] || fail 'next_mark empty should be mark:1'
-client_scope_ip_set 192.0.2.60 mark:1 || fail 'set mark:1'
-[ "$(client_scope_next_mark)" = "mark:2" ] || fail 'next_mark should skip used mark:1'
-client_scope_ip_set 192.0.2.61 mark:2 || fail 'set mark:2'
-[ "$(client_scope_next_mark)" = "mark:3" ] || fail 'next_mark should be mark:3'
-client_scope_ip_set 192.0.2.62 mark:3 || fail 'set mark:3'
+# --- Фаза B: client_scope_next_mark (mark:1 зарезервирован под роутер) ---
+[ "$(client_scope_next_mark)" = "mark:2" ] || fail 'next_mark empty should be mark:2 (mark:1 reserved)'
+client_scope_ip_set 192.0.2.60 mark:2 || fail 'set mark:2'
+[ "$(client_scope_next_mark)" = "mark:3" ] || fail 'next_mark should skip used mark:2'
+client_scope_ip_set 192.0.2.61 mark:3 || fail 'set mark:3'
+[ "$(client_scope_next_mark)" = "mark:4" ] || fail 'next_mark should be mark:4'
+client_scope_ip_set 192.0.2.62 mark:4 || fail 'set mark:4'
 # Граничный случай: все mark до MAX заняты -> ошибка.
 # MAX берётся из config (CLIENT_SCOPE_MARK_MAX), временно снижаем до 3.
 config_set_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_MARK_MAX 3 || fail 'set MARK_MAX=3'
@@ -106,20 +106,18 @@ if client_scope_next_mark >/dev/null 2>&1; then
   fail 'next_mark should fail when all marks up to MAX are used'
 fi
 config_set_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_MARK_MAX 255 || fail 'restore MARK_MAX=255'
-[ "$(client_scope_next_mark)" = "mark:4" ] || fail 'next_mark after restore should be mark:4'
-client_scope_ip_remove 192.0.2.60 || fail 'clear mark:1'
-client_scope_ip_remove 192.0.2.61 || fail 'clear mark:2'
-client_scope_ip_remove 192.0.2.62 || fail 'clear mark:3'
+[ "$(client_scope_next_mark)" = "mark:5" ] || fail 'next_mark after restore should be mark:5'
+client_scope_ip_remove 192.0.2.60 || fail 'clear mark:2'
+client_scope_ip_remove 192.0.2.61 || fail 'clear mark:3'
+client_scope_ip_remove 192.0.2.62 || fail 'clear mark:4'
 
 # Мастер должен явно сообщать об исчерпании mark, а не предлагать пустой default.
 config_set_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_MARK_MAX 2 || fail 'set exhausted MARK_MAX=2'
-client_scope_ip_set 192.0.2.60 mark:1 || fail 'set mark:1 for exhausted wizard'
-client_scope_ip_set 192.0.2.61 mark:2 || fail 'set mark:2 for exhausted wizard'
+client_scope_ip_set 192.0.2.60 mark:2 || fail 'set mark:2 for exhausted wizard'
 exhausted_out="$(printf '192.0.2.63\n' | client_scopes_wizard_add 2>&1 || true)"
-printf '%s' "$exhausted_out" | grep -q 'Нет свободных scope' || fail 'wizard should report exhausted marks'
+printf '%s' "$exhausted_out" | grep -q 'Свободных mark нет' || fail 'wizard should report exhausted marks'
 [ -z "$(client_scope_ip_get 192.0.2.63)" ] || fail 'exhausted wizard must not create mapping'
-client_scope_ip_remove 192.0.2.60 || fail 'remove exhausted mark:1'
-client_scope_ip_remove 192.0.2.61 || fail 'remove exhausted mark:2'
+client_scope_ip_remove 192.0.2.60 || fail 'remove exhausted mark:2'
 config_set_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_MARK_MAX 255 || fail 'restore exhausted MARK_MAX=255'
 
 # --- Фаза C: client_scope_table / lock_summary ---
@@ -218,16 +216,16 @@ client_scope_daemon_reload
 # --- Фаза F: wizard_add базовый (авто-mark, без lock, без включения) ---
 : > "$FIREWALL_EVENTS"
 printf '192.0.2.20\n\nn\nn\n' | client_scopes_wizard_add || fail 'wizard_add basic'
-[ "$(client_scope_ip_get 192.0.2.20)" = mark:1 ] || fail 'wizard_add should auto-assign mark:1'
+[ "$(client_scope_ip_get 192.0.2.20)" = mark:2 ] || fail 'wizard_add should auto-assign mark:2 (mark:1 reserved)'
 [ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 0 ] || fail 'wizard_add must not enable mode on "n"'
 [ ! -s "$FIREWALL_EVENTS" ] || fail 'wizard_add while disabled must not touch firewall'
-[ "$(client_scope_next_mark)" = mark:2 ] || fail 'next_mark after wizard_add'
+[ "$(client_scope_next_mark)" = mark:3 ] || fail 'next_mark after wizard_add'
 
 # --- Фаза G: wizard_add с lock (профиль 1 → tls → стратегия 2) ---
 printf '192.0.2.21\n\nn\ny\n1\n1\n2\n' | client_scopes_wizard_add || fail 'wizard_add with lock'
-[ "$(client_scope_ip_get 192.0.2.21)" = mark:2 ] || fail 'wizard_add lock client should get mark:2'
-[ "$(orch_scoped_locked_get mark:2 1 tls)" = 2 ] || fail 'wizard_add lock should store mark:2/1/tls=2'
-[ "$(client_scope_lock_summary mark:2)" = "1/tls=2" ] || fail 'lock summary after wizard_add'
+[ "$(client_scope_ip_get 192.0.2.21)" = mark:3 ] || fail 'wizard_add lock client should get mark:3'
+[ "$(orch_scoped_locked_get mark:3 1 tls)" = 2 ] || fail 'wizard_add lock should store mark:3/1/tls=2'
+[ "$(client_scope_lock_summary mark:3)" = "1/tls=2" ] || fail 'lock summary after wizard_add'
 
 # --- Фаза H: wizard_add с включением режима (демон запущен → рестарт) ---
 export ZAPRET2_INIT="$TMP_DIR/init.sh"
@@ -277,18 +275,18 @@ fi
 client_scope_ip_remove 192.0.2.80 || fail 'clear mark:5'
 
 # --- Фаза J: wizard_remove (IP + lock'и; режим гаснет только на последнем) ---
-printf 'mark:2\ny\ny\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:2'
+printf 'mark:3\ny\ny\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:3'
 [ -z "$(client_scope_ip_get 192.0.2.21)" ] || fail 'wizard_remove should clear IP'
-[ "$(orch_scoped_locked_get mark:2 1 tls)" = 0 ] || fail 'wizard_remove should clear locks'
+[ "$(orch_scoped_locked_get mark:3 1 tls)" = 0 ] || fail 'wizard_remove should clear locks'
 [ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 1 ] || fail 'wizard_remove must keep mode while other mappings exist'
 # Последний маппинг → режим выключается автоматически.
 printf 'mark:10\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:10'
-printf 'mark:1\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:1'
+printf 'mark:2\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:2'
 export ZAPRET2_INIT="$TMP_DIR/init.sh"
 touch "$RUNNING_FLAG"
 SERVICE_FAIL_ONCE=1
 SERVICE_RESTORE_RUNNING=1
-if printf 'mark:3\ny\nn\n' | client_scopes_wizard_remove; then
+if printf 'mark:4\ny\nn\n' | client_scopes_wizard_remove; then
   fail 'last-client removal should report first restart failure'
 fi
 [ -f "$RUNNING_FLAG" ] || fail 'last-client removal rollback must restore previously running daemon'
@@ -306,7 +304,7 @@ if printf 'mark:999\n0\n' | client_scopes_ask_scope >/dev/null 2>&1; then
 fi
 printf '9\n0\n' | client_scopes_submenu || fail 'submenu should exit on 0 after invalid input'
 printf '1\n192.0.2.50\n\nn\nn\n\n0\n' | client_scopes_submenu || fail 'submenu wizard_add roundtrip'
-[ "$(client_scope_ip_get 192.0.2.50)" = mark:1 ] || fail 'submenu wizard_add should persist mapping'
+[ "$(client_scope_ip_get 192.0.2.50)" = mark:2 ] || fail 'submenu wizard_add should persist mapping'
 # Пункт 4: включение без маппингов не должно сработать.
 client_scope_ip_remove 192.0.2.50 || fail 'clear for toggle test'
 printf '4\ny\n\n0\n' | client_scopes_submenu || fail 'submenu toggle roundtrip'
@@ -333,6 +331,12 @@ client_scopes_ask_ip <<'EOF' || fail 'ask_ip empty arp list fallback'
 192.0.2.92
 EOF
 [ "$CLIENT_SCOPE_ASK_IP" = "192.0.2.92" ] || fail 'ask_ip fallback result'
+# mark:1 зарезервирован под роутер; выбор уходит на повтор после отказа.
+client_scopes_ask_mark <<'EOF' || fail 'ask_mark after reserved rejection'
+1
+mark:7
+EOF
+[ "$CLIENT_SCOPE_ASK_MARK" = "mark:7" ] || fail 'ask_mark result'
 # Статика: пункты 11/12 ушли из меню стратегий, удаление клиента — в гейте.
 if grep -q 'submenu_item "11" "Client scopes' lib/submenus.sh; then
   fail 'menu 1 should not show client scopes item 11 anymore'
