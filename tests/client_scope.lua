@@ -136,3 +136,22 @@ assert(strategy == 1 and scope == "default",
   "missing runtime config must preserve the safe default scope")
 
 print("client scope parser ok")
+
+-- Per-mark файлы: три колонки без scope, скоуп подставляется из имени mark'а.
+G.locked_load_lines_for_tests({"3\ttls\t8", "5\tudp\t2"})
+local scoped_tmp = os.tmpname()
+local scoped_fh = assert(io.open(scoped_tmp, "w"))
+scoped_fh:write("3\ttls\t6\n", "5\tudp\t1\n")
+scoped_fh:close()
+G.locked_load_scoped_file_for_tests(scoped_tmp, "mark:82")
+os.remove(scoped_tmp)
+assert(G.locked_strategy_for_profile("3", "tls", "mark:82") == 6,
+  "per-mark file must load under its own scope")
+assert(G.locked_strategy_for_profile("5", "udp", "mark:82") == 1,
+  "per-mark udp row must load")
+assert(G.locked_strategy_for_profile("3", "tls", "default") == 8,
+  "per-mark file must not leak into default scope")
+assert(G.locked_strategy_for_profile("3", "tls", "mark:7") == 8,
+  "other mark must fall back to default")
+
+print("client scope per-mark files ok")

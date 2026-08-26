@@ -44,8 +44,30 @@ expect_fail orch_scoped_locked_set mark:1 2 udp 999999
 expect_fail orch_scoped_locked_set nope 2 tls 1
 
 # Every persisted row must be tab-separated and writes must be complete.
+# Mark-локи живут в per-mark файлах (3 колонки), locked.tsv их не содержит.
 orch_scoped_locked_set mark:7 2 tls 5
-awk -F '\t' '$1 ~ /^mark:/ && NF != 4 { exit 1 }' "$ORCH_LOCK_FILE" || fail "scoped row is not 4-column TSV"
+[ -f "$ORCH_DIR/scopes/mark_7.tsv" ] || fail "per-mark file missing after set"
+awk -F '\t' 'NF != 3 { exit 1 }' "$ORCH_DIR/scopes/mark_7.tsv" || fail "per-mark rows must be 3-column TSV"
+if grep -q '^mark:' "$ORCH_LOCK_FILE"; then
+  fail "locked.tsv must not keep scoped rows"
+fi
+[ "$(orch_scoped_locked_get mark:7 2 tls)" = 5 ] || fail "mark get from per-mark file"
+[ "$(orch_scoped_lock_source mark:7 2 tls)" = "scoped" ] || fail "lock source must be scoped"
+orch_scoped_locked_clear mark:7 2 tls || fail "clear mark:7"
+[ ! -f "$ORCH_DIR/scopes/mark_7.tsv" ] || fail "empty per-mark file must be removed"
+
+# Миграция legacy-формата: 4-колоночные mark: строки переезжают в per-mark файл.
+printf 'mark:9\t2\ttls\t4\n2\ttls\t3\n' > "$ORCH_LOCK_FILE"
+[ "$(orch_scoped_locked_get mark:9 2 tls)" = 4 ] || fail "migrated mark lock lost"
+[ -f "$ORCH_DIR/scopes/mark_9.tsv" ] || fail "migration must create per-mark file"
+if grep -q '^mark:' "$ORCH_LOCK_FILE"; then
+  fail "migration must strip scoped rows from locked.tsv"
+fi
+[ "$(orch_scoped_locked_get default 2 tls)" = 3 ] || fail "migration must keep default rows"
+# Повторная миграция — идемпотентна, значение не удваивается.
+orch_scoped_locks_migrate || fail "idempotent migrate run"
+[ "$(awk -F '\t' 'END{print NR}' "$ORCH_DIR/scopes/mark_9.tsv")" = 1 ] || fail "migrate must not duplicate rows"
+orch_scoped_locked_clear mark:9 2 tls || fail "clear migrated mark:9"
 
 # Every persisted row must be tab-separated and writes must be complete.
 client_scope_ip_set 192.0.2.10 mark:101 || fail "IP mapping set"

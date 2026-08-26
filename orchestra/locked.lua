@@ -1,5 +1,11 @@
 local LOCKED_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.tsv"
 local LOCKED_MANUAL_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.manual.tsv"
+-- Per-mark lock-файлы: <orchestra>/scopes/mark_N.tsv (3 колонки, без колонки scope).
+-- Список активных mark'ов берём из маппинга клиентов — он и так перечисляет
+-- все mark'и, чей трафик маркируется firewall'ом.
+local LOCKED_DIR = string.match(LOCKED_PATH, "^(.*)/[^/]+$") or "/opt/zator/extra_strats/cache/orchestra"
+local SCOPED_DIR = LOCKED_DIR .. "/scopes"
+local SCOPED_MAP_PATH = LOCKED_DIR .. "/../client_scope.tsv"
 local last_load = 0
 local cache_ttl = 2
 local LOCKED_TLS = {}
@@ -86,6 +92,33 @@ local function load_locked_file(path)
   load_locked_lines(lines)
 end
 
+-- Per-mark файл: строки «profile<TAB>proto<TAB>strategy» без колонки scope.
+-- Скоуп подставляется из имени mark'а; валидация — общая через locked_parse_line.
+local function load_scoped_file(path, scope)
+  local f = io.open(path, "r")
+  if not f then return end
+  for line in f:lines() do
+    local s, profile, proto, strategy = locked_parse_line(scope .. "\t" .. line)
+    if s then
+      CLIENT_SCOPE_SCOPED_LOCK_COUNT = CLIENT_SCOPE_SCOPED_LOCK_COUNT + 1
+      store_locked(s, profile, proto, strategy)
+    end
+  end
+  f:close()
+end
+
+local function load_scoped_locks()
+  local f = io.open(SCOPED_MAP_PATH, "r")
+  if not f then return end
+  for line in f:lines() do
+    local mark = line:match("^mark:(%d+)\t")
+    if mark then
+      load_scoped_file(SCOPED_DIR .. "/mark_" .. mark .. ".tsv", "mark:" .. mark)
+    end
+  end
+  f:close()
+end
+
 local function load_locked_tables()
   local now = os.time()
   if now and (now - last_load) < cache_ttl then return end
@@ -102,6 +135,7 @@ local function load_locked_tables()
   else
     load_locked_file(LOCKED_PATH)
     load_locked_file(LOCKED_MANUAL_PATH)
+    load_scoped_locks()
   end
 end
 
@@ -135,6 +169,16 @@ function locked_load_lines_for_tests(lines)
   LOCKED_TEST_LINES = lines or {}
   last_load = 0
   load_locked_tables()
+end
+
+-- Тестовый загрузчик per-mark файла: чистые таблицы + один файл под своим скоупом.
+function locked_load_scoped_file_for_tests(path, scope)
+  LOCKED_TEST_LINES = nil
+  last_load = os.time() or 0
+  LOCKED_TLS, LOCKED_HTTP, LOCKED_UDP = {}, {}, {}
+  LOCKED_CONFLICTS, LOCKED_CONFLICTS_TOTAL = {}, 0
+  CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
+  load_scoped_file(path, scope)
 end
 
 local function load_exclude_hostlist(path)

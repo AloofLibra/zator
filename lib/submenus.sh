@@ -157,16 +157,17 @@ client_scopes_print_table() {
 # orch_scoped_locked_get, не подменяет «нет записи» на 0 — для сброса
 # нужен именно факт отсутствия записи.
 _client_scopes_scoped_value() {
-  local scope="$1" profile="$2" proto="$3"
-  [ -f "$ORCH_LOCK_FILE" ] || return 0
-  if [ "$scope" = default ]; then
+  local scope="$1" profile="$2" proto="$3" file
+  if [ "$scope" != default ]; then
+    file="$(_orch_scope_lock_file "$scope")" || return 0
+    [ -f "$file" ] || return 0
+    awk -F '\t' -v pr="$profile" -v po="$proto" '$1==pr && $2==po {print $3; exit}' "$file"
+  else
+    [ -f "$ORCH_LOCK_FILE" ] || return 0
     awk -F '\t' -v pr="$profile" -v po="$proto" '
       $1==pr && $2==po && NF==3 {print $3; exit}
       $1==pr && po=="tls" && NF==2 {print $2; exit}
     ' "$ORCH_LOCK_FILE"
-  else
-    awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" \
-      '$1==sc && $2==pr && $3==po && NF>=4 {print $4; exit}' "$ORCH_LOCK_FILE"
   fi
 }
 
@@ -203,9 +204,9 @@ client_scopes_ask_scope() {
     [ -n "$scope" ] || continue
     count=$((count + 1))
     if [ "$scope" = "default" ]; then
-      echo "  $count. default — все клиенты"
+      submenu_item "$count" "default — все клиенты"
     else
-      echo "  $count. $scope"
+      submenu_item "$count" "$scope"
     fi
   done <<< "$list"
   while true; do
@@ -239,9 +240,9 @@ client_scopes_ask_profile() {
     max="$(config_profile_max_strategy "$p" "$cfg" 2>/dev/null || echo 0)"
     hint="$(_client_scopes_locks_hint "${1:-default}" "$p")"
     if [ -n "$hint" ]; then
-      echo "  $p. $(config_profile_title "$p") [$max] — $hint"
+      submenu_item "$p" "$(config_profile_title "$p") [$max] — $hint"
     else
-      echo "  $p. $(config_profile_title "$p") [$max]"
+      submenu_item "$p" "$(config_profile_title "$p") [$max]"
     fi
   done
   while true; do
@@ -279,10 +280,10 @@ client_scopes_ask_proto() {
   fi
   i=1
   for proto in $list; do
-    echo "  $i. $proto"
+    submenu_item "$i" "$proto"
     i=$((i + 1))
   done
-  echo "  $((n + 1)). оба протокола"
+  submenu_item "$((n + 1))" "оба протокола"
   while true; do
     read -re -p "Протокол (1..$((n + 1)), Enter - оба, 0 — назад): " ans || return 1
     if [ -z "$ans" ] || [ "$ans" = "$((n + 1))" ]; then

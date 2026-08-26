@@ -214,6 +214,8 @@ Scoped lock удаляется отдельно через сброс scoped loc
 ```sh
 cat /opt/zator/extra_strats/cache/client_scope.tsv
 cat /opt/zator/extra_strats/cache/orchestra/locked.tsv
+ls /opt/zator/extra_strats/cache/orchestra/scopes/ 2>/dev/null
+cat /opt/zator/extra_strats/cache/orchestra/scopes/mark_*.tsv 2>/dev/null
 nft list table inet zator_client_scope
 ps w | grep '[n]fqws2'
 logread | grep -i nfqws2 | tail -100

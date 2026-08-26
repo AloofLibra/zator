@@ -29,21 +29,64 @@ _orch_scope_basic_validate() {
   printf '%s' "$scope" | grep -Eq '^(default|mark:[0-9]+)$'
 }
 
+# Per-mark lock-файлы: $ORCH_DIR/scopes/mark_N.tsv, строки — profile<TAB>proto<TAB>strategy.
+# Один mark — один файл: клиента можно бекапить/удалять целиком, файл читается сам
+# по себе. default-локи остаются в locked.tsv (легаси-формат 2/3 колонки).
+_orch_scopes_dir() {
+  printf '%s\n' "${ORCH_DIR}/scopes"
+}
+
+_orch_scope_lock_file() {
+  local n="${1#mark:}"
+  printf '%s' "$n" | grep -Eq '^[1-9][0-9]*$' || return 1
+  printf '%s\n' "$(_orch_scopes_dir)/mark_${n}.tsv"
+}
+
+# Разовая миграция старого формата: 4-колоночные mark: строки из locked.tsv
+# переезжают в per-mark файлы. Идемпотентна; Lua до сих пор читает и старый
+# формат, так что непромигрированные установки продолжают работать.
+orch_scoped_locks_migrate() {
+  local f="${ORCH_LOCK_FILE}" dir tmp
+  [ -f "$f" ] || return 0
+  awk -F '\t' 'NF>=4 && $1 ~ /^mark:[1-9][0-9]*$/ {m=1} END {exit !m}' "$f" || return 0
+  dir="$(_orch_scopes_dir)"
+  mkdir -p "$dir" || return 1
+  awk -F '\t' 'NF>=4 && $1 ~ /^mark:[1-9][0-9]*$/ {print substr($1,6) "\t" $2 "\t" $3 "\t" $4}' "$f" \
+    | while IFS="$(printf '\t')" read -r n pr po st; do
+        [ -n "$n" ] || continue
+        printf '%s\t%s\t%s\n' "$pr" "$po" "$st" >> "$dir/mark_${n}.tsv"
+      done
+  tmp="${f}.migrate.$$"
+  awk -F '\t' '!(NF>=4 && $1 ~ /^mark:[1-9][0-9]*$/)' "$f" > "$tmp" \
+    && mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
 orch_scoped_locked_get() {
-  local scope="${1:-}" profile="${2:-}" proto="${3:-}"
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" file
   _orch_scope_basic_validate "$scope" || return 2
   [ -n "$profile" ] && [ -n "$proto" ] || return 2
+  if [ "$scope" != default ]; then
+    orch_scoped_locks_migrate
+    file="$(_orch_scope_lock_file "$scope")" || return 2
+    if [ -f "$file" ]; then
+      awk -F '\t' -v pr="$profile" -v po="$proto" '$1==pr && $2==po {print $3; exit}' "$file"
+    else
+      printf '0\n'
+    fi
+    return 0
+  fi
   [ -f "$ORCH_LOCK_FILE" ] || { printf '0\n'; return 0; }
-  awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '
-    $1==sc && $2==pr && $3==po && NF>=4 {print $4; found=1; exit}
-    sc=="default" && $1==pr && $2==po && NF==3 {print $3; found=1; exit}
-    sc=="default" && po=="tls" && $1==pr && NF==2 {print $2; found=1; exit}
+  awk -F '\t' -v pr="$profile" -v po="$proto" '
+    $1==pr && $2==po && NF==3 {print $3; found=1; exit}
+    po=="tls" && $1==pr && NF==2 {print $2; found=1; exit}
     END {if (!found) print "0"}
   ' "$ORCH_LOCK_FILE"
 }
 
 orch_scoped_locked_set() {
-  local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" tmp="${ORCH_LOCK_FILE}.tmp.$$" matches
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}"
+  local file tmp matches
   _orch_scope_basic_validate "$scope" || { echo "Invalid lock scope: $scope" >&2; return 2; }
   if type orch_scope_validate >/dev/null 2>&1; then
     orch_scope_validate "$scope" "$profile" "$proto" "$strategy" || return 2
@@ -52,23 +95,50 @@ orch_scoped_locked_set() {
     printf '%s' "$strategy" | grep -Eq '^(auto|clear|0|[1-9][0-9]*)$' || return 2
   fi
   case "$strategy" in auto|clear) orch_scoped_locked_clear "$scope" "$profile" "$proto"; return $? ;; esac
+  if [ "$scope" != default ]; then
+    orch_scoped_locks_migrate
+    file="$(_orch_scope_lock_file "$scope")" || return 2
+    mkdir -p "$(_orch_scopes_dir)" || return 1
+    [ -f "$file" ] || : > "$file" || return 1
+    matches="$(awk -F '\t' -v pr="$profile" -v po="$proto" '$1==pr && $2==po {n++} END {print n+0}' "$file")"
+    [ "$matches" -le 1 ] || { echo "Conflicting duplicate lock rows for $scope/$profile/$proto" >&2; return 3; }
+    tmp="${file}.tmp.$$"
+    awk -F '\t' -v OFS='\t' -v pr="$profile" -v po="$proto" -v st="$strategy" '
+      {if ($1==pr && $2==po) {if (!seen) {print pr, po, st; seen=1}; next} print}
+      END {if (!seen) print pr, po, st}
+    ' "$file" > "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; echo "Unable to update lock file" >&2; return 1; }
+    return 0
+  fi
   mkdir -p "$(dirname "$ORCH_LOCK_FILE")" || return 1
   [ -f "$ORCH_LOCK_FILE" ] || : > "$ORCH_LOCK_FILE" || return 1
-  matches="$(awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '((NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && NF==2 && $1==pr)) {n++} END {print n+0}' "$ORCH_LOCK_FILE")"
+  matches="$(awk -F '\t' -v pr="$profile" -v po="$proto" '((NF==3 && $1==pr && $2==po) || (po=="tls" && NF==2 && $1==pr)) {n++} END {print n+0}' "$ORCH_LOCK_FILE")"
   [ "$matches" -le 1 ] || { echo "Conflicting duplicate lock rows for $scope/$profile/$proto" >&2; return 3; }
-  awk -F '\t' -v OFS='\t' -v sc="$scope" -v pr="$profile" -v po="$proto" -v st="$strategy" '
-    function same() { return (NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && NF==2 && $1==pr) }
-    {if (same()) {if (!seen) {print (sc=="default" ? pr OFS po OFS st : sc OFS pr OFS po OFS st); seen=1}; next} print}
-    END {if (!seen) print (sc=="default" ? pr OFS po OFS st : sc OFS pr OFS po OFS st)}
+  tmp="${ORCH_LOCK_FILE}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v pr="$profile" -v po="$proto" -v st="$strategy" '
+    function same() { return (NF==3 && $1==pr && $2==po) || (po=="tls" && NF==2 && $1==pr) }
+    {if (same()) {if (!seen) {print pr, po, st; seen=1}; next} print}
+    END {if (!seen) print pr, po, st}
   ' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; echo "Unable to update lock file" >&2; return 1; }
 }
 
 orch_scoped_locked_clear() {
-  local scope="${1:-}" profile="${2:-}" proto="${3:-}" tmp="${ORCH_LOCK_FILE}.tmp.$$"
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" file tmp
   _orch_scope_basic_validate "$scope" || return 2
   if type orch_scope_validate >/dev/null 2>&1; then orch_scope_validate "$scope" "$profile" "$proto" clear || return 2; fi
+  if [ "$scope" != default ]; then
+    orch_scoped_locks_migrate
+    file="$(_orch_scope_lock_file "$scope")" || return 2
+    [ -f "$file" ] || return 0
+    tmp="${file}.tmp.$$"
+    awk -F '\t' -v pr="$profile" -v po="$proto" '!($1==pr && $2==po)' "$file" > "$tmp" \
+      && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+    # Пустой per-mark файл не оставляем: «клиент целиком» = нет файла.
+    [ -s "$file" ] || rm -f "$file"
+    return 0
+  fi
   [ -f "$ORCH_LOCK_FILE" ] || return 0
-  awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '!((NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && $1==pr && NF==2)) {print}' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; return 1; }
+  tmp="${ORCH_LOCK_FILE}.tmp.$$"
+  awk -F '\t' -v pr="$profile" -v po="$proto" '!((NF==3 && $1==pr && $2==po) || (po=="tls" && $1==pr && NF==2)) {print}' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; return 1; }
 }
 
 # Explain where an effective lock came from for CLI/WebUI diagnostics.
@@ -77,18 +147,38 @@ orch_scoped_lock_source() {
   local exact_count default_count
   _orch_scope_basic_validate "$scope" || return 2
   [ -n "$profile" ] && [ -n "$proto" ] || return 2
+  if [ "$scope" != default ]; then
+    orch_scoped_locks_migrate
+    file="$(_orch_scope_lock_file "$scope")" || return 2
+    if [ ! -f "$file" ]; then
+      exact_count=0
+    else
+      exact_count="$(awk -F '\t' -v pr="$profile" -v po="$proto" '$1==pr && $2==po {n++} END{print n+0}' "$file")"
+    fi
+    [ "$exact_count" -gt 1 ] && { printf 'conflict\n'; return 0; }
+    [ "$exact_count" -eq 1 ] && { printf 'scoped\n'; return 0; }
+    [ -f "$ORCH_LOCK_FILE" ] || { printf 'auto\n'; return 0; }
+    default_count="$(awk -F '\t' -v pr="$profile" -v po="$proto" '((NF==3 && $1==pr && $2==po) || (NF==2 && po=="tls" && $1==pr)) {n++} END{print n+0}' "$ORCH_LOCK_FILE")"
+    [ "$default_count" -gt 1 ] && printf 'conflict\n' || { [ "$default_count" -eq 1 ] && printf 'default\n' || printf 'auto\n'; }
+    return 0
+  fi
   [ -f "$file" ] || { printf 'auto\n'; return 0; }
-  exact_count="$(awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" 'NF>=4 && $1==sc && $2==pr && $3==po {n++} END{print n+0}' "$file")"
-  [ "$exact_count" -gt 1 ] && { printf 'conflict\n'; return 0; }
-  [ "$exact_count" -eq 1 ] && { printf 'scoped\n'; return 0; }
   default_count="$(awk -F '\t' -v pr="$profile" -v po="$proto" '((NF==3 && $1==pr && $2==po) || (NF==2 && po=="tls" && $1==pr)) {n++} END{print n+0}' "$file")"
   [ "$default_count" -gt 1 ] && printf 'conflict\n' || { [ "$default_count" -eq 1 ] && printf 'default\n' || printf 'auto\n'; }
 }
 
 orch_scoped_list_scopes() {
+  local dir
   printf 'default\n'
-  [ -f "$ORCH_LOCK_FILE" ] || return 0
-  awk -F '\t' '$1 ~ /^mark:[0-9]+$/ {print $1}' "$ORCH_LOCK_FILE"
+  orch_scoped_locks_migrate
+  {
+    [ -f "$ORCH_LOCK_FILE" ] && awk -F '\t' '$1 ~ /^mark:[1-9][0-9]*$/ {print $1}' "$ORCH_LOCK_FILE"
+    dir="$(_orch_scopes_dir)"
+    if [ -d "$dir" ]; then
+      ls "$dir" 2>/dev/null | sed -n 's/^mark_\([1-9][0-9]*\)\.tsv$/mark:\1/p'
+    fi
+  } | sort -u
+  return 0
 }
 
 # CLI-managed client mapping: one canonical row is scope<TAB>IP.
@@ -196,15 +286,18 @@ client_scope_next_mark() {
 }
 
 # Scoped/default lock-строки для одного scope. Печатает "profile<TAB>proto<TAB>strategy".
-# default — legacy 3- и 2-колоночные строки; mark:N — 4-колоночные.
+# default — legacy 3- и 2-колоночные строки из locked.tsv; mark:N — его per-mark файл.
 client_scope_scope_locks() {
-  local scope="${1:-default}"
+  local scope="${1:-default}" file
   _orch_scope_basic_validate "$scope" || return 2
-  [ -f "$ORCH_LOCK_FILE" ] || return 0
   if [ "$scope" = default ]; then
+    [ -f "$ORCH_LOCK_FILE" ] || return 0
     awk -F '\t' 'NF==3 {print $1 "\t" $2 "\t" $3} NF==2 {print $1 "\t" "tls" "\t" $2}' "$ORCH_LOCK_FILE"
   else
-    awk -F '\t' -v sc="$scope" '$1==sc && NF>=4 {print $2 "\t" $3 "\t" $4}' "$ORCH_LOCK_FILE"
+    orch_scoped_locks_migrate
+    file="$(_orch_scope_lock_file "$scope")" || return 2
+    [ -f "$file" ] || return 0
+    awk -F '\t' 'NF==3 {print $1 "\t" $2 "\t" $3}' "$file"
   fi
 }
 
@@ -223,18 +316,31 @@ client_scope_lock_summary() {
 # Машиночитаемая сводка по всем scope: "scope<TAB>ip<TAB>lock_summary".
 # default — первая строка (ip пустой), далее mark:N в порядке id.
 # Один scope может иметь несколько IP — они склеиваются через запятую.
+# Mark'и берутся и из маппинга, и из каталога per-mark локов: локи без
+# маппинга (клиент удалён, локи оставлены) видны и доступны для чистки.
 # Единый источник данных для CLI-таблицы и будущего WebUI.
 client_scope_table() {
-  local file scope ips locks
+  local file dir scope ips locks
   file="$(client_scope_map_file)"
+  dir="$(_orch_scopes_dir)"
+  orch_scoped_locks_migrate
   printf 'default\t\t%s\n' "$(client_scope_lock_summary default)"
-  [ -f "$file" ] || return 0
-  for scope in $(awk -F '\t' '$1 ~ /^mark:[1-9][0-9]*$/ {print $1}' "$file" | sort -u -t: -k2,2n); do
-    # Склейка IP через запятую на чистом awk: paste есть не во всех busybox-сборках.
-    ips="$(awk -F '\t' -v sc="$scope" '$1==sc { printf "%s%s", sep, $2; sep="," }' "$file")"
-    locks="$(client_scope_lock_summary "$scope")"
-    printf '%s\t%s\t%s\n' "$scope" "$ips" "$locks"
-  done
+  {
+    [ -f "$file" ] && awk -F '\t' '$1 ~ /^mark:[1-9][0-9]*$/ {print $1}' "$file"
+    if [ -d "$dir" ]; then
+      ls "$dir" 2>/dev/null | sed -n 's/^mark_\([1-9][0-9]*\)\.tsv$/mark:\1/p'
+    fi
+  } | sort -u | sort -t: -k2,2n | while IFS= read -r scope; do
+      [ -n "$scope" ] || continue
+      ips=""
+      if [ -f "$file" ]; then
+        # Склейка IP через запятую на чистом awk: paste есть не во всех busybox-сборках.
+        ips="$(awk -F '\t' -v sc="$scope" '$1==sc { printf "%s%s", sep, $2; sep="," }' "$file")"
+      fi
+      locks="$(client_scope_lock_summary "$scope")"
+      printf '%s\t%s\t%s\n' "$scope" "$ips" "$locks"
+    done
+  return 0
 }
 
 # Backward-compatible default-scope wrappers.
