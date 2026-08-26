@@ -645,9 +645,6 @@ client_scopes_wizard_lock() {
     echo -e "${green}Lock сохранён: $scope / профиль $profile ($(config_profile_title "$profile")) / $proto_list → $saved.${plain}"
   fi
   echo "Lock'и scope: $(_client_scopes_lock_line "$scope")"
-  # nfqws2 не всегда подхватывает изменение scoped-локов TTL-перечитыванием
-  # (замерено на Keenetic): перезапускаем демон, если он работал.
-  client_scope_daemon_reload
 }
 
 # Мастер: удалить клиента (все IP scope + опционально его lock'и).

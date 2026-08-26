@@ -1194,6 +1194,7 @@ profile_state_set_and_apply() {
   if [ "${ORCH_ACTIVE_SCOPE:-default}" != default ]; then
     # Контекст mark'и (client scopes): фиксируем только per-mark лок.
     # Глобальный profile state и config не трогаем — они описывают default-скоп.
+    # Рестарт не нужен: nfqws2 перечитывает локы TTL-перечитыванием.
     for proto in $proto_list; do
       if [ "$normalized" = "auto" ]; then
         orch_scoped_locked_clear "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" || return 1
@@ -1201,9 +1202,6 @@ profile_state_set_and_apply() {
         orch_scoped_locked_set "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" "$normalized" || return 1
       fi
     done
-    # nfqws2 не всегда подхватывает изменение scoped-локов TTL-перечитыванием
-    # (замерено на Keenetic): перезапускаем демон, если он работал.
-    client_scope_daemon_reload
     return 0
   fi
 
