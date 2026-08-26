@@ -660,17 +660,10 @@ client_scopes_toggle_mode() {
 #функция меню "1. Сменить стратегии"
 strategies_submenu() {
   local SUBMENU_ITEM_INDENT=1
-  # Client scopes (Beta): при включённом режиме сначала выбираем/создаём
-  # клиента, под которого настраиваем стратегии; при выключенном меню
-  # работает как раньше — без вопросов про mark.
+  # Client scopes (Beta): меню всегда открывается как раньше — без вопросов.
+  # При включённом режиме активный клиент показывается в шапке и переключается
+  # пунктом 12 (по умолчанию — default, все клиенты).
   ORCH_ACTIVE_SCOPE="default"
-  if [ "$(client_scope_mode_text)" = "включен" ]; then
-    if client_scopes_ask_scope_for_strategies; then
-      ORCH_ACTIVE_SCOPE="$CLIENT_SCOPE_ASK_RESULT"
-    else
-      return 0
-    fi
-  fi
   while true; do
     clear -x
     local strategies_status cfg
@@ -691,7 +684,7 @@ strategies_submenu() {
     [ "$games_state" = "Выключен" ] && games_disabled=1 || games_disabled=0
 
     echo -e "${cyan}--- Управление стратегиями ---${plain}"
-    if [ "$ORCH_ACTIVE_SCOPE" != default ]; then
+    if [ "$(client_scope_mode_text)" = "включен" ]; then
       echo -e "${yellow}Клиент: $(client_scopes_scope_label "$ORCH_ACTIVE_SCOPE")${plain}"
     fi
     echo -e "${yellow}Выбор стратегии профиля (0 или Enter для выхода)${plain}"
@@ -724,6 +717,9 @@ strategies_submenu() {
     fi
     submenu_item "10" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "11" "Client scopes: IP и lock"
+    if [ "$(client_scope_mode_text)" = "включен" ]; then
+      submenu_item "12" "Клиент стратегий: $(client_scopes_scope_label "$ORCH_ACTIVE_SCOPE")"
+    fi
     submenu_item "0" "Назад"
     echo ""
 
@@ -794,6 +790,13 @@ strategies_submenu() {
         ;;
       "11")
         client_scopes_submenu
+        ;;
+      "12")
+        # Проваливание в настройки конкретной марки: подборы и фиксации
+        # ниже по меню применяются к выбранному клиенту.
+        if client_scopes_ask_scope_for_strategies; then
+          ORCH_ACTIVE_SCOPE="$CLIENT_SCOPE_ASK_RESULT"
+        fi
         ;;
       "22")
         echo -e "${yellow}Переключатель Client scopes переехал в главное меню (пункт 23).${plain}"
