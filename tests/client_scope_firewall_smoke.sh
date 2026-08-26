@@ -72,6 +72,7 @@ chmod +x "$MOCK/nft"
   apply
   first=$(cat "$NFT_STATE")
   printf '%s\n' "$first" | grep -q 'hook prerouting' || fail 'client scope did not select prerouting'
+  printf '%s\n' "$first" | grep -q 'priority -190' || fail 'client scope must classify before mangle-priority policy routing marks'
   ! printf '%s\n' "$first" | grep -q 'hook postrouting' || fail 'client scope selected postrouting'
   printf '%s\n' "$first" | grep -q 'ip6 saddr 2001:db8::10' || fail 'IPv6 client rule missing'
   ! printf '%s\n' "$first" | grep -q '999.1.1.1' || fail 'invalid IPv4 client rule was emitted'
