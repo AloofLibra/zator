@@ -230,6 +230,73 @@ client_scopes_ask_scope() {
   done
 }
 
+# Выбор scope для меню стратегий: существующий (default/mark:N) или создание
+# нового клиента IP → mark. Результат — $CLIENT_SCOPE_ASK_RESULT. 1 — отмена.
+client_scopes_ask_scope_for_strategies() {
+  local list count extra ans scope ip
+  while true; do
+    list="$(client_scope_table | cut -f1)"
+    count=0
+    while IFS= read -r scope; do
+      [ -n "$scope" ] || continue
+      count=$((count + 1))
+      if [ "$scope" = "default" ]; then
+        submenu_item "$count" "default — все клиенты"
+      else
+        submenu_item "$count" "$scope"
+      fi
+    done <<< "$list"
+    extra=$((count + 1))
+    submenu_item "$extra" "Новый клиент (IP → mark)"
+    read -re -p "Стратегии для клиента (1..$extra, 0 — назад): " ans || return 1
+    case "$ans" in
+      0) return 1 ;;
+      "$extra")
+        read -re -p "IP клиента: " ip || return 1
+        if ! client_scope_ip_validate "$ip"; then
+          echo -e "${red}Некорректный IP-адрес.${plain}"
+          continue
+        fi
+        scope="$(client_scope_ip_get "$ip")"
+        if [ -z "$scope" ]; then
+          if ! scope="$(client_scope_next_mark)"; then
+            echo -e "${red}Нет свободных mark: диапазон исчерпан.${plain}"
+            continue
+          fi
+        fi
+        if client_scope_ip_add "$ip" "$scope"; then
+          echo -e "${green}Сохранено: $ip → $scope.${plain}"
+          CLIENT_SCOPE_ASK_RESULT="$scope"
+          return 0
+        fi
+        echo -e "${red}Не удалось сохранить маппинг (проверьте IP и firewall backend).${plain}"
+        continue
+        ;;
+      *)
+        if ui_is_number_in_range "$ans" 1 "$count"; then
+          CLIENT_SCOPE_ASK_RESULT="$(sed -n "${ans}p" <<< "$list")"
+          return 0
+        fi
+        echo -e "${red}Неверный ввод.${plain}" ;;
+    esac
+  done
+}
+
+# Короткая строка «mark:82 (192.168.0.82)» для заголовка меню стратегий.
+client_scopes_scope_label() {
+  local scope="${1:-default}" ips
+  if [ "$scope" = default ]; then
+    printf '%s\n' "default (все клиенты)"
+    return 0
+  fi
+  ips="$(client_scope_table | awk -F '\t' -v sc="$scope" '$1==sc {print $2; exit}')"
+  if [ -n "$ips" ]; then
+    printf '%s (%s)\n' "$scope" "$ips"
+  else
+    printf '%s\n' "$scope"
+  fi
+}
+
 # Выбор профиля (1..7 — основные профили со стратегиями), с текущими локами.
 # $1 — scope, для которого показываем локи. Результат — $CLIENT_SCOPE_ASK_PROFILE.
 # 1 — отмена.
@@ -593,6 +660,17 @@ client_scopes_toggle_mode() {
 #функция меню "1. Сменить стратегии"
 strategies_submenu() {
   local SUBMENU_ITEM_INDENT=1
+  # Client scopes (Beta): при включённом режиме сначала выбираем/создаём
+  # клиента, под которого настраиваем стратегии; при выключенном меню
+  # работает как раньше — без вопросов про mark.
+  ORCH_ACTIVE_SCOPE="default"
+  if [ "$(client_scope_mode_text)" = "включен" ]; then
+    if client_scopes_ask_scope_for_strategies; then
+      ORCH_ACTIVE_SCOPE="$CLIENT_SCOPE_ASK_RESULT"
+    else
+      return 0
+    fi
+  fi
   while true; do
     clear -x
     local strategies_status cfg
@@ -613,6 +691,9 @@ strategies_submenu() {
     [ "$games_state" = "Выключен" ] && games_disabled=1 || games_disabled=0
 
     echo -e "${cyan}--- Управление стратегиями ---${plain}"
+    if [ "$ORCH_ACTIVE_SCOPE" != default ]; then
+      echo -e "${yellow}Клиент: $(client_scopes_scope_label "$ORCH_ACTIVE_SCOPE")${plain}"
+    fi
     echo -e "${yellow}Выбор стратегии профиля (0 или Enter для выхода)${plain}"
     echo -e "  Текущие стратегии [${strategies_status}]"
     echo -e 
@@ -643,7 +724,6 @@ strategies_submenu() {
     fi
     submenu_item "10" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "11" "Client scopes: IP и lock"
-    submenu_item "22" "Client scopes (Beta): $(client_scope_mode_text)" ""
     submenu_item "0" "Назад"
     echo ""
 
@@ -716,10 +796,11 @@ strategies_submenu() {
         client_scopes_submenu
         ;;
       "22")
-        toggle_client_scope_mode
+        echo -e "${yellow}Переключатель Client scopes переехал в главное меню (пункт 23).${plain}"
         pause_enter
         ;;
       "0"|"")
+        ORCH_ACTIVE_SCOPE="default"
         return
         ;;
       *)

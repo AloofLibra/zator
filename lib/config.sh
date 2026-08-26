@@ -500,6 +500,7 @@ menu_config_snapshot() {
   MENU_UDP_GAMES="Неизвестно"
   MENU_PORTS="дефолт"
   MENU_CONFIG_DATE="Неизвестно"
+  MENU_CLIENT_SCOPE="выключен"
   MENU_PROFILE_MAX_1=0
   MENU_PROFILE_MAX_2=0
   MENU_PROFILE_MAX_3=0
@@ -723,6 +724,9 @@ menu_config_snapshot() {
   fi
   if [ -n "$ports" ]; then
     MENU_PORTS="$ports"
+  fi
+  if [ "$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)" = "1" ]; then
+    MENU_CLIENT_SCOPE="включен"
   fi
   return 0
 }
@@ -1180,6 +1184,19 @@ profile_state_set_and_apply() {
   normalized="$(profile_state_normalize "$state")" || return 1
   [ -n "$proto_list" ] || proto_list="$(config_profile_proto_list "$profile")"
   [ -n "$proto_list" ] || return 1
+
+  if [ "${ORCH_ACTIVE_SCOPE:-default}" != default ]; then
+    # Контекст mark'и (client scopes): фиксируем только per-mark лок.
+    # Глобальный profile state и config не трогаем — они описывают default-скоп.
+    for proto in $proto_list; do
+      if [ "$normalized" = "auto" ]; then
+        orch_scoped_locked_clear "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" || return 1
+      else
+        orch_scoped_locked_set "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" "$normalized" || return 1
+      fi
+    done
+    return 0
+  fi
 
   for proto in $proto_list; do
     if [ "$normalized" = "auto" ]; then

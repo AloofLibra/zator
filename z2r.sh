@@ -1975,6 +1975,7 @@ ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас
 ${Fcyan}19.${yellow} Доп. настройки (reasm, WG, QUIC-fakes, keenetic)
 ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}
 ${Fcyan}21.${yellow} Управление бэкапами (создание/восстановление/удаление архивов)
+${Fcyan}23.${yellow} Client scopes (Beta): разные стратегии разным устройствам по IP. Сейчас: ${plain}[${MENU_CLIENT_SCOPE}]${yellow}
 ${Fcyan}666.${yellow} Ошибки nfqws2 — журнал последнего запуска${MENU_ERR_STATE}
 ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
@@ -2030,6 +2031,11 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ensure_nfqws2_stopped
     z2r_service_action start
     echo -e "${green}Выполнена быстрая перезагрузка zapret2 (остановка + запуск)${plain}"
+    pause_enter
+    ;;
+
+  "23")
+    toggle_client_scope_mode || true
     pause_enter
     ;;
 

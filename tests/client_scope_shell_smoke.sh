@@ -95,4 +95,32 @@ if grep -q '^example\.org\t' "$ORCH_LOCK_FILE"; then
   fail "custom-domain rows were not cleared"
 fi
 
+# Активный scope меню стратегий: дефолтные wrapper'ы пишут в per-mark файл,
+# глобальные profile state / config не затрагиваются.
+(
+  export ORCH_ACTIVE_SCOPE="mark:5"
+  orch_locked_set 2 tls 7 || fail "active scope set"
+  [ -f "$ORCH_DIR/scopes/mark_5.tsv" ] || fail "active scope set must write per-mark file"
+  [ "$(orch_locked_get 2 tls)" = 7 ] || fail "active scope get"
+  [ "$(orch_locked_state_get 2 tls)" = 7 ] || fail "active scope state get"
+  [ "$(orch_locked_state_get 3 tls)" = "auto" ] || fail "absent scoped state must be auto"
+  profile_state_set_and_apply 2 "tls" 5 "$CONFIG_FILE" || fail "active scope profile apply"
+  [ "$(orch_scoped_locked_get mark:5 2 tls)" = 5 ] || fail "active scope profile apply must write scoped lock"
+  orch_locked_clear 2 tls || fail "active scope clear"
+  [ ! -f "$ORCH_DIR/scopes/mark_5.tsv" ] || fail "cleared per-mark file must be removed"
+)
+if grep -qE '^[0-9]+[[:space:]]+tls' "${PROFILE_STATE_FILE:-/nonexistent}" 2>/dev/null; then
+  fail "active scope must not touch global profile state"
+fi
+# Без ORCH_ACTIVE_SCOPE — всё как раньше: default-скоп.
+orch_locked_set 2 tls 3 || fail "default wrapper set"
+[ "$(orch_scoped_locked_get default 2 tls)" = 3 ] || fail "default wrapper must write locked.tsv"
+[ ! -f "$ORCH_DIR/scopes/mark_5.tsv" ] || fail "default wrapper must not write per-mark files"
+
+# Статика: гейт меню стратегий и статус по активному scope на месте.
+grep -q 'client_scopes_ask_scope_for_strategies' "$REPO_DIR/lib/submenus.sh" \
+  || fail "strategies menu lost client scope gate"
+grep -q 'ORCH_ACTIVE_SCOPE' "$REPO_DIR/lib/strategies.sh" \
+  || fail "locks info lost active scope awareness"
+
 printf 'client scope shell smoke ok\n'

@@ -527,8 +527,15 @@ get_orchestra_locks_info() {
 
     local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http"
     local stored_line orch_line
-    stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
-    orch_line="$(_orchestra_multi_state "$orch_lock_file" "$_pairs")"
+    if [ "${ORCH_ACTIVE_SCOPE:-default}" = default ]; then
+      stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
+      orch_line="$(_orchestra_multi_state "$orch_lock_file" "$_pairs")"
+    else
+      # Контекст mark'и (client scopes): показываем локи только этого клиента,
+      # глобальный profile state в шапку не примешиваем.
+      stored_line=""
+      orch_line="$(_orchestra_multi_state "$(_orch_scope_lock_file "$ORCH_ACTIVE_SCOPE" 2>/dev/null || printf '%s\n' "$orch_lock_file")" "$_pairs")"
+    fi
 
     local s_vals o_vals
     IFS=$'\t' read -ra s_vals <<< "$stored_line"

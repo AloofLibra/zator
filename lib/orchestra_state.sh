@@ -18,7 +18,22 @@ _orch_locked_read() {
 }
 
 orch_locked_state_get() {
-  _orch_locked_read "$1" "$2" "auto"
+  local scope="${ORCH_ACTIVE_SCOPE:-default}" file v
+  if [ "$scope" = default ]; then
+    _orch_locked_read "$1" "$2" "auto"
+    return 0
+  fi
+  file="$(_orch_scope_lock_file "$scope")" || { printf 'auto\n'; return 0; }
+  if [ ! -f "$file" ]; then
+    printf 'auto\n'
+    return 0
+  fi
+  v="$(awk -F '\t' -v pr="$1" -v po="$2" '$1==pr && $2==po {print $3; exit}' "$file")"
+  if [ -n "$v" ]; then
+    printf '%s\n' "$v"
+  else
+    printf 'auto\n'
+  fi
 }
 
 # Scoped locks retain legacy three-column rows for default and use
@@ -343,10 +358,13 @@ client_scope_table() {
   return 0
 }
 
-# Backward-compatible default-scope wrappers.
-orch_locked_get() { orch_scoped_locked_get default "$1" "$2"; }
-orch_locked_set() { orch_scoped_locked_set default "$1" "$2" "$3"; }
-orch_locked_clear() { orch_scoped_locked_clear default "$1" "$2"; }
+# Backward-compatible default-scope wrappers. Дефолтные wrapper'ы уважают
+# активный scope меню стратегий: пока меню работает в контексте mark:N
+# (client scopes включены), подборы и фиксации пишутся в его per-mark файл.
+# Во всех остальных контекстах ORCH_ACTIVE_SCOPE не задан → default.
+orch_locked_get() { orch_scoped_locked_get "${ORCH_ACTIVE_SCOPE:-default}" "$1" "$2"; }
+orch_locked_set() { orch_scoped_locked_set "${ORCH_ACTIVE_SCOPE:-default}" "$1" "$2" "$3"; }
+orch_locked_clear() { orch_scoped_locked_clear "${ORCH_ACTIVE_SCOPE:-default}" "$1" "$2"; }
 
 zapret2_running() {
   pidof nfqws2 >/dev/null 2>&1
