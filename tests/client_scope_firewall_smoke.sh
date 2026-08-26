@@ -14,7 +14,10 @@ args="$*"
 case "$1" in
   -N) grep -Fxq "chain:$2" "$state" 2>/dev/null || printf 'chain:%s\n' "$2" >> "$state" ;;
   -C) grep -Fxq "rule:-A ${args#-C }" "$state" ;;
+  # -I хранится как -A без позиционного номера: текст правила тот же,
+  # проверка -C/-D и идемпотентность работают по тексту, а не позиции.
   -A) printf 'rule:-A %s\n' "${args#-A }" >> "$state" ;;
+  -I) printf 'rule:-A %s\n' "$(printf '%s\n' "${args#-I }" | sed 's/^\([A-Za-z_][A-Za-z0-9_]*\) 1 /\1 /')" >> "$state" ;;
   -D) line="rule:-A ${args#-D }"; tmp="${state}.tmp"; awk -v x="$line" '$0 != x { print }' "$state" > "$tmp"; mv "$tmp" "$state" ;;
   -S) chain=${2:-}; sed -n "s/^rule:-A ${chain} /-A ${chain} /p" "$state" | sed 's/--comment zator-client-scope/--comment "zator-client-scope"/g' ;;
   *) exit 0 ;;
