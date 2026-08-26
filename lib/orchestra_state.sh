@@ -275,9 +275,8 @@ client_scope_ip_add() {
 client_scope_ip_remove() {
   local ip="$1"
   client_scope_ip_clear "$ip" || return $?
-  if [ -z "$(client_scope_ip_list)" ]; then
-    config_set_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 0 || return 1
-  fi
+  # Режим НЕ выключаем автоматически: удаление последнего клиента часто
+  # часть переформирования группы. Вопрос о выключении — в визарде удаления.
   client_scope_firewall_reconcile
 }
 

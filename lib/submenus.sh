@@ -650,6 +650,15 @@ client_scopes_wizard_lock() {
 }
 
 # Мастер: удалить клиента (все IP scope + опционально его lock'и).
+# Удалить все локи scope (per-mark файл целиком / default-строки не трогаем).
+client_scopes_clear_scope_locks() {
+  local scope="$1" prof pproto
+  while IFS="$(printf '\t')" read -r prof pproto _; do
+    [ -n "$prof" ] || continue
+    orch_scoped_locked_clear "$scope" "$prof" "$pproto"
+  done <<< "$(client_scope_scope_locks "$scope")"
+}
+
 client_scopes_wizard_remove() {
   local scope ans ip was_enabled was_running=0 rc ips count choice rest
   client_scopes_print_table
@@ -680,9 +689,26 @@ client_scopes_wizard_remove() {
       submenu_item "$count" "$ip"
     done
     submenu_item "$((count + 1))" "Удалить всю группу (все IP и локи)"
-    read -re -p "Удалить (1..$((count + 1)), 0 — отмена): " choice || return 0
+    submenu_item "$((count + 2))" "Сбросить локи группы (IP останутся)"
+    read -re -p "Выберите действие (1..$((count + 2)), 0 — отмена): " choice || return 0
     case "$choice" in
       0) return 0 ;;
+      "$((count + 2))")
+        # Отдельный сброс локов: клиент остаётся, стратегии возвращаются
+        # к default (наследованию).
+        if [ -z "$(client_scope_scope_locks "$scope")" ]; then
+          echo -e "${yellow}У группы $scope нет локов.${plain}"
+          return 0
+        fi
+        read -re -p "Сбросить все локи $scope (стратегии вернутся к default)? (y/N): " ans || return 0
+        case "$ans" in
+          y|Y|да|Д|д)
+            client_scopes_clear_scope_locks "$scope"
+            echo -e "${green}Локи группы $scope сброшены — стратегии наследуются от default.${plain}"
+            ;;
+        esac
+        return 0
+        ;;
       "$((count + 1))") ;;   # вся группа — обычный путь ниже
       *)
         if ui_is_number_in_range "$choice" 1 "$count"; then
@@ -701,6 +727,14 @@ client_scopes_wizard_remove() {
         ;;
     esac
   fi
+  # Судьбу локов решаем ДО удаления — пока клиент ещё существует.
+  clear_locks=0
+  if [ -n "$(client_scope_scope_locks "$scope")" ]; then
+    read -re -p "Удалить lock'и этого клиента? (y/N): " ans || return 0
+    case "$ans" in
+      y|Y|да|Д|д) clear_locks=1 ;;
+    esac
+  fi
   read -re -p "Удалить $scope и все его IP? (y/N): " ans || return 0
   case "$ans" in
     y|Y|да|Д|д) ;;
@@ -716,26 +750,29 @@ client_scopes_wizard_remove() {
       return 1
     fi
   done
-  echo -e "${green}Клиент $scope удалён.${plain}"
-  if [ "$was_enabled" = "включен" ] && [ "$(client_scope_mode_text)" != "включен" ]; then
-    if client_scope_daemon_reload "$was_running"; then :; else
-      rc=$?
-      [ "$was_running" = 1 ] && client_scope_daemon_reload 1 || true
-      echo -e "${red}Режим выключен, но перезапуск nfqws2 завершился ошибкой.${plain}"
-      return "$rc"
-    fi
-    echo -e "${yellow}Последний маппинг удалён — режим выключен.${plain}"
+  if [ "$clear_locks" = 1 ]; then
+    client_scopes_clear_scope_locks "$scope"
+    echo "Lock'и клиента удалены."
   fi
-  if [ -n "$(client_scope_scope_locks "$scope")" ]; then
-    read -re -p "Удалить lock'и этого клиента? (y/N): " ans || return 0
+  echo -e "${green}Клиент $scope удалён.${plain}"
+  # Последний клиент — не повод молча гасить режим: часто это часть
+  # переформирования группы. Спрашиваем, дефолт — оставить включённым
+  # (новый клиент подхватит правила автоматически).
+  if [ "$was_enabled" = "включен" ] && [ -z "$(client_scope_ip_list)" ]; then
+    read -re -p "Это был последний клиент — выключить режим Client scopes? (y/N): " ans || return 0
     case "$ans" in
       y|Y|да|Д|д)
-        local prof pproto
-        while IFS="$(printf '\t')" read -r prof pproto _; do
-          [ -n "$prof" ] || continue
-          orch_scoped_locked_clear "$scope" "$prof" "$pproto"
-        done <<< "$(client_scope_scope_locks "$scope")"
-        echo "Lock'и клиента удалены."
+        if client_scope_mode_set 0; then
+          echo -e "${yellow}Режим Client scopes выключен.${plain}"
+        else
+          rc=$?
+          [ "$was_running" = 1 ] && client_scope_daemon_reload 1 || true
+          echo -e "${red}Не удалось выключить режим (сбой перезапуска nfqws2).${plain}"
+          return "$rc"
+        fi
+        ;;
+      *)
+        echo -e "${yellow}Режим оставлен включённым: добавьте нового клиента — правила появятся автоматически.${plain}"
         ;;
     esac
   fi

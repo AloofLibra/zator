@@ -274,27 +274,34 @@ if printf '0\n' | client_scopes_ask_profile mark:5 >/dev/null 2>&1; then
 fi
 client_scope_ip_remove 192.0.2.80 || fail 'clear mark:5'
 
-# --- Фаза J: wizard_remove (IP + lock'и; режим гаснет только на последнем) ---
+# --- Фаза J: wizard_remove (локи спрашиваются ДО удаления; режим гаснет последним) ---
 printf 'mark:3\ny\ny\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:3'
 [ -z "$(client_scope_ip_get 192.0.2.21)" ] || fail 'wizard_remove should clear IP'
 [ "$(orch_scoped_locked_get mark:3 1 tls)" = 0 ] || fail 'wizard_remove should clear locks'
 [ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 1 ] || fail 'wizard_remove must keep mode while other mappings exist'
-# Последний маппинг → режим выключается автоматически.
-printf 'mark:10\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:10'
+# mark:10: локи оставить (n), марку удалить (y) — осиротевшие локи
+# нужны фазе M (выбор группы из списка).
+printf 'mark:10\nn\ny\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:10'
+# Последний маппинг: режим сами не гасим — спрашиваем (дефолт: оставить).
 printf 'mark:2\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:2'
+[ -z "$(client_scope_ip_get 192.0.2.20)" ] || fail 'mark:2 ip must be gone'
+[ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 1 ] || fail 'mode must stay enabled after last removal (answer n)'
+# Явное выключение через вопрос + падающий рестарт: ошибка локализована.
 export ZAPRET2_INIT="$TMP_DIR/init.sh"
 touch "$RUNNING_FLAG"
 SERVICE_FAIL_ONCE=1
 SERVICE_RESTORE_RUNNING=1
-if printf 'mark:4\ny\nn\n' | client_scopes_wizard_remove; then
-  fail 'last-client removal should report first restart failure'
+if printf 'mark:4\ny\ny\n' | client_scopes_wizard_remove; then
+  fail 'mode-off via question should report restart failure'
 fi
-[ -f "$RUNNING_FLAG" ] || fail 'last-client removal rollback must restore previously running daemon'
+[ -f "$RUNNING_FLAG" ] || fail 'daemon restore retry missing after failed mode-off'
 SERVICE_FAIL_ONCE=0
 SERVICE_RESTORE_RUNNING=0
 rm -f "$RUNNING_FLAG"
 unset ZAPRET2_INIT
-[ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 0 ] || fail 'removing last mapping should disable mode'
+# После неудачного выключения режим откатился к включённому — чистим явно.
+client_scope_mode_set 0 || fail 'cleanup disable after rollback'
+[ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 0 ] || fail 'final disable'
 [ ! -s "$CLIENT_SCOPE_MAP_FILE" ] || fail 'mapping file should be empty after removing all clients'
 
 # Группа с несколькими IP: удаление одного не трогает группу и локи.
@@ -303,8 +310,14 @@ client_scope_ip_set 192.0.2.81 mark:2 || fail 'set multi group ip2'
 printf 'mark:2\n1\n' | client_scopes_wizard_remove || fail 'wizard_remove single ip from group'
 [ -z "$(client_scope_ip_get 192.0.2.80)" ] || fail 'selected ip must be removed'
 [ "$(client_scope_ip_get 192.0.2.81)" = mark:2 ] || fail 'other group ip must stay'
-# Остался один IP — обычный путь удаления всей группы.
-printf 'mark:2\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove rest of group'
+# Отдельный сброс локов группы: IP остаются, стратегии наследуют default.
+client_scope_ip_set 192.0.2.83 mark:2 || fail 'set reset group ip1'
+orch_scoped_locked_set mark:2 3 tls 4 || fail 'set reset group lock'
+printf 'mark:2\n4\ny\n' | client_scopes_wizard_remove || fail 'wizard_reset group locks'
+[ -z "$(_client_scopes_scoped_value mark:2 3 tls)" ] || fail 'group locks must be reset'
+[ -n "$(client_scope_ip_get 192.0.2.83)" ] || fail 'group ips must survive lock reset'
+# Осталось два IP — удаляем всю группу через пункт меню.
+printf 'mark:2\n3\ny\n' | client_scopes_wizard_remove || fail 'wizard_remove rest of group'
 [ -z "$(client_scope_ip_get 192.0.2.81)" ] || fail 'group must be removed fully'
 
 # --- Фаза K: меню 11 (сводка + мастера) ---
