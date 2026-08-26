@@ -102,4 +102,11 @@ printf '%s\n' "$REMOVE_BLOCK" | grep -q 'client_scope_firewall_action cleanup' \
 if printf '%s\n' "$REMOVE_BLOCK" | grep -q 'if client_scope_enabled_from_active_config'; then
   fail 'remove_zapret still gates cleanup on enabled config'
 fi
+
+# Keenetic ndm пересобирает firewall при любом событии в сети и сносит правила
+# client scope; netfilter.d-хук обязан переустанавливать их общим reconcile.
+grep -q 'client_scope_firewall_reconcile' "$ROOT/Entware/000-zapret2.sh" \
+  || fail 'netfilter.d hook does not re-apply client scope firewall'
+grep -q 'restart-fw' "$ROOT/Entware/000-zapret2.sh" \
+  || fail 'netfilter.d hook lost restart-fw'
 printf 'client scope firewall smoke ok\n'
