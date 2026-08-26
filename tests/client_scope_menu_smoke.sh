@@ -375,4 +375,23 @@ fi
 grep -q 'Удалить клиента' lib/submenus.sh || fail 'gate picker must offer client removal'
 grep -q 'client_scopes_ask_ip' lib/submenus.sh || fail 'gate picker must use IP picker'
 
+# --- Фаза N: онбординг через пункт 23 — первого клиента добавляем на месте ---
+: > "$FIREWALL_EVENTS"
+toggle_client_scope_mode <<'EOF' || fail 'toggle onboarding add-first'
+Y
+192.0.2.99
+
+EOF
+[ "$(client_scope_ip_get 192.0.2.99)" = mark:2 ] || fail 'onboarding must create mapping'
+[ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 1 ] || fail 'onboarding must enable mode'
+grep -q '^CLIENT_SCOPE_ENABLE=1$' "$ZATOR_ROOT/lua/client-scope-config.lua" || fail 'onboarding must sync lua config'
+grep -qx apply "$FIREWALL_EVENTS" || fail 'onboarding must apply firewall'
+# Отказ от онбординга — режим остаётся выключенным.
+client_scope_mode_set 0 || fail 'disable after onboarding'
+client_scope_ip_remove 192.0.2.99 || fail 'clear onboarding client'
+if printf 'n\n' | toggle_client_scope_mode >/dev/null 2>&1; then
+  fail 'declined onboarding must not enable mode'
+fi
+[ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 0 ] || fail 'declined onboarding keeps mode off'
+
 printf 'client scope menu smoke ok\n'

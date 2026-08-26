@@ -812,8 +812,35 @@ toggle_client_scope_mode() {
     client_scope_mode_set 0 || return 1
     echo -e "${yellow}Client scopes (Beta) выключены.${plain}"
   else
-    client_scope_mode_set 1 || { echo -e "${red}Нельзя включить Client scopes (Beta): сначала добавьте IP-маппинг (пункт 11).${plain}"; return 1; }
-    echo -e "${green}Client scopes (Beta) включены.${plain}"
+    # Онбординг: включать нечего — добавляем первого клиента здесь же.
+    # Иначе тупик: меню 1 показывает выбор клиента только при включённом
+    # режиме, а включение требует хотя бы одного маппинга.
+    if [ -z "$(client_scope_ip_list)" ]; then
+      local ans
+      echo -e "${yellow}Клиентов ещё нет — сначала добавим первого, затем включим режим.${plain}"
+      read -re -p "Добавить клиента сейчас? (Y/n): " ans || return 1
+      case "$ans" in
+        n|N|нет|Н|н)
+          echo "Включение отменено: добавьте IP-маппинг (пункт 23 или меню 1 после включения)."
+          return 1
+          ;;
+      esac
+      if ! client_scopes_ask_ip; then
+        echo "Включение отменено."
+        return 1
+      fi
+      if ! client_scopes_ask_mark; then
+        echo "Включение отменено."
+        return 1
+      fi
+      if ! client_scope_ip_add "$CLIENT_SCOPE_ASK_IP" "$CLIENT_SCOPE_ASK_MARK"; then
+        echo -e "${red}Не удалось сохранить маппинг (проверьте IP и firewall backend).${plain}"
+        return 1
+      fi
+      echo -e "${green}Сохранено: $CLIENT_SCOPE_ASK_IP → $CLIENT_SCOPE_ASK_MARK.${plain}"
+    fi
+    client_scope_mode_set 1 || { echo -e "${red}Не удалось включить Client scopes (Beta).${plain}"; return 1; }
+    echo -e "${green}Client scopes (Beta) включены. Настройка стратегий — меню 1.${plain}"
   fi
 }
 
