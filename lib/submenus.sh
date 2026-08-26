@@ -651,7 +651,7 @@ client_scopes_wizard_lock() {
 
 # Мастер: удалить клиента (все IP scope + опционально его lock'и).
 client_scopes_wizard_remove() {
-  local scope ans ip was_enabled was_running=0 rc
+  local scope ans ip was_enabled was_running=0 rc ips count choice rest
   client_scopes_print_table
   if [ -z "$(client_scope_table | cut -f1 | grep '^mark:')" ]; then
     echo -e "${yellow}Нет клиентов для удаления.${plain}"
@@ -666,6 +666,41 @@ client_scopes_wizard_remove() {
       echo -e "${yellow}default — это все клиенты, удалять нечего. Выберите mark:N.${plain}"
       return 0 ;;
   esac
+  # В группе несколько IP — можно удалить один, не трогая остальных.
+  ips="$(awk -F '\t' -v sc="$scope" '$1==sc {print $2}' "$(client_scope_map_file)" 2>/dev/null)"
+  count=0
+  for ip in $ips; do
+    count=$((count + 1))
+  done
+  if [ "$count" -gt 1 ]; then
+    echo "В группе $scope несколько IP:"
+    count=0
+    for ip in $ips; do
+      count=$((count + 1))
+      submenu_item "$count" "$ip"
+    done
+    submenu_item "$((count + 1))" "Удалить всю группу (все IP и локи)"
+    read -re -p "Удалить (1..$((count + 1)), 0 — отмена): " choice || return 0
+    case "$choice" in
+      0) return 0 ;;
+      "$((count + 1))") ;;   # вся группа — обычный путь ниже
+      *)
+        if ui_is_number_in_range "$choice" 1 "$count"; then
+          ip="$(printf '%s\n' "$ips" | sed -n "${choice}p")"
+          if client_scope_ip_remove "$ip"; then
+            rest="$(awk -F '\t' -v sc="$scope" '$1==sc { printf "%s%s", sep, $2; sep="," }' "$(client_scope_map_file)" 2>/dev/null)"
+            echo -e "${green}IP $ip удалён из группы $scope. Осталось: $rest${plain}"
+          else
+            echo -e "${red}Не удалось удалить $ip.${plain}"
+            return 1
+          fi
+          return 0
+        fi
+        echo -e "${red}Неверный ввод.${plain}"
+        return 0
+        ;;
+    esac
+  fi
   read -re -p "Удалить $scope и все его IP? (y/N): " ans || return 0
   case "$ans" in
     y|Y|да|Д|д) ;;

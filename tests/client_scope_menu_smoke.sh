@@ -297,6 +297,16 @@ unset ZAPRET2_INIT
 [ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 0 ] || fail 'removing last mapping should disable mode'
 [ ! -s "$CLIENT_SCOPE_MAP_FILE" ] || fail 'mapping file should be empty after removing all clients'
 
+# Группа с несколькими IP: удаление одного не трогает группу и локи.
+client_scope_ip_set 192.0.2.80 mark:2 || fail 'set multi group ip1'
+client_scope_ip_set 192.0.2.81 mark:2 || fail 'set multi group ip2'
+printf 'mark:2\n1\n' | client_scopes_wizard_remove || fail 'wizard_remove single ip from group'
+[ -z "$(client_scope_ip_get 192.0.2.80)" ] || fail 'selected ip must be removed'
+[ "$(client_scope_ip_get 192.0.2.81)" = mark:2 ] || fail 'other group ip must stay'
+# Остался один IP — обычный путь удаления всей группы.
+printf 'mark:2\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove rest of group'
+[ -z "$(client_scope_ip_get 192.0.2.81)" ] || fail 'group must be removed fully'
+
 # --- Фаза K: меню 11 (сводка + мастера) ---
 # Ручной ввод разрешает только существующий scope.
 if printf 'mark:999\n0\n' | client_scopes_ask_scope >/dev/null 2>&1; then
