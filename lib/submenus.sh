@@ -300,29 +300,59 @@ client_scopes_ask_ip() {
   done
 }
 
-# Выбор mark для нового клиента: Enter — следующий свободный (автоназначение
-# со 2-го: mark:1 зарезервирован под роутер, 0 использовать нельзя),
-# mark:N/число — добавить в уже существующую группу или создать с этим номером.
-# Результат — $CLIENT_SCOPE_ASK_MARK. 1 — отмена.
+# Выбор mark: нумерованный список существующих групп (с их IP), «Новая группа»
+# (авто — следующий свободный со 2-го: mark:1 зарезервирован под роутер)
+# или ручной номер. Результат — $CLIENT_SCOPE_ASK_MARK. 1 — отмена.
 client_scopes_ask_mark() {
-  local next ans n ips
+  local next list count extra ans n ips scope
   if ! next="$(client_scope_next_mark)"; then
     next=""
     echo -e "${yellow}Свободных mark нет — можно добавить только в существующую группу.${plain}"
   fi
   while true; do
+    list="$(client_scope_table | awk -F '\t' '$1 ~ /^mark:/ {print $1}')"
+    count=0
+    echo "Группы клиентов:"
+    while IFS= read -r scope; do
+      [ -n "$scope" ] || continue
+      count=$((count + 1))
+      ips="$(awk -F '\t' -v sc="$scope" '$1==sc { printf "%s%s", sep, $2; sep="," }' "$(client_scope_map_file)" 2>/dev/null)"
+      if [ -n "$ips" ]; then
+        submenu_item "$count" "$scope ($ips)"
+      else
+        submenu_item "$count" "$scope"
+      fi
+    done <<< "$list"
     if [ -n "$next" ]; then
-      read -re -p "Mark (Enter = $next — новая группа, или mark:N существующей, 0 — отмена): " ans || return 1
-      [ -n "$ans" ] || ans="$next"
+      extra=$((count + 1))
+      submenu_item "$extra" "Новая группа ($next)"
+      read -re -p "Выберите группу (1..$count, Enter - новая $next, mark:N - вручную, 0 — отмена): " ans || return 1
+      [ -n "$ans" ] || ans="$extra"
     else
-      read -re -p "Mark (mark:N — свободных номеров нет, только существующая группа, 0 — отмена): " ans || return 1
+      extra=0
+      read -re -p "Выберите группу (1..$count, mark:N - вручную, 0 — отмена): " ans || return 1
+      if [ -z "$ans" ]; then
+        echo -e "${yellow}Свободных mark нет — выберите существующую группу или введите mark:N вручную.${plain}"
+        continue
+      fi
     fi
     case "$ans" in
       0) return 1 ;;
+    esac
+    if [ "$extra" != 0 ] && [ "$ans" = "$extra" ]; then
+      CLIENT_SCOPE_ASK_MARK="$next"
+      return 0
+    fi
+    if ui_is_number_in_range "$ans" 1 "$count"; then
+      CLIENT_SCOPE_ASK_MARK="$(sed -n "${ans}p" <<< "$list")"
+      return 0
+    fi
+    # Ручной ввод: mark:N или число — существующая группа или новая с номером.
+    case "$ans" in
       mark:*) ;;
       [0-9]*) ans="mark:$ans" ;;
       *)
-        echo -e "${red}Некорректный mark (ожидается mark:N).${plain}"
+        echo -e "${red}Неверный ввод.${plain}"
         continue
         ;;
     esac
@@ -334,10 +364,6 @@ client_scopes_ask_mark() {
     if ! client_scope_mark_validate "$ans"; then
       echo -e "${red}Некорректный mark (ожидается mark:N).${plain}"
       continue
-    fi
-    ips="$(awk -F '\t' -v sc="$ans" '$1==sc { printf "%s%s", sep, $2; sep="," }' "$(client_scope_map_file)" 2>/dev/null)"
-    if [ -n "$ips" ]; then
-      echo -e "${yellow}IP добавляется в существующую группу $ans (уже там: $ips).${plain}"
     fi
     CLIENT_SCOPE_ASK_MARK="$ans"
     return 0

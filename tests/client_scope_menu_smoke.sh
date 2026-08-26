@@ -331,9 +331,14 @@ client_scopes_ask_ip <<'EOF' || fail 'ask_ip empty arp list fallback'
 192.0.2.92
 EOF
 [ "$CLIENT_SCOPE_ASK_IP" = "192.0.2.92" ] || fail 'ask_ip fallback result'
-# mark:1 зарезервирован под роутер; выбор уходит на повтор после отказа.
-client_scopes_ask_mark <<'EOF' || fail 'ask_mark after reserved rejection'
+# Выбор марки: число — группа из списка (mark:10 остался с локами после
+# фазы J), mark:1 — резерв роутера (отказ), mark:7 — вручную.
+client_scopes_ask_mark <<'EOF' || fail 'ask_mark list selection'
 1
+EOF
+[ "$CLIENT_SCOPE_ASK_MARK" = "mark:10" ] || fail 'ask_mark should select existing group by number'
+client_scopes_ask_mark <<'EOF' || fail 'ask_mark reserved then manual'
+mark:1
 mark:7
 EOF
 [ "$CLIENT_SCOPE_ASK_MARK" = "mark:7" ] || fail 'ask_mark result'
