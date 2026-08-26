@@ -19,17 +19,136 @@ client_scopes_print_header() {
   fi
 }
 
-# Таблица: scope / IP / lock'и. Данные — из client_scope_table (orchestra_state.sh).
-client_scopes_print_table() {
-  local scope ips locks
+# Ширина строки при выводе локов (перенос длинных списков; ориентир — 80-колоночный терминал).
+CLIENT_SCOPES_WRAP_WIDTH=76
+
+# Короткие имена профилей для компактного вывода локов (полные — config_profile_title).
+_client_scopes_profile_label() {
+  case "$1" in
+    1) echo "YouTube" ;;
+    2) echo "Googlevideo" ;;
+    3) echo "RKN" ;;
+    4) echo "Discord" ;;
+    5) echo "QUIC" ;;
+    6) echo "UDP Voice" ;;
+    7) echo "UDP Games" ;;
+    8) echo "Fallback TLS" ;;
+    9) echo "Fallback HTTP" ;;
+    *) echo "профиль $1" ;;
+  esac
+}
+
+# Одна запись лока в человекочитаемом виде: "YouTube/tls=28", "домен/tls=выкл".
+# 0 — не номер стратегии, а «выключено»: диссинк для цели не применяется (VERDICT_PASS).
+_client_scopes_lock_entry() {
+  local target="$1" proto="$2" strat="$3" label
+  case "$target" in
+    [1-9]) label="$(_client_scopes_profile_label "$target")" ;;
+    *) label="$target" ;;
+  esac
+  if [ "$strat" = 0 ]; then
+    strat="выкл"
+  fi
+  printf '%s/%s=%s\n' "$label" "$proto" "$strat"
+}
+
+# Перенос записей (по одной в строке на входе) в строки не шире $1.
+# $2 — префикс первой строки (например, "домены (23): ").
+_client_scopes_wrap_entries() {
+  local width="${1:-76}" prefix="${2:-}" line="" entry first=1
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    if [ "$first" = 1 ]; then
+      entry="${prefix}${entry}"
+      first=0
+    fi
+    if [ -z "$line" ]; then
+      line="$entry"
+    elif [ "$(( ${#line} + ${#entry} + 2 ))" -le "$width" ]; then
+      line="$line, $entry"
+    else
+      printf '%s\n' "$line"
+      line="$entry"
+    fi
+  done
+  if [ -n "$line" ]; then
+    printf '%s\n' "$line"
+  fi
+  return 0
+}
+
+# Однострочная сводка локов scope с именами профилей и «выкл» вместо 0.
+_client_scopes_lock_line() {
+  local scope="$1" tab target proto strat out=""
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r target proto strat; do
+    if [ -n "$target" ]; then
+      if [ -n "$out" ]; then
+        out="$out, "
+      fi
+      out="$out$(_client_scopes_lock_entry "$target" "$proto" "$strat")"
+    fi
+  done <<< "$(client_scope_scope_locks "$scope" 2>/dev/null)"
+  printf '%s\n' "$out"
+}
+
+# Блок локов одного scope: сперва профили (по номеру), затем домены (по алфавиту).
+# У default доменных локов может быть много — список переносится по ширине.
+_client_scopes_print_locks() {
+  local scope="$1" tab target proto strat proles="" domains="" dcount
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r target proto strat; do
+    [ -n "$target" ] || continue
+    case "$target" in
+      [1-9]) proles="${proles}${target}${tab}${proto}${tab}${strat}
+" ;;
+      *) domains="${domains}${target}${tab}${proto}${tab}${strat}
+" ;;
+    esac
+  done <<< "$(client_scope_scope_locks "$scope" 2>/dev/null)"
+  [ -n "${proles}${domains}" ] || return 0
   echo ""
-  printf '  %-10s %-26s %s\n' "Scope" "IP" "Lock'и"
-  while IFS="$(printf '\t')" read -r scope ips locks; do
+  echo -e "  ${cyan}Локи (${scope}):${plain}"
+  if [ -n "$proles" ]; then
+    printf '%s' "$proles" | LC_ALL=C sort | while IFS="$tab" read -r target proto strat; do
+      if [ -n "$target" ]; then
+        _client_scopes_lock_entry "$target" "$proto" "$strat"
+      fi
+    done | _client_scopes_wrap_entries "$CLIENT_SCOPES_WRAP_WIDTH" | sed 's/^/    /'
+  fi
+  if [ -n "$domains" ]; then
+    dcount="$(printf '%s' "$domains" | grep -c .)"
+    printf '%s' "$domains" | LC_ALL=C sort | while IFS="$tab" read -r target proto strat; do
+      if [ -n "$target" ]; then
+        _client_scopes_lock_entry "$target" "$proto" "$strat"
+      fi
+    done | _client_scopes_wrap_entries "$CLIENT_SCOPES_WRAP_WIDTH" "домены ($dcount): " | sed 's/^/    /'
+  fi
+  return 0
+}
+
+# Таблица: scope / IP. Локи — блоками под таблицей: у default это все локи
+# оркестра (профили + домены), в одну строку они не помещаются.
+# Данные — из client_scope_table / client_scope_scope_locks (orchestra_state.sh).
+client_scopes_print_table() {
+  local scope ips
+  echo ""
+  printf '  %-10s %s\n' "Scope" "IP"
+  while IFS="$(printf '\t')" read -r scope ips _; do
     [ -n "$scope" ] || continue
-    [ -n "$ips" ] || ips="—"
-    [ -n "$locks" ] || locks="—"
-    printf '  %-10s %-26s %s\n' "$scope" "$ips" "$locks"
+    if [ "$scope" = default ]; then
+      ips="все клиенты"
+    elif [ -z "$ips" ]; then
+      ips="—"
+    fi
+    printf '  %-10s %s\n' "$scope" "$ips"
   done <<< "$(client_scope_table)"
+  while IFS="$(printf '\t')" read -r scope _; do
+    if [ -n "$scope" ]; then
+      _client_scopes_print_locks "$scope"
+    fi
+  done <<< "$(client_scope_table)"
+  return 0
 }
 
 # Выбор scope из таблицы. Результат — $CLIENT_SCOPE_ASK_RESULT.
@@ -237,9 +356,13 @@ client_scopes_wizard_lock() {
     return 0
   fi
   strategy="$CLIENT_SCOPE_ASK_STRATEGY"
+  local saved="$strategy"
+  if [ "$strategy" = 0 ]; then
+    saved="0 (выкл)"
+  fi
   if orch_scoped_locked_set "$scope" "$profile" "$proto" "$strategy"; then
-    echo -e "${green}Lock сохранён: $scope / профиль $profile ($(config_profile_title "$profile")) / $proto → $strategy.${plain}"
-    echo "Lock'и scope: $(client_scope_lock_summary "$scope")"
+    echo -e "${green}Lock сохранён: $scope / профиль $profile ($(config_profile_title "$profile")) / $proto → $saved.${plain}"
+    echo "Lock'и scope: $(_client_scopes_lock_line "$scope")"
   else
     echo -e "${red}Не удалось сохранить lock (некорректные параметры или конфликт).${plain}"
     return 1

@@ -135,7 +135,23 @@ table="$(client_scope_table)"
 [ "$(printf '%s\n' "$table" | sed -n 1p)" = "$(printf 'default\t\t1/tls=3')" ] || fail "table default row: $(printf '%s' "$table" | sed -n 1p)"
 [ "$(printf '%s\n' "$table" | sed -n 2p)" = "$(printf 'mark:2\t192.0.2.30\t')" ] || fail "table mark:2 row (numeric order): $(printf '%s\n' "$table" | sed -n 2p)"
 [ "$(printf '%s\n' "$table" | sed -n 3p)" = "$(printf 'mark:10\t192.0.2.40,192.0.2.41\t5/udp=2')" ] || fail "table mark:10 row: $(printf '%s\n' "$table" | sed -n 3p)"
-client_scopes_print_table | grep -q '192.0.2.40,192.0.2.41' || fail 'print_table should show joined IPs'
+# Вывод печатается в переменную: grep -q в пайпе обрывает таблицу (SIGPIPE при pipefail).
+table_out="$(client_scopes_print_table)"
+printf '%s\n' "$table_out" | grep -q '192.0.2.40,192.0.2.41' || fail 'print_table should show joined IPs'
+printf '%s\n' "$table_out" | grep -q 'все клиенты' || fail 'print_table should label default scope as все клиенты'
+printf '%s\n' "$table_out" | grep -q 'Локи (default)' || fail 'print_table should render default locks block'
+printf '%s\n' "$table_out" | grep -q 'YouTube/tls=3' || fail 'print_table should render profile name in locks'
+printf '%s\n' "$table_out" | grep -q 'Локи (mark:10)' || fail 'print_table should render mark:10 locks block'
+printf '%s\n' "$table_out" | grep -q 'QUIC/udp=2' || fail 'print_table should render mark:10 lock with profile name'
+# Домены: группировка с количеством, сортировка по алфавиту, 0 = «выкл».
+orch_scoped_locked_set default example.net tls 0 || fail 'set domain lock 0'
+orch_scoped_locked_set default aa.example.org tls 5 || fail 'set second domain lock'
+table_out="$(client_scopes_print_table)"
+printf '%s\n' "$table_out" | grep -q 'домены (2): aa.example.org/tls=5, example.net/tls=выкл' || fail 'print_table should group+sort domains and render 0 as выкл'
+_client_scopes_lock_line default | grep -q 'YouTube/tls=3' || fail 'lock_line should render profile names'
+_client_scopes_lock_line default | grep -q 'example.net/tls=выкл' || fail 'lock_line should render 0 as выкл'
+orch_scoped_locked_clear default example.net tls || fail 'clear domain lock'
+orch_scoped_locked_clear default aa.example.org tls || fail 'clear second domain lock'
 client_scope_ip_remove 192.0.2.30 || fail 'clear mark:2 ip'
 client_scope_ip_remove 192.0.2.40 || fail 'clear mark:10 ip'
 client_scope_ip_remove 192.0.2.41 || fail 'clear mark:10 ip'
