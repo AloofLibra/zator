@@ -375,6 +375,7 @@ client_scopes_ask_mark() {
 client_scopes_ask_scope_for_strategies() {
   local list count extra del ans scope ip
   while true; do
+    clear -x
     list="$(client_scope_table | cut -f1)"
     count=0
     while IFS= read -r scope; do
