@@ -230,10 +230,80 @@ client_scopes_ask_scope() {
   done
 }
 
+# LAN-мосты, из ARP-таблицы которых берём список устройств:
+# Keenetic — br0 (и дополнительные brN), OpenWRT — br-lan.
+client_scopes_lan_ifaces() {
+  local b
+  for b in br0 br-lan br1 br2; do
+    if [ -d "/sys/class/net/$b" ]; then
+      printf '%s\n' "$b"
+    fi
+  done
+}
+
+# IP устройств из ARP-таблицы LAN-мостов. Неполные записи (нулевой MAC)
+# и уже привязанные к mark IP пропускаются.
+client_scopes_lan_ip_list() {
+  local iface ip
+  for iface in $(client_scopes_lan_ifaces); do
+    awk -v dev="$iface" '$6 == dev && $4 != "00:00:00:00:00:00" {print $1}' /proc/net/arp 2>/dev/null
+  done | sort -u | while IFS= read -r ip; do
+      if [ -n "$ip" ] && [ -z "$(client_scope_ip_get "$ip" 2>/dev/null)" ]; then
+        printf '%s\n' "$ip"
+      fi
+    done
+  return 0
+}
+
+# Ввод IP клиента: вручную или выбором из найденных устройств (ARP).
+# Результат — $CLIENT_SCOPE_ASK_IP. 1 — отмена.
+client_scopes_ask_ip() {
+  local ip ans list count
+  while true; do
+    read -re -p "IP клиента (Enter — выбрать из найденных устройств, 0 — отмена): " ip || return 1
+    case "$ip" in
+      0) return 1 ;;
+      "")
+        list="$(client_scopes_lan_ip_list)"
+        count=0
+        if [ -n "$list" ]; then
+          echo "Найденные устройства (ARP):"
+          while IFS= read -r ip; do
+            [ -n "$ip" ] || continue
+            count=$((count + 1))
+            submenu_item "$count" "$ip"
+          done <<< "$list"
+        fi
+        if [ "$count" -eq 0 ]; then
+          echo -e "${yellow}В ARP-таблице подходящих устройств не найдено — введите IP вручную.${plain}"
+          continue
+        fi
+        read -re -p "Выберите устройство (1..$count, 0 — ввести вручную): " ans || return 1
+        case "$ans" in
+          0) continue ;;
+          *)
+            if ui_is_number_in_range "$ans" 1 "$count"; then
+              CLIENT_SCOPE_ASK_IP="$(sed -n "${ans}p" <<< "$list")"
+              return 0
+            fi
+            echo -e "${red}Неверный ввод.${plain}" ;;
+        esac
+        continue
+        ;;
+      *)
+        if client_scope_ip_validate "$ip"; then
+          CLIENT_SCOPE_ASK_IP="$ip"
+          return 0
+        fi
+        echo -e "${red}Некорректный IP-адрес.${plain}" ;;
+    esac
+  done
+}
+
 # Выбор scope для меню стратегий: существующий (default/mark:N) или создание
 # нового клиента IP → mark. Результат — $CLIENT_SCOPE_ASK_RESULT. 1 — отмена.
 client_scopes_ask_scope_for_strategies() {
-  local list count extra ans scope ip
+  local list count extra del ans scope ip
   while true; do
     list="$(client_scope_table | cut -f1)"
     count=0
@@ -247,16 +317,21 @@ client_scopes_ask_scope_for_strategies() {
       fi
     done <<< "$list"
     extra=$((count + 1))
+    del=$((count + 2))
     submenu_item "$extra" "Новый клиент (IP → mark)"
-    read -re -p "Стратегии для клиента (1..$extra, 0 — назад): " ans || return 1
+    submenu_item "$del" "Удалить клиента"
+    read -re -p "Стратегии для клиента (1..$del, 0 — назад): " ans || return 1
     case "$ans" in
       0) return 1 ;;
+      "$del")
+        client_scopes_wizard_remove
+        continue
+        ;;
       "$extra")
-        read -re -p "IP клиента: " ip || return 1
-        if ! client_scope_ip_validate "$ip"; then
-          echo -e "${red}Некорректный IP-адрес.${plain}"
+        if ! client_scopes_ask_ip; then
           continue
         fi
+        ip="$CLIENT_SCOPE_ASK_IP"
         scope="$(client_scope_ip_get "$ip")"
         if [ -z "$scope" ]; then
           if ! scope="$(client_scope_next_mark)"; then
@@ -412,13 +487,10 @@ client_scopes_ask_strategy() {
 # Мастер: добавить клиента (IP → mark) с автоназначением mark.
 client_scopes_wizard_add() {
   local ip scope ans
-  while true; do
-    read -re -p "IP клиента: " ip || return 1
-    if client_scope_ip_validate "$ip"; then
-      break
-    fi
-    echo -e "${red}Некорректный IP-адрес.${plain}"
-  done
+  if ! client_scopes_ask_ip; then
+    return 1
+  fi
+  ip="$CLIENT_SCOPE_ASK_IP"
   scope="$(client_scope_ip_get "$ip")"
   if [ -n "$scope" ]; then
     echo "У IP уже есть scope $scope."
@@ -728,10 +800,6 @@ strategies_submenu() {
       submenu_item "9" "Fallback HTTP (безразборный блок) [${MENU_PROFILE_MAX_9:-0}]" "" "$STRATEGY_STATE_FB_HTTP"
     fi
     submenu_item "10" "Авторотация TCP/HTTP [${auto_state}]"
-    submenu_item "11" "Client scopes: IP и lock"
-    if [ "$(client_scope_mode_text)" = "включен" ]; then
-      submenu_item "12" "Клиент стратегий: $(client_scopes_scope_label "$ORCH_ACTIVE_SCOPE")"
-    fi
     submenu_item "0" "Назад"
     echo ""
 
@@ -798,20 +866,6 @@ strategies_submenu() {
         ;;
       "10")
         toggle_auto_mode
-        pause_enter
-        ;;
-      "11")
-        client_scopes_submenu
-        ;;
-      "12")
-        # Проваливание в настройки конкретной марки: подборы и фиксации
-        # ниже по меню применяются к выбранному клиенту.
-        if client_scopes_ask_scope_for_strategies; then
-          ORCH_ACTIVE_SCOPE="$CLIENT_SCOPE_ASK_RESULT"
-        fi
-        ;;
-      "22")
-        echo -e "${yellow}Переключатель Client scopes переехал в главное меню (пункт 23).${plain}"
         pause_enter
         ;;
       "0"|"")

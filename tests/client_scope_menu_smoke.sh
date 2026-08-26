@@ -312,4 +312,35 @@ client_scope_ip_remove 192.0.2.50 || fail 'clear for toggle test'
 printf '4\ny\n\n0\n' | client_scopes_submenu || fail 'submenu toggle roundtrip'
 [ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 0 ] || fail 'submenu toggle must not enable without mappings'
 
+# --- Фаза M: ввод IP клиента (вручную / отмена / пустой ARP-список) ---
+# heredoc, а не pipe: результат в $CLIENT_SCOPE_ASK_IP должен остаться
+# в текущем шелле (пайп унёс бы переменную в сабшелл).
+client_scopes_ask_ip <<'EOF' || fail 'ask_ip manual entry'
+192.0.2.90
+EOF
+[ "$CLIENT_SCOPE_ASK_IP" = "192.0.2.90" ] || fail 'ask_ip result'
+client_scopes_ask_ip <<'EOF' || fail 'ask_ip invalid then valid'
+999.1.1.1
+192.0.2.91
+EOF
+[ "$CLIENT_SCOPE_ASK_IP" = "192.0.2.91" ] || fail 'ask_ip after invalid input'
+if printf '0\n' | client_scopes_ask_ip >/dev/null 2>&1; then
+  fail 'ask_ip 0 must cancel'
+fi
+# Enter при пустом списке устройств → подсказка и повторный ручной ввод.
+client_scopes_ask_ip <<'EOF' || fail 'ask_ip empty arp list fallback'
+
+192.0.2.92
+EOF
+[ "$CLIENT_SCOPE_ASK_IP" = "192.0.2.92" ] || fail 'ask_ip fallback result'
+# Статика: пункты 11/12 ушли из меню стратегий, удаление клиента — в гейте.
+if grep -q 'submenu_item "11" "Client scopes' lib/submenus.sh; then
+  fail 'menu 1 should not show client scopes item 11 anymore'
+fi
+if grep -q 'submenu_item "12"' lib/submenus.sh; then
+  fail 'menu 1 should not show client switch item 12 anymore'
+fi
+grep -q 'Удалить клиента' lib/submenus.sh || fail 'gate picker must offer client removal'
+grep -q 'client_scopes_ask_ip' lib/submenus.sh || fail 'gate picker must use IP picker'
+
 printf 'client scope menu smoke ok\n'
