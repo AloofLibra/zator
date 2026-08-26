@@ -243,12 +243,17 @@ client_scopes_ask_proto() {
 # 1 — отмена (ничего не сохраняется).
 client_scopes_ask_strategy() {
   local profile="$1" proto="$2" scope="$3"
-  local max current ans cfg
+  local max current cur_label ans cfg
   cfg="$(client_scopes_cfg)"
   max="$(config_profile_max_strategy "$profile" "$cfg" 2>/dev/null || echo 0)"
   current="$(orch_scoped_locked_get "$scope" "$profile" "$proto" 2>/dev/null || echo 0)"
+  # 0 — не «отключить сайт», а выключить диссинк: трафик идёт без обработки.
+  cur_label="$current"
+  if [ "$current" = 0 ]; then
+    cur_label="выкл"
+  fi
   while true; do
-    read -re -p "Стратегия (0..$max, 0 — отключить, Enter = $current, q — назад): " ans || return 1
+    read -re -p "Стратегия (0..$max, 0 — выкл диссинка, Enter = $cur_label, q — назад): " ans || return 1
     [ -n "$ans" ] || ans="$current"
     if ui_is_number_in_range "$ans" 0 "$max"; then
       CLIENT_SCOPE_ASK_STRATEGY="$ans"
@@ -364,6 +369,9 @@ client_scopes_wizard_lock() {
   fi
   if orch_scoped_locked_set "$scope" "$profile" "$proto" "$strategy"; then
     echo -e "${green}Lock сохранён: $scope / профиль $profile ($(config_profile_title "$profile")) / $proto → $saved.${plain}"
+    if [ "$strategy" = 0 ]; then
+      echo "Диссинк по этому профилю у клиента выключен: трафик идёт без обработки. Это не блокировка сайта."
+    fi
     echo "Lock'и scope: $(_client_scopes_lock_line "$scope")"
   else
     echo -e "${red}Не удалось сохранить lock (некорректные параметры или конфликт).${plain}"
