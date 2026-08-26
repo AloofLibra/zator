@@ -328,9 +328,15 @@ client_scope_firewall_action() {
   script="$(client_scope_firewall_script)"
   [ -f "$script" ] || return 0
   # Run in a subshell so Entware's /opt/bin PATH does not leak to the caller.
+  # CLIENT_SCOPE_ENABLE/MAP_FILE обязаны попасть в дочерний bash: без export
+  # скрипт не видит режим и молча завершается no-op (rc=0), правила не встают.
   (
     PATH="/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${PATH:-}"
     export PATH
+    CLIENT_SCOPE_ENABLE="${CLIENT_SCOPE_ENABLE:-0}"
+    CLIENT_SCOPE_MAP_FILE="${CLIENT_SCOPE_MAP_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/client_scope.tsv}"
+    ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+    export CLIENT_SCOPE_ENABLE CLIENT_SCOPE_MAP_FILE ZATOR_ROOT
     shell="$(command -v bash 2>/dev/null || true)"
     if [ -n "$shell" ] && [ -x "$shell" ]; then
       "$shell" "$script" "$action"

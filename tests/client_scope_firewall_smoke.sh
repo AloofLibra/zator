@@ -109,4 +109,29 @@ grep -q 'client_scope_firewall_reconcile' "$ROOT/Entware/000-zapret2.sh" \
   || fail 'netfilter.d hook does not re-apply client scope firewall'
 grep -q 'restart-fw' "$ROOT/Entware/000-zapret2.sh" \
   || fail 'netfilter.d hook lost restart-fw'
+
+# client_scope_firewall_action обязан пробрасывать CLIENT_SCOPE_ENABLE в дочерний
+# скрипт: без export скрипт не видел режим и молча завершался no-op (rc=0),
+# правила не вставали ни из меню, ни из netfilter-хука.
+ENVSTUB="$TMP/zator-root"
+mkdir -p "$ENVSTUB/firewall"
+cat > "$ENVSTUB/firewall/client-scope-iptables.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'action=%s enable=%s map=%s\n' "$1" "${CLIENT_SCOPE_ENABLE:-}" "${CLIENT_SCOPE_MAP_FILE:-}" > "$ENV_DUMP"
+STUB
+chmod +x "$ENVSTUB/firewall/client-scope-iptables.sh"
+export ENV_DUMP="$TMP/child-env.txt"
+# shellcheck source=/dev/null
+source "$ROOT/lib/config.sh"
+CLIENT_SCOPE_FIREWALL_BACKEND=iptables
+ZATOR_ROOT="$ENVSTUB"
+CLIENT_SCOPE_ENABLE=1
+client_scope_firewall_action apply || fail 'firewall action apply failed'
+grep -q 'action=apply enable=1' "$ENV_DUMP" || fail 'child script did not receive CLIENT_SCOPE_ENABLE=1 (missing export)'
+grep -q 'map=' "$ENV_DUMP" || fail 'child script did not receive CLIENT_SCOPE_MAP_FILE'
+CLIENT_SCOPE_ENABLE=0
+: > "$ENV_DUMP"
+client_scope_firewall_action cleanup || fail 'firewall action cleanup failed'
+grep -q 'action=cleanup' "$ENV_DUMP" || fail 'cleanup must always reach the script'
+unset ENV_DUMP CLIENT_SCOPE_FIREWALL_BACKEND
 printf 'client scope firewall smoke ok\n'
