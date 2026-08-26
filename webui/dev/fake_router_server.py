@@ -566,7 +566,7 @@ def orch_scoped_set(lock_file, scope, profile, proto, strategy):
     if scope == "default":
         key = [str(profile), proto]
     rows = [r for r in rows if not ((len(r) >= 4 and r[:3] == key) or (scope == "default" and len(r) >= 2 and r[:2] == key))]
-    rows.append(key + [str(strategy)] if scope != "default" else key + [str(strategy)])
+    rows.append(key + [str(strategy)])
     _write_tsv(lock_file, rows)
 
 

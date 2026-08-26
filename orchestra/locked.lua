@@ -298,11 +298,6 @@ local function client_scope_config_status()
   return { mask = mask, shift = shift, max_scope = max_scope }, nil
 end
 
-local function client_scope_config()
-  local config = client_scope_config_status()
-  return config
-end
-
 local function client_scope_record(scope, reason)
   CLIENT_SCOPE_LAST_SEEN = scope or CLIENT_SCOPE_DEFAULT
   CLIENT_SCOPE_LAST_REASON = reason or "no-scoped-lock"
@@ -352,28 +347,6 @@ function desync_client_scope(desync)
   local scope = "mark:" .. tostring(scope_number)
   client_scope_record(scope, "no-scoped-lock")
   return client_scope_store(desync, scope)
-end
-
-local function client_scope_count_locks(values)
-  local count = 0
-  for scope, profiles in pairs(values) do
-    if scope ~= CLIENT_SCOPE_DEFAULT then
-      for _ in pairs(profiles) do count = count + 1 end
-    end
-  end
-  return count
-end
-
-local function client_scope_count_conflicts()
-  local count = 0
-  for scope, protocols in pairs(LOCKED_CONFLICTS) do
-    if scope ~= CLIENT_SCOPE_DEFAULT then
-      for _, profiles in pairs(protocols) do
-        for _ in pairs(profiles) do count = count + 1 end
-      end
-    end
-  end
-  return count
 end
 
 -- Deliberately returns only aggregate, scope-safe fields.  Payloads and source

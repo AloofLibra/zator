@@ -598,18 +598,6 @@ client_scope_lua_config_install_default() {
   [ -f "$dest" ] || z2r_download_project_file "$dest" "lua/client-scope-config.lua" || return 1
 }
 
-# Deploy the optional client-scope helper without applying firewall changes.
-client_scope_firewall_update_from_repo() {
-  local dest="$ZATOR_ROOT/firewall/client-scope-iptables.sh"
-  mkdir -p "$(dirname "$dest")"
-  if [ -f "$SCRIPT_DIR/firewall/client-scope-iptables.sh" ]; then
-    cp -f "$SCRIPT_DIR/firewall/client-scope-iptables.sh" "$dest" || return 1
-  else
-    z2r_download_project_file "$dest" "firewall/client-scope-iptables.sh" || return 1
-  fi
-  chmod +x "$dest"
-}
-
 strategy_validator_install_service() {
   local validator_path="/opt/bin:/opt/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   if ! PATH="$validator_path" command -v curl >/dev/null 2>&1; then
@@ -1061,7 +1049,6 @@ get_repo() {
   mkdir -p "$ORCH_DIR"
   z2r_install_runtime_libs_from_archive || return 1
   client_scope_lua_config_install_default || return 1
-  client_scope_firewall_update_from_repo || return 1
   chmod 777 "$ORCH_DIR" 2>/dev/null || true
   locked_lua_update_from_repo || true
   rst_guard_lua_update_from_repo || true
@@ -1162,7 +1149,6 @@ client_scope_enabled_from_active_config() {
 
 client_scope_firewall_apply_active_config() {
  [ -f "$ZAPRET2_ROOT/config" ] || return 0
- FWTYPE="$(sed -n -n 's/^[[:space:]]*FWTYPE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
  client_scope_firewall_reconcile || true
 }
 
@@ -1170,7 +1156,6 @@ remove_zapret() {
  # Cleanup is independent of the feature flag. Prefer the active config's
  # backend; when config is already absent, clean both isolated backends.
  if [ -f "$ZAPRET2_ROOT/config" ]; then
-  FWTYPE="$(sed -n -n 's/^[[:space:]]*FWTYPE[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "$ZAPRET2_ROOT/config" | head -n1)"
   client_scope_firewall_action cleanup || true
  else
   CLIENT_SCOPE_FIREWALL_BACKEND=nftables client_scope_firewall_action cleanup || true

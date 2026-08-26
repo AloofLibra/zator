@@ -17,38 +17,8 @@ _orch_locked_read() {
   } END{if (!found) print d}' "$ORCH_LOCK_FILE"
 }
 
-_orch_legacy_locked_get() {
-  _orch_locked_read "$1" "$2" "0"
-}
-
 orch_locked_state_get() {
   _orch_locked_read "$1" "$2" "auto"
-}
-
-_orch_legacy_locked_set() {
-  local profile="$1"
-  local proto="$2"
-  local strategy="$3"
-  local tmp="${ORCH_LOCK_FILE}.tmp"
-  mkdir -p "$(dirname "$ORCH_LOCK_FILE")" || return 1
-  touch "$ORCH_LOCK_FILE" || return 1
-  awk -v pr="$profile" -v p="$proto" -v s="$strategy" 'BEGIN{FS=OFS="\t"}{
-    if ($1==pr && (($2==p) || (NF==2 && p=="tls"))) {print pr,p,s; found=1; next}
-    print
-  } END{
-    if (!found) print pr,p,s
-  }' "$ORCH_LOCK_FILE" > "$tmp" && mv "$tmp" "$ORCH_LOCK_FILE"
-}
-
-_orch_legacy_locked_clear() {
-  local profile="$1"
-  local proto="$2"
-  local tmp="${ORCH_LOCK_FILE}.tmp"
-  [ -f "$ORCH_LOCK_FILE" ] || return 0
-  awk -v pr="$profile" -v p="$proto" 'BEGIN{FS=OFS="\t"}{
-    if ($1==pr && (($2==p) || (NF==2 && p=="tls"))) next
-    print
-  }' "$ORCH_LOCK_FILE" > "$tmp" && mv "$tmp" "$ORCH_LOCK_FILE"
 }
 
 # Scoped locks retain legacy three-column rows for default and use
@@ -99,14 +69,6 @@ orch_scoped_locked_clear() {
   if type orch_scope_validate >/dev/null 2>&1; then orch_scope_validate "$scope" "$profile" "$proto" clear || return 2; fi
   [ -f "$ORCH_LOCK_FILE" ] || return 0
   awk -F '\t' -v sc="$scope" -v pr="$profile" -v po="$proto" '!((NF>=4 && $1==sc && $2==pr && $3==po) || (sc=="default" && NF==3 && $1==pr && $2==po) || (sc=="default" && po=="tls" && $1==pr && NF==2)) {print}' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; return 1; }
-}
-
-orch_scoped_locked_list() {
-  local scope="${1:-}"
-  [ -f "$ORCH_LOCK_FILE" ] || return 0
-  [ -z "$scope" ] && { awk 'NF>=3 && $0 !~ /^[[:space:]]*#/ {print}' "$ORCH_LOCK_FILE"; return; }
-  _orch_scope_basic_validate "$scope" || return 2
-  awk -F '\t' -v sc="$scope" '$1==sc || (sc=="default" && NF==3) {print}' "$ORCH_LOCK_FILE"
 }
 
 # Explain where an effective lock came from for CLI/WebUI diagnostics.

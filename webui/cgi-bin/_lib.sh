@@ -323,7 +323,7 @@ _provider_cache_text() {
   fi
 }
 
-client_scope_diagnostics_json() {
+_client_scope_diagnostics_state() {
   local enabled mask shift max desync postnat mask_n shift_n max_n desync_n postnat_n mode reason
   local mask_json shift_json max_json scoped_count conflicts file manual_file
   enabled="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
@@ -367,17 +367,32 @@ client_scope_diagnostics_json() {
   file="$ORCH_DIR/locked.tsv"; manual_file="$ORCH_DIR/locked.manual.tsv"
   scoped_count="$(awk -F '\t' '$1 ~ /^mark:[0-9]+$/ && NF >= 4 {n++} END {print n+0}' "$file" "$manual_file" 2>/dev/null)"
   conflicts="$(awk -F '\t' '$1 ~ /^mark:[0-9]+$/ && NF >= 4 {key=$1 SUBSEP $2 SUBSEP $3; seen[key SUBSEP $4]=1} END {for (item in seen) {split(item, fields, SUBSEP); keys[fields[1] SUBSEP fields[2] SUBSEP fields[3]]++} for (key in keys) if (keys[key] > 1) n++} END {print n+0}' "$file" "$manual_file" 2>/dev/null)"
-  printf '{"mode":"%s","mask":%s,"shift":%s,"max_scope":%s,"scoped_lock_count":%s,"conflicts":%s,"last_seen_scope":"unavailable","fallback_reason":"%s"}' \
+  printf '%s|%s|%s|%s|%s|%s|%s\n' \
     "$mode" "$mask_json" "$shift_json" "$max_json" "${scoped_count:-0}" "${conflicts:-0}" "$reason"
 }
 
+_client_scope_diagnostics_json_from_state() {
+  local state="$1" mode mask_json shift_json max_json scoped_count conflicts reason
+  IFS='|' read -r mode mask_json shift_json max_json scoped_count conflicts reason <<< "$state"
+  printf '{"mode":"%s","mask":%s,"shift":%s,"max_scope":%s,"scoped_lock_count":%s,"conflicts":%s,"last_seen_scope":"unavailable","fallback_reason":"%s"}' \
+    "$mode" "$mask_json" "$shift_json" "$max_json" "$scoped_count" "$conflicts" "$reason"
+}
+
+client_scope_diagnostics_json() {
+  local state
+  state="$(_client_scope_diagnostics_state)"
+  _client_scope_diagnostics_json_from_state "$state"
+}
+
 client_scopes_json() {
-  local scopes scope first=1 enabled warning diagnostics reason
+  local scopes scope first=1 enabled warning diagnostics diagnostic_state
+  local mode mask_json shift_json max_json scoped_count conflicts reason
   scopes="$(orch_scoped_list_scopes 2>/dev/null | sort -u)"
-  diagnostics="$(client_scope_diagnostics_json)"
+  diagnostic_state="$(_client_scope_diagnostics_state)"
+  IFS='|' read -r mode mask_json shift_json max_json scoped_count conflicts reason <<< "$diagnostic_state"
+  diagnostics="$(_client_scope_diagnostics_json_from_state "$diagnostic_state")"
   enabled=false; warning=""
-  reason="$(printf '%s' "$diagnostics" | sed -n 's/.*"fallback_reason":"\([^"]*\)".*/\1/p')"
-  [ "$(printf '%s' "$diagnostics" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')" = mark ] && enabled=true
+  [ "$mode" = mark ] && enabled=true
   case "$reason" in
     missing-mask) warning="Client scope включён, но firewall mapping не задан." ;;
     mask-conflict) warning="Маска client scope пересекается со служебной mark-маской; включён безопасный fallback." ;;

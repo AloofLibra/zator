@@ -128,7 +128,6 @@ config_client_scope_ensure() {
 config_client_scope_apply() {
   local old_cfg="$1" new_cfg="$2" v
   [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
-  config_client_scope_ensure "$new_cfg"
   for v in ENABLE MARK_MASK MARK_SHIFT MARK_MAX; do
     config_var_exists "$old_cfg" "CLIENT_SCOPE_$v" || continue
     config_set_var "$new_cfg" "CLIENT_SCOPE_$v" "$(config_get_var "$old_cfg" "CLIENT_SCOPE_$v")"
