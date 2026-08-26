@@ -1,48 +1,325 @@
 # submenus.sh
 # Единый стиль: loop + return на 0/Enter
 
-# Управление lock scopes клиента. Legacy без scope остаётся default.
+# Путь к живому config (для чтения max-стратегий профилей).
+client_scopes_cfg() {
+  printf '%s\n' "${ZAPRET2_ROOT:-/opt/zapret2}/config"
+}
+
+# --- Client scopes: вывод состояния (общий для меню и будущих вызовов) ---
+
+client_scopes_print_header() {
+  local mode
+  echo -e "${cyan}--- Client scopes ---${plain}"
+  mode="$(client_scope_mode_text)"
+  if [ "$mode" = "включен" ]; then
+    echo -e "Режим: ${green}включен${plain}"
+  else
+    echo -e "Режим: ${red}выключен${plain}"
+  fi
+}
+
+# Таблица: scope / IP / lock'и. Данные — из client_scope_table (orchestra_state.sh).
+client_scopes_print_table() {
+  local scope ips locks
+  echo ""
+  printf '  %-10s %-26s %s\n' "Scope" "IP" "Lock'и"
+  while IFS="$(printf '\t')" read -r scope ips locks; do
+    [ -n "$scope" ] || continue
+    [ -n "$ips" ] || ips="—"
+    [ -n "$locks" ] || locks="—"
+    printf '  %-10s %-26s %s\n' "$scope" "$ips" "$locks"
+  done <<< "$(client_scope_table)"
+}
+
+# Выбор scope из таблицы. Результат — $CLIENT_SCOPE_ASK_RESULT.
+# $1 — опциональный preset (вопрос пропускается). 1 — отмена.
+client_scopes_ask_scope() {
+  local preset="${1:-}" ans list count scope
+  if [ -n "$preset" ]; then
+    CLIENT_SCOPE_ASK_RESULT="$preset"
+    return 0
+  fi
+  list="$(client_scope_table | cut -f1)"
+  count=0
+  while IFS= read -r scope; do
+    [ -n "$scope" ] || continue
+    count=$((count + 1))
+    if [ "$scope" = "default" ]; then
+      echo "  $count. default — все клиенты"
+    else
+      echo "  $count. $scope"
+    fi
+  done <<< "$list"
+  while true; do
+    read -re -p "Выберите scope (1..$count, или mark:N, q — назад): " ans || return 1
+    case "$ans" in
+      q|Q) return 1 ;;
+      default) CLIENT_SCOPE_ASK_RESULT="default"; return 0 ;;
+      mark:*)
+        if client_scope_mark_validate "$ans" && printf '%s\n' "$list" | grep -Fqx "$ans"; then
+          CLIENT_SCOPE_ASK_RESULT="$ans"
+          return 0
+        fi
+        echo -e "${red}Такой клиент не найден.${plain}" ;;
+      *)
+        if ui_is_number_in_range "$ans" 1 "$count"; then
+          CLIENT_SCOPE_ASK_RESULT="$(sed -n "${ans}p" <<< "$list")"
+          return 0
+        fi
+        echo -e "${red}Неверный ввод.${plain}" ;;
+    esac
+  done
+}
+
+# Выбор профиля (1..7 — основные профили со стратегиями).
+# Результат — $CLIENT_SCOPE_ASK_PROFILE. 1 — отмена.
+client_scopes_ask_profile() {
+  local p max ans cfg
+  cfg="$(client_scopes_cfg)"
+  for p in 1 2 3 4 5 6 7; do
+    max="$(config_profile_max_strategy "$p" "$cfg" 2>/dev/null || echo 0)"
+    echo "  $p. $(config_profile_title "$p") [${max}]"
+  done
+  while true; do
+    read -re -p "Выберите профиль (1..7, q — назад): " ans || return 1
+    if ui_is_number_in_range "$ans" 1 7; then
+      CLIENT_SCOPE_ASK_PROFILE="$ans"
+      return 0
+    fi
+    case "$ans" in q|Q) return 1 ;; esac
+    echo -e "${red}Неверный ввод.${plain}"
+  done
+}
+
+# Выбор протокола, если у профиля их несколько. Результат — $CLIENT_SCOPE_ASK_PROTO.
+client_scopes_ask_proto() {
+  local list="$1" proto ans n=0 i=1
+  for proto in $list; do n=$((n + 1)); done
+  i=1
+  for proto in $list; do
+    echo "  $i. $proto"
+    i=$((i + 1))
+  done
+  while true; do
+    read -re -p "Выберите протокол (1..$n, q — назад): " ans || return 1
+    if ui_is_number_in_range "$ans" 1 "$n"; then
+      i=1
+      for proto in $list; do
+        if [ "$i" -eq "$ans" ]; then
+          CLIENT_SCOPE_ASK_PROTO="$proto"
+          return 0
+        fi
+        i=$((i + 1))
+      done
+    fi
+    case "$ans" in q|Q) return 1 ;; esac
+    echo -e "${red}Неверный ввод.${plain}"
+  done
+}
+
+# Выбор стратегии 0..max. Enter — текущее значение. Результат — $CLIENT_SCOPE_ASK_STRATEGY.
+# 1 — отмена (ничего не сохраняется).
+client_scopes_ask_strategy() {
+  local profile="$1" proto="$2" scope="$3"
+  local max current ans cfg
+  cfg="$(client_scopes_cfg)"
+  max="$(config_profile_max_strategy "$profile" "$cfg" 2>/dev/null || echo 0)"
+  current="$(orch_scoped_locked_get "$scope" "$profile" "$proto" 2>/dev/null || echo 0)"
+  while true; do
+    read -re -p "Стратегия (0..$max, 0 — отключить, Enter = $current, q — назад): " ans || return 1
+    [ -n "$ans" ] || ans="$current"
+    if ui_is_number_in_range "$ans" 0 "$max"; then
+      CLIENT_SCOPE_ASK_STRATEGY="$ans"
+      return 0
+    fi
+    case "$ans" in q|Q) return 1 ;; esac
+    echo -e "${red}Неверный ввод.${plain}"
+  done
+}
+
+# Мастер: добавить клиента (IP → mark) с автоназначением mark.
+client_scopes_wizard_add() {
+  local ip scope ans
+  while true; do
+    read -re -p "IP клиента: " ip || return 1
+    if client_scope_ip_validate "$ip"; then
+      break
+    fi
+    echo -e "${red}Некорректный IP-адрес.${plain}"
+  done
+  scope="$(client_scope_ip_get "$ip")"
+  if [ -n "$scope" ]; then
+    echo "У IP уже есть scope $scope."
+    read -re -p "Изменить? (y/N): " ans || return 0
+    case "$ans" in
+      y|Y|да|Д|д) ;;
+      *) return 0 ;;
+    esac
+  else
+    if ! scope="$(client_scope_next_mark)"; then
+      echo -e "${red}Нет свободных scope: все mark в разрешённом диапазоне уже заняты.${plain}"
+      return 1
+    fi
+  fi
+  while true; do
+    read -re -p "Scope (Enter = $scope): " ans || return 1
+    [ -n "$ans" ] || ans="$scope"
+    case "$ans" in
+      mark:*)
+        if client_scope_mark_validate "$ans"; then
+          scope="$ans"
+          break
+        fi
+        ;;
+      *)
+        case "$ans" in
+          [0-9]*)
+            if client_scope_mark_validate "mark:$ans"; then
+              scope="mark:$ans"
+              break
+            fi
+            ;;
+        esac
+        ;;
+    esac
+    echo -e "${red}Некорректный scope (ожидается mark:N).${plain}"
+  done
+  if ! client_scope_ip_add "$ip" "$scope"; then
+    echo -e "${red}Не удалось сохранить маппинг (проверьте IP, scope и firewall backend).${plain}"
+    return 1
+  fi
+  echo -e "${green}Сохранено: $ip → $scope.${plain}"
+  if [ "$(client_scope_mode_text)" != "включен" ]; then
+    read -re -p "Включить Client scopes? (y/N): " ans || return 0
+    case "$ans" in
+      y|Y|да|Д|д)
+        if client_scope_mode_set 1; then
+          echo -e "${green}Client scopes включены.${plain}"
+        else
+          echo -e "${red}Не удалось включить режим.${plain}"
+        fi
+        ;;
+    esac
+  fi
+  read -re -p "Настроить lock для этого клиента? (y/N): " ans || return 0
+  case "$ans" in
+    y|Y|да|Д|д) client_scopes_wizard_lock "$scope" ;;
+  esac
+}
+
+# Мастер: настроить lock (scope → профиль → протокол → стратегия).
+# $1 — опциональный preset scope.
+client_scopes_wizard_lock() {
+  local scope profile proto_list proto strategy
+  client_scopes_print_table
+  if ! client_scopes_ask_scope "${1:-}"; then
+    return 0
+  fi
+  scope="$CLIENT_SCOPE_ASK_RESULT"
+  if ! client_scopes_ask_profile; then
+    return 0
+  fi
+  profile="$CLIENT_SCOPE_ASK_PROFILE"
+  proto_list="$(config_profile_proto_list "$profile")"
+  if [ -z "$proto_list" ]; then
+    echo -e "${red}Не удалось определить протокол профиля $profile.${plain}"
+    return 1
+  fi
+  if [ "${proto_list#* }" = "$proto_list" ]; then
+    proto="$proto_list"
+  elif ! client_scopes_ask_proto "$proto_list"; then
+    return 0
+  else
+    proto="$CLIENT_SCOPE_ASK_PROTO"
+  fi
+  if ! client_scopes_ask_strategy "$profile" "$proto" "$scope"; then
+    return 0
+  fi
+  strategy="$CLIENT_SCOPE_ASK_STRATEGY"
+  if orch_scoped_locked_set "$scope" "$profile" "$proto" "$strategy"; then
+    echo -e "${green}Lock сохранён: $scope / профиль $profile ($(config_profile_title "$profile")) / $proto → $strategy.${plain}"
+    echo "Lock'и scope: $(client_scope_lock_summary "$scope")"
+  else
+    echo -e "${red}Не удалось сохранить lock (некорректные параметры или конфликт).${plain}"
+    return 1
+  fi
+}
+
+# Мастер: удалить клиента (все IP scope + опционально его lock'и).
+client_scopes_wizard_remove() {
+  local scope ans ip was_enabled was_running=0 rc
+  client_scopes_print_table
+  if [ -z "$(client_scope_table | cut -f1 | grep '^mark:')" ]; then
+    echo -e "${yellow}Нет клиентов для удаления.${plain}"
+    return 0
+  fi
+  if ! client_scopes_ask_scope; then
+    return 0
+  fi
+  scope="$CLIENT_SCOPE_ASK_RESULT"
+  case "$scope" in
+    default)
+      echo -e "${yellow}default — это все клиенты, удалять нечего. Выберите mark:N.${plain}"
+      return 0 ;;
+  esac
+  read -re -p "Удалить $scope и все его IP? (y/N): " ans || return 0
+  case "$ans" in
+    y|Y|да|Д|д) ;;
+    *) return 0 ;;
+  esac
+  was_enabled="$(client_scope_mode_text)"
+  if [ -n "${ZAPRET2_INIT:-}" ] && zapret2_running; then
+    was_running=1
+  fi
+  for ip in $(awk -F '\t' -v sc="$scope" '$1==sc {print $2}' "$(client_scope_map_file)"); do
+    if ! client_scope_ip_remove "$ip"; then
+      echo -e "${red}Не удалось удалить $ip.${plain}"
+      return 1
+    fi
+  done
+  echo -e "${green}Клиент $scope удалён.${plain}"
+  if [ "$was_enabled" = "включен" ] && [ "$(client_scope_mode_text)" != "включен" ]; then
+    if client_scope_daemon_reload "$was_running"; then :; else
+      rc=$?
+      [ "$was_running" = 1 ] && client_scope_daemon_reload 1 || true
+      echo -e "${red}Режим выключен, но перезапуск nfqws2 завершился ошибкой.${plain}"
+      return "$rc"
+    fi
+    echo -e "${yellow}Последний маппинг удалён — режим выключен.${plain}"
+  fi
+  if [ -n "$(client_scope_scope_locks "$scope")" ]; then
+    read -re -p "Удалить lock'и этого клиента? (y/N): " ans || return 0
+    case "$ans" in
+      y|Y|да|Д|д)
+        local prof pproto
+        while IFS="$(printf '\t')" read -r prof pproto _; do
+          [ -n "$prof" ] || continue
+          orch_scoped_locked_clear "$scope" "$prof" "$pproto"
+        done <<< "$(client_scope_scope_locks "$scope")"
+        echo "Lock'и клиента удалены."
+        ;;
+    esac
+  fi
+}
+
+# Пункт 11: сводка состояния + мастера.
 client_scopes_submenu() {
-  local scope profile proto strategy ip
   while true; do
     clear -x
-    echo -e "${cyan}--- Client scopes ---${plain}"
-    echo "Доступные scopes: $(orch_scoped_list_scopes 2>/dev/null | sort -u | tr '\n' ' ')"
-    echo "IP-маппинги:"
-    client_scope_ip_list 2>/dev/null || true
-    submenu_item "1" "Добавить/изменить IP → mark:N"
-    submenu_item "2" "Удалить IP-маппинг"
-    submenu_item "3" "Установить lock (scope, профиль, протокол, стратегия)"
-    submenu_item "4" "Сбросить scoped lock"
-    submenu_item "0" "Назад"
-    read -re -p "Ваш выбор: " ans
+    client_scopes_print_header
+    client_scopes_print_table
+    submenu_item "1" "Добавить клиента (IP → mark)" ""
+    submenu_item "2" "Настроить клиента (lock)" ""
+    submenu_item "3" "Удалить клиента" ""
+    submenu_item "4" "Включить/выключить режим" ""
+    submenu_item "0" "Назад" ""
+    read -re -p "Ваш выбор: " ans || return
     case "$ans" in
-      1)
-        read -re -p "IP клиента: " ip
-        read -re -p "Scope (mark:N): " scope
-        if client_scope_ip_add "$ip" "$scope"; then
-          echo "IP-маппинг сохранён."
-        else echo -e "${red}Некорректный IP, scope или firewall backend.${plain}"; fi
-        pause_enter ;;
-      2)
-        read -re -p "IP клиента: " ip
-        if client_scope_ip_remove "$ip"; then
-          echo "IP-маппинг удалён."
-        else echo -e "${red}Не удалось удалить IP-маппинг или применить firewall.${plain}"; fi
-        pause_enter ;;
-      3)
-        read -re -p "Scope (default или mark:N): " scope
-        read -re -p "Профиль: " profile
-        read -re -p "Протокол (tls/http/udp): " proto
-        read -re -p "Стратегия (0..N): " strategy
-        if orch_scoped_locked_set "${scope:-default}" "$profile" "$proto" "$strategy"; then echo "Lock сохранён."; else echo -e "${red}Некорректные параметры или конфликт.${plain}"; fi
-        pause_enter ;;
-      4)
-        read -re -p "Scope: " scope
-        read -re -p "Профиль: " profile
-        read -re -p "Протокол: " proto
-        if orch_scoped_locked_clear "${scope:-default}" "$profile" "$proto"; then echo "Scoped lock сброшен."; else echo -e "${red}Не удалось сбросить lock.${plain}"; fi
-        pause_enter ;;
+      1) client_scopes_wizard_add || true; pause_enter ;;
+      2) client_scopes_wizard_lock || true; pause_enter ;;
+      3) client_scopes_wizard_remove || true; pause_enter ;;
+      4) client_scopes_toggle_mode || true; pause_enter ;;
       0|"") return ;;
       *) ui_invalid_input ;;
     esac
@@ -54,25 +331,44 @@ client_scope_mode_text() {
   [ "$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)" = 1 ] && printf 'включен' || printf 'выключен'
 }
 
+# Пункт 22: тонкая обёртка над централизованным setter'ом (config.sh).
 toggle_client_scope_mode() {
-  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
-  local current="$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
-  if [ "$current" = 1 ]; then
-    config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0 || return 1
-    CLIENT_SCOPE_ENABLE=0
-    client_scope_firewall_reconcile
+  if [ "$(client_scope_mode_text)" = "включен" ]; then
+    client_scope_mode_set 0 || return 1
     echo -e "${yellow}Client scopes (Beta) выключены.${plain}"
-    return 0
+  else
+    client_scope_mode_set 1 || { echo -e "${red}Нельзя включить Client scopes (Beta): сначала добавьте IP-маппинг (пункт 11).${plain}"; return 1; }
+    echo -e "${green}Client scopes (Beta) включены.${plain}"
   fi
-  if [ -z "$(client_scope_ip_list 2>/dev/null)" ]; then
-    echo -e "${red}Нельзя включить Client scopes (Beta): сначала добавьте IP-маппинг.${plain}"
-    return 1
+}
+
+# Пункт 4 внутри 11: переключение режима с подтверждением.
+client_scopes_toggle_mode() {
+  local current
+  current="$(client_scope_mode_text)"
+  if [ "$current" = "включен" ]; then
+    read -re -p "Выключить Client scopes? (y/N): " ans || return 0
+    case "$ans" in
+      y|Y|да|Д|д)
+        if client_scope_mode_set 0; then
+          echo -e "${yellow}Client scopes выключены.${plain}"
+        else
+          echo -e "${red}Не удалось выключить режим.${plain}"
+        fi
+        ;;
+    esac
+  else
+    read -re -p "Включить Client scopes? (y/N): " ans || return 0
+    case "$ans" in
+      y|Y|да|Д|д)
+        if client_scope_mode_set 1; then
+          echo -e "${green}Client scopes включены.${plain}"
+        else
+          echo -e "${red}Не удалось включить режим (нужен хотя бы один IP-маппинг).${plain}"
+        fi
+        ;;
+    esac
   fi
-  config_set_var "$cfg" CLIENT_SCOPE_ENABLE 1 || return 1
-  client_scope_config_prepare "$cfg" || return 1
-  CLIENT_SCOPE_ENABLE=1
-  client_scope_firewall_reconcile
-  echo -e "${green}Client scopes (Beta) включены.${plain}"
 }
 
 #функция меню "1. Сменить стратегии"
@@ -128,7 +424,7 @@ strategies_submenu() {
     fi
     submenu_item "10" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "11" "Client scopes: IP и lock"
-    submenu_item "22" "Client scopes (Beta): $(client_scope_mode_text)"
+    submenu_item "22" "Client scopes (Beta): $(client_scope_mode_text)" ""
     submenu_item "0" "Назад"
     echo ""
 

@@ -176,6 +176,66 @@ client_scope_ip_remove() {
   client_scope_firewall_reconcile
 }
 
+# Следующий свободный mark (1..CLIENT_SCOPE_MARK_MAX), не занятый в маппинге.
+# Печатает "mark:N"; 1 если все заняты.
+client_scope_next_mark() {
+  local max file used id
+  max="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_MARK_MAX 2>/dev/null || printf 255)"
+  printf '%s' "$max" | grep -Eq '^[1-9][0-9]*$' || max=255
+  file="$(client_scope_map_file)"
+  used=""
+  [ -f "$file" ] && used="$(awk -F '\t' '$1 ~ /^mark:[1-9][0-9]*$/ {print substr($1,6)}' "$file" | sort -n | tr '\n' ' ')"
+  id=1
+  while [ "$id" -le "$max" ]; do
+    case " $used " in
+      *" $id "*) id=$((id + 1)) ;;
+      *) printf 'mark:%s\n' "$id"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Scoped/default lock-строки для одного scope. Печатает "profile<TAB>proto<TAB>strategy".
+# default — legacy 3- и 2-колоночные строки; mark:N — 4-колоночные.
+client_scope_scope_locks() {
+  local scope="${1:-default}"
+  _orch_scope_basic_validate "$scope" || return 2
+  [ -f "$ORCH_LOCK_FILE" ] || return 0
+  if [ "$scope" = default ]; then
+    awk -F '\t' 'NF==3 {print $1 "\t" $2 "\t" $3} NF==2 {print $1 "\t" "tls" "\t" $2}' "$ORCH_LOCK_FILE"
+  else
+    awk -F '\t' -v sc="$scope" '$1==sc && NF>=4 {print $2 "\t" $3 "\t" $4}' "$ORCH_LOCK_FILE"
+  fi
+}
+
+# Краткая сводка lock для scope в одну строку: "3/tls=7, 5/udp=2" (пусто если нет).
+client_scope_lock_summary() {
+  local scope="${1:-default}" out line prof proto strat
+  out=""
+  while IFS="$(printf '\t')" read -r prof proto strat; do
+    [ -n "$prof" ] || continue
+    [ -n "$out" ] && out="$out, "
+    out="${out}${prof}/${proto}=${strat}"
+  done <<< "$(client_scope_scope_locks "$scope" 2>/dev/null)"
+  printf '%s\n' "$out"
+}
+
+# Машиночитаемая сводка по всем scope: "scope<TAB>ip<TAB>lock_summary".
+# default — первая строка (ip пустой), далее mark:N в порядке id.
+# Один scope может иметь несколько IP — они склеиваются через запятую.
+# Единый источник данных для CLI-таблицы и будущего WebUI.
+client_scope_table() {
+  local file scope ips locks
+  file="$(client_scope_map_file)"
+  printf 'default\t\t%s\n' "$(client_scope_lock_summary default)"
+  [ -f "$file" ] || return 0
+  for scope in $(awk -F '\t' '$1 ~ /^mark:[1-9][0-9]*$/ {print $1}' "$file" | sort -u -t: -k2,2n); do
+    ips="$(awk -F '\t' -v sc="$scope" '$1==sc {print $2}' "$file" | paste -sd, -)"
+    locks="$(client_scope_lock_summary "$scope")"
+    printf '%s\t%s\t%s\n' "$scope" "$ips" "$locks"
+  done
+}
+
 # Backward-compatible default-scope wrappers.
 orch_locked_get() { orch_scoped_locked_get default "$1" "$2"; }
 orch_locked_set() { orch_scoped_locked_set default "$1" "$2" "$3"; }

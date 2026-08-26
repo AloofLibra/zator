@@ -918,6 +918,92 @@ config_profile_proto_list() {
   esac
 }
 
+# Человекочитаемое имя профиля для меню и WebUI.
+config_profile_title() {
+  case "$1" in
+    1) echo "TCP 443 (YouTube)" ;;
+    2) echo "TCP 443 (Googlevideo)" ;;
+    3) echo "TCP 443 (RKN)" ;;
+    4) echo "TCP 443 (Discord)" ;;
+    5) echo "UDP 443 (QUIC)" ;;
+    6) echo "UDP Voice (Discord/STUN)" ;;
+    7) echo "UDP Games (1026-65531)" ;;
+    8) echo "Fallback TLS" ;;
+    9) echo "Fallback HTTP" ;;
+    *) echo "Профиль $1" ;;
+  esac
+}
+
+# Централизованный setter режима Client scopes (CLI + будущий WebUI).
+# $1 = 0|1. Обновляет config, Lua-глобалы и firewall; перезапускает работающий
+# демон, т.к. client-scope-config.lua загружается однократно при старте nfqws2
+# через --lua-init и без рестарта новые глобалы не вступят в силу.
+client_scope_mode_set() {
+  local want="$1" cfg backup rc was_running=0
+  cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg" ] || { echo "Не найден config: $cfg" >&2; return 1; }
+  if [ "$want" = 1 ]; then
+    [ -n "$(client_scope_ip_list 2>/dev/null)" ] || { echo "Нельзя включить Client scopes: нет IP-маппингов" >&2; return 1; }
+  elif [ "$want" != 0 ]; then
+    echo "Некорректное состояние Client scopes: $want" >&2
+    return 2
+  fi
+
+  backup="${cfg}.client-scope.$$"
+  cp "$cfg" "$backup" || return 1
+  if [ -n "${ZAPRET2_INIT:-}" ] && zapret2_running; then
+    was_running=1
+  fi
+
+  if config_set_var "$cfg" CLIENT_SCOPE_ENABLE "$want"; then :; else
+    rc=$?
+    mv -f "$backup" "$cfg" 2>/dev/null || true
+    return "$rc"
+  fi
+  if [ "$want" = 1 ]; then
+    if client_scope_config_prepare "$cfg"; then :; else
+      rc=$?
+      _client_scope_mode_rollback "$cfg" "$backup" 0 || true
+      return "$rc"
+    fi
+  fi
+  if client_scope_firewall_reconcile; then :; else
+    rc=$?
+    _client_scope_mode_rollback "$cfg" "$backup" 0 || true
+    return "$rc"
+  fi
+  if client_scope_daemon_reload "$was_running"; then :; else
+    rc=$?
+    _client_scope_mode_rollback "$cfg" "$backup" "$was_running" || true
+    return "$rc"
+  fi
+
+  rm -f "$backup" 2>/dev/null || true
+  return 0
+}
+
+# Best-effort откат config + производных Lua/firewall/daemon после сбоя setter'а.
+_client_scope_mode_rollback() {
+  local cfg="$1" backup="$2" was_running="${3:-0}"
+  if ! mv -f "$backup" "$cfg"; then
+    echo "Не удалось восстановить config после ошибки Client scopes" >&2
+    return 1
+  fi
+  client_scope_firewall_reconcile || true
+  [ "$was_running" = 1 ] && client_scope_daemon_reload 1 || true
+  return 0
+}
+
+# client-scope-config.lua загружается однократно при старте nfqws2 (--lua-init),
+# поэтому работающему демону нужен рестарт, чтобы увидеть новые глобалы.
+# $1=1 принудительно выполняет restart (для восстановления после неудачного restart).
+client_scope_daemon_reload() {
+  local force="${1:-0}"
+  [ -n "${ZAPRET2_INIT:-}" ] || return 0
+  [ "$force" = 1 ] || zapret2_running || return 0
+  z2r_service_action restart
+}
+
 csv_contains_token() {
   local csv="$1"
   local token="$2"
