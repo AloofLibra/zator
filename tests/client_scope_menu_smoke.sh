@@ -143,6 +143,18 @@ printf '%s\n' "$table_out" | grep -q 'Локи (default)' || fail 'print_table s
 printf '%s\n' "$table_out" | grep -q 'YouTube/tls=3' || fail 'print_table should render profile name in locks'
 printf '%s\n' "$table_out" | grep -q 'Локи (mark:10)' || fail 'print_table should render mark:10 locks block'
 printf '%s\n' "$table_out" | grep -q 'QUIC/udp=2' || fail 'print_table should render mark:10 lock with profile name'
+# Регресс пустого IP (busybox без paste / кривой маппинг): локи не должны
+# попадать в колонку IP (read с IFS=таб схлопывает пустое поле).
+printf 'mark:77\t\n' >> "$CLIENT_SCOPE_MAP_FILE"
+orch_scoped_locked_set mark:77 1 tls 2 || fail 'set empty-ip scope lock'
+table_out="$(client_scopes_print_table)"
+printf '%s\n' "$table_out" | grep -qx '  mark:77    —' || fail 'print_table must show dash for empty IP, not locks'
+printf '%s\n' "$table_out" | grep -q 'Локи (mark:77)' || fail 'print_table should render mark:77 locks block'
+if printf '%s\n' "$table_out" | grep -q '1/tls=2'; then
+  fail 'raw lock leaked into IP column'
+fi
+orch_scoped_locked_clear mark:77 1 tls || fail 'clear empty-ip scope lock'
+awk -F '\t' '$1 != "mark:77"' "$CLIENT_SCOPE_MAP_FILE" > "$CLIENT_SCOPE_MAP_FILE.tmp" && mv "$CLIENT_SCOPE_MAP_FILE.tmp" "$CLIENT_SCOPE_MAP_FILE"
 # Домены: группировка с количеством, сортировка по алфавиту, 0 = «выкл».
 orch_scoped_locked_set default example.net tls 0 || fail 'set domain lock 0'
 orch_scoped_locked_set default aa.example.org tls 5 || fail 'set second domain lock'

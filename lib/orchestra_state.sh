@@ -230,7 +230,8 @@ client_scope_table() {
   printf 'default\t\t%s\n' "$(client_scope_lock_summary default)"
   [ -f "$file" ] || return 0
   for scope in $(awk -F '\t' '$1 ~ /^mark:[1-9][0-9]*$/ {print $1}' "$file" | sort -u -t: -k2,2n); do
-    ips="$(awk -F '\t' -v sc="$scope" '$1==sc {print $2}' "$file" | paste -sd, -)"
+    # Склейка IP через запятую на чистом awk: paste есть не во всех busybox-сборках.
+    ips="$(awk -F '\t' -v sc="$scope" '$1==sc { printf "%s%s", sep, $2; sep="," }' "$file")"
     locks="$(client_scope_lock_summary "$scope")"
     printf '%s\t%s\t%s\n' "$scope" "$ips" "$locks"
   done

@@ -134,7 +134,9 @@ client_scopes_print_table() {
   local scope ips
   echo ""
   printf '  %-10s %s\n' "Scope" "IP"
-  while IFS="$(printf '\t')" read -r scope ips _; do
+  # Нормализация в ровно 2 колонки: read с IFS=таб схлопывает пустое поле,
+  # и при IP="" локи попадали бы в колонку IP.
+  while IFS="$(printf '\t')" read -r scope ips; do
     [ -n "$scope" ] || continue
     if [ "$scope" = default ]; then
       ips="все клиенты"
@@ -142,12 +144,12 @@ client_scopes_print_table() {
       ips="—"
     fi
     printf '  %-10s %s\n' "$scope" "$ips"
-  done <<< "$(client_scope_table)"
-  while IFS="$(printf '\t')" read -r scope _; do
+  done <<< "$(client_scope_table | awk -F '\t' '{ print $1 "\t" $2 }')"
+  while read -r scope; do
     if [ -n "$scope" ]; then
       _client_scopes_print_locks "$scope"
     fi
-  done <<< "$(client_scope_table)"
+  done <<< "$(client_scope_table | cut -f1)"
   return 0
 }
 
