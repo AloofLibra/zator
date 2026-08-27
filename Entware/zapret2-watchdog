@@ -1,0 +1,233 @@
+#!/bin/sh
+# zapret2-watchdog : перезапускает zapret2, если nfqws2 УПАЛ или задыхается по памяти.
+#
+# Отличие падения от намеренной остановки:
+#   - штатный stop (init-скрипт) удаляет pidfile (/var/run/nfqws2_*.pid) —
+#     watchdog видит "нет pidfile, нет процесса" и НЕ трогает zapret2;
+#   - падение оставляет pidfile с мёртвым pid — watchdog перезапускает.
+#   Поэтому выключение/остановка/обновление zapret2 пользователем не вызывают
+#   автоматического перезапуска.
+#
+# Причины перезапуска:
+#   - pidfile есть, но процесс мёртв (демон упал)
+#   - в /tmp/nfqws2_*.err появились LUA PANIC / not enough memory
+#   - (опционально) RSS процесса превысил лимит
+# Если init-скрипт zapret2 исчез (удаление) — watchdog сам останавливается.
+#
+# Лог событий: /tmp/zapret2-watchdog.log (+ syslog через logger).
+# Конфиг (не обязателен, применяется на лету):
+#   /opt/zator/z2r_lib/zapret2-watchdog.conf
+#   WATCH_INTERVAL=30        # период проверки, сек
+#   WATCH_MEM_LIMIT_KB=0     # лимит RSS в KB, 0 = выключено
+#   WATCH_COOLDOWN=60        # минимум секунд между перезапусками
+
+PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+PIDFILE=/opt/var/run/zapret2-watchdog.pid
+LOGFILE=/tmp/zapret2-watchdog.log
+CONF=/opt/zator/z2r_lib/zapret2-watchdog.conf
+
+WATCH_INTERVAL=30
+WATCH_MEM_LIMIT_KB=0
+WATCH_COOLDOWN=60
+
+[ -f "$CONF" ] && . "$CONF"
+
+watch_init()
+{
+	if [ -n "$WATCH_INIT_CMD" ]; then
+		WATCH_INIT=$WATCH_INIT_CMD
+	elif [ -x /opt/etc/init.d/S90-zapret2 ]; then
+		WATCH_INIT=/opt/etc/init.d/S90-zapret2
+	elif [ -x /etc/init.d/zapret2 ]; then
+		WATCH_INIT=/etc/init.d/zapret2
+	else
+		return 1
+	fi
+}
+
+wlog()
+{
+	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOGFILE"
+	logger -t zapret2-watchdog "$*" 2>/dev/null
+	# не даём логу расти бесконечно
+	if [ "$(wc -c <"$LOGFILE" 2>/dev/null || echo 0)" -gt 51200 ]; then
+		tail -n 200 "$LOGFILE" >"$LOGFILE.tmp" 2>/dev/null && mv -f "$LOGFILE.tmp" "$LOGFILE"
+	fi
+}
+
+nfqws2_state()
+{
+	# выводит: "run <pids>" | "crash" | "stopped" | "deadpid <pidfile>"
+	pidfiles=""
+	live_pids=""
+	dead_pf=""
+	for pf in /var/run/nfqws2_*.pid; do
+		[ -r "$pf" ] || continue
+		pidfiles=yes
+		p=$(cat "$pf" 2>/dev/null)
+		if [ -n "$p" ] && [ -d "/proc/$p" ]; then
+			live_pids="$live_pids $p"
+		else
+			dead_pf=$pf
+		fi
+	done
+	if [ -n "$live_pids" ]; then
+		if [ -n "$dead_pf" ]; then
+			echo "deadpid $dead_pf"
+		else
+			echo "run$live_pids"
+		fi
+		return
+	fi
+	# pidfile мог потеряться — ищем процесс по имени
+	byname=$(pidof nfqws2 2>/dev/null)
+	if [ -n "$byname" ]; then
+		echo "run $byname"
+		return
+	fi
+	# процесса нет: pidfile остался = упал, pidfile удалён = штатная остановка
+	if [ -n "$pidfiles" ]; then
+		echo "crash"
+	else
+		echo "stopped"
+	fi
+}
+
+do_restart()
+{
+	now=$(date +%s)
+	if [ $((now - LAST_RESTART)) -lt "$WATCH_COOLDOWN" ]; then
+		wlog "перезапуск пропущен (cooldown): $1"
+		return
+	fi
+	LAST_RESTART=$now
+	wlog "ПАДЕНИЕ/ПРОБЛЕМА, перезапускаю zapret2: $1"
+	# снимок памяти до рестарта: видно, был ли это действительно OOM
+	memline=$(free 2>/dev/null | grep '^Mem:')
+	[ -n "$memline" ] && wlog "память до рестарта: $(echo "$memline" | tr -s ' \t' ' ')"
+	# вывод init не пишем: ошибки запуска демона попадают в /tmp/nfqws2_*.err (п.666 меню)
+	"$WATCH_INIT" restart >/dev/null 2>&1
+	# очищаем err-логи, чтобы маркер OOM не сработал повторно на старых строках
+	for ef in /tmp/nfqws2_*.err; do [ -f "$ef" ] && : >"$ef"; done
+}
+
+do_watch()
+{
+	watch_init || { wlog "init-скрипт zapret2 не найден, watchdog останавливается"; exit 1; }
+	LAST_RESTART=0
+	LAST_STATE=""
+	wlog "watchdog запущен (interval=${WATCH_INTERVAL}s, mem_limit=${WATCH_MEM_LIMIT_KB}KB, init=$WATCH_INIT)"
+	trap 'wlog "watchdog остановлен"; exit 0' TERM INT
+
+	while :; do
+		sleep "$WATCH_INTERVAL"
+
+		# удаление zapret2: init-скрипт исчез — нам тут больше делать нечего
+		if [ ! -x "$WATCH_INIT" ]; then
+			wlog "init-скрипт zapret2 исчез (удаление?), watchdog останавливается"
+			exit 0
+		fi
+
+		# конфиг можно менять на лету
+		[ -f "$CONF" ] && . "$CONF"
+		: "${WATCH_INTERVAL:=30}"
+
+		reason=""
+		state=$(nfqws2_state)
+
+		case "$state" in
+		run*)
+			if [ "$LAST_STATE" != run ]; then
+				wlog "nfqws2 работает (pids:${state#run})"
+			fi
+			;;
+		crash)
+			reason="nfqws2 упал (pidfile остался с мёртвым pid)"
+			;;
+		deadpid*)
+			reason="часть демонов не жива ($state)"
+			;;
+		stopped)
+			if [ "$LAST_STATE" != stopped ]; then
+				wlog "nfqws2 не запущен (штатная остановка или ещё не стартовал) — перезапуск не требуется"
+			fi
+			;;
+		esac
+		LAST_STATE=${state%% *}
+
+		# живой, но задыхающийся: маркеры нехватки памяти в lua
+		if [ -z "$reason" ] && [ "$LAST_STATE" = run ]; then
+			for ef in /tmp/nfqws2_*.err; do
+				[ -r "$ef" ] || continue
+				if grep -qE "LUA PANIC|not enough memory|out of memory" "$ef" 2>/dev/null; then
+					reason="нехватка памяти (lua OOM в $ef)"
+					break
+				fi
+			done
+		fi
+
+		# опциональный лимит RSS (только для живого процесса)
+		if [ -z "$reason" ] && [ "$LAST_STATE" = run ] && [ "$WATCH_MEM_LIMIT_KB" -gt 0 ] 2>/dev/null; then
+			rss=0
+			for p in ${state#run}; do
+				v=$(awk '/^VmRSS:/{print $2}' "/proc/$p/status" 2>/dev/null)
+				[ -n "$v" ] && rss=$((rss + v))
+			done
+			if [ "$rss" -gt "$WATCH_MEM_LIMIT_KB" ] 2>/dev/null; then
+				reason="RSS ${rss}KB выше лимита ${WATCH_MEM_LIMIT_KB}KB"
+			fi
+		fi
+
+		[ -n "$reason" ] && do_restart "$reason"
+	done
+}
+
+running()
+{
+	[ -r "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+case "$1" in
+	start)
+		running && exit 0
+		mkdir -p /opt/var/run || exit 1
+		nohup "$0" watch >>"$LOGFILE" 2>&1 &
+		echo $! >"$PIDFILE"
+		;;
+	stop)
+		if running; then
+			p=$(cat "$PIDFILE")
+			kill "$p" 2>/dev/null
+			# trap срабатывает только после текущего sleep — даём время выйти
+			i=0
+			while [ $i -lt 35 ] && kill -0 "$p" 2>/dev/null; do
+				sleep 1
+				i=$((i + 1))
+			done
+			kill -9 "$p" 2>/dev/null
+		fi
+		rm -f "$PIDFILE"
+		;;
+	restart)
+		"$0" stop
+		"$0" start
+		;;
+	status)
+		if running; then
+			echo "running (pid $(cat "$PIDFILE"))"
+			tail -n 5 "$LOGFILE" 2>/dev/null
+		else
+			echo "stopped"
+			exit 1
+		fi
+		;;
+	watch)
+		do_watch
+		;;
+	*)
+		echo "usage: $0 {start|stop|restart|status}" >&2
+		exit 1
+		;;
+esac
