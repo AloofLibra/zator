@@ -2194,6 +2194,13 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
       command -v logread >/dev/null 2>&1 && echo -e "${yellow}Если проблемы точно есть, а здесь пусто — обновите zapret2 ещё раз (wrt_fixes включает журнал ошибок).${plain}"
     fi
+    if [ -s /tmp/zapret2-watchdog.log ] && grep -aqE '^[0-9]{4}-' /tmp/zapret2-watchdog.log 2>/dev/null; then
+      echo ""
+      echo "--- События watchdog (падения/перезапуски zapret2) ---"
+      grep -aE '^[0-9]{4}-' /tmp/zapret2-watchdog.log | tail -15
+      echo ""
+      echo -e "${yellow}Источник: /tmp/zapret2-watchdog.log, последние 15 событий. Если пусто — watchdog не установлен или ещё ничего не ловил.${plain}"
+    fi
     pause_enter
     ;;
 
