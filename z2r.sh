@@ -1990,6 +1990,8 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        # zapret2 уходит насовсем — watchdog больше нечего сторожить.
+        watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
         zator_remove || echo -e "${red}Удаление zator завершилось с ошибкой.${plain}"
         echo -e "${yellow}Удаление zator и zapret2 завершено${plain}"
@@ -2007,6 +2009,8 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        # zapret2 уходит без переустановки — watchdog больше нечего сторожить.
+        watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
         WEBUI_WAS_RUNNING=0
         webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
@@ -2219,7 +2223,8 @@ while true; do
  fi
  WEBUI_WAS_RUNNING=0
  webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
- 
+
+ # Watchdog не трогаем: это переустановка (поднимем в конце — watchdog_ensure_running).
  remove_zapret
  
  #Запрос желаемой версии zapret2
@@ -2294,5 +2299,8 @@ while true; do
  	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
  fi
  install_zapret_reboot
+ # Обновление = переустановка: watchdog пережил её (см. remove_zapret выше);
+ # если демон самоостановился в паузу без init-скрипта — поднимаем.
+ watchdog_ensure_running || true
  get_menu
 done

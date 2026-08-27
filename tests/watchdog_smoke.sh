@@ -11,6 +11,10 @@
 #     скачанные файлы остаются; повторное включение — без докачки;
 #   • watchdog_toggle (WRT) — enable+start при включении, stop+disable
 #     при выключении, init-файл остаётся;
+#   • watchdog_uninstall (меню 4/44) — полная зачистка: демон остановлен
+#     (TERM → 3с → KILL по pidfile), файлы/конфиг/обёртка удалены;
+#   • watchdog_ensure_running (тело установщика) — поднимает включённый
+#     watchdog после переустановки, молчит при живом/выключенном;
 #   • статика: bash -n (z2r.sh, lib/submenus.sh), sh -n (оба watchdog-файла),
 #     блок «События watchdog» в п.666, пункт 6 и обработчик в подменю,
 #     env-override путей автозапуска.
@@ -203,5 +207,75 @@ assert_eq "$(calls "$WRT_CALLS")" "enable,start,stop,disable" "wrt: при вы�
 echo stopped >"$STATUS_MODE"
 assert_eq "$(watchdog_status_text)" "выключен" "wrt: статус «выключен»"
 ok "wrt: включение (enable+start) и выключение (stop+disable), файл остался"
+
+# --- Удаление (меню 4/44): полная зачистка watchdog ---
+
+OSystem="entware"
+# живой «демон»: реальный фоновый процесс + pidfile (путь через env)
+sleep 300 &
+WDPID=$!
+disown "$WDPID" 2>/dev/null || true
+echo "$WDPID" >"$TMP_DIR/watchdog.pid"
+Z2R_WATCHDOG_PIDFILE="$TMP_DIR/watchdog.pid"
+touch "$ENT_SCRIPT.conf"
+out="$(watchdog_uninstall)"
+kill "$WDPID" 2>/dev/null || true
+assert_contains "$out" "остановлен и удалён" "uninstall entware: сообщение"
+[ ! -e "$ENT_SCRIPT" ] || fail "uninstall entware: скрипт не удалён"
+[ ! -e "$ENT_SCRIPT.conf" ] || fail "uninstall entware: конфиг не удалён"
+[ ! -e "$Z2R_ENTWARE_INIT" ] || fail "uninstall entware: обёртка автозапуска не удалена"
+[ ! -e "$TMP_DIR/watchdog.pid" ] || fail "uninstall entware: pidfile не удалён"
+kill -0 "$WDPID" 2>/dev/null && fail "uninstall entware: демон не остановлен"
+ok "uninstall entware: демон остановлен, файлы удалены"
+
+OSystem="WRT"
+make_mock_script "$Z2R_WRT_INIT" "$STATUS_MODE" "$WRT_CALLS"
+: >"$WRT_CALLS"
+out="$(watchdog_uninstall)"
+assert_contains "$out" "остановлен и удалён" "uninstall wrt: сообщение"
+[ ! -e "$Z2R_WRT_INIT" ] || fail "uninstall wrt: init-файл не удалён"
+assert_eq "$(calls "$WRT_CALLS")" "stop,disable" "uninstall wrt: stop и disable"
+ok "uninstall wrt: stop+disable, init-файл удалён"
+
+OSystem="vps"
+out="$(watchdog_uninstall)"
+[ -z "$out" ] || fail "uninstall на чужой платформе должен молчать"
+ok "uninstall: чужая платформа — тихий no-op"
+
+# --- После переустановки (тело установщика): поднять выживший watchdog ---
+
+OSystem="entware"
+out="$(watchdog_ensure_running)"
+[ -z "$out" ] || fail "ensure_running без watchdog должен молчать"
+
+make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS"
+make_mock_script "$Z2R_ENTWARE_INIT" "$STATUS_MODE" "$ENT_CALLS"
+echo stopped >"$STATUS_MODE"
+: >"$ENT_CALLS"
+out="$(watchdog_ensure_running)"
+assert_contains "$out" "снова запущен" "ensure_running entware: сообщение о подъёме"
+assert_eq "$(calls "$ENT_CALLS")" "start" "ensure_running entware: вызван start"
+
+echo run >"$STATUS_MODE"
+: >"$ENT_CALLS"
+out="$(watchdog_ensure_running)"
+[ -z "$out" ] || fail "ensure_running при работающем демоне должен молчать"
+[ -z "$(cat "$ENT_CALLS")" ] || fail "ensure_running при работающем не должен звать start"
+
+rm -f "$Z2R_ENTWARE_INIT"
+: >"$ENT_CALLS"
+out="$(watchdog_ensure_running)"
+[ -z "$out" ] || fail "ensure_running без обёртки (был выключен) должен молчать"
+[ -z "$(cat "$ENT_CALLS")" ] || fail "ensure_running без обёртки не должен звать start"
+ok "ensure_running entware: подъём после паузы, молчит при живом/выключенном"
+
+OSystem="WRT"
+make_mock_script "$Z2R_WRT_INIT" "$STATUS_MODE" "$WRT_CALLS"
+echo stopped >"$STATUS_MODE"
+: >"$WRT_CALLS"
+out="$(watchdog_ensure_running)"
+assert_contains "$out" "снова запущен" "ensure_running wrt: сообщение о подъёме"
+assert_eq "$(calls "$WRT_CALLS")" "enabled,start" "ensure_running wrt: вызван start"
+ok "ensure_running wrt: подъём после паузы"
 
 echo "watchdog smoke ok"
