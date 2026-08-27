@@ -1397,12 +1397,113 @@ wireguard_submenu() {
   done
 }
 
+# --- Watchdog zapret2: включение/выключение (пункт 19-6) ---
+# Файлы докачиваются с репозитория при отсутствии (z2r_download_project_file),
+# поэтому в ветке они живут как исходники, а на роутере появляются по требованию.
+
+watchdog_entware_script() { printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog"; }
+watchdog_entware_init() { printf '%s\n' /opt/etc/init.d/S91zapret2-watchdog; }
+watchdog_wrt_init() { printf '%s\n' /etc/init.d/zapret2-watchdog; }
+
+watchdog_supported() { [ "${OSystem:-}" = "entware" ] || [ "${OSystem:-}" = "WRT" ]; }
+
+# Статус для меню: работает / выключен / не установлен / недоступно.
+watchdog_status_text() {
+  if ! watchdog_supported; then
+    printf '%s\n' "недоступно"
+    return 0
+  fi
+  if [ "${OSystem:-}" = "WRT" ]; then
+    if [ ! -x "$(watchdog_wrt_init)" ]; then
+      printf '%s\n' "не установлен"
+    elif "$(watchdog_wrt_init)" status >/dev/null 2>&1; then
+      printf '%s\n' "работает"
+    else
+      printf '%s\n' "выключен"
+    fi
+    return 0
+  fi
+  if [ ! -x "$(watchdog_entware_script)" ]; then
+    printf '%s\n' "не установлен"
+  elif "$(watchdog_entware_script)" status >/dev/null 2>&1; then
+    printf '%s\n' "работает"
+  else
+    printf '%s\n' "выключен"
+  fi
+}
+
+# Переключатель: не установлен/выключен → скачать (если нужно) + включить
+# в автозагрузку + запустить; работает → остановить и убрать из автозагрузки.
+watchdog_toggle() {
+  local script init
+  if ! watchdog_supported; then
+    echo -e "${yellow}Watchdog доступен на Keenetic/Entware и OpenWRT.${plain}"
+    return 1
+  fi
+  if [ "${OSystem:-}" = "WRT" ]; then
+    init="$(watchdog_wrt_init)"
+    if [ -x "$init" ] && "$init" status >/dev/null 2>&1; then
+      "$init" stop >/dev/null 2>&1
+      "$init" disable >/dev/null 2>&1
+      echo -e "${yellow}Watchdog остановлен и убран из автозагрузки.${plain}"
+      return 0
+    fi
+    if [ ! -x "$init" ]; then
+      if ! z2r_download_project_file "$init" "init.d/openwrt/zapret2-watchdog"; then
+        echo -e "${red}Не удалось скачать watchdog с репозитория.${plain}"
+        return 1
+      fi
+      chmod +x "$init"
+    fi
+    "$init" enable >/dev/null 2>&1
+    if "$init" start; then
+      echo -e "${green}Watchdog установлен и включён (автозапуск).${plain}"
+    else
+      echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /tmp/zapret2-watchdog.log${plain}"
+      return 1
+    fi
+    return 0
+  fi
+  script="$(watchdog_entware_script)"
+  init="$(watchdog_entware_init)"
+  if [ -x "$script" ] && "$script" status >/dev/null 2>&1; then
+    "$script" stop
+    rm -f "$init"
+    echo -e "${yellow}Watchdog остановлен и убран из автозагрузки.${plain}"
+    return 0
+  fi
+  if [ ! -x "$script" ]; then
+    if ! z2r_download_project_file "$script" "Entware/zapret2-watchdog"; then
+      echo -e "${red}Не удалось скачать watchdog с репозитория.${plain}"
+      return 1
+    fi
+    chmod +x "$script"
+  fi
+  mkdir -p /opt/etc/init.d
+  cat > "$init" <<WRAPPER
+#!/bin/sh
+# Автозапуск watchdog zapret2 (создан z2r, пункт 19-6). Сам watchdog: $script
+case "\$1" in
+  start|stop|restart|status) exec "$script" "\$1" ;;
+  *) echo "usage: \$0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac
+WRAPPER
+  chmod +x "$init"
+  if "$script" start; then
+    echo -e "${green}Watchdog установлен и включён (автозапуск $init).${plain}"
+  else
+    echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /tmp/zapret2-watchdog.log${plain}"
+    return 1
+  fi
+}
+
 advanced_settings_submenu() {
   while true; do
     local current_state current_value current_color
     local wg_block wg_value wg_color
     local quic_block quic_value quic_color
     local keenetic_status keenetic_color
+    local wd_status wd_color
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -1451,6 +1552,13 @@ advanced_settings_submenu() {
       esac
       submenu_status_item "5" "Настройка Keenetic-политики для nfqws2." "$keenetic_status" "$keenetic_color"
     fi
+    wd_status="$(watchdog_status_text)"
+    case "$wd_status" in
+      работает) wd_color="green" ;;
+      выключен) wd_color="red" ;;
+      *) wd_color="yellow" ;;
+    esac
+    submenu_status_item "6" "Watchdog zapret2: перезапуск при падении/OOM." "$wd_status" "$wd_color"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1478,6 +1586,10 @@ advanced_settings_submenu() {
         if keenetic_policy_ndmc_is_supported; then
           keenetic_policy_submenu
         fi
+        ;;
+      "6")
+        watchdog_toggle || true
+        pause_enter
         ;;
       "0"|"")
         return
