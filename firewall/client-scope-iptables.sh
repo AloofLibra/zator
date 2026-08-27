@@ -63,7 +63,13 @@ apply() {
   [ -r "$CLIENT_SCOPE_MAP_FILE" ] || return 0
   _client_scope_iptables -N "$CLIENT_SCOPE_CHAIN" 2>/dev/null || true
   _client_scope_delete_owned
-  _client_scope_iptables -A PREROUTING -m comment --comment "$CLIENT_SCOPE_COMMENT" -j "$CLIENT_SCOPE_CHAIN" || return 1
+  # Вставляемся ПЕРВЫМИ в PREROUTING: magitrickle и подобные метят пакеты
+  # для политической маршрутизации полной 32-битной маркой (/0xffffffff)
+  # и затирают всё, что стояло до них. Наша маска 0xff00 после их правил
+  # ломала бы их марку (Telegram-медиа через VPN). Первыми — значит для
+  # VPN-направленных пакетов победит их марка (скоп деградирует до default),
+  # для остальных останется наша.
+  _client_scope_iptables -I PREROUTING 1 -m comment --comment "$CLIENT_SCOPE_COMMENT" -j "$CLIENT_SCOPE_CHAIN" || return 1
   while IFS=$'\t' read -r scope ip _ || [ -n "${scope:-}" ]; do
     [ -n "$scope" ] || continue
     case "$scope" in mark:*) id=${scope#mark:};; *) continue;; esac

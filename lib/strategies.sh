@@ -527,8 +527,15 @@ get_orchestra_locks_info() {
 
     local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http"
     local stored_line orch_line
-    stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
-    orch_line="$(_orchestra_multi_state "$orch_lock_file" "$_pairs")"
+    if [ "${ORCH_ACTIVE_SCOPE:-default}" = default ]; then
+      stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
+      orch_line="$(_orchestra_multi_state "$orch_lock_file" "$_pairs")"
+    else
+      # Контекст mark'и (client scopes): показываем локи только этого клиента,
+      # глобальный profile state в шапку не примешиваем.
+      stored_line=""
+      orch_line="$(_orchestra_multi_state "$(_orch_scope_lock_file "$ORCH_ACTIVE_SCOPE" 2>/dev/null || printf '%s\n' "$orch_lock_file")" "$_pairs")"
+    fi
 
     local s_vals o_vals
     IFS=$'\t' read -ra s_vals <<< "$stored_line"
@@ -769,9 +776,10 @@ domain_list_manage() {
 custom_rkn_remove_domain() {
     local domain="$1"
     domain_list_remove "$(custom_rkn_file)" "$domain" || return 1
-    orch_locked_clear "$domain" "tls"
-    orch_locked_clear "$domain" "http"
-    orch_locked_clear "$domain" "udp"
+    # Домен мог получить стратегию в любом client-scope — вычищаем отовсюду.
+    orch_locked_clear_everywhere "$domain" "tls"
+    orch_locked_clear_everywhere "$domain" "http"
+    orch_locked_clear_everywhere "$domain" "udp"
 }
 
 custom_rkn_add_domain() {
@@ -871,6 +879,25 @@ manage_custom_rkn_domain() {
         return 0
     fi
 
+    # Домен попадает в лист глобально (обрабатывается у всех), а подобранная
+    # стратегия закрепляется за конкретным клиентом: при включённых Client
+    # scopes спрашиваем марку, остальное — как раньше (default).
+    # local + динамический скоп bash: все вложенные вызовы (подбор,
+    # автопрогон, восстановление) видят этот ORCH_ACTIVE_SCOPE, а после
+    # выхода из функции глобальное значение не меняется.
+    local ORCH_ACTIVE_SCOPE="default"
+    if type client_scope_mode_text >/dev/null 2>&1 \
+      && [ "$(client_scope_mode_text)" = "включен" ] \
+      && type client_scopes_ask_scope_for_strategies >/dev/null 2>&1; then
+        echo "Стратегия закрепляется за клиентом (Client scopes включены)."
+        if client_scopes_ask_scope_for_strategies; then
+            ORCH_ACTIVE_SCOPE="$CLIENT_SCOPE_ASK_RESULT"
+        fi
+        if [ "$ORCH_ACTIVE_SCOPE" != default ]; then
+            echo -e "${yellow}Подбор и сохранение стратегии — для клиента ${ORCH_ACTIVE_SCOPE}.${plain}"
+        fi
+    fi
+
     max_strat="$(orch_max_strategy_for_profile 3)"
     if [ -z "$max_strat" ] || [ "$max_strat" -le 0 ]; then
         max_strat=19
@@ -880,9 +907,11 @@ manage_custom_rkn_domain() {
     if ! printf "%s" "$current_strat" | grep -Eq '^[0-9]+$' || [ "$current_strat" -le 0 ]; then
         current_strat=1
     fi
+    # Прежняя стратегия — в контексте выбранного клиента; подмешивать
+    # default-значение нельзя (это другой scope).
     prev_strat="$(orch_locked_get "$user_domain" "tls")"
     if ! printf "%s" "$prev_strat" | grep -Eq '^[0-9]+$' || [ "$prev_strat" -le 0 ]; then
-        prev_strat="$existing_strat"
+        prev_strat=""
     fi
 
     read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
@@ -918,7 +947,11 @@ manage_custom_rkn_domain() {
 
         read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
         if [ "$answer" = "1" ]; then
-            echo "Стратегия $s сохранена для $user_domain."
+            if [ "$ORCH_ACTIVE_SCOPE" != default ]; then
+                echo "Стратегия $s сохранена для $user_domain (клиент $ORCH_ACTIVE_SCOPE)."
+            else
+                echo "Стратегия $s сохранена для $user_domain."
+            fi
             telemetry_notify
             pause_enter
             return 0

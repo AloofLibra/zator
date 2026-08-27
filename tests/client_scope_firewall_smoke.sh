@@ -14,7 +14,10 @@ args="$*"
 case "$1" in
   -N) grep -Fxq "chain:$2" "$state" 2>/dev/null || printf 'chain:%s\n' "$2" >> "$state" ;;
   -C) grep -Fxq "rule:-A ${args#-C }" "$state" ;;
+  # -I хранится как -A без позиционного номера: текст правила тот же,
+  # проверка -C/-D и идемпотентность работают по тексту, а не позиции.
   -A) printf 'rule:-A %s\n' "${args#-A }" >> "$state" ;;
+  -I) printf 'rule:-A %s\n' "$(printf '%s\n' "${args#-I }" | sed 's/^\([A-Za-z_][A-Za-z0-9_]*\) 1 /\1 /')" >> "$state" ;;
   -D) line="rule:-A ${args#-D }"; tmp="${state}.tmp"; awk -v x="$line" '$0 != x { print }' "$state" > "$tmp"; mv "$tmp" "$state" ;;
   -S) chain=${2:-}; sed -n "s/^rule:-A ${chain} /-A ${chain} /p" "$state" | sed 's/--comment zator-client-scope/--comment "zator-client-scope"/g' ;;
   *) exit 0 ;;
@@ -69,6 +72,7 @@ chmod +x "$MOCK/nft"
   apply
   first=$(cat "$NFT_STATE")
   printf '%s\n' "$first" | grep -q 'hook prerouting' || fail 'client scope did not select prerouting'
+  printf '%s\n' "$first" | grep -q 'priority -190' || fail 'client scope must classify before mangle-priority policy routing marks'
   ! printf '%s\n' "$first" | grep -q 'hook postrouting' || fail 'client scope selected postrouting'
   printf '%s\n' "$first" | grep -q 'ip6 saddr 2001:db8::10' || fail 'IPv6 client rule missing'
   ! printf '%s\n' "$first" | grep -q '999.1.1.1' || fail 'invalid IPv4 client rule was emitted'
@@ -102,4 +106,36 @@ printf '%s\n' "$REMOVE_BLOCK" | grep -q 'client_scope_firewall_action cleanup' \
 if printf '%s\n' "$REMOVE_BLOCK" | grep -q 'if client_scope_enabled_from_active_config'; then
   fail 'remove_zapret still gates cleanup on enabled config'
 fi
+
+# Keenetic ndm пересобирает firewall при любом событии в сети и сносит правила
+# client scope; netfilter.d-хук обязан переустанавливать их общим reconcile.
+grep -q 'client_scope_firewall_reconcile' "$ROOT/Entware/000-zapret2.sh" \
+  || fail 'netfilter.d hook does not re-apply client scope firewall'
+grep -q 'restart-fw' "$ROOT/Entware/000-zapret2.sh" \
+  || fail 'netfilter.d hook lost restart-fw'
+
+# client_scope_firewall_action обязан пробрасывать CLIENT_SCOPE_ENABLE в дочерний
+# скрипт: без export скрипт не видел режим и молча завершался no-op (rc=0),
+# правила не вставали ни из меню, ни из netfilter-хука.
+ENVSTUB="$TMP/zator-root"
+mkdir -p "$ENVSTUB/firewall"
+cat > "$ENVSTUB/firewall/client-scope-iptables.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'action=%s enable=%s map=%s\n' "$1" "${CLIENT_SCOPE_ENABLE:-}" "${CLIENT_SCOPE_MAP_FILE:-}" > "$ENV_DUMP"
+STUB
+chmod +x "$ENVSTUB/firewall/client-scope-iptables.sh"
+export ENV_DUMP="$TMP/child-env.txt"
+# shellcheck source=/dev/null
+source "$ROOT/lib/config.sh"
+CLIENT_SCOPE_FIREWALL_BACKEND=iptables
+ZATOR_ROOT="$ENVSTUB"
+CLIENT_SCOPE_ENABLE=1
+client_scope_firewall_action apply || fail 'firewall action apply failed'
+grep -q 'action=apply enable=1' "$ENV_DUMP" || fail 'child script did not receive CLIENT_SCOPE_ENABLE=1 (missing export)'
+grep -q 'map=' "$ENV_DUMP" || fail 'child script did not receive CLIENT_SCOPE_MAP_FILE'
+CLIENT_SCOPE_ENABLE=0
+: > "$ENV_DUMP"
+client_scope_firewall_action cleanup || fail 'firewall action cleanup failed'
+grep -q 'action=cleanup' "$ENV_DUMP" || fail 'cleanup must always reach the script'
+unset ENV_DUMP CLIENT_SCOPE_FIREWALL_BACKEND
 printf 'client scope firewall smoke ok\n'

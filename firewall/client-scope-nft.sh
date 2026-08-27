@@ -39,7 +39,12 @@ _apply_ruleset() {
   tmp="${TMPDIR:-/tmp}/zator-client-scope-nft.$$.rules"
   {
     printf 'add table inet %s\n' "$CLIENT_SCOPE_NFT_TABLE"
-    printf 'add chain inet %s %s { type filter hook %s priority mangle; policy accept; }\n' \
+    # Приоритет -190: после conntrack (-200), но ДО стандартной mangle-зоны
+    # (-150), где маркируют policy-routing (pbr/vpn-policy-routing, mwan3 и
+    # т.п.). Переписыватели полной марки выигрывают для своих пакетов
+    # (скоп деградирует до default), остальные сохраняют марку клиента.
+    # При равной приоритете с ними порядок цепочек в ядре не определён.
+    printf 'add chain inet %s %s { type filter hook %s priority -190; policy accept; }\n' \
       "$CLIENT_SCOPE_NFT_TABLE" "$CLIENT_SCOPE_NFT_CHAIN" "$hook"
     while IFS=$'\t' read -r scope ip _ || [ -n "${scope:-}" ]; do
       [ -n "$scope" ] || continue

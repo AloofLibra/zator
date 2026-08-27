@@ -44,8 +44,30 @@ expect_fail orch_scoped_locked_set mark:1 2 udp 999999
 expect_fail orch_scoped_locked_set nope 2 tls 1
 
 # Every persisted row must be tab-separated and writes must be complete.
+# Mark-локи живут в per-mark файлах (3 колонки), locked.tsv их не содержит.
 orch_scoped_locked_set mark:7 2 tls 5
-awk -F '\t' '$1 ~ /^mark:/ && NF != 4 { exit 1 }' "$ORCH_LOCK_FILE" || fail "scoped row is not 4-column TSV"
+[ -f "$ORCH_DIR/scopes/mark_7.tsv" ] || fail "per-mark file missing after set"
+awk -F '\t' 'NF != 3 { exit 1 }' "$ORCH_DIR/scopes/mark_7.tsv" || fail "per-mark rows must be 3-column TSV"
+if grep -q '^mark:' "$ORCH_LOCK_FILE"; then
+  fail "locked.tsv must not keep scoped rows"
+fi
+[ "$(orch_scoped_locked_get mark:7 2 tls)" = 5 ] || fail "mark get from per-mark file"
+[ "$(orch_scoped_lock_source mark:7 2 tls)" = "scoped" ] || fail "lock source must be scoped"
+orch_scoped_locked_clear mark:7 2 tls || fail "clear mark:7"
+[ ! -f "$ORCH_DIR/scopes/mark_7.tsv" ] || fail "empty per-mark file must be removed"
+
+# Миграция legacy-формата: 4-колоночные mark: строки переезжают в per-mark файл.
+printf 'mark:9\t2\ttls\t4\n2\ttls\t3\n' > "$ORCH_LOCK_FILE"
+[ "$(orch_scoped_locked_get mark:9 2 tls)" = 4 ] || fail "migrated mark lock lost"
+[ -f "$ORCH_DIR/scopes/mark_9.tsv" ] || fail "migration must create per-mark file"
+if grep -q '^mark:' "$ORCH_LOCK_FILE"; then
+  fail "migration must strip scoped rows from locked.tsv"
+fi
+[ "$(orch_scoped_locked_get default 2 tls)" = 3 ] || fail "migration must keep default rows"
+# Повторная миграция — идемпотентна, значение не удваивается.
+orch_scoped_locks_migrate || fail "idempotent migrate run"
+[ "$(awk -F '\t' 'END{print NR}' "$ORCH_DIR/scopes/mark_9.tsv")" = 1 ] || fail "migrate must not duplicate rows"
+orch_scoped_locked_clear mark:9 2 tls || fail "clear migrated mark:9"
 
 # Every persisted row must be tab-separated and writes must be complete.
 client_scope_ip_set 192.0.2.10 mark:101 || fail "IP mapping set"
@@ -72,5 +94,48 @@ orch_locked_clear example.org tls || fail "custom-domain clear"
 if grep -q '^example\.org\t' "$ORCH_LOCK_FILE"; then
   fail "custom-domain rows were not cleared"
 fi
+
+# Активный scope меню стратегий: дефолтные wrapper'ы пишут в per-mark файл,
+# глобальные profile state / config не затрагиваются.
+(
+  export ORCH_ACTIVE_SCOPE="mark:5"
+  orch_locked_set 2 tls 7 || fail "active scope set"
+  [ -f "$ORCH_DIR/scopes/mark_5.tsv" ] || fail "active scope set must write per-mark file"
+  [ "$(orch_locked_get 2 tls)" = 7 ] || fail "active scope get"
+  [ "$(orch_locked_state_get 2 tls)" = 7 ] || fail "active scope state get"
+  [ "$(orch_locked_state_get 3 tls)" = "auto" ] || fail "absent scoped state must be auto"
+  profile_state_set_and_apply 2 "tls" 5 "$CONFIG_FILE" || fail "active scope profile apply"
+  [ "$(orch_scoped_locked_get mark:5 2 tls)" = 5 ] || fail "active scope profile apply must write scoped lock"
+  orch_locked_clear 2 tls || fail "active scope clear"
+  [ ! -f "$ORCH_DIR/scopes/mark_5.tsv" ] || fail "cleared per-mark file must be removed"
+)
+if grep -qE '^[0-9]+[[:space:]]+tls' "${PROFILE_STATE_FILE:-/nonexistent}" 2>/dev/null; then
+  fail "active scope must not touch global profile state"
+fi
+# Без ORCH_ACTIVE_SCOPE — всё как раньше: default-скоп.
+orch_locked_set 2 tls 3 || fail "default wrapper set"
+[ "$(orch_scoped_locked_get default 2 tls)" = 3 ] || fail "default wrapper must write locked.tsv"
+[ ! -f "$ORCH_DIR/scopes/mark_5.tsv" ] || fail "default wrapper must not write per-mark files"
+
+# Доменные локи в контексте клиента + очистка из всех scope (удаление домена).
+(
+  export ORCH_ACTIVE_SCOPE="mark:9"
+  orch_locked_set example.net tls 4 || fail "domain scoped set"
+)
+grep -q $'example.net\ttls\t4' "$ORCH_DIR/scopes/mark_9.tsv" || fail "domain lock must live in per-mark file"
+orch_locked_set example.net tls 6 || fail "domain default set"
+orch_locked_clear_everywhere example.net tls || fail "clear everywhere"
+if grep -q '^example\.net' "$ORCH_LOCK_FILE"; then
+  fail "clear everywhere must drop the default row"
+fi
+[ ! -f "$ORCH_DIR/scopes/mark_9.tsv" ] || fail "clear everywhere must drop per-mark rows"
+
+# Статика: гейт меню стратегий и статус по активному scope на месте.
+grep -q 'client_scopes_ask_scope_for_strategies' "$REPO_DIR/lib/submenus.sh" \
+  || fail "strategies menu lost client scope gate"
+grep -q 'ORCH_ACTIVE_SCOPE' "$REPO_DIR/lib/strategies.sh" \
+  || fail "locks info lost active scope awareness"
+grep -q 'client_scopes_ask_scope_for_strategies' "$REPO_DIR/lib/strategies.sh" \
+  || fail "domain strategy flow lost client scope selection"
 
 printf 'client scope shell smoke ok\n'

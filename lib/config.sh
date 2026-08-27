@@ -6,10 +6,10 @@ orch_scope_validate() {
   local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" max custom_domain=0
   printf '%s' "$scope$profile$proto$strategy" | grep -q '[[:cntrl:]]' && { echo "Lock values must not contain tabs or newlines" >&2; return 1; }
   printf '%s' "$scope" | grep -Eq '^(default|mark:[0-9]+)$' || { echo "Invalid lock scope: $scope" >&2; return 1; }
-  # Legacy custom-domain wrappers use the hostname as profile and TLS only.
-  # Keep this explicit and restrictive instead of treating arbitrary strings
-  # as profile identifiers.
-  if [ "$scope" = "default" ] && printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
+  # Custom-domain locks use the hostname as profile and TLS only. Домен
+  # попадает в лист глобально, а стратегия для него может быть закреплена
+  # за любым client scope (per-mark файл).
+  if printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
     custom_domain=1
     case "$strategy:$proto" in
       auto:*|clear:*) ;;
@@ -328,9 +328,15 @@ client_scope_firewall_action() {
   script="$(client_scope_firewall_script)"
   [ -f "$script" ] || return 0
   # Run in a subshell so Entware's /opt/bin PATH does not leak to the caller.
+  # CLIENT_SCOPE_ENABLE/MAP_FILE обязаны попасть в дочерний bash: без export
+  # скрипт не видит режим и молча завершается no-op (rc=0), правила не встают.
   (
     PATH="/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${PATH:-}"
     export PATH
+    CLIENT_SCOPE_ENABLE="${CLIENT_SCOPE_ENABLE:-0}"
+    CLIENT_SCOPE_MAP_FILE="${CLIENT_SCOPE_MAP_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/client_scope.tsv}"
+    ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+    export CLIENT_SCOPE_ENABLE CLIENT_SCOPE_MAP_FILE ZATOR_ROOT
     shell="$(command -v bash 2>/dev/null || true)"
     if [ -n "$shell" ] && [ -x "$shell" ]; then
       "$shell" "$script" "$action"
@@ -500,6 +506,7 @@ menu_config_snapshot() {
   MENU_UDP_GAMES="Неизвестно"
   MENU_PORTS="дефолт"
   MENU_CONFIG_DATE="Неизвестно"
+  MENU_CLIENT_SCOPE="выключен"
   MENU_PROFILE_MAX_1=0
   MENU_PROFILE_MAX_2=0
   MENU_PROFILE_MAX_3=0
@@ -723,6 +730,9 @@ menu_config_snapshot() {
   fi
   if [ -n "$ports" ]; then
     MENU_PORTS="$ports"
+  fi
+  if [ "$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)" = "1" ]; then
+    MENU_CLIENT_SCOPE="включен"
   fi
   return 0
 }
@@ -1180,6 +1190,20 @@ profile_state_set_and_apply() {
   normalized="$(profile_state_normalize "$state")" || return 1
   [ -n "$proto_list" ] || proto_list="$(config_profile_proto_list "$profile")"
   [ -n "$proto_list" ] || return 1
+
+  if [ "${ORCH_ACTIVE_SCOPE:-default}" != default ]; then
+    # Контекст mark'и (client scopes): фиксируем только per-mark лок.
+    # Глобальный profile state и config не трогаем — они описывают default-скоп.
+    # Рестарт не нужен: nfqws2 перечитывает локы TTL-перечитыванием.
+    for proto in $proto_list; do
+      if [ "$normalized" = "auto" ]; then
+        orch_scoped_locked_clear "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" || return 1
+      else
+        orch_scoped_locked_set "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" "$normalized" || return 1
+      fi
+    done
+    return 0
+  fi
 
   for proto in $proto_list; do
     if [ "$normalized" = "auto" ]; then

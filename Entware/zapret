@@ -43,10 +43,13 @@ run_daemon()
 		: > "$ERRLOG"
 		if command -v setsid >/dev/null 2>&1; then
 			setsid "$2" $3 >/dev/null 2>>"$ERRLOG" &
+			PID=$!
 		else
-			( trap '' INT QUIT HUP; exec "$2" $3 ) >/dev/null 2>>"$ERRLOG" &
+			set -m 2>/dev/null
+			"$2" $3 >/dev/null 2>>"$ERRLOG" &
+			PID=$!
+			set +m 2>/dev/null
 		fi
-		PID=$!
 		if [ -n "$PID" ]; then
 			echo $PID >$PIDFILE
 		else
