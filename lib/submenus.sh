@@ -545,6 +545,9 @@ watchdog_status_text() {
 
 # Переключатель: не установлен/выключен → скачать (если нужно) + включить
 # в автозагрузку + запустить; работает → остановить и убрать из автозагрузки.
+# Каждый небыстрый шаг печатается ДО его выполнения: остановка идёт до ~35
+# секунд (демон выходит только после текущего цикла проверки), молчание в
+# это время выглядит как зависание меню.
 watchdog_toggle() {
   local script init
   if ! watchdog_supported; then
@@ -554,18 +557,22 @@ watchdog_toggle() {
   if [ "${OSystem:-}" = "WRT" ]; then
     init="$(watchdog_wrt_init)"
     if [ -x "$init" ] && "$init" status >/dev/null 2>&1; then
+      echo -e "${cyan}Останавливаю watchdog и убираю из автозагрузки (procd)...${plain}"
+      echo -e "${yellow}Подождите: остановка занимает до ~35 секунд (демон завершается после текущего цикла проверки) — это не зависание.${plain}"
       "$init" stop >/dev/null 2>&1
       "$init" disable >/dev/null 2>&1
       echo -e "${yellow}Watchdog остановлен и убран из автозагрузки.${plain}"
       return 0
     fi
     if [ ! -x "$init" ]; then
+      echo -e "${cyan}Скачиваю watchdog с репозитория (init.d/openwrt/zapret2-watchdog)...${plain}"
       if ! z2r_download_project_file "$init" "init.d/openwrt/zapret2-watchdog"; then
         echo -e "${red}Не удалось скачать watchdog с репозитория.${plain}"
         return 1
       fi
       chmod +x "$init"
     fi
+    echo -e "${cyan}Включаю автозапуск и запускаю watchdog (procd)...${plain}"
     "$init" enable >/dev/null 2>&1
     if "$init" start; then
       echo -e "${green}Watchdog установлен и включён (автозапуск).${plain}"
@@ -578,18 +585,22 @@ watchdog_toggle() {
   script="$(watchdog_entware_script)"
   init="$(watchdog_entware_init)"
   if [ -x "$script" ] && "$script" status >/dev/null 2>&1; then
+    echo -e "${cyan}Останавливаю watchdog и убираю из автозагрузки...${plain}"
+    echo -e "${yellow}Подождите: остановка занимает до ~35 секунд (демон доигрывает текущий 30-секундный цикл проверки и выходит) — это не зависание.${plain}"
     "$script" stop
     rm -f "$init"
     echo -e "${yellow}Watchdog остановлен и убран из автозагрузки.${plain}"
     return 0
   fi
   if [ ! -x "$script" ]; then
+    echo -e "${cyan}Скачиваю watchdog с репозитория (Entware/zapret2-watchdog)...${plain}"
     if ! z2r_download_project_file "$script" "Entware/zapret2-watchdog"; then
       echo -e "${red}Не удалось скачать watchdog с репозитория.${plain}"
       return 1
     fi
     chmod +x "$script"
   fi
+  echo -e "${cyan}Настраиваю автозапуск и запускаю watchdog...${plain}"
   mkdir -p "$(dirname "$init")"
   cat > "$init" <<WRAPPER
 #!/bin/sh

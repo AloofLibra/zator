@@ -83,7 +83,7 @@ mkdir -p "$ZATOR_ROOT/z2r_lib"
 echo stopped >"$STATUS_MODE"
 
 # Заглушки цветов (нужны только для сообщений watchdog_toggle).
-plain=""; green=""; red=""; yellow=""
+plain=""; cyan=""; green=""; red=""; yellow=""
 
 # Извлекаем блок watchdog-функций: от комментария «--- Watchdog zapret2»
 # до advanced_settings_submenu (функции объявлены от колонки 0).
@@ -146,6 +146,8 @@ assert_eq "$(watchdog_status_text)" "не установлен" "entware без 
 
 out="$(watchdog_toggle)"
 assert_contains "$out" "включён" "entware: сообщение о включении"
+assert_contains "$out" "Скачиваю watchdog с репозитория" "entware: ход докачки должен печататься"
+assert_contains "$out" "запускаю watchdog" "entware: ход запуска должен печататься"
 assert_eq "$(cat "$DOWNLOAD_LOG")" "Entware/zapret2-watchdog" "entware: должна быть ровно одна докачка скрипта"
 [ -x "$ENT_SCRIPT" ] || fail "entware: скрипт не установлен после включения"
 [ -x "$Z2R_ENTWARE_INIT" ] || fail "entware: обёртка автозапуска не создана"
@@ -161,6 +163,8 @@ assert_eq "$(watchdog_status_text)" "работает" "entware: статус «
 
 out="$(watchdog_toggle)"
 assert_contains "$out" "остановлен и убран" "entware: сообщение о выключении"
+assert_contains "$out" "Останавливаю watchdog" "entware: остановка должна объявляться до неё"
+assert_contains "$out" "не зависание" "entware: должно быть предупреждение о долгой остановке"
 assert_eq "$(calls "$ENT_CALLS")" "start,stop" "entware: при выключении вызван stop"
 [ ! -e "$Z2R_ENTWARE_INIT" ] || fail "entware: обёртка автозапуска должна быть удалена"
 [ -x "$ENT_SCRIPT" ] || fail "entware: скачанный скрипт должен остаться"
@@ -183,6 +187,8 @@ assert_eq "$(watchdog_status_text)" "не установлен" "wrt без init
 
 out="$(watchdog_toggle)"
 assert_contains "$out" "включён" "wrt: сообщение о включении"
+assert_contains "$out" "Скачиваю watchdog с репозитория" "wrt: ход докачки должен печататься"
+assert_contains "$out" "запускаю watchdog" "wrt: ход запуска должен печататься"
 assert_eq "$(cat "$DOWNLOAD_LOG" | tail -1)" "init.d/openwrt/zapret2-watchdog" "wrt: докачан init-скрипт"
 [ -x "$Z2R_WRT_INIT" ] || fail "wrt: init-скрипт не установлен"
 assert_eq "$(calls "$WRT_CALLS")" "enable,start" "wrt: при включении enable и start"
@@ -191,6 +197,7 @@ assert_eq "$(watchdog_status_text)" "работает" "wrt: статус «ра
 
 out="$(watchdog_toggle)"
 assert_contains "$out" "остановлен и убран" "wrt: сообщение о выключении"
+assert_contains "$out" "Останавливаю watchdog" "wrt: остановка должна объявляться до неё"
 assert_eq "$(calls "$WRT_CALLS")" "enable,start,stop,disable" "wrt: при выключении stop и disable"
 [ -x "$Z2R_WRT_INIT" ] || fail "wrt: init-файл должен остаться (выключение ≠ удаление)"
 echo stopped >"$STATUS_MODE"
