@@ -1509,6 +1509,80 @@ WRAPPER
   fi
 }
 
+# Полное снятие watchdog при удалении zapret2/zator (пункты меню 4 и 44):
+# остановить демона и убрать его файлы (скрипт, конфиг, обёртку автозапуска,
+# лог). При обновлении/переустановке zapret2 НЕ вызывается — там watchdog
+# сознательно переживает обновление: init-скрипт zapret2 вернётся на место.
+watchdog_uninstall() {
+  local script init pidfile pid i removed=0
+  if ! watchdog_supported; then
+    return 0
+  fi
+  if [ "${OSystem:-}" = "WRT" ]; then
+    init="$(watchdog_wrt_init)"
+    if [ -e "$init" ]; then
+      removed=1
+      [ -x "$init" ] && { "$init" stop >/dev/null 2>&1; "$init" disable >/dev/null 2>&1; }
+      rm -f "$init"
+    fi
+  else
+    script="$(watchdog_entware_script)"
+    init="$(watchdog_entware_init)"
+    if [ -e "$script" ] || [ -e "$init" ]; then
+      removed=1
+      # Быстрая остановка: TERM, 3 секунды, KILL. Штатный stop ждёт до ~35
+      # секунд (демон выходит после текущего sleep) — для удаления долго, а
+      # оставлять живым процесс, файл скрипта которого сейчас снесём, нельзя.
+      pidfile="${Z2R_WATCHDOG_PIDFILE:-/opt/var/run/zapret2-watchdog.pid}"
+      pid=""
+      [ -r "$pidfile" ] && pid=$(cat "$pidfile" 2>/dev/null)
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        i=0
+        while [ "$i" -lt 3 ] && kill -0 "$pid" 2>/dev/null; do
+          sleep 1
+          i=$((i + 1))
+        done
+        kill -9 "$pid" 2>/dev/null
+      fi
+      rm -f "$pidfile" "$init" "$script" "${script}.conf"
+    fi
+  fi
+  rm -f /tmp/zapret2-watchdog.log
+  if [ "$removed" = 1 ]; then
+    echo -e "${yellow}Watchdog остановлен и удалён (демон, автозапуск, файлы).${plain}"
+  fi
+  return 0
+}
+
+# После обновления/переустановки zapret2: демон мог самоостановиться, пока
+# init-скрипт zapret2 отсутствовал (удаление и новая установка идут минуты).
+# Если watchdog был включён — поднимаем его обратно.
+watchdog_ensure_running() {
+  local script init
+  if ! watchdog_supported; then
+    return 0
+  fi
+  if [ "${OSystem:-}" = "WRT" ]; then
+    init="$(watchdog_wrt_init)"
+    [ -x "$init" ] && "$init" enabled >/dev/null 2>&1 || return 0
+    "$init" status >/dev/null 2>&1 && return 0
+    if "$init" start >/dev/null 2>&1; then
+      echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
+    fi
+    return 0
+  fi
+  script="$(watchdog_entware_script)"
+  init="$(watchdog_entware_init)"
+  # Обёртка автозапуска = признак «был включён»: нет её — не поднимаем.
+  [ -x "$script" ] && [ -x "$init" ] || return 0
+  "$script" status >/dev/null 2>&1 && return 0
+  if "$script" start >/dev/null 2>&1; then
+    echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
+  fi
+  return 0
+}
+
 advanced_settings_submenu() {
   while true; do
     local current_state current_value current_color
