@@ -1402,8 +1402,9 @@ wireguard_submenu() {
 # поэтому в ветке они живут как исходники, а на роутере появляются по требованию.
 
 watchdog_entware_script() { printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog"; }
-watchdog_entware_init() { printf '%s\n' /opt/etc/init.d/S91zapret2-watchdog; }
-watchdog_wrt_init() { printf '%s\n' /etc/init.d/zapret2-watchdog; }
+# Пути автозапуска переопределяются через env (тесты подставляют временные файлы).
+watchdog_entware_init() { printf '%s\n' "${Z2R_ENTWARE_INIT:-/opt/etc/init.d/S91zapret2-watchdog}"; }
+watchdog_wrt_init() { printf '%s\n' "${Z2R_WRT_INIT:-/etc/init.d/zapret2-watchdog}"; }
 
 watchdog_supported() { [ "${OSystem:-}" = "entware" ] || [ "${OSystem:-}" = "WRT" ]; }
 
@@ -1479,7 +1480,7 @@ watchdog_toggle() {
     fi
     chmod +x "$script"
   fi
-  mkdir -p /opt/etc/init.d
+  mkdir -p "$(dirname "$init")"
   cat > "$init" <<WRAPPER
 #!/bin/sh
 # Автозапуск watchdog zapret2 (создан z2r, пункт 19-6). Сам watchdog: $script
