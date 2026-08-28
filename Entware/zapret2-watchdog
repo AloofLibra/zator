@@ -9,8 +9,10 @@
 #   автоматического перезапуска.
 #
 # Причины перезапуска:
-#   - pidfile есть, но процесс мёртв (демон упал)
+#   - pidfile есть, но процесс мёртв (демон упал; pid сверяется по cmdline —
+#     переиспользованный pid постороннего процесса «работой» не считается)
 #   - в /tmp/nfqws2_*.err появились LUA PANIC / not enough memory
+#     (только обычные root-файлы без симлинков — /tmp записываем всеми)
 #   - (опционально) RSS процесса превысил лимит
 # Если init-скрипт zapret2 исчез (удаление) — watchdog сам останавливается.
 #
@@ -24,9 +26,12 @@
 PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-PIDFILE=/opt/var/run/zapret2-watchdog.pid
-LOGFILE=/tmp/zapret2-watchdog.log
-CONF=/opt/zator/z2r_lib/zapret2-watchdog.conf
+# Пути можно переопределить через env (используется smoke-тестами)
+PIDFILE="${Z2R_WATCHDOG_PIDFILE:-/opt/var/run/zapret2-watchdog.pid}"
+LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/tmp/zapret2-watchdog.log}"
+CONF="${Z2R_WATCHDOG_CONF:-/opt/zator/z2r_lib/zapret2-watchdog.conf}"
+RUNDIR="${Z2R_WATCHDOG_RUNDIR:-/var/run}"
+ERRDIR="${Z2R_WATCHDOG_ERRDIR:-/tmp}"
 
 WATCH_INTERVAL=30
 WATCH_MEM_LIMIT_KB=0
@@ -49,12 +54,27 @@ watch_init()
 
 wlog()
 {
+	# /tmp доступен всем на запись: не пишем в симлинк, подменённый
+	# локальным пользователем
+	[ -L "$LOGFILE" ] && rm -f "$LOGFILE"
 	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOGFILE"
-	logger -t zapret2-watchdog "$*" 2>/dev/null
+	logger -t zapret2-watchdog "$*" 2>/dev/null || :
 	# не даём логу расти бесконечно
 	if [ "$(wc -c <"$LOGFILE" 2>/dev/null || echo 0)" -gt 51200 ]; then
+		rm -f "$LOGFILE.tmp"
 		tail -n 200 "$LOGFILE" >"$LOGFILE.tmp" 2>/dev/null && mv -f "$LOGFILE.tmp" "$LOGFILE"
 	fi
+}
+
+is_nfqws2_pid()
+{
+	# существование /proc/$1 не доказывает, что pid принадлежит nfqws2:
+	# после падения и переиспользования pid устаревший pidfile должен
+	# считаться падением, а не «работает». Сверяем аргументы процесса.
+	[ -n "$1" ] || return 1
+	case "$1" in *[!0-9]*) return 1 ;; esac
+	[ -r "/proc/$1/cmdline" ] || return 1
+	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -qE '(^|/)nfqws2$'
 }
 
 nfqws2_state()
@@ -63,11 +83,11 @@ nfqws2_state()
 	pidfiles=""
 	live_pids=""
 	dead_pf=""
-	for pf in /var/run/nfqws2_*.pid; do
+	for pf in "$RUNDIR"/nfqws2_*.pid; do
 		[ -r "$pf" ] || continue
 		pidfiles=yes
 		p=$(cat "$pf" 2>/dev/null)
-		if [ -n "$p" ] && [ -d "/proc/$p" ]; then
+		if is_nfqws2_pid "$p"; then
 			live_pids="$live_pids $p"
 		else
 			dead_pf=$pf
@@ -95,6 +115,21 @@ nfqws2_state()
 	fi
 }
 
+safe_err_files()
+{
+	# /tmp доступен всем на запись: обрабатываем только обычные файлы без
+	# симлинков, принадлежащие тому же пользователю, от которого работает
+	# watchdog (на роутере — root). Иначе локальный пользователь мог бы
+	# подложить маркер OOM (принудительный рестарт) или через симлинк
+	# заставить root обрезать чужой файл.
+	for ef in "$ERRDIR"/nfqws2_*.err; do
+		[ -L "$ef" ] && continue
+		[ -f "$ef" ] || continue
+		[ "$(stat -c '%u' "$ef" 2>/dev/null)" = "$(id -u 2>/dev/null)" ] || continue
+		printf '%s\n' "$ef"
+	done
+}
+
 do_restart()
 {
 	now=$(date +%s)
@@ -105,17 +140,26 @@ do_restart()
 	LAST_RESTART=$now
 	wlog "ПАДЕНИЕ/ПРОБЛЕМА, перезапускаю zapret2: $1"
 	# снимок памяти до рестарта: видно, был ли это действительно OOM
-	memline=$(free 2>/dev/null | grep '^Mem:')
+	memline=$(free 2>/dev/null | grep '^Mem:' || :)
 	[ -n "$memline" ] && wlog "память до рестарта: $(echo "$memline" | tr -s ' \t' ' ')"
-	# вывод init не пишем: ошибки запуска демона попадают в /tmp/nfqws2_*.err (п.666 меню)
-	"$WATCH_INIT" restart >/dev/null 2>&1
-	# очищаем err-логи, чтобы маркер OOM не сработал повторно на старых строках
-	for ef in /tmp/nfqws2_*.err; do [ -f "$ef" ] && : >"$ef"; done
+	# старые маркеры OOM снимаем ДО рестарта: они относятся к упавшему запуску,
+	# а свежие ошибки нового запуска сохраняются для п.666
+	for ef in $(safe_err_files); do
+		: >"$ef"
+	done
+	# вывод init не пишем: ошибки запуска демона попадают в err-логи (п.666)
+	if "$WATCH_INIT" restart >/dev/null 2>&1; then
+		wlog "рестарт zapret2 выполнен"
+	else
+		wlog "рестарт zapret2 завершился с ошибкой — подробности в логах zapret2 (п.666)"
+	fi
 }
 
 do_watch()
 {
 	watch_init || { wlog "init-скрипт zapret2 не найден, watchdog останавливается"; exit 1; }
+	# pidfile пишет сам демон: start ждёт его появления как сигнала готовности
+	echo $$ >"$PIDFILE"
 	LAST_RESTART=0
 	LAST_STATE=""
 	wlog "watchdog запущен (interval=${WATCH_INTERVAL}s, mem_limit=${WATCH_MEM_LIMIT_KB}KB, init=$WATCH_INIT)"
@@ -157,10 +201,9 @@ do_watch()
 		esac
 		LAST_STATE=${state%% *}
 
-		# живой, но задыхающийся: маркеры нехватки памяти в lua
+		# живой, но задыхающийся: маркеры нехватки памяти в err-логах
 		if [ -z "$reason" ] && [ "$LAST_STATE" = run ]; then
-			for ef in /tmp/nfqws2_*.err; do
-				[ -r "$ef" ] || continue
+			for ef in $(safe_err_files); do
 				if grep -qE "LUA PANIC|not enough memory|out of memory" "$ef" 2>/dev/null; then
 					reason="нехватка памяти (lua OOM в $ef)"
 					break
@@ -184,29 +227,62 @@ do_watch()
 	done
 }
 
+pid_is_watchdog()
+{
+	# pid в pidfile мог переиспользоваться посторонним процессом после смерти
+	# демона: прежде чем сигналить (TERM/KILL) или считать watchdog живым,
+	# сверяем аргументы процесса
+	[ -n "$1" ] || return 1
+	case "$1" in *[!0-9]*) return 1 ;; esac
+	[ -r "/proc/$1/cmdline" ] || return 1
+	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -qE '(^|/)zapret2-watchdog$'
+}
+
 running()
 {
-	[ -r "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+	pid_is_watchdog "$(cat "$PIDFILE" 2>/dev/null)"
 }
 
 case "$1" in
 	start)
-		running && exit 0
-		mkdir -p /opt/var/run || exit 1
+		if running; then
+			exit 0
+		fi
+		rm -f "$PIDFILE"
+		mkdir -p "$(dirname "$PIDFILE")" || exit 1
 		nohup "$0" watch >>"$LOGFILE" 2>&1 &
-		echo $! >"$PIDFILE"
+		child=$!
+		# pidfile пишет сам демон (echo $$ в do_watch) — его появление и есть
+		# сигнал готовности. Раньше start вслепую рапортовал успех: демон мог
+		# умереть сразу (нет init-скрипта, кривой конфиг), а меню говорило
+		# «включён». При неудаче подчищаем pidfile и возвращаем ошибку.
+		i=0
+		while [ $i -lt 5 ]; do
+			[ -s "$PIDFILE" ] && break
+			kill -0 "$child" 2>/dev/null || break
+			sleep 1
+			i=$((i + 1))
+		done
+		if [ ! -s "$PIDFILE" ] || ! pid_is_watchdog "$(cat "$PIDFILE" 2>/dev/null)"; then
+			rm -f "$PIDFILE"
+			echo "watchdog не смог запуститься — смотрите $LOGFILE" >&2
+			exit 1
+		fi
 		;;
 	stop)
-		if running; then
-			p=$(cat "$PIDFILE")
+		p=$(cat "$PIDFILE" 2>/dev/null)
+		if pid_is_watchdog "$p"; then
 			kill "$p" 2>/dev/null
 			# trap срабатывает только после текущего sleep — даём время выйти
 			i=0
-			while [ $i -lt 35 ] && kill -0 "$p" 2>/dev/null; do
+			while [ $i -lt 35 ] && pid_is_watchdog "$p"; do
 				sleep 1
 				i=$((i + 1))
 			done
-			kill -9 "$p" 2>/dev/null
+			# повторная сверка перед KILL: pid мог переиспользоваться
+			if pid_is_watchdog "$p"; then
+				kill -9 "$p" 2>/dev/null
+			fi
 		fi
 		rm -f "$PIDFILE"
 		;;
