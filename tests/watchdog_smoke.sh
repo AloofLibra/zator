@@ -67,6 +67,21 @@ grep -qF 'Z2R_ENTWARE_INIT' "$REPO_DIR/lib/submenus.sh" || fail "путь entwar
 grep -qF 'Z2R_WRT_INIT' "$REPO_DIR/lib/submenus.sh" || fail "путь wrt-автозапуска не переопределяется через env"
 ok "wiring: п.666, пункт 19-6, pidfile-эвристика, env-override"
 
+# Регрессии ревью PR#35: procd обязан запускать $initscript (не $0 = rc.common),
+# живость pid сверяется по cmdline, OOM на OpenWRT берётся из syslog (logread)
+grep -qF 'procd_set_param command "$initscript" run' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "start_service должен запускать \$initscript, а не \$0 (под rc.common \$0 = /etc/rc.common)"
+if grep -qF 'procd_set_param command "$0"' "$REPO_DIR/init.d/openwrt/zapret2-watchdog"; then
+  fail "start_service не должен использовать \$0 — под rc.common это /etc/rc.common, сервис не стартует"
+fi
+grep -q '^is_nfqws2_pid()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "в openwrt-watchdog нет сверки идентичности pid по /proc/cmdline"
+grep -q '^oom_count()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "в openwrt-watchdog нет счётчика OOM-строк syslog"
+grep -q 'logread' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "openwrt-watchdog должен искать OOM в syslog (logread): stderr nfqws2 идёт туда, а не в /tmp/nfqws2_*.err"
+ok "статика: \$initscript в procd, is_nfqws2_pid, OOM из logread"
+
 # --- Динамическая часть: watchdog_*-функции из lib/submenus.sh ---
 
 TMP_DIR="$(mktemp -d /tmp/zator-watchdog.XXXXXX)"
@@ -131,6 +146,138 @@ z2r_download_project_file() {
 }
 
 calls() { tr '\n' ',' <"$1" | sed 's/,$//'; }
+
+# --- OpenWRT: start_service обязан запускать $initscript, а не $0 ---
+# Под «#!/bin/sh /etc/rc.common» $0 указывает на /etc/rc.common: procd получал
+# бы не тот скрипт, и сервис никогда бы не стартовал. Эмулируем окружение
+# rc.common и перехватываем аргументы procd_set_param.
+
+WRT_TEST_CONF="$TMP_DIR/wrt-test.conf"
+: >"$WRT_TEST_CONF"                # чтобы «[ -f $CONF ] && . $CONF» при source не вернул 1 под set -e
+Z2R_WATCHDOG_CONF="$WRT_TEST_CONF"
+Z2R_WATCHDOG_LOGFILE="$TMP_DIR/wrt-sourced.log"
+initscript="$Z2R_WRT_INIT"         # эту переменную задаёт rc.common
+FAKE_ZAPRET2_INIT="$TMP_DIR/fake-zapret2-init"
+printf '#!/bin/sh\necho "$1" >>"%s"\nexit 0\n' "$TMP_DIR/zapret2-init.calls" >"$FAKE_ZAPRET2_INIT"
+chmod +x "$FAKE_ZAPRET2_INIT"
+WATCH_INIT_CMD="$FAKE_ZAPRET2_INIT"
+
+PROCD_PARAMS="$TMP_DIR/procd.params"
+procd_open_instance() { :; }
+procd_set_param() { printf '%s\n' "$*" >>"$PROCD_PARAMS"; }
+procd_close_instance() { :; }
+: >"$PROCD_PARAMS"
+# shellcheck disable=SC1090
+source "$REPO_DIR/init.d/openwrt/zapret2-watchdog"
+start_service || fail "wrt start_service: должен завершаться успехом при доступном init"
+grep -qF "command $Z2R_WRT_INIT run" "$PROCD_PARAMS" \
+  || fail "wrt start_service: procd должен получить 'command <initscript> run', получено: $(tr '\n' ';' <"$PROCD_PARAMS")"
+grep -qF 'respawn 3600 5 5' "$PROCD_PARAMS" || fail "wrt start_service: procd должен получить respawn 3600 5 5"
+ok "wrt start_service: procd запускает \$initscript run с respawn"
+
+if [ ! -x /etc/init.d/zapret2 ] && [ ! -x /opt/etc/init.d/S90-zapret2 ]; then
+  WATCH_INIT_CMD=""
+  : >"$PROCD_PARAMS"
+  if start_service >/dev/null 2>&1; then
+    fail "wrt start_service: без init zapret2 должен завершаться ошибкой"
+  fi
+  if [ -s "$PROCD_PARAMS" ]; then
+    fail "wrt start_service: без init zapret2 procd-параметры задаваться не должны"
+  fi
+  ok "wrt start_service: без init zapret2 — ошибка, параметров нет"
+else
+  ok "wrt start_service: пропуск негативного сценария (на машине есть init zapret2)"
+fi
+
+# --- OpenWRT: OOM-детект по syslog (logread) — триггер только на новые строки ---
+
+awk '/^wlog\(\)/{f=1} /^oom_count\(\)/{f=1} /^oom_new\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
+  "$REPO_DIR/init.d/openwrt/zapret2-watchdog" >"$TMP_DIR/wrt_oom_funcs.sh"
+grep -q '^oom_new()' "$TMP_DIR/wrt_oom_funcs.sh" || fail "не извлеклись oom-функции из openwrt-watchdog"
+# shellcheck disable=SC1090
+source "$TMP_DIR/wrt_oom_funcs.sh"
+
+mkdir -p "$TMP_DIR/fakebin"
+LOGREAD_LINES="$TMP_DIR/logread.fixture"
+printf '#!/bin/sh\ncat "%s" 2>/dev/null\n' "$LOGREAD_LINES" >"$TMP_DIR/fakebin/logread"
+chmod +x "$TMP_DIR/fakebin/logread"
+PATH="$TMP_DIR/fakebin:$PATH"
+LOGFILE="$TMP_DIR/wrt-oom-test.log"
+
+cat >"$LOGREAD_LINES" <<'FIX'
+Jan  1 00:00:00 router user.info nfqws2[123]: nfqws2 started
+Jan  1 00:00:05 router user.err nfqws2[123]: LUA PANIC: not enough memory
+Jan  1 00:00:06 router user.err nfqws2[124]: NOT ENOUGH MEMORY in lua alloc
+FIX
+
+trigger=no
+LAST_OOM_LINES=0
+oom_new && trigger=yes || trigger=no
+[ "$trigger" = yes ] || fail "wrt oom: новая OOM-строка в syslog должна срабатывать"
+LAST_OOM_LINES=$(oom_count)
+oom_new && trigger=yes || trigger=no
+[ "$trigger" = no ] || fail "wrt oom: без новых строк триггера быть не должно"
+# вытеснение кольцевым буфером: счётчик уменьшился — не ложное срабатывание
+head -n 1 "$LOGREAD_LINES" >"$LOGREAD_LINES.tmp" && mv -f "$LOGREAD_LINES.tmp" "$LOGREAD_LINES"
+oom_new && trigger=yes || trigger=no
+[ "$trigger" = no ] || fail "wrt oom: вытеснение строк буфером не должно срабатывать"
+[ "$LAST_OOM_LINES" = 0 ] || fail "wrt oom: после вытеснения счётчик должен сброситься на 0"
+# и новая строка после вытеснения снова срабатывает
+printf 'Jan  1 00:00:07 router user.err nfqws2[123]: LUA PANIC: not enough memory\n' >>"$LOGREAD_LINES"
+oom_new && trigger=yes || trigger=no
+[ "$trigger" = yes ] || fail "wrt oom: новая строка после вытеснения должна срабатывать"
+# OOM-строка чужого процесса не считается
+printf 'Jan  1 00:00:08 router user.err other[1]: LUA PANIC: not enough memory\n' >>"$LOGREAD_LINES"
+LAST_OOM_LINES=$(oom_count)
+oom_new && trigger=yes || trigger=no
+[ "$trigger" = no ] || fail "wrt oom: OOM-строка чужого процесса не должна считаться"
+ok "wrt oom: logread, только новые строки, вытеснение буфера, чужие процессы"
+
+# --- OpenWRT: do_restart — код возврата init в логе, err-логи не трогаются ---
+
+awk '/^wlog\(\)/{f=1} /^oom_count\(\)/{f=1} /^do_restart\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
+  "$REPO_DIR/init.d/openwrt/zapret2-watchdog" >"$TMP_DIR/wrt_restart_funcs.sh"
+grep -q '^do_restart()' "$TMP_DIR/wrt_restart_funcs.sh" || fail "не извлекся do_restart из openwrt-watchdog"
+# shellcheck disable=SC1090
+source "$TMP_DIR/wrt_restart_funcs.sh"
+
+LOGFILE="$TMP_DIR/wrt-restart.log"
+: >"$LOGFILE"
+WRT_INIT_CALLS="$TMP_DIR/wrt-init.calls"
+printf '#!/bin/sh\necho "$1" >>"%s"\n' "$WRT_INIT_CALLS" >"$TMP_DIR/fake-init-ok.sh"
+printf '#!/bin/sh\necho "$1" >>"%s"\nexit 1\n' "$WRT_INIT_CALLS" >"$TMP_DIR/fake-init-fail.sh"
+chmod +x "$TMP_DIR/fake-init-ok.sh" "$TMP_DIR/fake-init-fail.sh"
+WATCH_INIT="$TMP_DIR/fake-init-ok.sh"
+LAST_RESTART=0
+WATCH_COOLDOWN=60
+LAST_OOM_LINES=0
+
+do_restart "тест: успех"
+grep -qxF 'restart' "$WRT_INIT_CALLS" || fail "wrt do_restart: init должен вызваться с restart"
+grep -qF 'рестарт zapret2 выполнен' "$LOGFILE" || fail "wrt do_restart: успех рестарта должен попадать в лог"
+
+WATCH_INIT="$TMP_DIR/fake-init-fail.sh"
+LAST_RESTART=0
+do_restart "тест: неудача"
+grep -qF 'рестарт zapret2 завершился с ошибкой' "$LOGFILE" \
+  || fail "wrt do_restart: неудача рестарта должна попадать в лог (раньше код возврата игнорировался)"
+
+: >"$WRT_INIT_CALLS"
+do_restart "тест: cooldown"
+if [ -s "$WRT_INIT_CALLS" ]; then
+  fail "wrt do_restart: в cooldown init вызываться не должен"
+fi
+
+# WRT-вариант не имеет права трогать /tmp/nfqws2_*.err — их источник syslog
+WRT_ERRDIR="$TMP_DIR/wrt-err"
+mkdir -p "$WRT_ERRDIR"
+echo 'LUA PANIC: not enough memory' >"$WRT_ERRDIR/nfqws2_1.err"
+WATCH_INIT="$TMP_DIR/fake-init-ok.sh"
+LAST_RESTART=0
+do_restart "тест: err не трогаем"
+grep -q 'LUA PANIC' "$WRT_ERRDIR/nfqws2_1.err" \
+  || fail "wrt do_restart: не должен очищать /tmp/nfqws2_*.err (на OpenWRT это не источник, свежие логи терялись)"
+ok "wrt do_restart: rc рестарта в логе, cooldown, err-логи не трогаются"
 
 # --- Платформа без watchdog: недоступно и отказ ---
 

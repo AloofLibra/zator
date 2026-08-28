@@ -10,7 +10,9 @@
 #
 # Причины перезапуска:
 #   - pidfile есть, но процесс мёртв (демон упал)
-#   - в /tmp/nfqws2_*.err появились LUA PANIC / not enough memory
+#   - в syslog (logread) появились НОВЫЕ строки LUA PANIC / not enough memory
+#     от nfqws2 — на OpenWRT stderr демона идёт в syslog
+#     (procd_set_param stderr 1 в wrt_fixes), а не в /tmp/nfqws2_*.err
 #   - (опционально) RSS процесса превысил лимит
 # Если init-скрипт zapret2 исчез (удаление) — watchdog сам останавливается.
 # procd дополнительно поднимет сам watchdog, если тот умрёт (respawn 3600 5 5).
@@ -25,8 +27,10 @@
 USE_PROCD=1
 START=98
 
-CONF=/opt/zator/z2r_lib/zapret2-watchdog.conf
-LOGFILE=/tmp/zapret2-watchdog.log
+# Пути можно переопределить через env (используется smoke-тестами)
+CONF="${Z2R_WATCHDOG_CONF:-/opt/zator/z2r_lib/zapret2-watchdog.conf}"
+LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/tmp/zapret2-watchdog.log}"
+RUNDIR="${Z2R_WATCHDOG_RUNDIR:-/var/run}"
 
 WATCH_INTERVAL=30
 WATCH_MEM_LIMIT_KB=0
@@ -38,9 +42,9 @@ my_extra_command() {
 	local cmd="$1"
 	local help="$2"
 	local extra="$(printf "%-16s%s" "${cmd}" "${help}")"
-	EXTRA_HELP="${EXTRA_HELP}	${extra}
+	EXTRA_HELP="${EXTRA_HELP:-}	${extra}
 "
-	EXTRA_COMMANDS="${EXTRA_COMMANDS} ${cmd}"
+	EXTRA_COMMANDS="${EXTRA_COMMANDS:-} ${cmd}"
 }
 my_extra_command run "internal: run watchdog loop"
 
@@ -59,12 +63,27 @@ watch_init()
 
 wlog()
 {
+	# /tmp доступен всем на запись: не пишем в симлинк, подменённый
+	# локальным пользователем
+	[ -L "$LOGFILE" ] && rm -f "$LOGFILE"
 	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOGFILE"
-	logger -t zapret2-watchdog "$*" 2>/dev/null
+	logger -t zapret2-watchdog "$*" 2>/dev/null || :
 	# не даём логу расти бесконечно
 	if [ "$(wc -c <"$LOGFILE" 2>/dev/null || echo 0)" -gt 51200 ]; then
+		rm -f "$LOGFILE.tmp"
 		tail -n 200 "$LOGFILE" >"$LOGFILE.tmp" 2>/dev/null && mv -f "$LOGFILE.tmp" "$LOGFILE"
 	fi
+}
+
+is_nfqws2_pid()
+{
+	# существование /proc/$1 не доказывает, что pid принадлежит nfqws2:
+	# после падения и переиспользования pid устаревший pidfile должен
+	# считаться падением, а не «работает». Сверяем аргументы процесса.
+	[ -n "$1" ] || return 1
+	case "$1" in *[!0-9]*) return 1 ;; esac
+	[ -r "/proc/$1/cmdline" ] || return 1
+	tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -qE '(^|/)nfqws2$'
 }
 
 nfqws2_state()
@@ -73,11 +92,11 @@ nfqws2_state()
 	pidfiles=""
 	live_pids=""
 	dead_pf=""
-	for pf in /var/run/nfqws2_*.pid; do
+	for pf in "$RUNDIR"/nfqws2_*.pid; do
 		[ -r "$pf" ] || continue
 		pidfiles=yes
 		p=$(cat "$pf" 2>/dev/null)
-		if [ -n "$p" ] && [ -d "/proc/$p" ]; then
+		if is_nfqws2_pid "$p"; then
 			live_pids="$live_pids $p"
 		else
 			dead_pf=$pf
@@ -105,6 +124,29 @@ nfqws2_state()
 	fi
 }
 
+oom_count()
+{
+	# stderr nfqws2 на OpenWRT идёт в syslog, ищем маркеры нехватки памяти там
+	local n
+	n=$(logread 2>/dev/null | grep -icE 'nfqws2.*(LUA PANIC|not enough memory|out of memory)')
+	[ -n "$n" ] || n=0
+	echo "$n"
+}
+
+oom_new()
+{
+	# триггер только на НОВЫЕ совпадения: старые строки syslog иначе
+	# перезапускали бы zapret2 на каждом цикле проверки
+	local n
+	n=$(oom_count)
+	if [ "$n" -lt "$LAST_OOM_LINES" ]; then
+		# кольцевой буфер syslog вытеснил старые строки — не срабатываем
+		LAST_OOM_LINES=$n
+		return 1
+	fi
+	[ "$n" -gt "$LAST_OOM_LINES" ]
+}
+
 do_restart()
 {
 	now=$(date +%s)
@@ -115,12 +157,17 @@ do_restart()
 	LAST_RESTART=$now
 	wlog "ПАДЕНИЕ/ПРОБЛЕМА, перезапускаю zapret2: $1"
 	# снимок памяти до рестарта: видно, был ли это действительно OOM
-	memline=$(free 2>/dev/null | grep '^Mem:')
+	memline=$(free 2>/dev/null | grep '^Mem:' || :)
 	[ -n "$memline" ] && wlog "память до рестарта: $(echo "$memline" | tr -s ' \t' ' ')"
-	# вывод init не пишем: ошибки запуска демона попадают в /tmp/nfqws2_*.err (п.666 меню)
-	"$WATCH_INIT" restart >/dev/null 2>&1
-	# очищаем err-логи, чтобы маркер OOM не сработал повторно на старых строках
-	for ef in /tmp/nfqws2_*.err; do [ -f "$ef" ] && : >"$ef"; done
+	# фиксируем, сколько OOM-строк уже видели: совпадения, появившиеся ПОСЛЕ
+	# рестарта, снова станут триггером, старые — нет
+	LAST_OOM_LINES=$(oom_count)
+	# вывод init не пишем: ошибки nfqws2 видны в syslog (logread | grep nfqws2)
+	if "$WATCH_INIT" restart >/dev/null 2>&1; then
+		wlog "рестарт zapret2 выполнен"
+	else
+		wlog "рестарт zapret2 завершился с ошибкой — подробности в syslog (logread | grep nfqws2)"
+	fi
 }
 
 do_watch()
@@ -128,6 +175,8 @@ do_watch()
 	watch_init || { wlog "init-скрипт zapret2 не найден, watchdog останавливается"; exit 1; }
 	LAST_RESTART=0
 	LAST_STATE=""
+	# старые OOM-строки из syslog не должны триггерить сразу после старта
+	LAST_OOM_LINES=$(oom_count)
 	wlog "watchdog запущен (interval=${WATCH_INTERVAL}s, mem_limit=${WATCH_MEM_LIMIT_KB}KB, init=$WATCH_INIT)"
 	trap 'wlog "watchdog остановлен"; exit 0' TERM INT
 
@@ -167,15 +216,9 @@ do_watch()
 		esac
 		LAST_STATE=${state%% *}
 
-		# живой, но задыхающийся: маркеры нехватки памяти в lua
-		if [ -z "$reason" ] && [ "$LAST_STATE" = run ]; then
-			for ef in /tmp/nfqws2_*.err; do
-				[ -r "$ef" ] || continue
-				if grep -qE "LUA PANIC|not enough memory|out of memory" "$ef" 2>/dev/null; then
-					reason="нехватка памяти (lua OOM в $ef)"
-					break
-				fi
-			done
+		# живой, но задыхающийся: новые маркеры нехватки памяти в syslog
+		if [ -z "$reason" ] && [ "$LAST_STATE" = run ] && oom_new; then
+			reason="нехватка памяти (маркер OOM в syslog)"
 		fi
 
 		# опциональный лимит RSS (только для живого процесса)
@@ -203,7 +246,9 @@ start_service()
 {
 	watch_init || { echo "init-скрипт zapret2 не найден" >&2; return 1; }
 	procd_open_instance
-	procd_set_param command "$0" run
+	# НЕ $0: под «#!/bin/sh /etc/rc.common» $0 указывает на /etc/rc.common,
+	# реальный путь init-скрипта даёт $initscript (его выставляет rc.common)
+	procd_set_param command "$initscript" run
 	procd_set_param respawn 3600 5 5
 	procd_close_instance
 }
