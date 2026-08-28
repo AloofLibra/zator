@@ -76,6 +76,14 @@ if grep -qF 'procd_set_param command "$0"' "$REPO_DIR/init.d/openwrt/zapret2-wat
 fi
 grep -q '^is_nfqws2_pid()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
   || fail "в openwrt-watchdog нет сверки идентичности pid по /proc/cmdline"
+grep -q '^is_nfqws2_pid()' "$REPO_DIR/Entware/zapret2-watchdog" \
+  || fail "в entware-watchdog нет сверки идентичности pid по /proc/cmdline"
+grep -q '^pid_is_watchdog()' "$REPO_DIR/Entware/zapret2-watchdog" \
+  || fail "в entware-watchdog нет сверки идентичности собственного pid (kill чужого процесса)"
+grep -q '^safe_err_files()' "$REPO_DIR/Entware/zapret2-watchdog" \
+  || fail "в entware-watchdog нет безопасной проходки по err-логам (/tmp записываем всеми)"
+grep -qF 'Z2R_WATCHDOG_PIDFILE' "$REPO_DIR/Entware/zapret2-watchdog" \
+  || fail "пути watchdog не переопределяются через env (нужны для smoke-тестов)"
 grep -q '^oom_count()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
   || fail "в openwrt-watchdog нет счётчика OOM-строк syslog"
 grep -q 'logread' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
@@ -278,6 +286,169 @@ do_restart "тест: err не трогаем"
 grep -q 'LUA PANIC' "$WRT_ERRDIR/nfqws2_1.err" \
   || fail "wrt do_restart: не должен очищать /tmp/nfqws2_*.err (на OpenWRT это не источник, свежие логи терялись)"
 ok "wrt do_restart: rc рестарта в логе, cooldown, err-логи не трогаются"
+
+# --- Entware: nfqws2_state — pidfile с переиспользованным pid это падение ---
+# Раньше живость определялась фактом существования /proc/<pid>: после падения
+# nfqws2 и переиспользования pid посторонним процессом (sleep и т.п.) watchdog
+# считал демона «работает» и не замечал реального падения.
+
+awk '/^is_nfqws2_pid\(\)/{f=1} /^nfqws2_state\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
+  "$REPO_DIR/Entware/zapret2-watchdog" >"$TMP_DIR/ent_state_funcs.sh"
+grep -q '^nfqws2_state()' "$TMP_DIR/ent_state_funcs.sh" || fail "не извлеклись state-функции из entware-watchdog"
+# shellcheck disable=SC1090
+source "$TMP_DIR/ent_state_funcs.sh"
+
+ENT_RUNDIR="$TMP_DIR/ent/run"
+mkdir -p "$ENT_RUNDIR"
+RUNDIR="$ENT_RUNDIR"
+
+state=$(nfqws2_state)
+[ "$state" = "stopped" ] || fail "nfqws2_state: пустой rundir должен давать stopped, получено: $state"
+
+sleep 120 &
+FOREIGN_PID=$!
+disown "$FOREIGN_PID" 2>/dev/null || true
+echo "$FOREIGN_PID" >"$ENT_RUNDIR/nfqws2_1.pid"
+state=$(nfqws2_state)
+[ "$state" = "crash" ] || fail "nfqws2_state: pidfile с живым чужим pid (переиспользование) должен давать crash, получено: $state"
+
+mkdir -p "$TMP_DIR/ent/fakebin"
+FAKE_NFQ2="$TMP_DIR/ent/fakebin/nfqws2"
+printf '#!/bin/sh\nwhile :; do sleep 1; done\n' >"$FAKE_NFQ2"
+chmod +x "$FAKE_NFQ2"
+sh "$FAKE_NFQ2" &
+NFQ2_PID=$!
+disown "$NFQ2_PID" 2>/dev/null || true
+echo "$NFQ2_PID" >"$ENT_RUNDIR/nfqws2_1.pid"
+state=$(nfqws2_state)
+case "$state" in
+  run*" $NFQ2_PID") : ;;
+  *) fail "nfqws2_state: живой nfqws2 должен давать run с его pid, получено: $state" ;;
+esac
+kill "$FOREIGN_PID" "$NFQ2_PID" 2>/dev/null || true
+ok "nfqws2_state: переиспользованный pid = crash, настоящий nfqws2 = run"
+
+# --- Entware: safe_err_files — только обычные root-файлы, симлинки мимо ---
+
+awk '/^wlog\(\)/{f=1} /^safe_err_files\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
+  "$REPO_DIR/Entware/zapret2-watchdog" >"$TMP_DIR/ent_safe_funcs.sh"
+grep -q '^safe_err_files()' "$TMP_DIR/ent_safe_funcs.sh" || fail "не извлеклась safe_err_files из entware-watchdog"
+# shellcheck disable=SC1090
+source "$TMP_DIR/ent_safe_funcs.sh"
+
+ENT_ERRDIR="$TMP_DIR/ent/err"
+mkdir -p "$ENT_ERRDIR"
+ERRDIR="$ENT_ERRDIR"
+LOGFILE="$TMP_DIR/ent/wlog.log"
+
+echo 'LUA PANIC: not enough memory' >"$ENT_ERRDIR/nfqws2_1.err"
+safe=$(safe_err_files | tr '\n' ' ')
+case "$safe" in
+  *nfqws2_1.err*) : ;;
+  *) fail "safe_err_files: обычный файл владельца должен попадать в выборку, получено: $safe" ;;
+esac
+# nativestrict: MSYS2 по умолчанию копирует вместо symlink — тогда сценарий пропускается
+if MSYS=winsymlinks:nativestrict ln -sf /etc/passwd "$ENT_ERRDIR/nfqws2_2.err" 2>/dev/null; then
+  safe=$(safe_err_files | tr '\n' ' ')
+  case "$safe" in
+    *nfqws2_2.err*) fail "safe_err_files: симлинк не должен попадать в выборку" ;;
+    *) : ;;
+  esac
+fi
+# чужой владелец игнорируется (только если chown реально сменил uid:
+# MSYS2 может вернуть успех без смены владельца)
+if echo x >"$ENT_ERRDIR/nfqws2_3.err" \
+   && chown 1:1 "$ENT_ERRDIR/nfqws2_3.err" 2>/dev/null \
+   && [ "$(stat -c '%u' "$ENT_ERRDIR/nfqws2_3.err" 2>/dev/null)" != "$(id -u 2>/dev/null)" ]; then
+  safe=$(safe_err_files | tr '\n' ' ')
+  case "$safe" in
+    *nfqws2_3.err*) fail "safe_err_files: файл чужого владельца не должен попадать в выборку" ;;
+    *) : ;;
+  esac
+fi
+ok "safe_err_files: обычные файлы берём, симлинки и чужих владельцев игнорируем"
+
+# --- Entware: do_restart — старые маркеры ДО рестарта, код возврата в лог ---
+
+awk '/^wlog\(\)/{f=1} /^safe_err_files\(\)/{f=1} /^do_restart\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
+  "$REPO_DIR/Entware/zapret2-watchdog" >"$TMP_DIR/ent_restart_funcs.sh"
+grep -q '^do_restart()' "$TMP_DIR/ent_restart_funcs.sh" || fail "не извлекся do_restart из entware-watchdog"
+# shellcheck disable=SC1090
+source "$TMP_DIR/ent_restart_funcs.sh"
+
+LOGFILE="$TMP_DIR/ent/restart.log"
+: >"$LOGFILE"
+ENT_INIT_CALLS="$TMP_DIR/ent/init.calls"
+printf '#!/bin/sh\necho "$1" >>"%s"\nexit 1\n' "$ENT_INIT_CALLS" >"$TMP_DIR/ent/init-fail.sh"
+chmod +x "$TMP_DIR/ent/init-fail.sh"
+WATCH_INIT="$TMP_DIR/ent/init-fail.sh"
+LAST_RESTART=0
+WATCH_COOLDOWN=60
+
+echo 'LUA PANIC: not enough memory' >"$ENT_ERRDIR/nfqws2_1.err"
+do_restart "тест: неудача"
+if [ -s "$ENT_ERRDIR/nfqws2_1.err" ]; then
+  fail "do_restart: старый маркер OOM должен сниматься ДО рестарта, иначе сработает повторно"
+fi
+grep -qxF 'restart' "$ENT_INIT_CALLS" || fail "do_restart: init должен вызваться с restart"
+grep -qF 'рестарт zapret2 завершился с ошибкой' "$LOGFILE" \
+  || fail "do_restart: неудача рестарта должна попадать в лог (раньше код возврата игнорировался)"
+: >"$ENT_INIT_CALLS"
+do_restart "тест: cooldown"
+if [ -s "$ENT_INIT_CALLS" ]; then
+  fail "do_restart: в cooldown init вызываться не должен"
+fi
+ok "entware do_restart: старые маркеры сняты до рестарта, код возврата в логе, cooldown"
+
+# --- Entware: жизненный цикл реального скрипта — start ждёт готовности демона ---
+
+ENT_REAL="$REPO_DIR/Entware/zapret2-watchdog"
+ENT_PIDFILE="$TMP_DIR/ent/wd.pid"
+ENT_LOG="$TMP_DIR/ent/wd.log"
+export Z2R_WATCHDOG_PIDFILE="$ENT_PIDFILE"
+export Z2R_WATCHDOG_LOGFILE="$ENT_LOG"
+export Z2R_WATCHDOG_CONF="$TMP_DIR/ent/wd.conf"
+export Z2R_WATCHDOG_RUNDIR="$ENT_RUNDIR"
+export Z2R_WATCHDOG_ERRDIR="$ENT_ERRDIR"
+export WATCH_INIT_CMD
+printf 'WATCH_INTERVAL=1\n' >"$Z2R_WATCHDOG_CONF"
+printf '#!/bin/sh\necho "$1" >>"%s"\nexit 0\n' "$ENT_INIT_CALLS" >"$TMP_DIR/ent/zapret2-init.sh"
+chmod +x "$TMP_DIR/ent/zapret2-init.sh"
+
+# демону некуда смотреть init zapret2 — start обязан честно вернуть ошибку.
+# watch_init считает WATCH_INIT_CMD годным без проверки существования, поэтому
+# негативный сценарий — именно пустой WATCH_INIT_CMD и отсутствие реальных
+# init-путей на машине.
+if [ -x /opt/etc/init.d/S90-zapret2 ] || [ -x /etc/init.d/zapret2 ]; then
+  ok "start: негативный сценарий пропущен (на машине есть настоящий init zapret2)"
+else
+  WATCH_INIT_CMD=""
+  if sh "$ENT_REAL" start >/dev/null 2>&1; then
+    fail "start: без init zapret2 должен завершаться ошибкой (раньше возвращал 0 вслепую)"
+  fi
+  if [ -e "$ENT_PIDFILE" ]; then
+    fail "start: после неудачи pidfile должен подчищаться"
+  fi
+  grep -q 'init-скрипт zapret2 не найден' "$ENT_LOG" \
+    || fail "start: причина неудачи должна попадать в лог watchdog"
+  ok "start: без init zapret2 — ошибка, pidfile подчищен, причина в логе"
+fi
+
+# успешный старт: pidfile пишет сам демон, статус running, stop завершает процесс
+WATCH_INIT_CMD="$TMP_DIR/ent/zapret2-init.sh"
+sh "$ENT_REAL" start || fail "start: должен завершаться успехом"
+[ -s "$ENT_PIDFILE" ] || fail "start: pidfile должен быть записан демоном"
+wd_status=$(sh "$ENT_REAL" status) || fail "status: должен быть running после start"
+case "$wd_status" in running*) : ;; *) fail "status: ожидался running, получено: $wd_status" ;; esac
+grep -q 'watchdog запущен' "$ENT_LOG" || fail "демон должен логировать свой запуск"
+sh "$ENT_REAL" stop || fail "stop: должен завершаться успехом"
+if [ -e "$ENT_PIDFILE" ]; then
+  fail "stop: pidfile должен удаляться"
+fi
+if sh "$ENT_REAL" status >/dev/null 2>&1; then
+  fail "status: после stop должен быть stopped"
+fi
+ok "entware жизненный цикл: start ждёт pidfile, статус/stop, неудача стартa рапортуется"
 
 # --- Платформа без watchdog: недоступно и отказ ---
 
