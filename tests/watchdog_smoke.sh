@@ -11,10 +11,26 @@
 #     скачанные файлы остаются; повторное включение — без докачки;
 #   • watchdog_toggle (WRT) — enable+start при включении, stop+disable
 #     при выключении, init-файл остаётся;
-#   • watchdog_uninstall (меню 4/44) — полная зачистка: демон остановлен
-#     (TERM → 3с → KILL по pidfile), файлы/конфиг/обёртка удалены;
+#   • частичные сбои toggle — упавший enable/start/stop даёт ненулевой код
+#     возврата и откат (WRT: disable; entware: удаление обёртки), без
+#     сообщения об успехе (регрессии ревью PR#35);
+#   • watchdog_uninstall (меню 4/44) — полная зачистка: демон останавливается
+#     (TERM → 3с → KILL, только после сверки cmdline), файлы/конфиг/обёртка
+#     удалены; pidfile с переиспользованным pid чужого процесса не приводит
+#     к kill постороннего; сирота (демон жив, файлов нет) тоже останавливается;
 #   • watchdog_ensure_running (тело установщика) — поднимает включённый
 #     watchdog после переустановки, молчит при живом/выключенном;
+#   • procd (WRT) — start_service передаёт procd 'command $initscript run'
+#     (не $0 = /etc/rc.common), respawn; без init zapret2 — ошибка;
+#   • OOM (WRT) — только НОВЫЕ строки в syslog/logread, вытеснение буфера,
+#     чужие процессы не считаются; do_restart не трогает err-логи;
+#   • nfqws2_state — pidfile с переиспользованным pid чужого процесса = crash
+#     (а не «работает»), живой nfqws2 = run (сверка /proc/<pid>/cmdline);
+#   • safe_err_files — только обычные файлы владельца, симлинки/чужие мимо;
+#   • do_restart (entware) — старые маркеры OOM снимаются ДО рестарта, код
+#     возврата init попадает в лог, cooldown держит;
+#   • жизненный цикл реального entware-скрипта в песочнице — start ждёт
+#     pidfile от демона, без init zapret2 возвращает ошибку, status/stop;
 #   • статика: bash -n (z2r.sh, lib/submenus.sh), sh -n (оба watchdog-файла),
 #     блок «События watchdog» в п.666, пункт 6 и обработчик в подменю,
 #     env-override путей автозапуска.
@@ -84,6 +100,12 @@ grep -q '^safe_err_files()' "$REPO_DIR/Entware/zapret2-watchdog" \
   || fail "в entware-watchdog нет безопасной проходки по err-логам (/tmp записываем всеми)"
 grep -qF 'Z2R_WATCHDOG_PIDFILE' "$REPO_DIR/Entware/zapret2-watchdog" \
   || fail "пути watchdog не переопределяются через env (нужны для smoke-тестов)"
+grep -q '^wd_pid_is_ours()' "$REPO_DIR/lib/submenus.sh" \
+  || fail "в lib/submenus.sh нет сверки идентичности pid перед kill (wd_pid_is_ours)"
+grep -qF 'if ! "$init" enable' "$REPO_DIR/lib/submenus.sh" \
+  || fail "watchdog_toggle должен проверять код возврата enable (частичный успех недопустим)"
+grep -qF 'if ! "$script" stop' "$REPO_DIR/lib/submenus.sh" \
+  || fail "watchdog_toggle должен проверять код возврата stop (частичный успех недопустим)"
 grep -q '^oom_count()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
   || fail "в openwrt-watchdog нет счётчика OOM-строк syslog"
 grep -q 'logread' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
@@ -123,22 +145,27 @@ source "$TMP_DIR/watchdog_funcs.sh"
 
 # Мок watchdog-скрипта: логирует действия ($3, кроме пробы status),
 # status отвечает по файлу режима $2 (run → 0, иначе 1), остальные
-# команды — 0. Реальный watchdog в тесте не запускается.
+# команды — 0. Если задан файл $4, перечисленные в нём команды (по одной
+# в строке) завершаются ошибкой — имитация частичных сбоев меню.
+# Реальный watchdog в тесте не запускается.
 make_mock_script() {
-  local path="$1" mode_file="$2" calls_file="$3"
+  local path="$1" mode_file="$2" calls_file="$3" fail_file="${4:-}"
   mkdir -p "$(dirname "$path")"
   cat >"$path" <<MOCK
 #!/bin/sh
+if [ "\$1" != "status" ]; then
+  echo "\$1" >>"$calls_file"
+fi
+if [ -n "$fail_file" ] && grep -qxF "\$1" "$fail_file" 2>/dev/null; then
+  exit 1
+fi
 case "\$1" in
   status)
     [ "\$(cat "$mode_file" 2>/dev/null)" = "run" ] && exit 0
     exit 1
     ;;
-  *)
-    echo "\$1" >>"$calls_file"
-    exit 0
-    ;;
 esac
+exit 0
 MOCK
   chmod +x "$path"
 }
@@ -526,18 +553,75 @@ echo stopped >"$STATUS_MODE"
 assert_eq "$(watchdog_status_text)" "выключен" "wrt: статус «выключен»"
 ok "wrt: включение (enable+start) и выключение (stop+disable), файл остался"
 
+# --- Частичные сбои: пункт 19-6 не должен рапортовать успех частичного ---
+# применения: вызывающий код использует «watchdog_toggle || true», поэтому
+# рассчитывать на set -e нельзя — проверяем коды возврата каждого шага и откат.
+
+FAIL_CMDS="$TMP_DIR/fail.cmds"
+
+OSystem="WRT"
+echo stopped >"$STATUS_MODE"
+printf 'enable\n' >"$FAIL_CMDS"
+make_mock_script "$Z2R_WRT_INIT" "$STATUS_MODE" "$WRT_CALLS" "$FAIL_CMDS"
+: >"$WRT_CALLS"
+if watchdog_toggle >/dev/null 2>&1; then
+  fail "wrt toggle: упавший enable должен давать ненулевой код возврата"
+fi
+assert_eq "$(calls "$WRT_CALLS")" "enable" "wrt toggle: при упавшем enable start не вызывается"
+ok "wrt toggle: ошибка enable → отказ без start"
+
+echo stopped >"$STATUS_MODE"
+printf 'start\n' >"$FAIL_CMDS"
+make_mock_script "$Z2R_WRT_INIT" "$STATUS_MODE" "$WRT_CALLS" "$FAIL_CMDS"
+: >"$WRT_CALLS"
+if watchdog_toggle >/dev/null 2>&1; then
+  fail "wrt toggle: неудачный start должен давать ненулевой код возврата"
+fi
+assert_eq "$(calls "$WRT_CALLS")" "enable,start,disable" "wrt toggle: после неудачного start автозапуск откатывается (disable)"
+ok "wrt toggle: неудачный start → откат enable"
+
+OSystem="entware"
+echo stopped >"$STATUS_MODE"
+printf 'start\n' >"$FAIL_CMDS"
+make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS" "$FAIL_CMDS"
+: >"$ENT_CALLS"
+if watchdog_toggle >/dev/null 2>&1; then
+  fail "entware toggle: неудачный start должен давать ненулевой код возврата"
+fi
+assert_eq "$(calls "$ENT_CALLS")" "start" "entware toggle: при неудачном start вызван только start"
+[ ! -e "$Z2R_ENTWARE_INIT" ] || fail "entware toggle: обёртка автозапуска должна откатываться при неудачном start"
+ok "entware toggle: неудачный start → отказ и откат обёртки"
+
+echo run >"$STATUS_MODE"
+printf 'stop\n' >"$FAIL_CMDS"
+make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS" "$FAIL_CMDS"
+printf '#!/bin/sh\nexec "%s" "$1"\n' "$ENT_SCRIPT" >"$Z2R_ENTWARE_INIT"
+chmod +x "$Z2R_ENTWARE_INIT"
+: >"$ENT_CALLS"
+if watchdog_toggle >/dev/null 2>&1; then
+  fail "entware toggle: неудачный stop должен давать ненулевой код возврата"
+fi
+assert_eq "$(calls "$ENT_CALLS")" "stop" "entware toggle: при неудачном stop вызван stop"
+[ -e "$Z2R_ENTWARE_INIT" ] || fail "entware toggle: при неудачном stop обёртка не должна удаляться"
+echo stopped >"$STATUS_MODE"
+ok "entware toggle: неудачный stop → отказ, обёртка на месте"
+
 # --- Удаление (меню 4/44): полная зачистка watchdog ---
 
 OSystem="entware"
-# живой «демон»: реальный фоновый процесс + pidfile (путь через env)
-sleep 300 &
+# живой «демон»: фоновый процесс, в cmdline которого есть zapret2-watchdog
+mkdir -p "$TMP_DIR/fakewd"
+printf '#!/bin/sh\ntrap "exit 0" TERM INT\nwhile :; do sleep 1; done\n' >"$TMP_DIR/fakewd/zapret2-watchdog"
+chmod +x "$TMP_DIR/fakewd/zapret2-watchdog"
+
+"$TMP_DIR/fakewd/zapret2-watchdog" watch &
 WDPID=$!
 disown "$WDPID" 2>/dev/null || true
 echo "$WDPID" >"$TMP_DIR/watchdog.pid"
 Z2R_WATCHDOG_PIDFILE="$TMP_DIR/watchdog.pid"
+make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS"
 touch "$ENT_SCRIPT.conf"
 out="$(watchdog_uninstall)"
-kill "$WDPID" 2>/dev/null || true
 assert_contains "$out" "остановлен и удалён" "uninstall entware: сообщение"
 [ ! -e "$ENT_SCRIPT" ] || fail "uninstall entware: скрипт не удалён"
 [ ! -e "$ENT_SCRIPT.conf" ] || fail "uninstall entware: конфиг не удалён"
@@ -545,6 +629,33 @@ assert_contains "$out" "остановлен и удалён" "uninstall entware
 [ ! -e "$TMP_DIR/watchdog.pid" ] || fail "uninstall entware: pidfile не удалён"
 kill -0 "$WDPID" 2>/dev/null && fail "uninstall entware: демон не остановлен"
 ok "uninstall entware: демон остановлен, файлы удалены"
+
+# pidfile с переиспользованным pid постороннего процесса: чужой процесс не
+# убивается (раньше по pidfile отправлялись TERM и KILL вслепую), но сам
+# pidfile и файлы установки зачищаются
+sleep 120 &
+SLEEP_PID=$!
+disown "$SLEEP_PID" 2>/dev/null || true
+echo "$SLEEP_PID" >"$TMP_DIR/watchdog.pid"
+make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS"
+out="$(watchdog_uninstall)"
+assert_contains "$out" "остановлен и удалён" "uninstall entware: сообщение при файлах на месте"
+kill -0 "$SLEEP_PID" 2>/dev/null || fail "uninstall entware: посторонний процесс (переиспользованный pid) убивать нельзя"
+[ ! -e "$TMP_DIR/watchdog.pid" ] || fail "uninstall entware: pidfile должен зачищаться даже с чужим pid"
+ok "uninstall entware: чужой pid не тронут, pidfile зачищен"
+kill "$SLEEP_PID" 2>/dev/null || true
+
+# сирота: демон жив, pidfile есть, а файлы установки уже частично удалены —
+# раньше ветка зачистки не выполнялась вовсе и демон оставался висеть
+"$TMP_DIR/fakewd/zapret2-watchdog" watch &
+WDPID=$!
+disown "$WDPID" 2>/dev/null || true
+echo "$WDPID" >"$TMP_DIR/watchdog.pid"
+out="$(watchdog_uninstall)"
+assert_contains "$out" "остановлен и удалён" "uninstall entware: сообщение о сироте"
+kill -0 "$WDPID" 2>/dev/null && fail "uninstall entware: осиротевший демон должен останавливаться"
+[ ! -e "$TMP_DIR/watchdog.pid" ] || fail "uninstall entware: pidfile сироты должен удаляться"
+ok "uninstall entware: сирота (демон жив, файлов установки нет) остановлен"
 
 OSystem="WRT"
 make_mock_script "$Z2R_WRT_INIT" "$STATUS_MODE" "$WRT_CALLS"
