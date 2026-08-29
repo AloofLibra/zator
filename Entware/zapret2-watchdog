@@ -130,10 +130,11 @@ safe_err_files()
 	# watchdog (на роутере — root). Иначе локальный пользователь мог бы
 	# подложить маркер OOM (принудительный рестарт) или через симлинк
 	# заставить root обрезать чужой файл.
+	uid=$(id -u 2>/dev/null)
 	for ef in "$ERRDIR"/nfqws2_*.err; do
 		[ -L "$ef" ] && continue
 		[ -f "$ef" ] || continue
-		[ "$(stat -c '%u' "$ef" 2>/dev/null)" = "$(id -u 2>/dev/null)" ] || continue
+		[ "$(stat -c '%u' "$ef" 2>/dev/null)" = "$uid" ] || continue
 		printf '%s\n' "$ef"
 	done
 }

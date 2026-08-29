@@ -34,21 +34,16 @@ CONF="${Z2R_WATCHDOG_CONF:-/opt/zator/z2r_lib/zapret2-watchdog.conf}"
 LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/opt/zator/z2r_lib/zapret2-watchdog.log}"
 RUNDIR="${Z2R_WATCHDOG_RUNDIR:-/var/run}"
 
+# Регистрация внутренней команды run для /etc/rc.common (EXTRA_HELP/COMMANDS)
+EXTRA_HELP="${EXTRA_HELP:-}	$(printf '%-16s%s' run 'internal: run watchdog loop')
+"
+EXTRA_COMMANDS="${EXTRA_COMMANDS:-} run"
+
 WATCH_INTERVAL=30
 WATCH_MEM_LIMIT_KB=0
 WATCH_COOLDOWN=60
 
 [ -f "$CONF" ] && . "$CONF"
-
-my_extra_command() {
-	local cmd="$1"
-	local help="$2"
-	local extra="$(printf "%-16s%s" "${cmd}" "${help}")"
-	EXTRA_HELP="${EXTRA_HELP:-}	${extra}
-"
-	EXTRA_COMMANDS="${EXTRA_COMMANDS:-} ${cmd}"
-}
-my_extra_command run "internal: run watchdog loop"
 
 watch_init()
 {
@@ -145,25 +140,35 @@ oom_scan()
 	# не сработать на истории до старта watchdog.
 	local out
 	out=$(logread 2>/dev/null | awk -v marker="$OOM_CURSOR" '
-		BEGIN { n = 0; matches = 0; start = ""; last = "" }
+		BEGIN {
+			found = 0
+			matches_all = 0
+			matches_after = 0
+			last = ""
+		}
 		{
 			last = $0
-			lines[++n] = $0
-			if (marker != "" && $0 == marker) { start = n }
+			is_match = (tolower($0) ~ /nfqws2.*(lua panic|not enough memory|out of memory)/)
+			if (is_match)
+				matches_all++
+			if (marker != "" && $0 == marker) {
+				found = 1
+				matches_after = 0
+			} else if (found && is_match) {
+				matches_after++
+			}
 		}
 		END {
 			if (marker == "") {
 				# первый запуск: историю до старта watchdog пропускаем
-				start = n
-			} else if (start == "") {
+				print 0
+			} else if (found) {
+				print matches_after
+			} else {
 				# курсора в буфере нет (вытеснен или лог обнулён) —
 				# все текущие строки появились позже курсора
-				start = 0
+				print matches_all
 			}
-			for (i = start + 1; i <= n; i++)
-				if (tolower(lines[i]) ~ /nfqws2.*(lua panic|not enough memory|out of memory)/)
-					matches++
-			print matches
 			print last
 		}')
 	OOM_NEW_MATCH=$(printf '%s\n' "$out" | sed -n 1p)
