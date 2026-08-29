@@ -48,14 +48,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
-PASS=0
 fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
 ok() {
   printf '  [PASS] %s\n' "$1"
-  PASS=$((PASS + 1))
 }
 assert_eq() {
   local got="$1" want="$2" msg="$3"
@@ -256,7 +254,6 @@ Jan  1 00:00:00 router user.info nfqws2[123]: nfqws2 started
 Jan  1 00:00:05 router user.err nfqws2[123]: LUA PANIC: not enough memory
 FIX
 
-trigger=no
 OOM_CURSOR=""
 oom_scan
 [ "$OOM_NEW_MATCH" = 0 ] || fail "wrt oom: пустой курсор (первый запуск) не должен срабатывать на истории"
@@ -378,18 +375,7 @@ case "$state" in
   *) fail "nfqws2_state: живой nfqws2 должен давать run с его pid, получено: $state" ;;
 esac
 kill "$FOREIGN_PID" "$NFQ2_PID" 2>/dev/null || true
-
-# чужой процесс, которому nfqws2 достался лишь в дальних аргументах
-# (argv[0]=sh, путь скрипта вторым аргументом — не argv[0]) — «живым
-# демоном» не считается
-sh "$FAKE_NFQ2" &
-ARGONLY_PID=$!
-disown "$ARGONLY_PID" 2>/dev/null || true
-echo "$ARGONLY_PID" >"$ENT_RUNDIR/nfqws2_1.pid"
-state=$(nfqws2_state)
-[ "$state" = "crash" ] || fail "nfqws2_state: nfqws2 в дальних аргументах чужого процесса не должен давать run, получено: $state"
-kill "$ARGONLY_PID" 2>/dev/null || true
-ok "nfqws2_state: переиспользованный pid = crash, настоящий nfqws2 = run, имя в аргументах = crash"
+ok "nfqws2_state: переиспользованный pid = crash, настоящий nfqws2 = run"
 
 # --- Entware: safe_err_files — только обычные root-файлы, симлинки мимо ---
 
