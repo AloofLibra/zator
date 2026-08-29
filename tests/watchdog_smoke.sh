@@ -357,9 +357,10 @@ state=$(nfqws2_state)
 
 mkdir -p "$TMP_DIR/ent/fakebin"
 FAKE_NFQ2="$TMP_DIR/ent/fakebin/nfqws2"
-printf '#!/bin/sh\nwhile :; do sleep 1; done\n' >"$FAKE_NFQ2"
-chmod +x "$FAKE_NFQ2"
-sh "$FAKE_NFQ2" &
+# строго argv[0]: настоящий nfqws2 — бинарник, его argv[0] — путь с именем
+# nfqws2. Имитируем через exec -a (shebang-скрипт дал бы интерпретатор
+# первым аргументом, как и настоящий бинарный демон никогда не выглядит).
+bash -c 'exec -a "$1" sleep 300' _ "$FAKE_NFQ2" &
 NFQ2_PID=$!
 disown "$NFQ2_PID" 2>/dev/null || true
 echo "$NFQ2_PID" >"$ENT_RUNDIR/nfqws2_1.pid"
@@ -369,7 +370,18 @@ case "$state" in
   *) fail "nfqws2_state: живой nfqws2 должен давать run с его pid, получено: $state" ;;
 esac
 kill "$FOREIGN_PID" "$NFQ2_PID" 2>/dev/null || true
-ok "nfqws2_state: переиспользованный pid = crash, настоящий nfqws2 = run"
+
+# чужой процесс, которому nfqws2 достался лишь в дальних аргументах
+# (argv[0]=sh, путь скрипта вторым аргументом — не argv[0]) — «живым
+# демоном» не считается
+sh "$FAKE_NFQ2" &
+ARGONLY_PID=$!
+disown "$ARGONLY_PID" 2>/dev/null || true
+echo "$ARGONLY_PID" >"$ENT_RUNDIR/nfqws2_1.pid"
+state=$(nfqws2_state)
+[ "$state" = "crash" ] || fail "nfqws2_state: nfqws2 в дальних аргументах чужого процесса не должен давать run, получено: $state"
+kill "$ARGONLY_PID" 2>/dev/null || true
+ok "nfqws2_state: переиспользованный pid = crash, настоящий nfqws2 = run, имя в аргументах = crash"
 
 # --- Entware: safe_err_files — только обычные root-файлы, симлинки мимо ---
 
@@ -625,17 +637,20 @@ ok "entware toggle: неудачный stop → отказ, обёртка на 
 # --- Удаление (меню 4/44): полная зачистка watchdog ---
 
 OSystem="entware"
-# живой «демон»: фоновый процесс, в cmdline которого есть zapret2-watchdog
+# «демон» живёт по каноническому пути нашего скрипта: wd_pid_is_ours сверяет
+# строго argv[0] с $(watchdog_entware_script)
+printf '#!/bin/sh\ntrap "exit 0" TERM INT\nwhile :; do sleep 1; done\n' >"$ENT_SCRIPT"
+chmod +x "$ENT_SCRIPT"
+# процесс с тем же basename, но из другого каталога — «нашим» не считается
 mkdir -p "$TMP_DIR/fakewd"
 printf '#!/bin/sh\ntrap "exit 0" TERM INT\nwhile :; do sleep 1; done\n' >"$TMP_DIR/fakewd/zapret2-watchdog"
 chmod +x "$TMP_DIR/fakewd/zapret2-watchdog"
 
-"$TMP_DIR/fakewd/zapret2-watchdog" watch &
+"$ENT_SCRIPT" watch &
 WDPID=$!
 disown "$WDPID" 2>/dev/null || true
 echo "$WDPID" >"$TMP_DIR/watchdog.pid"
 Z2R_WATCHDOG_PIDFILE="$TMP_DIR/watchdog.pid"
-make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS"
 touch "$ENT_SCRIPT.conf"
 out="$(watchdog_uninstall)"
 assert_contains "$out" "остановлен и удалён" "uninstall entware: сообщение"
@@ -645,6 +660,18 @@ assert_contains "$out" "остановлен и удалён" "uninstall entware
 [ ! -e "$TMP_DIR/watchdog.pid" ] || fail "uninstall entware: pidfile не удалён"
 kill -0 "$WDPID" 2>/dev/null && fail "uninstall entware: демон не остановлен"
 ok "uninstall entware: демон остановлен, файлы удалены"
+
+# процесс из другого каталога с тем же basename: argv[0] не совпал —
+# сигналить ему нельзя (файлы при этом зачищаются)
+"$TMP_DIR/fakewd/zapret2-watchdog" watch &
+SAMEBASE_PID=$!
+disown "$SAMEBASE_PID" 2>/dev/null || true
+echo "$SAMEBASE_PID" >"$TMP_DIR/watchdog.pid"
+out="$(watchdog_uninstall)"
+kill -0 "$SAMEBASE_PID" 2>/dev/null || fail "uninstall entware: процесс с тем же basename из чужого каталога убивать нельзя"
+[ ! -e "$TMP_DIR/watchdog.pid" ] || fail "uninstall entware: pidfile должен зачищаться"
+ok "uninstall entware: тот же basename из чужого каталога не тронут"
+kill "$SAMEBASE_PID" 2>/dev/null || true
 
 # pidfile с переиспользованным pid постороннего процесса: чужой процесс не
 # убивается (раньше по pidfile отправлялись TERM и KILL вслепую), но сам
@@ -663,7 +690,9 @@ kill "$SLEEP_PID" 2>/dev/null || true
 
 # сирота: демон жив, pidfile есть, а файлы установки уже частично удалены —
 # раньше ветка зачистки не выполнялась вовсе и демон оставался висеть
-"$TMP_DIR/fakewd/zapret2-watchdog" watch &
+printf '#!/bin/sh\ntrap "exit 0" TERM INT\nwhile :; do sleep 1; done\n' >"$ENT_SCRIPT"
+chmod +x "$ENT_SCRIPT"
+"$ENT_SCRIPT" watch &
 WDPID=$!
 disown "$WDPID" 2>/dev/null || true
 echo "$WDPID" >"$TMP_DIR/watchdog.pid"

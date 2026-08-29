@@ -1408,13 +1408,31 @@ watchdog_wrt_init() { printf '%s\n' "${Z2R_WRT_INIT:-/etc/init.d/zapret2-watchdo
 
 watchdog_supported() { [ "${OSystem:-}" = "entware" ] || [ "${OSystem:-}" = "WRT" ]; }
 
-# Проверка, что pid действительно принадлежит демону watchdog: pid мог
+# Проверка, что pid действительно принадлежит нашему демону watchdog: pid мог
 # переиспользоваться посторонним процессом после смерти демона — такому
-# сигналить (TERM/KILL) нельзя. Сверяем аргументы процесса по cmdline.
+# сигналить (TERM/KILL) нельзя. Сверяются строго ПЕРВЫЕ аргументы cmdline с
+# каноническим путём нашего скрипта: либо сам скрипт как argv[0] (прямой
+# запуск), либо «sh наш-скрипт …» — при shebang-запуске ядро подставляет
+# интерпретатор первым аргументом. Упоминание пути в дальних аргументах
+# чужого процесса и тот же basename из другого каталога «нашими» не
+# считаются — fail-closed безопаснее ложного kill. /proc/pid/exe здесь не
+# помощник: для скриптов он указывает на busybox, как и у любого процесса.
 wd_pid_is_ours() {
+  local script cmdl line1 line2
+  script="$(watchdog_entware_script)"
   case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
   [ -r "/proc/$1/cmdline" ] || return 1
-  tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -qE '(^|/)zapret2-watchdog$'
+  cmdl="$(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null)"
+  line1="$(printf '%s\n' "$cmdl" | sed -n 1p)"
+  line2="$(printf '%s\n' "$cmdl" | sed -n 2p)"
+  [ -n "$line1" ] || return 1
+  if [ "$line1" = "$script" ]; then
+    return 0
+  fi
+  case "$line1" in
+    sh | */sh) [ "$line2" = "$script" ] && return 0 ;;
+  esac
+  return 1
 }
 
 # Статус для меню: работает / выключен / не установлен / недоступно.
