@@ -666,8 +666,11 @@ WRAPPER
 # остановить демона и убрать его файлы (скрипт, конфиг, обёртку автозапуска,
 # лог). При обновлении/переустановке zapret2 НЕ вызывается — там watchdog
 # сознательно переживает обновление: init-скрипт zapret2 вернётся на место.
+# Каждый шаг проверяется по факту: неполная зачистка — это ненулевой код
+# возврата и явное предупреждение (вызывающий код печатает свою ошибку через
+# «|| echo», и он должен реально срабатывать).
 watchdog_uninstall() {
-  local script init pidfile pid i killed=0 removed=0
+  local script init pidfile pid i killed=0 removed=0 errors=0
   if ! watchdog_supported; then
     return 0
   fi
@@ -675,8 +678,18 @@ watchdog_uninstall() {
     init="$(watchdog_wrt_init)"
     if [ -e "$init" ]; then
       removed=1
-      [ -x "$init" ] && { "$init" stop >/dev/null 2>&1; "$init" disable >/dev/null 2>&1; }
+      if [ -x "$init" ]; then
+        if ! "$init" stop >/dev/null 2>&1; then
+          errors=$((errors + 1))
+        fi
+        if ! "$init" disable >/dev/null 2>&1; then
+          errors=$((errors + 1))
+        fi
+      fi
       rm -f "$init"
+      if [ -e "$init" ]; then
+        errors=$((errors + 1))
+      fi
     fi
   else
     script="$(watchdog_entware_script)"
@@ -700,15 +713,30 @@ watchdog_uninstall() {
       # повторная сверка перед KILL: pid мог переиспользоваться посторонним
       if wd_pid_is_ours "$pid"; then
         kill -9 "$pid" 2>/dev/null
+        sleep 1
+        if wd_pid_is_ours "$pid"; then
+          errors=$((errors + 1))
+        fi
       fi
     fi
     rm -f "$pidfile"
-    if [ -e "$script" ] || [ -e "$init" ]; then
+    if [ -e "$pidfile" ]; then
+      errors=$((errors + 1))
+    fi
+    # конфиг и лог удаляем безусловно: они могли осиротеть раньше скрипта
+    if [ -e "$script" ] || [ -e "$init" ] || [ -e "${script}.conf" ]; then
       removed=1
-      rm -f "$init" "$script" "${script}.conf"
+    fi
+    rm -f "$init" "$script" "${script}.conf"
+    if [ -e "$init" ] || [ -e "$script" ] || [ -e "${script}.conf" ]; then
+      errors=$((errors + 1))
     fi
   fi
-  rm -f /tmp/zapret2-watchdog.log
+  rm -f /tmp/zapret2-watchdog.log 2>/dev/null || :
+  if [ "$errors" -gt 0 ]; then
+    echo -e "${red}Watchdog удалён не полностью: часть шагов завершилась с ошибкой — процесс или файлы могли остаться.${plain}"
+    return 1
+  fi
   if [ "$removed" = 1 ] || [ "$killed" = 1 ]; then
     echo -e "${yellow}Watchdog остановлен и удалён (демон, автозапуск, файлы).${plain}"
   fi
@@ -717,7 +745,9 @@ watchdog_uninstall() {
 
 # После обновления/переустановки zapret2: демон мог самоостановиться, пока
 # init-скрипт zapret2 отсутствовал (удаление и новая установка идут минуты).
-# Если watchdog был включён — поднимаем его обратно.
+# Если watchdog был включён — поднимаем его обратно. Неудачный запуск — это
+# предупреждение и ненулевой код возврата: установщик продолжит работу через
+# «|| true», но пользователь увидит, что watchdog остался выключен.
 watchdog_ensure_running() {
   local script init
   if ! watchdog_supported; then
@@ -729,6 +759,9 @@ watchdog_ensure_running() {
     "$init" status >/dev/null 2>&1 && return 0
     if "$init" start >/dev/null 2>&1; then
       echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
+    else
+      echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /tmp/zapret2-watchdog.log${plain}"
+      return 1
     fi
     return 0
   fi
@@ -739,6 +772,9 @@ watchdog_ensure_running() {
   "$script" status >/dev/null 2>&1 && return 0
   if "$script" start >/dev/null 2>&1; then
     echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
+  else
+    echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /tmp/zapret2-watchdog.log${plain}"
+    return 1
   fi
   return 0
 }
