@@ -124,27 +124,44 @@ nfqws2_state()
 	fi
 }
 
-oom_count()
+oom_scan()
 {
-	# stderr nfqws2 на OpenWRT идёт в syslog, ищем маркеры нехватки памяти там
-	local n
-	n=$(logread 2>/dev/null | grep -icE 'nfqws2.*(LUA PANIC|not enough memory|out of memory)')
-	[ -n "$n" ] || n=0
-	echo "$n"
-}
-
-oom_new()
-{
-	# триггер только на НОВЫЕ совпадения: старые строки syslog иначе
-	# перезапускали бы zapret2 на каждом цикле проверки
-	local n
-	n=$(oom_count)
-	if [ "$n" -lt "$LAST_OOM_LINES" ]; then
-		# кольцевой буфер syslog вытеснил старые строки — не срабатываем
-		LAST_OOM_LINES=$n
-		return 1
-	fi
-	[ "$n" -gt "$LAST_OOM_LINES" ]
+	# Курсор syslog: OOM_CURSOR хранит последнюю уже обработанную строку
+	# буфера, новыми считаются строки ПОСЛЕ её последнего вхождения. Счётчик
+	# количества здесь не годится: кольцевой буфер может вытеснить одну
+	# старую OOM-строку ровно в момент появления новой — количество не
+	# меняется и новый OOM терялся. Если курсора в буфере уже нет (вытеснен
+	# или лог обнулён) — новыми считаются все текущие строки: они
+	# гарантированно появились позже курсора (буфер вытесняет старейшие
+	# первыми). Пустой курсор (первый запуск) — всё считается старым, чтобы
+	# не сработать на истории до старта watchdog.
+	OOM_NEW_MATCH=0
+	local out
+	out=$(logread 2>/dev/null | awk -v marker="$OOM_CURSOR" '
+		BEGIN { n = 0; matches = 0; start = ""; last = "" }
+		{
+			last = $0
+			lines[++n] = $0
+			if (marker != "" && $0 == marker) { start = n }
+		}
+		END {
+			if (marker == "") {
+				# первый запуск: историю до старта watchdog пропускаем
+				start = n
+			} else if (start == "") {
+				# курсора в буфере нет (вытеснен или лог обнулён) —
+				# все текущие строки появились позже курсора
+				start = 0
+			}
+			for (i = start + 1; i <= n; i++)
+				if (tolower(lines[i]) ~ /nfqws2.*(lua panic|not enough memory|out of memory)/)
+					matches++
+			print matches
+			print last
+		}')
+	OOM_NEW_MATCH=$(printf '%s\n' "$out" | sed -n 1p)
+	OOM_CURSOR=$(printf '%s\n' "$out" | sed -n 2p)
+	[ -n "$OOM_NEW_MATCH" ] || OOM_NEW_MATCH=0
 }
 
 do_restart()
@@ -159,9 +176,6 @@ do_restart()
 	# снимок памяти до рестарта: видно, был ли это действительно OOM
 	memline=$(free 2>/dev/null | grep '^Mem:' || :)
 	[ -n "$memline" ] && wlog "память до рестарта: $(echo "$memline" | tr -s ' \t' ' ')"
-	# фиксируем, сколько OOM-строк уже видели: совпадения, появившиеся ПОСЛЕ
-	# рестарта, снова станут триггером, старые — нет
-	LAST_OOM_LINES=$(oom_count)
 	# вывод init не пишем: ошибки nfqws2 видны в syslog (logread | grep nfqws2)
 	if "$WATCH_INIT" restart >/dev/null 2>&1; then
 		wlog "рестарт zapret2 выполнен"
@@ -175,8 +189,8 @@ do_watch()
 	watch_init || { wlog "init-скрипт zapret2 не найден, watchdog останавливается"; exit 1; }
 	LAST_RESTART=0
 	LAST_STATE=""
-	# старые OOM-строки из syslog не должны триггерить сразу после старта
-	LAST_OOM_LINES=$(oom_count)
+	# пустой курсор: история syslog до старта watchdog триггером не станет
+	OOM_CURSOR=""
 	wlog "watchdog запущен (interval=${WATCH_INTERVAL}s, mem_limit=${WATCH_MEM_LIMIT_KB}KB, init=$WATCH_INIT)"
 	trap 'wlog "watchdog остановлен"; exit 0' TERM INT
 
@@ -216,9 +230,12 @@ do_watch()
 		esac
 		LAST_STATE=${state%% *}
 
+		# курсор syslog двигаем каждый цикл, даже пока nfqws2 остановлен,
+		# иначе после простоя старые строки считались бы новыми
+		oom_scan
 		# живой, но задыхающийся: новые маркеры нехватки памяти в syslog
-		if [ -z "$reason" ] && [ "$LAST_STATE" = run ] && oom_new; then
-			reason="нехватка памяти (маркер OOM в syslog)"
+		if [ -z "$reason" ] && [ "$LAST_STATE" = run ] && [ "$OOM_NEW_MATCH" -gt 0 ]; then
+			reason="нехватка памяти (новый маркер OOM в syslog)"
 		fi
 
 		# опциональный лимит RSS (только для живого процесса)
