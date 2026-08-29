@@ -1,45 +1,10 @@
 #!/usr/bin/env bash
 #
-# Smoke-тест watchdog zapret2 (файлы Entware/zapret2-watchdog и
-# init.d/openwrt/zapret2-watchdog, пункт меню 19-6, блок событий в п.666).
+# Изолированный smoke-тест watchdog для Entware и OpenWRT:
+# runtime lifecycle, PID safety, OOM-детект по syslog, menu toggle,
+# install/update/uninstall и отказные сценарии.
 #
-# Покрывает:
-#   • watchdog_status_text — недоступно (чужая платформа) / не установлен /
-#     работает / выключен, для entware и WRT;
-#   • watchdog_toggle (entware) — включение: докачка при отсутствии,
-#     обёртка автозапуска, запуск; выключение: stop + удаление обёртки,
-#     скачанные файлы остаются; повторное включение — без докачки;
-#   • watchdog_toggle (WRT) — enable+start при включении, stop+disable
-#     при выключении, init-файл остаётся;
-#   • частичные сбои toggle — упавший enable/start/stop даёт ненулевой код
-#     возврата и откат (WRT: disable; entware: удаление обёртки), без
-#     сообщения об успехе (регрессии ревью PR#35);
-#   • watchdog_uninstall (меню 4/44) — полная зачистка: демон останавливается
-#     (TERM → 3с → KILL, только после сверки cmdline), файлы/конфиг/обёртка
-#     удалены; pidfile с переиспользованным pid чужого процесса не приводит
-#     к kill постороннего; сирота (демон жив, файлов нет) тоже останавливается;
-#   • watchdog_ensure_running (тело установщика) — поднимает включённый
-#     watchdog после переустановки, молчит при живом/выключенном;
-#   • procd (WRT) — start_service передаёт procd 'command $initscript run'
-#     (не $0 = /etc/rc.common), respawn; без init zapret2 — ошибка;
-#   • OOM (WRT) — только НОВЫЕ строки в syslog/logread, вытеснение буфера,
-#     чужие процессы не считаются; do_restart не трогает err-логи;
-#   • nfqws2_state — pidfile с переиспользованным pid чужого процесса = crash
-#     (а не «работает»), живой nfqws2 = run (сверка /proc/<pid>/cmdline);
-#   • safe_err_files — только обычные файлы владельца, симлинки/чужие мимо;
-#   • do_restart (entware) — старые маркеры OOM снимаются ДО рестарта, код
-#     возврата init попадает в лог, cooldown держит;
-#   • жизненный цикл реального entware-скрипта в песочнице — start ждёт
-#     pidfile от демона, без init zapret2 возвращает ошибку, status/stop;
-#   • статика: bash -n (z2r.sh, lib/submenus.sh), sh -n (оба watchdog-файла),
-#     блок «События watchdog» в п.666, пункт 6 и обработчик в подменю,
-#     env-override путей автозапуска.
-#
-# ИЗОЛЯЦИЯ: тест не пишет в /opt и не запускает настоящий watchdog —
-# ZATOR_ROOT и пути init (Z2R_ENTWARE_INIT/Z2R_WRT_INIT) указывают во
-# временную папку, скачивание подменяется моком, вместо реального
-# watchdog-скрипта ставится мок, логирующий вызовы.
-#
+# Не пишет в /opt и не запускает настоящий zapret2.
 # Возврат: 0 — успех («watchdog smoke ok»), 1 — любая ошибка (FAIL: ...).
 # Запуск:  bash tests/watchdog_smoke.sh
 
@@ -76,49 +41,22 @@ grep -q 'События watchdog' "$REPO_DIR/z2r.sh" || fail "в z2r.sh нет �
 grep -qF 'zapret2-watchdog.log" | tail -15' "$REPO_DIR/z2r.sh" || fail "п.666 не показывает последние события watchdog"
 grep -qF 'watchdog_toggle || true' "$REPO_DIR/lib/submenus.sh" || fail "в подменю нет обработчика пункта 6 (watchdog_toggle)"
 grep -qF 'submenu_status_item "6" "Watchdog zapret2' "$REPO_DIR/lib/submenus.sh" || fail "в подменю нет пункта 6 (статус watchdog)"
-grep -qF 'pidfile остался' "$REPO_DIR/Entware/zapret2-watchdog" || fail "в watchdog нет pidfile-эвристики (падение vs штатная остановка)"
 grep -qF 'Z2R_ENTWARE_INIT' "$REPO_DIR/lib/submenus.sh" || fail "путь entware-автозапуска не переопределяется через env"
 grep -qF 'Z2R_WRT_INIT' "$REPO_DIR/lib/submenus.sh" || fail "путь wrt-автозапуска не переопределяется через env"
-ok "wiring: п.666, пункт 19-6, pidfile-эвристика, env-override"
-
-# Регрессии ревью PR#35: procd обязан запускать $initscript (не $0 = rc.common),
-# живость pid сверяется по cmdline, OOM на OpenWRT берётся из syslog (logread)
-grep -qF 'procd_set_param command "$initscript" run' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
-  || fail "start_service должен запускать \$initscript, а не \$0 (под rc.common \$0 = /etc/rc.common)"
-if grep -qF 'procd_set_param command "$0"' "$REPO_DIR/init.d/openwrt/zapret2-watchdog"; then
-  fail "start_service не должен использовать \$0 — под rc.common это /etc/rc.common, сервис не стартует"
-fi
-grep -q '^is_nfqws2_pid()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
-  || fail "в openwrt-watchdog нет сверки идентичности pid по /proc/cmdline"
-grep -q '^is_nfqws2_pid()' "$REPO_DIR/Entware/zapret2-watchdog" \
-  || fail "в entware-watchdog нет сверки идентичности pid по /proc/cmdline"
-grep -q '^pid_is_watchdog()' "$REPO_DIR/Entware/zapret2-watchdog" \
-  || fail "в entware-watchdog нет сверки идентичности собственного pid (kill чужого процесса)"
-grep -q '^safe_err_files()' "$REPO_DIR/Entware/zapret2-watchdog" \
-  || fail "в entware-watchdog нет безопасной проходки по err-логам (/tmp записываем всеми)"
 grep -qF 'Z2R_WATCHDOG_PIDFILE' "$REPO_DIR/Entware/zapret2-watchdog" \
   || fail "пути watchdog не переопределяются через env (нужны для smoke-тестов)"
-grep -q '^wd_pid_is_ours()' "$REPO_DIR/lib/submenus.sh" \
-  || fail "в lib/submenus.sh нет сверки идентичности pid перед kill (wd_pid_is_ours)"
-# лог watchdog — в root-owned каталоге: «проверил симлинк — открыл» в
-# world-writable /tmp не закрывает TOCTOU и прозрачный nohup >> до запуска
+ok "wiring: п.666, пункт 19-6, env-override путей"
+
+# Deployment-инварианты, которые трудно проверить локально: лог watchdog
+# живёт в root-owned каталоге — «проверил симлинк — открыл» в world-writable
+# /tmp не закрывает TOCTOU и прозрачный nohup >> до запуска демона.
 grep -qF 'LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/opt/zator/z2r_lib/zapret2-watchdog.log}"' "$REPO_DIR/Entware/zapret2-watchdog" \
   || fail "лог watchdog (entware) должен лежать в root-owned /opt/zator/z2r_lib, а не в world-writable /tmp"
 grep -qF 'LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/opt/zator/z2r_lib/zapret2-watchdog.log}"' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
   || fail "лог watchdog (WRT) должен лежать в root-owned /opt/zator/z2r_lib, а не в world-writable /tmp"
 grep -qF '"$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log"' "$REPO_DIR/z2r.sh" \
   || fail "п.666 должен читать события watchdog из root-owned $ZATOR_ROOT/z2r_lib/zapret2-watchdog.log"
-grep -qF 'if ! "$init" enable' "$REPO_DIR/lib/submenus.sh" \
-  || fail "watchdog_toggle должен проверять код возврата enable (частичный успех недопустим)"
-grep -qF 'if ! "$script" stop' "$REPO_DIR/lib/submenus.sh" \
-  || fail "watchdog_toggle должен проверять код возврата stop (частичный успех недопустим)"
-grep -q '^oom_scan()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
-  || fail "в openwrt-watchdog нет OOM-курсора syslog (oom_scan)"
-grep -q 'OOM_CURSOR' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
-  || fail "openwrt-watchdog должен хранить курсор syslog, а не сравнивать количество строк (кольцевой буфер обманывает счётчик)"
-grep -q 'logread' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
-  || fail "openwrt-watchdog должен искать OOM в syslog (logread): stderr nfqws2 идёт туда, а не в /tmp/nfqws2_*.err"
-ok "статика: \$initscript в procd, is_nfqws2_pid, OOM из logread"
+ok "deployment: лог watchdog в root-owned каталоге"
 
 # --- Динамическая часть: watchdog_*-функции из lib/submenus.sh ---
 
@@ -235,13 +173,8 @@ fi
 # --- OpenWRT: OOM-детект по syslog (logread) — курсор последней строки ---
 # Счётчик количества здесь не работает: кольцевой буфер может вытеснить одну
 # старую OOM-строку ровно в момент появления новой, количество не меняется и
-# новый OOM пропускался (замечание второго ревью).
-
-awk '/^oom_scan\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
-  "$REPO_DIR/init.d/openwrt/zapret2-watchdog" >"$TMP_DIR/wrt_oom_funcs.sh"
-grep -q '^oom_scan()' "$TMP_DIR/wrt_oom_funcs.sh" || fail "не извлеклась oom_scan из openwrt-watchdog"
-# shellcheck disable=SC1090
-source "$TMP_DIR/wrt_oom_funcs.sh"
+# новый OOM пропускался (замечание второго ревью). oom_scan/wlog/do_restart
+# уже загружены вместе с полным WRT init выше.
 
 mkdir -p "$TMP_DIR/fakebin"
 LOGREAD_LINES="$TMP_DIR/logread.fixture"
@@ -292,12 +225,6 @@ ok "wrt oom: курсор syslog, сценарий «минус старая п�
 
 # --- OpenWRT: do_restart — код возврата init в логе, err-логи не трогаются ---
 
-awk '/^wlog\(\)/{f=1} /^do_restart\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
-  "$REPO_DIR/init.d/openwrt/zapret2-watchdog" >"$TMP_DIR/wrt_restart_funcs.sh"
-grep -q '^do_restart()' "$TMP_DIR/wrt_restart_funcs.sh" || fail "не извлекся do_restart из openwrt-watchdog"
-# shellcheck disable=SC1090
-source "$TMP_DIR/wrt_restart_funcs.sh"
-
 LOGFILE="$TMP_DIR/wrt-restart.log"
 : >"$LOGFILE"
 WRT_INIT_CALLS="$TMP_DIR/wrt-init.calls"
@@ -340,11 +267,13 @@ ok "wrt do_restart: rc рестарта в логе, cooldown, err-логи не
 # nfqws2 и переиспользования pid посторонним процессом (sleep и т.п.) watchdog
 # считал демона «работает» и не замечал реального падения.
 
-awk '/^is_nfqws2_pid\(\)/{f=1} /^nfqws2_state\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
-  "$REPO_DIR/Entware/zapret2-watchdog" >"$TMP_DIR/ent_state_funcs.sh"
-grep -q '^nfqws2_state()' "$TMP_DIR/ent_state_funcs.sh" || fail "не извлеклись state-функции из entware-watchdog"
+# Загружаем весь блок функций entware-watchdog до CLI-dispatch один раз:
+# нужны nfqws2_state/is_nfqws2_pid, wlog/safe_err_files/do_restart и др.
+awk '/^watch_init\(\)/{f=1} /^case "\$1" in/{f=0} f' \
+  "$REPO_DIR/Entware/zapret2-watchdog" >"$TMP_DIR/ent_funcs.sh"
+grep -q '^nfqws2_state()' "$TMP_DIR/ent_funcs.sh" || fail "не извлекся блок функций entware-watchdog"
 # shellcheck disable=SC1090
-source "$TMP_DIR/ent_state_funcs.sh"
+source "$TMP_DIR/ent_funcs.sh"
 
 ENT_RUNDIR="$TMP_DIR/ent/run"
 mkdir -p "$ENT_RUNDIR"
@@ -379,12 +308,6 @@ ok "nfqws2_state: переиспользованный pid = crash, настоя
 
 # --- Entware: safe_err_files — только обычные root-файлы, симлинки мимо ---
 
-awk '/^wlog\(\)/{f=1} /^safe_err_files\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
-  "$REPO_DIR/Entware/zapret2-watchdog" >"$TMP_DIR/ent_safe_funcs.sh"
-grep -q '^safe_err_files()' "$TMP_DIR/ent_safe_funcs.sh" || fail "не извлеклась safe_err_files из entware-watchdog"
-# shellcheck disable=SC1090
-source "$TMP_DIR/ent_safe_funcs.sh"
-
 ENT_ERRDIR="$TMP_DIR/ent/err"
 mkdir -p "$ENT_ERRDIR"
 ERRDIR="$ENT_ERRDIR"
@@ -418,12 +341,6 @@ fi
 ok "safe_err_files: обычные файлы берём, симлинки и чужих владельцев игнорируем"
 
 # --- Entware: do_restart — старые маркеры ДО рестарта, код возврата в лог ---
-
-awk '/^wlog\(\)/{f=1} /^safe_err_files\(\)/{f=1} /^do_restart\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
-  "$REPO_DIR/Entware/zapret2-watchdog" >"$TMP_DIR/ent_restart_funcs.sh"
-grep -q '^do_restart()' "$TMP_DIR/ent_restart_funcs.sh" || fail "не извлекся do_restart из entware-watchdog"
-# shellcheck disable=SC1090
-source "$TMP_DIR/ent_restart_funcs.sh"
 
 LOGFILE="$TMP_DIR/ent/restart.log"
 : >"$LOGFILE"
