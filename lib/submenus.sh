@@ -547,23 +547,19 @@ wd_pid_is_ours() {
 
 # Статус для меню: работает / выключен / не установлен / недоступно.
 watchdog_status_text() {
+  local target
   if ! watchdog_supported; then
     printf '%s\n' "недоступно"
     return 0
   fi
   if [ "${OSystem:-}" = "WRT" ]; then
-    if [ ! -x "$(watchdog_wrt_init)" ]; then
-      printf '%s\n' "не установлен"
-    elif "$(watchdog_wrt_init)" status >/dev/null 2>&1; then
-      printf '%s\n' "работает"
-    else
-      printf '%s\n' "выключен"
-    fi
-    return 0
+    target="$(watchdog_wrt_init)"
+  else
+    target="$(watchdog_entware_script)"
   fi
-  if [ ! -x "$(watchdog_entware_script)" ]; then
+  if [ ! -x "$target" ]; then
     printf '%s\n' "не установлен"
-  elif "$(watchdog_entware_script)" status >/dev/null 2>&1; then
+  elif "$target" status >/dev/null 2>&1; then
     printf '%s\n' "работает"
   else
     printf '%s\n' "выключен"
@@ -688,13 +684,13 @@ WRAPPER
 # возврата и явное предупреждение (вызывающий код печатает свою ошибку через
 # «|| echo», и он должен реально срабатывать).
 watchdog_uninstall() {
-  local script init pidfile pid i killed=0 removed=0 errors=0
+  local script init conf pidfile pid i killed=0 removed=0 errors=0
+  conf="${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog.conf"
   if ! watchdog_supported; then
     return 0
   fi
   if [ "${OSystem:-}" = "WRT" ]; then
     init="$(watchdog_wrt_init)"
-    script="$(watchdog_entware_script)"
     if [ -e "$init" ]; then
       removed=1
       if [ -x "$init" ]; then
@@ -709,14 +705,6 @@ watchdog_uninstall() {
       if [ -e "$init" ]; then
         errors=$((errors + 1))
       fi
-    fi
-    # Конфиг общий для WRT и Entware и мог остаться без init-файла.
-    if [ -e "${script}.conf" ]; then
-      removed=1
-    fi
-    rm -f "${script}.conf"
-    if [ -e "${script}.conf" ]; then
-      errors=$((errors + 1))
     fi
   else
     script="$(watchdog_entware_script)"
@@ -750,14 +738,22 @@ watchdog_uninstall() {
     if [ -e "$pidfile" ]; then
       errors=$((errors + 1))
     fi
-    # конфиг и лог удаляем безусловно: они могли осиротеть раньше скрипта
-    if [ -e "$script" ] || [ -e "$init" ] || [ -e "${script}.conf" ]; then
+    if [ -e "$script" ] || [ -e "$init" ]; then
       removed=1
     fi
-    rm -f "$init" "$script" "${script}.conf"
-    if [ -e "$init" ] || [ -e "$script" ] || [ -e "${script}.conf" ]; then
+    rm -f "$init" "$script"
+    if [ -e "$init" ] || [ -e "$script" ]; then
       errors=$((errors + 1))
     fi
+  fi
+  # Конфиг общий для WRT и Entware и мог осиротеть раньше скрипта —
+  # чистим его вне платформенных веток
+  if [ -e "$conf" ]; then
+    removed=1
+  fi
+  rm -f "$conf"
+  if [ -e "$conf" ]; then
+    errors=$((errors + 1))
   fi
   # лог: новая локация в root-owned /opt/zator/z2r_lib + старая в /tmp
   # (осталась от прежних версий watchdog); зачистка лога best-effort
@@ -779,34 +775,23 @@ watchdog_uninstall() {
 # предупреждение и ненулевой код возврата: установщик продолжит работу через
 # «|| true», но пользователь увидит, что watchdog остался выключен.
 watchdog_ensure_running() {
-  local script init
-  if ! watchdog_supported; then
-    return 0
-  fi
+  local target init
+  watchdog_supported || return 0
   if [ "${OSystem:-}" = "WRT" ]; then
-    init="$(watchdog_wrt_init)"
-    [ -x "$init" ] && "$init" enabled >/dev/null 2>&1 || return 0
-    "$init" status >/dev/null 2>&1 && return 0
-    if "$init" start >/dev/null 2>&1; then
-      echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
-    else
-      echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
-      return 1
-    fi
-    return 0
-  fi
-  script="$(watchdog_entware_script)"
-  init="$(watchdog_entware_init)"
-  # Обёртка автозапуска = признак «был включён»: нет её — не поднимаем.
-  [ -x "$script" ] && [ -x "$init" ] || return 0
-  "$script" status >/dev/null 2>&1 && return 0
-  if "$script" start >/dev/null 2>&1; then
-    echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
+    target="$(watchdog_wrt_init)"
+    [ -x "$target" ] && "$target" enabled >/dev/null 2>&1 || return 0
   else
+    target="$(watchdog_entware_script)"
+    init="$(watchdog_entware_init)"
+    # Обёртка автозапуска = признак «был включён»: нет её — не поднимаем.
+    [ -x "$target" ] && [ -x "$init" ] || return 0
+  fi
+  "$target" status >/dev/null 2>&1 && return 0
+  if ! "$target" start >/dev/null 2>&1; then
     echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
     return 1
   fi
-  return 0
+  echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
 }
 
 advanced_settings_submenu() {
