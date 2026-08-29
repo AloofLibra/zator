@@ -1507,7 +1507,7 @@ watchdog_toggle() {
       return 1
     fi
     if ! "$init" start; then
-      echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /tmp/zapret2-watchdog.log${plain}"
+      echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
       # откат: не оставляем в автозагрузке то, что не запустилось
       "$init" disable >/dev/null 2>&1
       return 1
@@ -1563,7 +1563,7 @@ WRAPPER
   if "$script" start; then
     echo -e "${green}Watchdog установлен и включён (автозапуск $init).${plain}"
   else
-    echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /tmp/zapret2-watchdog.log${plain}"
+    echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
     # откат: не оставляем автозапуск того, что не запустилось
     rm -f "$init"
     return 1
@@ -1640,7 +1640,10 @@ watchdog_uninstall() {
       errors=$((errors + 1))
     fi
   fi
+  # лог: новая локация в root-owned /opt/zator/z2r_lib + старая в /tmp
+  # (осталась от прежних версий watchdog); зачистка лога best-effort
   rm -f /tmp/zapret2-watchdog.log 2>/dev/null || :
+  rm -f "${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog.log" 2>/dev/null || :
   if [ "$errors" -gt 0 ]; then
     echo -e "${red}Watchdog удалён не полностью: часть шагов завершилась с ошибкой — процесс или файлы могли остаться.${plain}"
     return 1
@@ -1668,7 +1671,7 @@ watchdog_ensure_running() {
     if "$init" start >/dev/null 2>&1; then
       echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
     else
-      echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /tmp/zapret2-watchdog.log${plain}"
+      echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
       return 1
     fi
     return 0
@@ -1681,7 +1684,7 @@ watchdog_ensure_running() {
   if "$script" start >/dev/null 2>&1; then
     echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
   else
-    echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /tmp/zapret2-watchdog.log${plain}"
+    echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
     return 1
   fi
   return 0

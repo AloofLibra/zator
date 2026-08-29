@@ -16,7 +16,9 @@
 #   - (опционально) RSS процесса превысил лимит
 # Если init-скрипт zapret2 исчез (удаление) — watchdog сам останавливается.
 #
-# Лог событий: /tmp/zapret2-watchdog.log (+ syslog через logger).
+# Лог событий: /opt/zator/z2r_lib/zapret2-watchdog.log (+ syslog через
+# logger). Каталог root-owned: в отличие от /tmp, локальный пользователь не
+# может подложить туда симлинк и увести запись root в чужой файл.
 # Конфиг (не обязателен, применяется на лету):
 #   /opt/zator/z2r_lib/zapret2-watchdog.conf
 #   WATCH_INTERVAL=30        # период проверки, сек
@@ -28,7 +30,7 @@ export PATH
 
 # Пути можно переопределить через env (используется smoke-тестами)
 PIDFILE="${Z2R_WATCHDOG_PIDFILE:-/opt/var/run/zapret2-watchdog.pid}"
-LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/tmp/zapret2-watchdog.log}"
+LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/opt/zator/z2r_lib/zapret2-watchdog.log}"
 CONF="${Z2R_WATCHDOG_CONF:-/opt/zator/z2r_lib/zapret2-watchdog.conf}"
 RUNDIR="${Z2R_WATCHDOG_RUNDIR:-/var/run}"
 ERRDIR="${Z2R_WATCHDOG_ERRDIR:-/tmp}"
@@ -54,8 +56,10 @@ watch_init()
 
 wlog()
 {
-	# /tmp доступен всем на запись: не пишем в симлинк, подменённый
-	# локальным пользователем
+	# Лог живёт в root-owned каталоге (/opt/zator/z2r_lib), поэтому «проверил
+	# симлинк — открыл» в world-writable /tmp больше не выполняется: некому
+	# подменить путь между проверкой и открытием. Проверка оставлена как
+	# страховка на случай ручного переноса лога в /tmp экспериментами.
 	[ -L "$LOGFILE" ] && rm -f "$LOGFILE"
 	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOGFILE"
 	logger -t zapret2-watchdog "$*" 2>/dev/null || :

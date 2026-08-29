@@ -75,7 +75,7 @@ sh -n "$REPO_DIR/init.d/openwrt/zapret2-watchdog" || fail "sh -n init.d/openwrt/
 ok "синтаксис z2r.sh, lib/submenus.sh и обоих watchdog-файлов"
 
 grep -q 'События watchdog' "$REPO_DIR/z2r.sh" || fail "в z2r.sh нет блока событий watchdog (п.666)"
-grep -qF 'zapret2-watchdog.log | tail -15' "$REPO_DIR/z2r.sh" || fail "п.666 не показывает последние события watchdog"
+grep -qF 'zapret2-watchdog.log" | tail -15' "$REPO_DIR/z2r.sh" || fail "п.666 не показывает последние события watchdog"
 grep -qF 'watchdog_toggle || true' "$REPO_DIR/lib/submenus.sh" || fail "в подменю нет обработчика пункта 6 (watchdog_toggle)"
 grep -qF 'submenu_status_item "6" "Watchdog zapret2' "$REPO_DIR/lib/submenus.sh" || fail "в подменю нет пункта 6 (статус watchdog)"
 grep -qF 'pidfile остался' "$REPO_DIR/Entware/zapret2-watchdog" || fail "в watchdog нет pidfile-эвристики (падение vs штатная остановка)"
@@ -102,6 +102,14 @@ grep -qF 'Z2R_WATCHDOG_PIDFILE' "$REPO_DIR/Entware/zapret2-watchdog" \
   || fail "пути watchdog не переопределяются через env (нужны для smoke-тестов)"
 grep -q '^wd_pid_is_ours()' "$REPO_DIR/lib/submenus.sh" \
   || fail "в lib/submenus.sh нет сверки идентичности pid перед kill (wd_pid_is_ours)"
+# лог watchdog — в root-owned каталоге: «проверил симлинк — открыл» в
+# world-writable /tmp не закрывает TOCTOU и прозрачный nohup >> до запуска
+grep -qF 'LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/opt/zator/z2r_lib/zapret2-watchdog.log}"' "$REPO_DIR/Entware/zapret2-watchdog" \
+  || fail "лог watchdog (entware) должен лежать в root-owned /opt/zator/z2r_lib, а не в world-writable /tmp"
+grep -qF 'LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/opt/zator/z2r_lib/zapret2-watchdog.log}"' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "лог watchdog (WRT) должен лежать в root-owned /opt/zator/z2r_lib, а не в world-writable /tmp"
+grep -qF '"$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log"' "$REPO_DIR/z2r.sh" \
+  || fail "п.666 должен читать события watchdog из root-owned $ZATOR_ROOT/z2r_lib/zapret2-watchdog.log"
 grep -qF 'if ! "$init" enable' "$REPO_DIR/lib/submenus.sh" \
   || fail "watchdog_toggle должен проверять код возврата enable (частичный успех недопустим)"
 grep -qF 'if ! "$script" stop' "$REPO_DIR/lib/submenus.sh" \
