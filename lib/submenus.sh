@@ -694,6 +694,7 @@ watchdog_uninstall() {
   fi
   if [ "${OSystem:-}" = "WRT" ]; then
     init="$(watchdog_wrt_init)"
+    script="$(watchdog_entware_script)"
     if [ -e "$init" ]; then
       removed=1
       if [ -x "$init" ]; then
@@ -708,6 +709,14 @@ watchdog_uninstall() {
       if [ -e "$init" ]; then
         errors=$((errors + 1))
       fi
+    fi
+    # Конфиг общий для WRT и Entware и мог остаться без init-файла.
+    if [ -e "${script}.conf" ]; then
+      removed=1
+    fi
+    rm -f "${script}.conf"
+    if [ -e "${script}.conf" ]; then
+      errors=$((errors + 1))
     fi
   else
     script="$(watchdog_entware_script)"

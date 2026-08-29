@@ -829,8 +829,17 @@ out="$(watchdog_uninstall)"
 [ -z "$out" ] || fail "uninstall wrt: повторная зачистка пустой установки должна молчать"
 ok "uninstall wrt: повторный вызов на чистой системе — тихий успех"
 
-# осиротевший конфиг: скрипта и обёртки уже нет, ${script}.conf остался —
-# раньше переживал «полное удаление»
+# осиротевший конфиг: init-файла уже нет, общий конфиг остался —
+# WRT-ветка тоже должна удалить его при полном снятии watchdog
+OSystem="WRT"
+WRT_CONF="$ZATOR_ROOT/z2r_lib/zapret2-watchdog.conf"
+touch "$WRT_CONF"
+out="$(watchdog_uninstall)"
+assert_contains "$out" "остановлен и удалён" "uninstall wrt: сообщение при единственном осиротевшем конфиге"
+[ ! -e "$WRT_CONF" ] || fail "uninstall wrt: осиротевший конфиг должен удаляться"
+ok "uninstall wrt: orphan-conf удаляется безусловно"
+
+# То же поведение для Entware: скрипта и обёртки уже нет, ${script}.conf остался
 OSystem="entware"
 command rm -f "$ENT_SCRIPT" "$Z2R_ENTWARE_INIT" "$ENT_SCRIPT.conf"
 touch "$ENT_SCRIPT.conf"
