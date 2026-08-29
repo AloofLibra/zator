@@ -1397,12 +1397,300 @@ wireguard_submenu() {
   done
 }
 
+# --- Watchdog zapret2: включение/выключение (пункт 19-6) ---
+# Файлы докачиваются с репозитория при отсутствии (z2r_download_project_file),
+# поэтому в ветке они живут как исходники, а на роутере появляются по требованию.
+
+watchdog_entware_script() { printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog"; }
+# Пути автозапуска переопределяются через env (тесты подставляют временные файлы).
+watchdog_entware_init() { printf '%s\n' "${Z2R_ENTWARE_INIT:-/opt/etc/init.d/S91zapret2-watchdog}"; }
+watchdog_wrt_init() { printf '%s\n' "${Z2R_WRT_INIT:-/etc/init.d/zapret2-watchdog}"; }
+
+watchdog_supported() { [ "${OSystem:-}" = "entware" ] || [ "${OSystem:-}" = "WRT" ]; }
+
+# Проверка, что pid действительно принадлежит нашему демону watchdog: pid мог
+# переиспользоваться посторонним процессом после смерти демона — такому
+# сигналить (TERM/KILL) нельзя. Сверяются строго ПЕРВЫЕ аргументы cmdline с
+# каноническим путём нашего скрипта: либо сам скрипт как argv[0] (прямой
+# запуск), либо «sh наш-скрипт …» — при shebang-запуске ядро подставляет
+# интерпретатор первым аргументом. Упоминание пути в дальних аргументах
+# чужого процесса и тот же basename из другого каталога «нашими» не
+# считаются — fail-closed безопаснее ложного kill. /proc/pid/exe здесь не
+# помощник: для скриптов он указывает на busybox, как и у любого процесса.
+wd_pid_is_ours() {
+  local script cmdl line1 line2
+  script="$(watchdog_entware_script)"
+  case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+  [ -r "/proc/$1/cmdline" ] || return 1
+  cmdl="$(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null)"
+  line1="$(printf '%s\n' "$cmdl" | sed -n 1p)"
+  line2="$(printf '%s\n' "$cmdl" | sed -n 2p)"
+  [ -n "$line1" ] || return 1
+  if [ "$line1" = "$script" ]; then
+    return 0
+  fi
+  case "$line1" in
+    sh | */sh) [ "$line2" = "$script" ] && return 0 ;;
+  esac
+  return 1
+}
+
+# Статус для меню: работает / выключен / не установлен / недоступно.
+watchdog_status_text() {
+  local target
+  if ! watchdog_supported; then
+    printf '%s\n' "недоступно"
+    return 0
+  fi
+  if [ "${OSystem:-}" = "WRT" ]; then
+    target="$(watchdog_wrt_init)"
+  else
+    target="$(watchdog_entware_script)"
+  fi
+  if [ ! -x "$target" ]; then
+    printf '%s\n' "не установлен"
+  elif "$target" status >/dev/null 2>&1; then
+    printf '%s\n' "работает"
+  else
+    printf '%s\n' "выключен"
+  fi
+}
+
+# Переключатель: не установлен/выключен → скачать (если нужно) + включить
+# в автозагрузку + запустить; работает → остановить и убрать из автозагрузки.
+# Каждый небыстрый шаг печатается ДО его выполнения: остановка идёт до ~35
+# секунд (демон выходит только после текущего цикла проверки), молчание в
+# это время выглядит как зависание меню.
+# Все шаги проверяются на ошибку: частично применённое состояние — это
+# ненулевой код возврата и откат там, где возможно; вызывающий код использует
+# «watchdog_toggle || true», поэтому рассчитывать на set -e нельзя.
+watchdog_toggle() {
+  local script init
+  if ! watchdog_supported; then
+    echo -e "${yellow}Watchdog доступен на Keenetic/Entware и OpenWRT.${plain}"
+    return 1
+  fi
+  if [ "${OSystem:-}" = "WRT" ]; then
+    init="$(watchdog_wrt_init)"
+    if [ -x "$init" ] && "$init" status >/dev/null 2>&1; then
+      echo -e "${cyan}Останавливаю watchdog и убираю из автозагрузки (procd)...${plain}"
+      echo -e "${yellow}Подождите: остановка занимает до ~35 секунд (демон завершается после текущего цикла проверки) — это не зависание.${plain}"
+      if ! "$init" stop >/dev/null 2>&1; then
+        echo -e "${red}Не удалось остановить watchdog.${plain}"
+        return 1
+      fi
+      if ! "$init" disable >/dev/null 2>&1; then
+        echo -e "${red}Watchdog остановлен, но убрать его из автозагрузки не удалось.${plain}"
+        return 1
+      fi
+      echo -e "${yellow}Watchdog остановлен и убран из автозагрузки.${plain}"
+      return 0
+    fi
+    if [ ! -x "$init" ]; then
+      echo -e "${cyan}Скачиваю watchdog с репозитория (init.d/openwrt/zapret2-watchdog)...${plain}"
+      if ! z2r_download_project_file "$init" "init.d/openwrt/zapret2-watchdog"; then
+        echo -e "${red}Не удалось скачать watchdog с репозитория.${plain}"
+        return 1
+      fi
+      if ! chmod +x "$init"; then
+        echo -e "${red}Не удалось сделать init-скрипт watchdog исполняемым.${plain}"
+        return 1
+      fi
+    fi
+    echo -e "${cyan}Включаю автозапуск и запускаю watchdog (procd)...${plain}"
+    if ! "$init" enable >/dev/null 2>&1; then
+      echo -e "${red}Не удалось включить автозапуск watchdog.${plain}"
+      return 1
+    fi
+    if ! "$init" start; then
+      echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
+      # откат: не оставляем в автозагрузке то, что не запустилось
+      "$init" disable >/dev/null 2>&1
+      return 1
+    fi
+    echo -e "${green}Watchdog установлен и включён (автозапуск).${plain}"
+    return 0
+  fi
+  script="$(watchdog_entware_script)"
+  init="$(watchdog_entware_init)"
+  if [ -x "$script" ] && "$script" status >/dev/null 2>&1; then
+    echo -e "${cyan}Останавливаю watchdog и убираю из автозагрузки...${plain}"
+    echo -e "${yellow}Подождите: остановка занимает до ~35 секунд (демон доигрывает текущий 30-секундный цикл проверки и выходит) — это не зависание.${plain}"
+    if ! "$script" stop; then
+      echo -e "${red}Не удалось остановить watchdog.${plain}"
+      return 1
+    fi
+    if ! rm -f "$init" || [ -e "$init" ]; then
+      echo -e "${red}Watchdog остановлен, но убрать обёртку автозапуска ($init) не удалось.${plain}"
+      return 1
+    fi
+    echo -e "${yellow}Watchdog остановлен и убран из автозагрузки.${plain}"
+    return 0
+  fi
+  if [ ! -x "$script" ]; then
+    echo -e "${cyan}Скачиваю watchdog с репозитория (Entware/zapret2-watchdog)...${plain}"
+    if ! z2r_download_project_file "$script" "Entware/zapret2-watchdog"; then
+      echo -e "${red}Не удалось скачать watchdog с репозитория.${plain}"
+      return 1
+    fi
+    if ! chmod +x "$script"; then
+      echo -e "${red}Не удалось сделать скрипт watchdog исполняемым.${plain}"
+      return 1
+    fi
+  fi
+  echo -e "${cyan}Настраиваю автозапуск и запускаю watchdog...${plain}"
+  if ! mkdir -p "$(dirname "$init")"; then
+    echo -e "${red}Не удалось создать каталог автозапуска ($(dirname "$init")).${plain}"
+    return 1
+  fi
+  cat > "$init" <<WRAPPER || { echo -e "${red}Не удалось создать обёртку автозапуска ($init).${plain}"; rm -f "$init"; return 1; }
+#!/bin/sh
+# Автозапуск watchdog zapret2 (создан z2r, пункт 19-6). Сам watchdog: $script
+case "\$1" in
+  start|stop|restart|status) exec "$script" "\$1" ;;
+  *) echo "usage: \$0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac
+WRAPPER
+  if ! chmod +x "$init"; then
+    echo -e "${red}Не удалось сделать обёртку автозапуска исполняемой ($init).${plain}"
+    rm -f "$init"
+    return 1
+  fi
+  if "$script" start; then
+    echo -e "${green}Watchdog установлен и включён (автозапуск $init).${plain}"
+  else
+    echo -e "${red}Watchdog не удалось запустить — посмотрите лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
+    # откат: не оставляем автозапуск того, что не запустилось
+    rm -f "$init"
+    return 1
+  fi
+}
+
+# Полное снятие watchdog при удалении zapret2/zator (пункты меню 4 и 44):
+# остановить демона и убрать его файлы (скрипт, конфиг, обёртку автозапуска,
+# лог). При обновлении/переустановке zapret2 НЕ вызывается — там watchdog
+# сознательно переживает обновление: init-скрипт zapret2 вернётся на место.
+# Каждый шаг проверяется по факту: неполная зачистка — это ненулевой код
+# возврата и явное предупреждение (вызывающий код печатает свою ошибку через
+# «|| echo», и он должен реально срабатывать).
+watchdog_uninstall() {
+  local script init conf pidfile pid i killed=0 removed=0 errors=0
+  conf="${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog.conf"
+  if ! watchdog_supported; then
+    return 0
+  fi
+  if [ "${OSystem:-}" = "WRT" ]; then
+    init="$(watchdog_wrt_init)"
+    if [ -e "$init" ]; then
+      removed=1
+      if [ -x "$init" ]; then
+        if ! "$init" stop >/dev/null 2>&1; then
+          errors=$((errors + 1))
+        fi
+        if ! "$init" disable >/dev/null 2>&1; then
+          errors=$((errors + 1))
+        fi
+      fi
+      rm -f "$init"
+      if [ -e "$init" ]; then
+        errors=$((errors + 1))
+      fi
+    fi
+  else
+    script="$(watchdog_entware_script)"
+    init="$(watchdog_entware_init)"
+    pidfile="${Z2R_WATCHDOG_PIDFILE:-/opt/var/run/zapret2-watchdog.pid}"
+    # pidfile и живого демона зачищаем ВСЕГДА, даже если файлы установки уже
+    # частично удалены: иначе демон останется висеть сиротой без файлов.
+    pid=""
+    [ -r "$pidfile" ] && pid=$(cat "$pidfile" 2>/dev/null)
+    if wd_pid_is_ours "$pid"; then
+      killed=1
+      # Быстрая остановка: TERM, 3 секунды, KILL. Штатный stop ждёт до ~35
+      # секунд (демон выходит после текущего sleep) — для удаления долго, а
+      # оставлять живым процесс, файл скрипта которого сейчас снесём, нельзя.
+      kill "$pid" 2>/dev/null
+      i=0
+      while [ "$i" -lt 3 ] && wd_pid_is_ours "$pid"; do
+        sleep 1
+        i=$((i + 1))
+      done
+      # повторная сверка перед KILL: pid мог переиспользоваться посторонним
+      if wd_pid_is_ours "$pid"; then
+        kill -9 "$pid" 2>/dev/null
+        sleep 1
+        if wd_pid_is_ours "$pid"; then
+          errors=$((errors + 1))
+        fi
+      fi
+    fi
+    rm -f "$pidfile"
+    if [ -e "$pidfile" ]; then
+      errors=$((errors + 1))
+    fi
+    if [ -e "$script" ] || [ -e "$init" ]; then
+      removed=1
+    fi
+    rm -f "$init" "$script"
+    if [ -e "$init" ] || [ -e "$script" ]; then
+      errors=$((errors + 1))
+    fi
+  fi
+  # Конфиг общий для WRT и Entware и мог осиротеть раньше скрипта —
+  # чистим его вне платформенных веток
+  if [ -e "$conf" ]; then
+    removed=1
+  fi
+  rm -f "$conf"
+  if [ -e "$conf" ]; then
+    errors=$((errors + 1))
+  fi
+  # лог: новая локация в root-owned /opt/zator/z2r_lib + старая в /tmp
+  # (осталась от прежних версий watchdog); зачистка лога best-effort
+  rm -f /tmp/zapret2-watchdog.log 2>/dev/null || :
+  rm -f "${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog.log" 2>/dev/null || :
+  if [ "$errors" -gt 0 ]; then
+    echo -e "${red}Watchdog удалён не полностью: часть шагов завершилась с ошибкой — процесс или файлы могли остаться.${plain}"
+    return 1
+  fi
+  if [ "$removed" = 1 ] || [ "$killed" = 1 ]; then
+    echo -e "${yellow}Watchdog остановлен и удалён (демон, автозапуск, файлы).${plain}"
+  fi
+  return 0
+}
+
+# После обновления/переустановки zapret2: демон мог самоостановиться, пока
+# init-скрипт zapret2 отсутствовал (удаление и новая установка идут минуты).
+# Если watchdog был включён — поднимаем его обратно. Неудачный запуск — это
+# предупреждение и ненулевой код возврата: установщик продолжит работу через
+# «|| true», но пользователь увидит, что watchdog остался выключен.
+watchdog_ensure_running() {
+  local target init
+  watchdog_supported || return 0
+  if [ "${OSystem:-}" = "WRT" ]; then
+    target="$(watchdog_wrt_init)"
+    [ -x "$target" ] && "$target" enabled >/dev/null 2>&1 || return 0
+  else
+    target="$(watchdog_entware_script)"
+    init="$(watchdog_entware_init)"
+    # Обёртка автозапуска = признак «был включён»: нет её — не поднимаем.
+    [ -x "$target" ] && [ -x "$init" ] || return 0
+  fi
+  "$target" status >/dev/null 2>&1 && return 0
+  if ! "$target" start >/dev/null 2>&1; then
+    echo -e "${red}Watchdog zapret2 НЕ смог запуститься после обновления — включите его вручную (пункт 19-6), лог: /opt/zator/z2r_lib/zapret2-watchdog.log${plain}"
+    return 1
+  fi
+  echo -e "${green}Watchdog zapret2 снова запущен (пережил обновление).${plain}"
+}
+
 advanced_settings_submenu() {
   while true; do
     local current_state current_value current_color
     local wg_block wg_value wg_color
     local quic_block quic_value quic_color
     local keenetic_status keenetic_color
+    local wd_status wd_color
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -1451,6 +1739,13 @@ advanced_settings_submenu() {
       esac
       submenu_status_item "5" "Настройка Keenetic-политики для nfqws2." "$keenetic_status" "$keenetic_color"
     fi
+    wd_status="$(watchdog_status_text)"
+    case "$wd_status" in
+      работает) wd_color="green" ;;
+      выключен) wd_color="red" ;;
+      *) wd_color="yellow" ;;
+    esac
+    submenu_status_item "6" "Watchdog zapret2: перезапуск при падении/OOM." "$wd_status" "$wd_color"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1478,6 +1773,10 @@ advanced_settings_submenu() {
         if keenetic_policy_ndmc_is_supported; then
           keenetic_policy_submenu
         fi
+        ;;
+      "6")
+        watchdog_toggle || true
+        pause_enter
         ;;
       "0"|"")
         return
