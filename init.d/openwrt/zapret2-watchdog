@@ -99,12 +99,10 @@ is_nfqws2_pid()
 nfqws2_state()
 {
 	# выводит: "run <pids>" | "crash" | "stopped" | "deadpid <pidfile>"
-	pidfiles=""
 	live_pids=""
 	dead_pf=""
 	for pf in "$RUNDIR"/nfqws2_*.pid; do
 		[ -r "$pf" ] || continue
-		pidfiles=yes
 		p=$(cat "$pf" 2>/dev/null)
 		if is_nfqws2_pid "$p"; then
 			live_pids="$live_pids $p"
@@ -127,7 +125,7 @@ nfqws2_state()
 		return
 	fi
 	# процесса нет: pidfile остался = упал, pidfile удалён = штатная остановка
-	if [ -n "$pidfiles" ]; then
+	if [ -n "$dead_pf" ]; then
 		echo "crash"
 	else
 		echo "stopped"
@@ -145,7 +143,6 @@ oom_scan()
 	# гарантированно появились позже курсора (буфер вытесняет старейшие
 	# первыми). Пустой курсор (первый запуск) — всё считается старым, чтобы
 	# не сработать на истории до старта watchdog.
-	OOM_NEW_MATCH=0
 	local out
 	out=$(logread 2>/dev/null | awk -v marker="$OOM_CURSOR" '
 		BEGIN { n = 0; matches = 0; start = ""; last = "" }
