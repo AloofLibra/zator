@@ -1990,6 +1990,8 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        # zapret2 уходит насовсем — watchdog больше нечего сторожить.
+        watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
         zator_remove || echo -e "${red}Удаление zator завершилось с ошибкой.${plain}"
         echo -e "${yellow}Удаление zator и zapret2 завершено${plain}"
@@ -2007,6 +2009,8 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        # zapret2 уходит без переустановки — watchdog больше нечего сторожить.
+        watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
         WEBUI_WAS_RUNNING=0
         webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
@@ -2134,6 +2138,15 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
       command -v logread >/dev/null 2>&1 && echo -e "${yellow}Если проблемы точно есть, а здесь пусто — обновите zapret2 ещё раз (wrt_fixes включает журнал ошибок).${plain}"
     fi
+    # Лог watchdog лежит в root-owned /opt/zator (не в world-writable /tmp):
+    # локальный пользователь не может подложить туда симлинк
+    if [ -s "$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log" ] && grep -aqE '^[0-9]{4}-' "$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log" 2>/dev/null; then
+      echo ""
+      echo "--- События watchdog (падения/перезапуски zapret2) ---"
+      grep -aE '^[0-9]{4}-' "$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log" | tail -15
+      echo ""
+      echo -e "${yellow}Источник: $ZATOR_ROOT/z2r_lib/zapret2-watchdog.log, последние 15 событий. Если пусто — watchdog не установлен или ещё ничего не ловил.${plain}"
+    fi
     pause_enter
     ;;
 
@@ -2212,7 +2225,8 @@ while true; do
  fi
  WEBUI_WAS_RUNNING=0
  webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
- 
+
+ # Watchdog не трогаем: это переустановка (поднимем в конце — watchdog_ensure_running).
  remove_zapret
  
  #Запрос желаемой версии zapret2
@@ -2287,5 +2301,8 @@ while true; do
  	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
  fi
  install_zapret_reboot
+ # Обновление = переустановка: watchdog пережил её (см. remove_zapret выше);
+ # если демон самоостановился в паузу без init-скрипта — поднимаем.
+ watchdog_ensure_running || true
  get_menu
 done
