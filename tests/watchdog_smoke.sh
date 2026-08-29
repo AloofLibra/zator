@@ -707,4 +707,83 @@ assert_contains "$out" "снова запущен" "ensure_running wrt: сооб
 assert_eq "$(calls "$WRT_CALLS")" "enabled,start" "ensure_running wrt: вызван start"
 ok "ensure_running wrt: подъём после паузы"
 
+# --- ensure_running: неудачный start не должен молчать (раньше rc=0, пусто) ---
+
+OSystem="entware"
+echo stopped >"$STATUS_MODE"
+printf 'start\n' >"$FAIL_CMDS"
+make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS" "$FAIL_CMDS"
+make_mock_script "$Z2R_ENTWARE_INIT" "$STATUS_MODE" "$ENT_CALLS" "$FAIL_CMDS"
+if out="$(watchdog_ensure_running)"; then
+  fail "ensure_running entware: неудачный start должен давать ненулевой код возврата"
+fi
+assert_contains "$out" "НЕ смог запуститься" "ensure_running entware: предупреждение о неудаче"
+ok "ensure_running entware: неудачный start — предупреждение и ошибка"
+
+OSystem="WRT"
+make_mock_script "$Z2R_WRT_INIT" "$STATUS_MODE" "$WRT_CALLS" "$FAIL_CMDS"
+echo stopped >"$STATUS_MODE"
+: >"$WRT_CALLS"
+if out="$(watchdog_ensure_running)"; then
+  fail "ensure_running wrt: неудачный start должен давать ненулевой код возврата"
+fi
+assert_contains "$out" "НЕ смог запуститься" "ensure_running wrt: предупреждение о неудаче"
+ok "ensure_running wrt: неудачный start — предупреждение и ошибка"
+
+# --- uninstall: неполная зачистка = ненулевой код возврата и предупреждение ---
+
+# rm, отказывающийся удалять файлы watchdog: раньше функция всё равно
+# рапортовала успех и возвращала 0
+OSystem="entware"
+echo stopped >"$STATUS_MODE"
+make_mock_script "$ENT_SCRIPT" "$STATUS_MODE" "$ENT_CALLS"
+make_mock_script "$Z2R_ENTWARE_INIT" "$STATUS_MODE" "$ENT_CALLS"
+touch "$ENT_SCRIPT.conf"
+rm() {
+  case "$*" in
+    *zapret2-watchdog*) return 1 ;;
+  esac
+  command rm "$@"
+}
+if out="$(watchdog_uninstall)"; then
+  fail "uninstall entware: сбой rm должен давать ненулевой код возврата"
+fi
+unset -f rm
+assert_contains "$out" "не полностью" "uninstall entware: предупреждение о неполной зачистке"
+[ -e "$ENT_SCRIPT" ] || fail "uninstall entware: при сбое rm скрипт должен был остаться"
+[ -e "$Z2R_ENTWARE_INIT" ] || fail "uninstall entware: при сбое rm обёртка должна была остаться"
+[ -e "$ENT_SCRIPT.conf" ] || fail "uninstall entware: при сбое rm конфиг должен был остаться"
+[ ! -e "$TMP_DIR/watchdog.pid" ] || fail "uninstall entware: pidfile (не попавший под сбой rm) должен удаляться"
+ok "uninstall entware: сбой rm — предупреждение и ошибка, состояние честное"
+
+# WRT: падающий stop/disable больше не игнорируются (живой procd-инстанс)
+OSystem="WRT"
+printf 'stop\ndisable\n' >"$FAIL_CMDS"
+make_mock_script "$Z2R_WRT_INIT" "$STATUS_MODE" "$WRT_CALLS" "$FAIL_CMDS"
+: >"$WRT_CALLS"
+if out="$(watchdog_uninstall)"; then
+  fail "uninstall wrt: сбой stop/disable должен давать ненулевой код возврата"
+fi
+assert_contains "$out" "не полностью" "uninstall wrt: предупреждение о неполной зачистке"
+assert_eq "$(calls "$WRT_CALLS")" "stop,disable" "uninstall wrt: после сбоя stop disable всё равно вызывается"
+[ ! -e "$Z2R_WRT_INIT" ] || fail "uninstall wrt: init-файл (rm прошёл) должен быть удалён"
+ok "uninstall wrt: сбой stop/disable — предупреждение и ошибка"
+
+# повторная зачистка после сбоя: init-файл уже удалён в прошлом сценарии —
+# тихий успех без сообщений
+OSystem="WRT"
+out="$(watchdog_uninstall)"
+[ -z "$out" ] || fail "uninstall wrt: повторная зачистка пустой установки должна молчать"
+ok "uninstall wrt: повторный вызов на чистой системе — тихий успех"
+
+# осиротевший конфиг: скрипта и обёртки уже нет, ${script}.conf остался —
+# раньше переживал «полное удаление»
+OSystem="entware"
+command rm -f "$ENT_SCRIPT" "$Z2R_ENTWARE_INIT" "$ENT_SCRIPT.conf"
+touch "$ENT_SCRIPT.conf"
+out="$(watchdog_uninstall)"
+assert_contains "$out" "остановлен и удалён" "uninstall entware: сообщение при единственном осиротевшем конфиге"
+[ ! -e "$ENT_SCRIPT.conf" ] || fail "uninstall entware: осиротевший конфиг должен удаляться"
+ok "uninstall entware: orphan-conf удаляется безусловно"
+
 echo "watchdog smoke ok"
