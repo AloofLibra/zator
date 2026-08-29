@@ -106,8 +106,10 @@ grep -qF 'if ! "$init" enable' "$REPO_DIR/lib/submenus.sh" \
   || fail "watchdog_toggle должен проверять код возврата enable (частичный успех недопустим)"
 grep -qF 'if ! "$script" stop' "$REPO_DIR/lib/submenus.sh" \
   || fail "watchdog_toggle должен проверять код возврата stop (частичный успех недопустим)"
-grep -q '^oom_count()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
-  || fail "в openwrt-watchdog нет счётчика OOM-строк syslog"
+grep -q '^oom_scan()' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "в openwrt-watchdog нет OOM-курсора syslog (oom_scan)"
+grep -q 'OOM_CURSOR' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "openwrt-watchdog должен хранить курсор syslog, а не сравнивать количество строк (кольцевой буфер обманывает счётчик)"
 grep -q 'logread' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
   || fail "openwrt-watchdog должен искать OOM в syslog (logread): stderr nfqws2 идёт туда, а не в /tmp/nfqws2_*.err"
 ok "статика: \$initscript в procd, is_nfqws2_pid, OOM из logread"
@@ -224,11 +226,14 @@ else
   ok "wrt start_service: пропуск негативного сценария (на машине есть init zapret2)"
 fi
 
-# --- OpenWRT: OOM-детект по syslog (logread) — триггер только на новые строки ---
+# --- OpenWRT: OOM-детект по syslog (logread) — курсор последней строки ---
+# Счётчик количества здесь не работает: кольцевой буфер может вытеснить одну
+# старую OOM-строку ровно в момент появления новой, количество не меняется и
+# новый OOM пропускался (замечание второго ревью).
 
-awk '/^wlog\(\)/{f=1} /^oom_count\(\)/{f=1} /^oom_new\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
+awk '/^oom_scan\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
   "$REPO_DIR/init.d/openwrt/zapret2-watchdog" >"$TMP_DIR/wrt_oom_funcs.sh"
-grep -q '^oom_new()' "$TMP_DIR/wrt_oom_funcs.sh" || fail "не извлеклись oom-функции из openwrt-watchdog"
+grep -q '^oom_scan()' "$TMP_DIR/wrt_oom_funcs.sh" || fail "не извлеклась oom_scan из openwrt-watchdog"
 # shellcheck disable=SC1090
 source "$TMP_DIR/wrt_oom_funcs.sh"
 
@@ -237,40 +242,52 @@ LOGREAD_LINES="$TMP_DIR/logread.fixture"
 printf '#!/bin/sh\ncat "%s" 2>/dev/null\n' "$LOGREAD_LINES" >"$TMP_DIR/fakebin/logread"
 chmod +x "$TMP_DIR/fakebin/logread"
 PATH="$TMP_DIR/fakebin:$PATH"
-LOGFILE="$TMP_DIR/wrt-oom-test.log"
 
 cat >"$LOGREAD_LINES" <<'FIX'
 Jan  1 00:00:00 router user.info nfqws2[123]: nfqws2 started
 Jan  1 00:00:05 router user.err nfqws2[123]: LUA PANIC: not enough memory
-Jan  1 00:00:06 router user.err nfqws2[124]: NOT ENOUGH MEMORY in lua alloc
 FIX
 
 trigger=no
-LAST_OOM_LINES=0
-oom_new && trigger=yes || trigger=no
-[ "$trigger" = yes ] || fail "wrt oom: новая OOM-строка в syslog должна срабатывать"
-LAST_OOM_LINES=$(oom_count)
-oom_new && trigger=yes || trigger=no
-[ "$trigger" = no ] || fail "wrt oom: без новых строк триггера быть не должно"
-# вытеснение кольцевым буфером: счётчик уменьшился — не ложное срабатывание
-head -n 1 "$LOGREAD_LINES" >"$LOGREAD_LINES.tmp" && mv -f "$LOGREAD_LINES.tmp" "$LOGREAD_LINES"
-oom_new && trigger=yes || trigger=no
-[ "$trigger" = no ] || fail "wrt oom: вытеснение строк буфером не должно срабатывать"
-[ "$LAST_OOM_LINES" = 0 ] || fail "wrt oom: после вытеснения счётчик должен сброситься на 0"
-# и новая строка после вытеснения снова срабатывает
-printf 'Jan  1 00:00:07 router user.err nfqws2[123]: LUA PANIC: not enough memory\n' >>"$LOGREAD_LINES"
-oom_new && trigger=yes || trigger=no
-[ "$trigger" = yes ] || fail "wrt oom: новая строка после вытеснения должна срабатывать"
-# OOM-строка чужого процесса не считается
-printf 'Jan  1 00:00:08 router user.err other[1]: LUA PANIC: not enough memory\n' >>"$LOGREAD_LINES"
-LAST_OOM_LINES=$(oom_count)
-oom_new && trigger=yes || trigger=no
-[ "$trigger" = no ] || fail "wrt oom: OOM-строка чужого процесса не должна считаться"
-ok "wrt oom: logread, только новые строки, вытеснение буфера, чужие процессы"
+OOM_CURSOR=""
+oom_scan
+[ "$OOM_NEW_MATCH" = 0 ] || fail "wrt oom: пустой курсор (первый запуск) не должен срабатывать на истории"
+[ "$OOM_CURSOR" = "Jan  1 00:00:05 router user.err nfqws2[123]: LUA PANIC: not enough memory" ] \
+  || fail "wrt oom: курсор должен встать на последнюю строку буфера, получено: $OOM_CURSOR"
+
+printf 'Jan  1 00:00:07 router user.info nfqws2[123]: reload ok\n' >>"$LOGREAD_LINES"
+printf 'Jan  1 00:00:08 router user.err nfqws2[123]: NOT ENOUGH MEMORY in lua alloc\n' >>"$LOGREAD_LINES"
+oom_scan
+[ "$OOM_NEW_MATCH" -gt 0 ] || fail "wrt oom: новая OOM-строка (в другом регистре) должна срабатывать"
+
+oom_scan
+[ "$OOM_NEW_MATCH" = 0 ] || fail "wrt oom: без новых строк триггера быть не должно"
+
+# ключевой сценарий ревью: старая OOM-строка вытеснена, новая появилась —
+# количество совпадений не изменилось (1 → 1), но триггер обязан прозвучать
+cat >"$LOGREAD_LINES" <<'FIX'
+Jan  1 00:00:00 router user.info nfqws2[123]: nfqws2 started
+Jan  1 00:00:09 router user.err nfqws2[123]: LUA PANIC: not enough memory
+FIX
+oom_scan
+[ "$OOM_NEW_MATCH" -gt 0 ] || fail "wrt oom: «минус старая OOM-строка, плюс новая» должно срабатывать (счётчик это пропускал)"
+
+printf 'Jan  1 00:00:10 router user.err other[1]: LUA PANIC: not enough memory\n' >>"$LOGREAD_LINES"
+oom_scan
+[ "$OOM_NEW_MATCH" = 0 ] || fail "wrt oom: OOM-строка чужого процесса не должна считаться"
+
+# курсор вытеснен целиком: все строки буфера считаются новыми
+cat >"$LOGREAD_LINES" <<'FIX'
+Jan  1 00:00:11 router user.err nfqws2[123]: LUA PANIC: not enough memory again
+FIX
+OOM_CURSOR="Jan  1 00:00:00 router user.info ancient: marker evicted long ago"
+oom_scan
+[ "$OOM_NEW_MATCH" -gt 0 ] || fail "wrt oom: после вытеснения курсора новые строки должны считаться"
+ok "wrt oom: курсор syslog, сценарий «минус старая плюс новая», чужие процессы"
 
 # --- OpenWRT: do_restart — код возврата init в логе, err-логи не трогаются ---
 
-awk '/^wlog\(\)/{f=1} /^oom_count\(\)/{f=1} /^do_restart\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
+awk '/^wlog\(\)/{f=1} /^do_restart\(\)/{f=1} f{print} f&&/^}$/{f=0}' \
   "$REPO_DIR/init.d/openwrt/zapret2-watchdog" >"$TMP_DIR/wrt_restart_funcs.sh"
 grep -q '^do_restart()' "$TMP_DIR/wrt_restart_funcs.sh" || fail "не извлекся do_restart из openwrt-watchdog"
 # shellcheck disable=SC1090
@@ -285,7 +302,6 @@ chmod +x "$TMP_DIR/fake-init-ok.sh" "$TMP_DIR/fake-init-fail.sh"
 WATCH_INIT="$TMP_DIR/fake-init-ok.sh"
 LAST_RESTART=0
 WATCH_COOLDOWN=60
-LAST_OOM_LINES=0
 
 do_restart "тест: успех"
 grep -qxF 'restart' "$WRT_INIT_CALLS" || fail "wrt do_restart: init должен вызваться с restart"
