@@ -652,11 +652,12 @@ client_scopes_wizard_lock() {
 # Мастер: удалить клиента (все IP scope + опционально его lock'и).
 # Удалить все локи scope (per-mark файл целиком / default-строки не трогаем).
 client_scopes_clear_scope_locks() {
-  local scope="$1" prof pproto
+  local scope="$1" prof pproto rc=0
   while IFS="$(printf '\t')" read -r prof pproto _; do
     [ -n "$prof" ] || continue
-    orch_scoped_locked_clear "$scope" "$prof" "$pproto"
+    orch_scoped_locked_clear "$scope" "$prof" "$pproto" || rc=1
   done <<< "$(client_scope_scope_locks "$scope")"
+  return "$rc"
 }
 
 client_scopes_wizard_remove() {
@@ -727,12 +728,19 @@ client_scopes_wizard_remove() {
         ;;
     esac
   fi
-  # Судьбу локов решаем ДО удаления — пока клиент ещё существует.
-  clear_locks=0
+  # Очистка — самостоятельное действие: подтверждённое «да» применяется сразу,
+  # даже если следующим вопросом отменить удаление IP/группы.
   if [ -n "$(client_scope_scope_locks "$scope")" ]; then
     read -re -p "Удалить lock'и этого клиента? (y/N): " ans || return 0
     case "$ans" in
-      y|Y|да|Д|д) clear_locks=1 ;;
+      y|Y|да|Д|д)
+        if client_scopes_clear_scope_locks "$scope"; then
+          echo -e "${green}Lock'и клиента удалены — стратегии наследуются от default.${plain}"
+        else
+          echo -e "${red}Не удалось полностью удалить lock'и клиента.${plain}"
+          return 1
+        fi
+        ;;
     esac
   fi
   read -re -p "Удалить $scope и все его IP? (y/N): " ans || return 0
@@ -750,10 +758,6 @@ client_scopes_wizard_remove() {
       return 1
     fi
   done
-  if [ "$clear_locks" = 1 ]; then
-    client_scopes_clear_scope_locks "$scope"
-    echo "Lock'и клиента удалены."
-  fi
   echo -e "${green}Клиент $scope удалён.${plain}"
   # Последний клиент — не повод молча гасить режим: часто это часть
   # переформирования группы. Спрашиваем, дефолт — оставить включённым

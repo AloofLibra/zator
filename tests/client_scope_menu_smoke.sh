@@ -274,7 +274,16 @@ if printf '0\n' | client_scopes_ask_profile mark:5 >/dev/null 2>&1; then
 fi
 client_scope_ip_remove 192.0.2.80 || fail 'clear mark:5'
 
-# --- Фаза J: wizard_remove (локи спрашиваются ДО удаления; режим гаснет последним) ---
+# --- Фаза J: wizard_remove (очистка lock'ов независима от удаления IP) ---
+# Подтвердить очистку, но отменить следующий вопрос удаления: scope и IP должны
+# остаться, а все его локи — исчезнуть (регресс из интерактивного меню).
+orch_scoped_locked_set mark:3 1 http 3 || fail 'add mark:3 http lock for clear-only'
+orch_scoped_locked_set mark:3 3 tls 1 || fail 'add mark:3 RKN lock for clear-only'
+printf 'mark:3\ny\nn\n' | client_scopes_wizard_remove || fail 'wizard_remove clear locks only'
+[ "$(client_scope_ip_get 192.0.2.21)" = mark:3 ] || fail 'clear-only must keep client IP'
+[ -z "$(client_scope_scope_locks mark:3)" ] || fail 'clear-only must remove every mark:3 lock'
+# Восстанавливаем lock для проверки полного удаления клиента.
+orch_scoped_locked_set mark:3 1 tls 2 || fail 'restore mark:3 lock for delete'
 printf 'mark:3\ny\ny\n' | client_scopes_wizard_remove || fail 'wizard_remove mark:3'
 [ -z "$(client_scope_ip_get 192.0.2.21)" ] || fail 'wizard_remove should clear IP'
 [ "$(orch_scoped_locked_get mark:3 1 tls)" = 0 ] || fail 'wizard_remove should clear locks'
