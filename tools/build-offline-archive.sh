@@ -120,11 +120,11 @@ project_tree_is_valid() {
   local root="$1" dir file
 
   [ -f "$root/offline/z2r" ] || return 1
-  for dir in blockcheck2.d Entware extra_strats fake init.d lib lists lua orchestra webui; do
+  for dir in blockcheck2.d data Entware extra_strats fake firewall init.d lib lists lua orchestra webui; do
     [ -d "$root/$dir" ] || return 1
   done
   for file in z2r.sh config.default fake_files.tar.gz recommendations.txt \
-    3proxy.cfg del.proxyauth z4r_test.sh user_test2.sh merlin_wan_restart_zapret.sh README.md; do
+    3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md; do
     [ -f "$root/$file" ] || return 1
   done
 }
@@ -300,11 +300,11 @@ payload_dir="$bundle_dir/payload"
 mkdir -p "$payload_dir" "$bundle_dir/vendor"
 
 cp -f "$REPO_DIR/offline/z2r" "$bundle_dir/z2r"
-for dir in blockcheck2.d Entware extra_strats fake init.d lib lists lua orchestra webui; do
+for dir in blockcheck2.d data Entware extra_strats fake firewall init.d lib lists lua orchestra webui; do
   cp -R "$REPO_DIR/$dir" "$payload_dir/$dir"
 done
 for file in z2r.sh config.default fake_files.tar.gz recommendations.txt \
-  3proxy.cfg del.proxyauth z4r_test.sh user_test2.sh merlin_wan_restart_zapret.sh README.md; do
+  3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md; do
   cp -f "$REPO_DIR/$file" "$payload_dir/$file"
 done
 if [ -n "$zapret2_archive" ]; then

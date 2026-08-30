@@ -90,16 +90,16 @@ fi
 command -v bash >/dev/null 2>&1 || fail "bash не найден; установите bash до запуска архивной установки"
 
 mkdir -p \
-    "$INSTALL_DIR/zapret2/z2r_lib" \
-    "$INSTALL_DIR/zapret2/extra_strats/cache/orchestra" \
-    "$INSTALL_DIR/zapret2/lua"
+    "$INSTALL_DIR/zator/z2r_lib" \
+    "$INSTALL_DIR/zator/extra_strats/cache/orchestra" \
+    "$INSTALL_DIR/zator/lua"
 
 cp -f "$launcher_dir/z2r" "$BIN_PATH"
 cp -f "$PAYLOAD_DIR/z2r.sh" "$INSTALL_DIR/z2r.sh"
 for file in $LIB_FILES; do
-    cp -f "$PAYLOAD_DIR/lib/$file" "$INSTALL_DIR/zapret2/z2r_lib/$file"
+    cp -f "$PAYLOAD_DIR/lib/$file" "$INSTALL_DIR/zator/z2r_lib/$file"
 done
-cp -f "$PAYLOAD_DIR/orchestra/locked.lua" "$INSTALL_DIR/zapret2/lua/locked.lua"
+cp -f "$PAYLOAD_DIR/orchestra/locked.lua" "$INSTALL_DIR/zator/lua/locked.lua"
 
 chmod +x "$BIN_PATH" "$INSTALL_DIR/z2r.sh"
 echo "Компоненты z2r установлены из архива."
