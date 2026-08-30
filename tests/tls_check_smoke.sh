@@ -520,8 +520,13 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: оверрайд run_daemon должен идти после source functions"
   grep -q 'setsid "\$2"' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: run_daemon без setsid-спавна"
-  grep -q "trap '' INT QUIT HUP" "$REPO_DIR/Entware/zapret" \
-    || fail "сценарий 14e: нет fallback-спавна с игнором INT/QUIT/HUP (роутеры без setsid)"
+  # nfqws2 ставит свои sigaction на INT/TERM/HUP — унаследованный игнор затирается;
+  # без setsid демон обязан получать собственную группу через job control (set -m),
+  # проверено на Keenetic busybox ash в неинтерактивном скрипте
+  grep -q 'set -m 2>/dev/null' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: нет set -m ветки (собственная pgid демона без setsid)"
+  grep -q 'set +m 2>/dev/null' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: set -m не гасится сразу после спавна (риск tcsetpgrp-побочек)"
   grep -q '>/dev/null 2>&1 &' "$REPO_DIR/Entware/zapret" \
     && fail "сценарий 14e: stderr демона глушится — ошибки конфига теряются"
   grep -q 'ERRLOG="/tmp/\${DAEMONBASE}_\$1.err"' "$REPO_DIR/Entware/zapret" \
@@ -643,7 +648,7 @@ fi
 [ "$(grep -c 'profile_check_json' webui/cgi-bin/_lib.sh)" = "2" ]   || fail "сценарий 16: profile_check_json должен зваться только из api_check (без инлайна в set-lock)"
 grep -q 'PARAM_PROFILE.*\[\[\|\[\[ "\${PARAM_PROFILE' webui/cgi-bin/_lib.sh   || grep -q 'api_check' webui/cgi-bin/_lib.sh || true
 grep -q '2>/dev/null </dev/null &' lib/netcheck.sh   || fail "сценарий 16: фоновые пробы не отсоединены от CGI stdio"
-grep -q "body: new URLSearchParams({ profile: profile.profile })" webui/app.js   || fail "сценарий 16: app.js не дергает проверку после set-lock"
+grep -q "body: new URLSearchParams({ profile: profile.profile" webui/app.js   || fail "сценарий 16: app.js не дергает проверку после set-lock"
 [ "$(grep -c "check.cgi" webui/app.js)" -ge 2 ]   || fail "сценарий 16: check.cgi должен вызываться и из кнопки, и после set-lock"
 [ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "2" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
 printf '%s' "$lib_sh" | grep -q '^    check)' || fail "сценарий 16: нет действия check в domains"

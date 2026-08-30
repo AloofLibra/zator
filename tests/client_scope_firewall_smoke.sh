@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+MOCK="$TMP/bin"
+mkdir -p "$MOCK"
+STATE="$TMP/iptables.state"
+cat > "$MOCK/iptables" <<'MOCK'
+#!/usr/bin/env bash
+state=${IPTABLES_STATE:?}
+[ "$1" = -t ] && shift 2
+args="$*"
+case "$1" in
+  -N) grep -Fxq "chain:$2" "$state" 2>/dev/null || printf 'chain:%s\n' "$2" >> "$state" ;;
+  -C) grep -Fxq "rule:-A ${args#-C }" "$state" ;;
+  # -I хранится как -A без позиционного номера: текст правила тот же,
+  # проверка -C/-D и идемпотентность работают по тексту, а не позиции.
+  -A) printf 'rule:-A %s\n' "${args#-A }" >> "$state" ;;
+  -I) printf 'rule:-A %s\n' "$(printf '%s\n' "${args#-I }" | sed 's/^\([A-Za-z_][A-Za-z0-9_]*\) 1 /\1 /')" >> "$state" ;;
+  -D) line="rule:-A ${args#-D }"; tmp="${state}.tmp"; awk -v x="$line" '$0 != x { print }' "$state" > "$tmp"; mv "$tmp" "$state" ;;
+  -S) chain=${2:-}; sed -n "s/^rule:-A ${chain} /-A ${chain} /p" "$state" | sed 's/--comment zator-client-scope/--comment "zator-client-scope"/g' ;;
+  *) exit 0 ;;
+esac
+MOCK
+chmod +x "$MOCK/iptables"
+export PATH="$MOCK:$PATH" IPTABLES_STATE="$STATE" CLIENT_SCOPE_ENABLE=1
+export CLIENT_SCOPE_MAP_FILE="$TMP/clients.tsv" CLIENT_SCOPE_CHAIN=ZATOR_CLIENT_SCOPE
+cat > "$CLIENT_SCOPE_MAP_FILE" <<'MAP'
+mark:1	192.0.2.10
+mark:2	198.51.100.20
+mark:3	2001:db8::10
+mark:4	999.1.1.1
+MAP
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+[ -f "$ROOT/firewall/client-scope-iptables.sh" ] || fail 'firewall integration script missing'
+# shellcheck source=/dev/null
+source "$ROOT/firewall/client-scope-iptables.sh"
+apply
+count=$(grep -c '^rule:' "$STATE" || true)
+[ "$count" -eq 3 ] || fail "expected jump plus 2 client rules, got $count"
+apply
+count2=$(grep -c '^rule:' "$STATE" || true)
+[ "$count2" -eq "$count" ] || fail 'apply/apply duplicated rules'
+grep -q '192.0.2.10' "$STATE" || fail 'first client missing'
+grep -q '198.51.100.20' "$STATE" || fail 'second client missing'
+# Foreign chain/rule must survive cleanup.
+printf 'chain:FOREIGN\nrule:FOREIGN -s 203.0.113.5 -j ACCEPT\n' >> "$STATE"
+cleanup
+! grep -q '^rule:.*ZATOR_CLIENT_SCOPE' "$STATE" || fail 'owned rules remain after cleanup'
+grep -q 'FOREIGN' "$STATE" || fail 'foreign rules were removed'
+CLIENT_SCOPE_ENABLE=0 apply
+[ "$(grep -c '^rule:' "$STATE" || true)" -eq 1 ] || fail 'disabled mode changed firewall'
+PATH="$TMP/empty" apply || fail 'missing iptables was not a safe no-op'
+
+# nft backend always classifies the LAN client before NAT, independently of
+# POSTNAT=1 and without requiring CLIENT_SCOPE_PRENAT.
+NFT_STATE="$TMP/nft.state"
+cat > "$MOCK/nft" <<'MOCK'
+#!/usr/bin/env bash
+state=${NFT_STATE:?}
+if [ "$1" = -f ]; then cp "$2" "$state"; exit 0; fi
+if [ "$1" = delete ] && [ "$2" = table ]; then
+  [ "${3:-}" = inet ] && [ "${4:-}" = zator_client_scope ] && printf 'foreign table inet other\n' > "$state"
+fi
+MOCK
+chmod +x "$MOCK/nft"
+# Source the nft backend in a subshell to keep the iptables test variables tidy.
+(
+  export PATH="$MOCK:$PATH" NFT_STATE CLIENT_SCOPE_ENABLE=1 POSTNAT=1 CLIENT_SCOPE_PRENAT=0 CLIENT_SCOPE_NFT_TABLE='foreign; delete table inet other'
+  source "$ROOT/firewall/client-scope-nft.sh"
+  apply
+  first=$(cat "$NFT_STATE")
+  printf '%s\n' "$first" | grep -q 'hook prerouting' || fail 'client scope did not select prerouting'
+  printf '%s\n' "$first" | grep -q 'priority -190' || fail 'client scope must classify before mangle-priority policy routing marks'
+  ! printf '%s\n' "$first" | grep -q 'hook postrouting' || fail 'client scope selected postrouting'
+  printf '%s\n' "$first" | grep -q 'ip6 saddr 2001:db8::10' || fail 'IPv6 client rule missing'
+  ! printf '%s\n' "$first" | grep -q '999.1.1.1' || fail 'invalid IPv4 client rule was emitted'
+  apply
+  [ "$(cat "$NFT_STATE")" = "$first" ] || fail 'nft apply/apply was not idempotent'
+  cleanup
+  grep -q 'foreign table inet other' "$NFT_STATE" || fail 'nft cleanup removed a foreign table'
+  CLIENT_SCOPE_ENABLE=0 apply
+  cleanup
+  grep -q 'foreign table inet other' "$NFT_STATE" || fail 'disabled cleanup did not preserve foreign state'
+  CLIENT_SCOPE_COMMENT='owned"; delete table inet other' apply
+  grep -q 'foreign table inet other' "$NFT_STATE" || fail 'invalid comment changed nft state'
+)
+
+# Lifecycle integration: remove_zapret must honor the active config even when
+# CLIENT_SCOPE_ENABLE is not exported by the caller.
+CONFIG_ROOT="$TMP/config-root"
+mkdir -p "$CONFIG_ROOT"
+printf 'CLIENT_SCOPE_ENABLE=1\n' > "$CONFIG_ROOT/config"
+unset CLIENT_SCOPE_ENABLE
+eval "$(sed -n '/^client_scope_enabled_from_active_config() {/,/^}/p' "$ROOT/z2r.sh")"
+ZAPRET2_ROOT="$CONFIG_ROOT"
+client_scope_enabled_from_active_config || fail 'active config enable was not detected'
+printf 'CLIENT_SCOPE_ENABLE=0\n' > "$CONFIG_ROOT/config"
+if client_scope_enabled_from_active_config; then
+  fail 'disabled active config was treated as enabled'
+fi
+REMOVE_BLOCK=$(sed -n '/^remove_zapret() {/,/^}/p' "$ROOT/z2r.sh")
+printf '%s\n' "$REMOVE_BLOCK" | grep -q 'client_scope_firewall_action cleanup' \
+  || fail 'remove_zapret does not always clean up client scope firewall'
+if printf '%s\n' "$REMOVE_BLOCK" | grep -q 'if client_scope_enabled_from_active_config'; then
+  fail 'remove_zapret still gates cleanup on enabled config'
+fi
+
+# Keenetic ndm пересобирает firewall при любом событии в сети и сносит правила
+# client scope; netfilter.d-хук обязан переустанавливать их общим reconcile.
+grep -q 'client_scope_firewall_reconcile' "$ROOT/Entware/000-zapret2.sh" \
+  || fail 'netfilter.d hook does not re-apply client scope firewall'
+grep -q 'restart-fw' "$ROOT/Entware/000-zapret2.sh" \
+  || fail 'netfilter.d hook lost restart-fw'
+
+# client_scope_firewall_action обязан пробрасывать CLIENT_SCOPE_ENABLE в дочерний
+# скрипт: без export скрипт не видел режим и молча завершался no-op (rc=0),
+# правила не вставали ни из меню, ни из netfilter-хука.
+ENVSTUB="$TMP/zator-root"
+mkdir -p "$ENVSTUB/firewall"
+cat > "$ENVSTUB/firewall/client-scope-iptables.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'action=%s enable=%s map=%s\n' "$1" "${CLIENT_SCOPE_ENABLE:-}" "${CLIENT_SCOPE_MAP_FILE:-}" > "$ENV_DUMP"
+STUB
+chmod +x "$ENVSTUB/firewall/client-scope-iptables.sh"
+export ENV_DUMP="$TMP/child-env.txt"
+# shellcheck source=/dev/null
+source "$ROOT/lib/config.sh"
+CLIENT_SCOPE_FIREWALL_BACKEND=iptables
+ZATOR_ROOT="$ENVSTUB"
+CLIENT_SCOPE_ENABLE=1
+client_scope_firewall_action apply || fail 'firewall action apply failed'
+grep -q 'action=apply enable=1' "$ENV_DUMP" || fail 'child script did not receive CLIENT_SCOPE_ENABLE=1 (missing export)'
+grep -q 'map=' "$ENV_DUMP" || fail 'child script did not receive CLIENT_SCOPE_MAP_FILE'
+CLIENT_SCOPE_ENABLE=0
+: > "$ENV_DUMP"
+client_scope_firewall_action cleanup || fail 'firewall action cleanup failed'
+grep -q 'action=cleanup' "$ENV_DUMP" || fail 'cleanup must always reach the script'
+unset ENV_DUMP CLIENT_SCOPE_FIREWALL_BACKEND
+printf 'client scope firewall smoke ok\n'

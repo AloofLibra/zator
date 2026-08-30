@@ -591,6 +591,13 @@ circular_runtime_update_from_repo() {
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
 }
 
+# client-scope-config.lua is a persistent generated state file. Download the
+# default only for a fresh install; updates must not overwrite user settings.
+client_scope_lua_config_install_default() {
+  local dest="$ZATOR_ROOT/lua/client-scope-config.lua"
+  [ -f "$dest" ] || z2r_download_project_file "$dest" "lua/client-scope-config.lua" || return 1
+}
+
 strategy_validator_install_service() {
   local validator_path="/opt/bin:/opt/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   if ! PATH="$validator_path" command -v curl >/dev/null 2>&1; then
@@ -1041,6 +1048,7 @@ get_repo() {
   mkdir -p "$ZATOR_ROOT/lists" "$ZATOR_ROOT/extra_strats" "$ZATOR_ROOT/extra_strats/cache" "$ZATOR_ROOT/files/fake"
   mkdir -p "$ORCH_DIR"
   z2r_install_runtime_libs_from_archive || return 1
+  client_scope_lua_config_install_default || return 1
   chmod 777 "$ORCH_DIR" 2>/dev/null || true
   locked_lua_update_from_repo || true
   rst_guard_lua_update_from_repo || true
@@ -1094,6 +1102,12 @@ get_repo() {
   fi
   # config.default и keenetic-policy.sh — zapret2-native, остаются в $ZAPRET2_ROOT.
  z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default" || return 1
+  # Add new optional settings without breaking an older deployed template.
+  config_client_scope_ensure "$ZAPRET2_ROOT/config.default" || return 1
+  mkdir -p "$ZATOR_ROOT/firewall"
+  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh" || return 1
+  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
+  chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
   if [ "$hardware" = "keenetic" ]; then
     z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
@@ -1106,8 +1120,47 @@ mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
 }
 
+# Client-scope config snapshot survives the destructive zapret2 reinstall.
+CLIENT_SCOPE_CONFIG_SNAPSHOT="/tmp/z2r_client_scope_config.$$"
+client_scope_config_snapshot() {
+  rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
+  [ -f "$ZAPRET2_ROOT/config" ] || return 0
+  cp -f "$ZAPRET2_ROOT/config" "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
+}
+
+client_scope_config_restore() {
+  [ -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT" ] || return 0
+  [ -f "$ZAPRET2_ROOT/config" ] || { rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"; return 0; }
+  config_client_scope_apply "$CLIENT_SCOPE_CONFIG_SNAPSHOT" "$ZAPRET2_ROOT/config" || true
+  config_client_scope_ensure "$ZAPRET2_ROOT/config" || true
+  client_scope_lua_config_sync "$ZAPRET2_ROOT/config" || true
+  rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
+}
+
 #Удаление старого запрета, если есть
+client_scope_enabled_from_active_config() {
+ if [ "${CLIENT_SCOPE_ENABLE+x}" = "x" ]; then
+  [ "$CLIENT_SCOPE_ENABLE" = "1" ]
+  return
+ fi
+ [ -f "$ZAPRET2_ROOT/config" ] || return 1
+ grep -Eq '^[[:space:]]*CLIENT_SCOPE_ENABLE[[:space:]]*=[[:space:]]*1([[:space:]]*#.*)?$' "$ZAPRET2_ROOT/config"
+}
+
+client_scope_firewall_apply_active_config() {
+ [ -f "$ZAPRET2_ROOT/config" ] || return 0
+ client_scope_firewall_reconcile || true
+}
+
 remove_zapret() {
+ # Cleanup is independent of the feature flag. Prefer the active config's
+ # backend; when config is already absent, clean both isolated backends.
+ if [ -f "$ZAPRET2_ROOT/config" ]; then
+  client_scope_firewall_action cleanup || true
+ else
+  CLIENT_SCOPE_FIREWALL_BACKEND=nftables client_scope_firewall_action cleanup || true
+  CLIENT_SCOPE_FIREWALL_BACKEND=iptables client_scope_firewall_action cleanup || true
+ fi
  if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
  	z2r_service_action stop
  fi
@@ -1358,6 +1411,7 @@ z2r_prune_staged_sources() {
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh"
  cleanup_zapret2_init_dirs
+ client_scope_firewall_apply_active_config
  z2r_service_action restart
  if pidof nfqws2 >/dev/null; then
   check_access_list
@@ -1921,6 +1975,7 @@ ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас
 ${Fcyan}19.${yellow} Доп. настройки (reasm, WG, QUIC-fakes, keenetic)
 ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}
 ${Fcyan}21.${yellow} Управление бэкапами (создание/восстановление/удаление архивов)
+${Fcyan}23.${yellow} Client scopes (Beta): разные стратегии разным устройствам по IP. Сейчас: ${plain}[${MENU_CLIENT_SCOPE}]${yellow}
 ${Fcyan}666.${yellow} Ошибки nfqws2 — журнал последнего запуска${MENU_ERR_STATE}
 ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
@@ -1979,6 +2034,11 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     pause_enter
     ;;
 
+  "23")
+    toggle_client_scope_mode || true
+    pause_enter
+    ;;
+
   "3")
     blockcheck2_run_summary
     pause_enter
@@ -1990,6 +2050,8 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        # zapret2 уходит насовсем — watchdog больше нечего сторожить.
+        watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
         zator_remove || echo -e "${red}Удаление zator завершилось с ошибкой.${plain}"
         echo -e "${yellow}Удаление zator и zapret2 завершено${plain}"
@@ -2007,6 +2069,8 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
+        # zapret2 уходит без переустановки — watchdog больше нечего сторожить.
+        watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
         WEBUI_WAS_RUNNING=0
         webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
         remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
@@ -2134,6 +2198,15 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
       command -v logread >/dev/null 2>&1 && echo -e "${yellow}Если проблемы точно есть, а здесь пусто — обновите zapret2 ещё раз (wrt_fixes включает журнал ошибок).${plain}"
     fi
+    # Лог watchdog лежит в root-owned /opt/zator (не в world-writable /tmp):
+    # локальный пользователь не может подложить туда симлинк
+    if [ -s "$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log" ] && grep -aqE '^[0-9]{4}-' "$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log" 2>/dev/null; then
+      echo ""
+      echo "--- События watchdog (падения/перезапуски zapret2) ---"
+      grep -aE '^[0-9]{4}-' "$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log" | tail -15
+      echo ""
+      echo -e "${yellow}Источник: $ZATOR_ROOT/z2r_lib/zapret2-watchdog.log, последние 15 событий. Если пусто — watchdog не установлен или ещё ничего не ловил.${plain}"
+    fi
     pause_enter
     ;;
 
@@ -2212,7 +2285,9 @@ while true; do
  fi
  WEBUI_WAS_RUNNING=0
  webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
- 
+ client_scope_config_snapshot
+
+ # Watchdog не трогаем: это переустановка (поднимем в конце — watchdog_ensure_running).
  remove_zapret
  
  #Запрос желаемой версии zapret2
@@ -2226,9 +2301,10 @@ while true; do
  #Скачивание, распаковка архива zapret2 и его удаление
  zapret_get
  
- #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
- get_repo
- if [ ! -s "$ORCH_LUA_LOCKED" ]; then
+ # Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
+  get_repo
+  client_scope_config_restore
+  if [ ! -s "$ORCH_LUA_LOCKED" ]; then
    echo "Повторная попытка загрузки locked.lua..."
    if locked_lua_update_from_repo; then
      echo -e "${green}Повторная загрузка locked.lua успешна.${plain}"
@@ -2287,5 +2363,8 @@ while true; do
  	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
  fi
  install_zapret_reboot
+ # Обновление = переустановка: watchdog пережил её (см. remove_zapret выше);
+ # если демон самоостановился в паузу без init-скрипта — поднимаем.
+ watchdog_ensure_running || true
  get_menu
 done

@@ -134,6 +134,20 @@ fi
 printf '%s\n' "$FORTYFOUR_BLOCK" | grep -qF 'remove_zapret || echo' \
   || fail "в обработчике 44 вызов remove_zapret не защищён (|| echo)"
 
+# Watchdog: удаление (4/44) снимает его полностью, тело установщика
+# (переустановка zapret2) — не удаляет, но поднимает после установки.
+printf '%s\n' "$FOUR_BLOCK" | grep -qF 'watchdog_uninstall || echo' \
+  || fail "в обработчике 4 вызов watchdog_uninstall не защищён (|| echo)"
+printf '%s\n' "$FORTYFOUR_BLOCK" | grep -qF 'watchdog_uninstall || echo' \
+  || fail "в обработчике 44 вызов watchdog_uninstall не защищён (|| echo)"
+INSTALL_BODY="$(sed -n '/^ remove_zapret$/,/^ get_menu$/p' "$REPO_DIR/z2r.sh")"
+[ -n "$INSTALL_BODY" ] || fail "не найдено тело установщика (remove_zapret → get_menu)"
+printf '%s\n' "$INSTALL_BODY" | grep -q 'watchdog_ensure_running' \
+  || fail "тело установщика не поднимает watchdog после переустановки"
+if printf '%s\n' "$INSTALL_BODY" | grep -q 'watchdog_uninstall'; then
+  fail "тело установщика (переустановка) не должно удалять watchdog"
+fi
+
 # Внутри zator_remove сервисы остановлены безопасно.
 ZR_BLOCK="$(cat "$TMP_DIR/zator_remove.fn")"
 printf '%s\n' "$ZR_BLOCK" | grep -qF 'strategy_validator_remove_service || true' \

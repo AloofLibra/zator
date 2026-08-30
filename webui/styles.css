@@ -458,7 +458,11 @@ button.primary.is-busy::after,
   gap: 10px;
 }
 
-.actions > button { flex: 1 1 180px; }
+.scope-picker { display: inline-flex; align-items: center; gap: 8px; }
+.scope-picker select { min-width: 130px; }
+#scope-warning { margin-inline: auto; }
+
+.scope-picker + #scope-warning { color: var(--warning); }
 .actions > .service-control { flex: 2 1 320px; }
 
 .stats-grid, .profile-grid { display: grid; gap: 12px; }

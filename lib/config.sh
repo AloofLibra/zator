@@ -2,6 +2,37 @@
 
 Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
+orch_scope_validate() {
+  local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" max custom_domain=0
+  printf '%s' "$scope$profile$proto$strategy" | grep -q '[[:cntrl:]]' && { echo "Lock values must not contain tabs or newlines" >&2; return 1; }
+  printf '%s' "$scope" | grep -Eq '^(default|mark:[0-9]+)$' || { echo "Invalid lock scope: $scope" >&2; return 1; }
+  # Custom-domain locks use the hostname as profile and TLS only. Домен
+  # попадает в лист глобально, а стратегия для него может быть закреплена
+  # за любым client scope (per-mark файл).
+  if printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
+    custom_domain=1
+    case "$strategy:$proto" in
+      auto:*|clear:*) ;;
+      *:tls) ;;
+      *) echo "Protocol $proto is not valid for custom domain $profile" >&2; return 1 ;;
+    esac
+  else
+    [ -n "$(config_profile_proto_list "$profile")" ] || { echo "Invalid lock profile: $profile" >&2; return 1; }
+    printf '%s\n' "$(config_profile_proto_list "$profile")" | tr ' ' '\n' | grep -Fxq "$proto" || { echo "Protocol $proto is not valid for profile $profile" >&2; return 1; }
+  fi
+  case "$strategy" in auto|clear|0) return 0 ;; esac
+  printf '%s' "$strategy" | grep -Eq '^[1-9][0-9]*$' || { echo "Invalid lock strategy: $strategy" >&2; return 1; }
+  if [ "$custom_domain" -eq 1 ]; then
+    # Custom-domain probing uses the TCP_Custom/profile-3 strategy range.
+    max="$(config_profile_max_strategy 3 "${CONFIG_FILE:-}")"
+  else
+    max="$(config_profile_max_strategy "$profile" "${CONFIG_FILE:-}")"
+  fi
+  if [ "$max" -gt 0 ] 2>/dev/null; then
+    [ "$strategy" -le "$max" ] 2>/dev/null || { echo "Strategy $strategy is outside profile $profile range" >&2; return 1; }
+  fi
+}
+
 config_get_file() {
   if [ -n "$1" ] && [ -f "$1" ]; then
     echo "$1"
@@ -50,6 +81,58 @@ config_set_var() {
   else
     printf '%s=%s\n' "$var" "$val" >> "$cfg"
   fi
+}
+
+# Parse a non-negative decimal or hexadecimal config number without eval.
+config_client_scope_num() {
+  local value="$1" digits
+  case "$value" in
+    0x[0-9a-fA-F]*|0X[0-9a-fA-F]*) printf '%u\n' "$((value))" 2>/dev/null ;;
+    ''|*[!0-9]*) return 1 ;;
+    *)
+      digits="$(printf '%s' "$value" | sed 's/^0*//')"
+      [ -n "$digits" ] || digits=0
+      printf '%u\n' "$((digits))" 2>/dev/null
+      ;;
+  esac
+}
+
+# Ensure optional client-mark settings exist in fresh and legacy configs.
+# Invalid or conflicting masks are disabled so nfqws2 keeps the safe no-op path.
+config_client_scope_ensure() {
+  local cfg="$1" enable mask shift max desync_mark desync_postnat
+  local mask_n shift_n max_n desync_mark_n desync_postnat_n
+  [ -f "$cfg" ] || return 1
+  config_var_exists "$cfg" CLIENT_SCOPE_ENABLE || printf '%s\n' 'CLIENT_SCOPE_ENABLE=0' >> "$cfg"
+  config_var_exists "$cfg" CLIENT_SCOPE_MARK_MASK || printf '%s\n' 'CLIENT_SCOPE_MARK_MASK=' >> "$cfg"
+  config_var_exists "$cfg" CLIENT_SCOPE_MARK_SHIFT || printf '%s\n' 'CLIENT_SCOPE_MARK_SHIFT=0' >> "$cfg"
+  config_var_exists "$cfg" CLIENT_SCOPE_MARK_MAX || printf '%s\n' 'CLIENT_SCOPE_MARK_MAX=255' >> "$cfg"
+  enable="$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE)"; mask="$(config_get_var "$cfg" CLIENT_SCOPE_MARK_MASK)"
+  shift="$(config_get_var "$cfg" CLIENT_SCOPE_MARK_SHIFT)"; max="$(config_get_var "$cfg" CLIENT_SCOPE_MARK_MAX)"
+  [ "$enable" = 0 ] && [ -z "$mask" ] && return 0
+  case "$enable" in 0|1) ;; *) config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0;; esac
+  mask_n="$(config_client_scope_num "$mask")" || { config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0; }
+  shift_n="$(config_client_scope_num "$shift")" || { config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0; }
+  max_n="$(config_client_scope_num "$max")" || { config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0; return 0; }
+  desync_mark="$(config_get_var "$cfg" DESYNC_MARK)"
+  desync_postnat="$(config_get_var "$cfg" DESYNC_MARK_POSTNAT)"
+  desync_mark_n="$(config_client_scope_num "$desync_mark")" || desync_mark_n=0
+  desync_postnat_n="$(config_client_scope_num "$desync_postnat")" || desync_postnat_n=0
+  if [ "$shift_n" -gt 31 ] || [ "$max_n" -gt 255 ] ||
+     [ $((mask_n & desync_mark_n)) -ne 0 ] ||
+     [ $((mask_n & desync_postnat_n)) -ne 0 ]; then
+    config_set_var "$cfg" CLIENT_SCOPE_ENABLE 0
+  fi
+}
+
+config_client_scope_apply() {
+  local old_cfg="$1" new_cfg="$2" v
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+  for v in ENABLE MARK_MASK MARK_SHIFT MARK_MAX; do
+    config_var_exists "$old_cfg" "CLIENT_SCOPE_$v" || continue
+    config_set_var "$new_cfg" "CLIENT_SCOPE_$v" "$(config_get_var "$old_cfg" "CLIENT_SCOPE_$v")"
+  done
+  config_client_scope_ensure "$new_cfg"
 }
 
 config_sed_ereg() {
@@ -225,6 +308,95 @@ fwtype_unavailable_reason() {
   fi
 }
 
+# Client-scope firewall is isolated from zapret/policy rules. Missing backends
+# are a safe no-op so legacy installs keep working.
+client_scope_firewall_script() {
+  local backend="${CLIENT_SCOPE_FIREWALL_BACKEND:-${FWTYPE:-}}" cfg
+  if [ -z "$backend" ]; then
+    cfg="$(config_get_file 2>/dev/null || true)"
+    [ -n "$cfg" ] && backend="$(config_get_var "$cfg" FWTYPE 2>/dev/null || true)"
+  fi
+  case "${backend:-iptables}" in
+    nftables|nft) echo "${ZATOR_ROOT:-/opt/zator}/firewall/client-scope-nft.sh" ;;
+    iptables|*) echo "${ZATOR_ROOT:-/opt/zator}/firewall/client-scope-iptables.sh" ;;
+  esac
+}
+
+client_scope_firewall_action() {
+  local action="$1" script shell rc
+  [ "$action" = cleanup ] || [ "${CLIENT_SCOPE_ENABLE:-0}" = 1 ] || return 0
+  script="$(client_scope_firewall_script)"
+  [ -f "$script" ] || return 0
+  # Run in a subshell so Entware's /opt/bin PATH does not leak to the caller.
+  # CLIENT_SCOPE_ENABLE/MAP_FILE обязаны попасть в дочерний bash: без export
+  # скрипт не видит режим и молча завершается no-op (rc=0), правила не встают.
+  (
+    PATH="/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${PATH:-}"
+    export PATH
+    CLIENT_SCOPE_ENABLE="${CLIENT_SCOPE_ENABLE:-0}"
+    CLIENT_SCOPE_MAP_FILE="${CLIENT_SCOPE_MAP_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/client_scope.tsv}"
+    ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+    export CLIENT_SCOPE_ENABLE CLIENT_SCOPE_MAP_FILE ZATOR_ROOT
+    shell="$(command -v bash 2>/dev/null || true)"
+    if [ -n "$shell" ] && [ -x "$shell" ]; then
+      "$shell" "$script" "$action"
+    elif [ -x "$script" ]; then
+      "$script" "$action"
+    else
+      exit 127
+    fi
+  )
+  rc=$?
+  [ "$rc" -eq 0 ] || {
+    echo "client-scope firewall $action failed; continuing safely" >&2
+    return "$rc"
+  }
+}
+
+client_scope_lua_config_sync() {
+  local cfg="${1:-${ZAPRET2_ROOT:-/opt/zapret2}/config}" file tmp
+  local enable mask shift max desync postnat
+  [ -f "$cfg" ] || return 0
+  file="${ZATOR_ROOT:-/opt/zator}/lua/client-scope-config.lua"
+  tmp="${file}.tmp.$$"
+  enable="$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
+  [ "$enable" = 1 ] || enable=0
+  mask="$(config_client_scope_num "$(config_get_var "$cfg" CLIENT_SCOPE_MARK_MASK 2>/dev/null || true)" 2>/dev/null || printf 0)"
+  shift="$(config_client_scope_num "$(config_get_var "$cfg" CLIENT_SCOPE_MARK_SHIFT 2>/dev/null || true)" 2>/dev/null || printf 0)"
+  max="$(config_client_scope_num "$(config_get_var "$cfg" CLIENT_SCOPE_MARK_MAX 2>/dev/null || true)" 2>/dev/null || printf 255)"
+  desync="$(config_client_scope_num "$(config_get_var "$cfg" DESYNC_MARK 2>/dev/null || true)" 2>/dev/null || printf 1073741824)"
+  postnat="$(config_client_scope_num "$(config_get_var "$cfg" DESYNC_MARK_POSTNAT 2>/dev/null || true)" 2>/dev/null || printf 536870912)"
+  mkdir -p "$(dirname "$file")" || return 1
+  {
+    printf '%s\n' '-- Generated by z2r; do not edit.'
+    printf 'CLIENT_SCOPE_ENABLE=%s\n' "$enable"
+    printf 'CLIENT_SCOPE_MARK_MASK=%s\n' "$mask"
+    printf 'CLIENT_SCOPE_MARK_SHIFT=%s\n' "$shift"
+    printf 'CLIENT_SCOPE_MARK_MAX=%s\n' "$max"
+    printf 'DESYNC_MARK=%s\n' "$desync"
+    printf 'DESYNC_MARK_POSTNAT=%s\n' "$postnat"
+  } > "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
+client_scope_firewall_reconcile() {
+  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config" enabled
+  client_scope_lua_config_sync "$cfg" || return 1
+  enabled="$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
+  CLIENT_SCOPE_ENABLE="$enabled"
+  if [ "$enabled" = 1 ]; then
+    client_scope_firewall_action apply
+  else
+    client_scope_firewall_action cleanup
+  fi
+}
+
+client_scope_config_prepare() {
+  local cfg="${1:-${ZAPRET2_ROOT:-/opt/zapret2}/config}"
+  config_set_var "$cfg" CLIENT_SCOPE_MARK_MASK 0xff00 || return 1
+  config_set_var "$cfg" CLIENT_SCOPE_MARK_SHIFT 8 || return 1
+  config_set_var "$cfg" CLIENT_SCOPE_MARK_MAX 255 || return 1
+}
+
 config_mode_text() {
   local mode="$1"
   local cfg="$2"
@@ -334,6 +506,7 @@ menu_config_snapshot() {
   MENU_UDP_GAMES="Неизвестно"
   MENU_PORTS="дефолт"
   MENU_CONFIG_DATE="Неизвестно"
+  MENU_CLIENT_SCOPE="выключен"
   MENU_PROFILE_MAX_1=0
   MENU_PROFILE_MAX_2=0
   MENU_PROFILE_MAX_3=0
@@ -558,6 +731,9 @@ menu_config_snapshot() {
   if [ -n "$ports" ]; then
     MENU_PORTS="$ports"
   fi
+  if [ "$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)" = "1" ]; then
+    MENU_CLIENT_SCOPE="включен"
+  fi
   return 0
 }
 
@@ -752,6 +928,92 @@ config_profile_proto_list() {
   esac
 }
 
+# Человекочитаемое имя профиля для меню и WebUI.
+config_profile_title() {
+  case "$1" in
+    1) echo "TCP 443 (YouTube)" ;;
+    2) echo "TCP 443 (Googlevideo)" ;;
+    3) echo "TCP 443 (RKN)" ;;
+    4) echo "TCP 443 (Discord)" ;;
+    5) echo "UDP 443 (QUIC)" ;;
+    6) echo "UDP Voice (Discord/STUN)" ;;
+    7) echo "UDP Games (1026-65531)" ;;
+    8) echo "Fallback TLS" ;;
+    9) echo "Fallback HTTP" ;;
+    *) echo "Профиль $1" ;;
+  esac
+}
+
+# Централизованный setter режима Client scopes (CLI + будущий WebUI).
+# $1 = 0|1. Обновляет config, Lua-глобалы и firewall; перезапускает работающий
+# демон, т.к. client-scope-config.lua загружается однократно при старте nfqws2
+# через --lua-init и без рестарта новые глобалы не вступят в силу.
+client_scope_mode_set() {
+  local want="$1" cfg backup rc was_running=0
+  cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg" ] || { echo "Не найден config: $cfg" >&2; return 1; }
+  if [ "$want" = 1 ]; then
+    [ -n "$(client_scope_ip_list 2>/dev/null)" ] || { echo "Нельзя включить Client scopes: нет IP-маппингов" >&2; return 1; }
+  elif [ "$want" != 0 ]; then
+    echo "Некорректное состояние Client scopes: $want" >&2
+    return 2
+  fi
+
+  backup="${cfg}.client-scope.$$"
+  cp "$cfg" "$backup" || return 1
+  if [ -n "${ZAPRET2_INIT:-}" ] && zapret2_running; then
+    was_running=1
+  fi
+
+  if config_set_var "$cfg" CLIENT_SCOPE_ENABLE "$want"; then :; else
+    rc=$?
+    mv -f "$backup" "$cfg" 2>/dev/null || true
+    return "$rc"
+  fi
+  if [ "$want" = 1 ]; then
+    if client_scope_config_prepare "$cfg"; then :; else
+      rc=$?
+      _client_scope_mode_rollback "$cfg" "$backup" 0 || true
+      return "$rc"
+    fi
+  fi
+  if client_scope_firewall_reconcile; then :; else
+    rc=$?
+    _client_scope_mode_rollback "$cfg" "$backup" 0 || true
+    return "$rc"
+  fi
+  if client_scope_daemon_reload "$was_running"; then :; else
+    rc=$?
+    _client_scope_mode_rollback "$cfg" "$backup" "$was_running" || true
+    return "$rc"
+  fi
+
+  rm -f "$backup" 2>/dev/null || true
+  return 0
+}
+
+# Best-effort откат config + производных Lua/firewall/daemon после сбоя setter'а.
+_client_scope_mode_rollback() {
+  local cfg="$1" backup="$2" was_running="${3:-0}"
+  if ! mv -f "$backup" "$cfg"; then
+    echo "Не удалось восстановить config после ошибки Client scopes" >&2
+    return 1
+  fi
+  client_scope_firewall_reconcile || true
+  [ "$was_running" = 1 ] && client_scope_daemon_reload 1 || true
+  return 0
+}
+
+# client-scope-config.lua загружается однократно при старте nfqws2 (--lua-init),
+# поэтому работающему демону нужен рестарт, чтобы увидеть новые глобалы.
+# $1=1 принудительно выполняет restart (для восстановления после неудачного restart).
+client_scope_daemon_reload() {
+  local force="${1:-0}"
+  [ -n "${ZAPRET2_INIT:-}" ] || return 0
+  [ "$force" = 1 ] || zapret2_running || return 0
+  z2r_service_action restart
+}
+
 csv_contains_token() {
   local csv="$1"
   local token="$2"
@@ -854,7 +1116,7 @@ profile_config_orch_set() {
   if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
     ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
   fi
-  orch_locked_set "$profile" "$proto" "$strategy" || rc=$?
+  orch_scoped_locked_set default "$profile" "$proto" "$strategy" || rc=$?
   ORCH_LOCK_FILE="$saved_lock_file"
   return "$rc"
 }
@@ -868,7 +1130,7 @@ profile_config_orch_clear() {
   if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
     ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
   fi
-  orch_locked_clear "$profile" "$proto" || rc=$?
+  orch_scoped_locked_clear default "$profile" "$proto" || rc=$?
   ORCH_LOCK_FILE="$saved_lock_file"
   return "$rc"
 }
@@ -928,6 +1190,20 @@ profile_state_set_and_apply() {
   normalized="$(profile_state_normalize "$state")" || return 1
   [ -n "$proto_list" ] || proto_list="$(config_profile_proto_list "$profile")"
   [ -n "$proto_list" ] || return 1
+
+  if [ "${ORCH_ACTIVE_SCOPE:-default}" != default ]; then
+    # Контекст mark'и (client scopes): фиксируем только per-mark лок.
+    # Глобальный profile state и config не трогаем — они описывают default-скоп.
+    # Рестарт не нужен: nfqws2 перечитывает локы TTL-перечитыванием.
+    for proto in $proto_list; do
+      if [ "$normalized" = "auto" ]; then
+        orch_scoped_locked_clear "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" || return 1
+      else
+        orch_scoped_locked_set "$ORCH_ACTIVE_SCOPE" "$profile" "$proto" "$normalized" || return 1
+      fi
+    done
+    return 0
+  fi
 
   for proto in $proto_list; do
     if [ "$normalized" = "auto" ]; then
