@@ -648,7 +648,7 @@ fi
 [ "$(grep -c 'profile_check_json' webui/cgi-bin/_lib.sh)" = "2" ]   || fail "сценарий 16: profile_check_json должен зваться только из api_check (без инлайна в set-lock)"
 grep -q 'PARAM_PROFILE.*\[\[\|\[\[ "\${PARAM_PROFILE' webui/cgi-bin/_lib.sh   || grep -q 'api_check' webui/cgi-bin/_lib.sh || true
 grep -q '2>/dev/null </dev/null &' lib/netcheck.sh   || fail "сценарий 16: фоновые пробы не отсоединены от CGI stdio"
-grep -q "body: new URLSearchParams({ profile: profile.profile })" webui/app.js   || fail "сценарий 16: app.js не дергает проверку после set-lock"
+grep -q "body: new URLSearchParams({ profile: profile.profile" webui/app.js   || fail "сценарий 16: app.js не дергает проверку после set-lock"
 [ "$(grep -c "check.cgi" webui/app.js)" -ge 2 ]   || fail "сценарий 16: check.cgi должен вызываться и из кнопки, и после set-lock"
 [ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "2" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
 printf '%s' "$lib_sh" | grep -q '^    check)' || fail "сценарий 16: нет действия check в domains"

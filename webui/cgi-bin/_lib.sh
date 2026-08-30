@@ -85,6 +85,7 @@ parse_params() {
   PARAM_NAME=""
   PARAM_CITY=""
   PARAM_PROTO=""
+  PARAM_SCOPE="default"
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
@@ -102,6 +103,7 @@ parse_params() {
       name) PARAM_NAME="$value" ;;
       city) PARAM_CITY="$value" ;;
       proto) PARAM_PROTO="$value" ;;
+      scope) PARAM_SCOPE="${value:-default}" ;;
     esac
   done
 }
@@ -128,13 +130,33 @@ profile_proto() {
   echo "${list%% *}"
 }
 
+# Resolve the selected client scope, falling back to the legacy default state.
+profile_scoped_state_display() {
+  local scope="$1" profile="$2" proto="$3" source scoped
+  if [ "${scope:-default}" = default ]; then
+    profile_state_display "$profile" "$proto"
+    return
+  fi
+  source="$(orch_scoped_lock_source "$scope" "$profile" "$proto" 2>/dev/null || printf auto)"
+  case "$source" in
+    scoped)
+      scoped="$(orch_scoped_locked_get "$scope" "$profile" "$proto" 2>/dev/null || printf 0)"
+      profile_state_normalize "$scoped" 2>/dev/null || printf auto
+      ;;
+    conflict) printf 'conflict\n' ;;
+    *) profile_state_display "$profile" "$proto" ;;
+  esac
+}
+
 profile_json() {
-  local id="$1" label="$2" desc="$3" proto current max
+  local id="$1" label="$2" desc="$3" proto current max scope source
+  scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  current="$(profile_state_display "$id" "$proto")"
+  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
   max="$(orch_max_strategy_for_profile "$id")"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s}' \
-    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}"
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s"}' \
+    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" "$(json_escape "$scope")" "$(json_escape "$source")"
 }
 
 all_profiles_json() {
@@ -160,31 +182,35 @@ all_profiles_json() {
 }
 
 profile_json_udp_games() {
-  local id="$1" label="$2" desc="$3" proto current max games_state
+  local id="$1" label="$2" desc="$3" proto current max games_state scope source
+  scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  current="$(profile_state_display "$id" "$proto")"
+  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
   max="$(orch_max_strategy_for_profile "$id")"
   games_state="$(config_mode_text udp_games "$CONFIG_FILE")"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"is_udp_games":true,"udp_games_enabled":%s}' \
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_udp_games":true,"udp_games_enabled":%s}' \
     "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
-    "$([ "$games_state" = "Включен" ] && echo true || echo false)"
+    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$games_state" = "Включен" ] && echo true || echo false)"
 }
 
 profile_json_fallback() {
-  local id="$1" label="$2" desc="$3" proto current max fallback_state
+  local id="$1" label="$2" desc="$3" proto current max fallback_state scope source
   local saved_lock_file
+  scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
   # Для профилей 8/9 (fallback) состояние стратегии хранится в locked.manual.tsv,
   # а не в locked.tsv. Временно переключаем ORCH_LOCK_FILE для чтения.
   saved_lock_file="$ORCH_LOCK_FILE"
   ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
-  current="$(profile_state_display "$id" "$proto")"
+  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
   ORCH_LOCK_FILE="$saved_lock_file"
   max="$(orch_max_strategy_for_profile "$id")"
   fallback_state="$(_fallback_state "$CONFIG_FILE")"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"is_fallback":true,"fallback_enabled":%s}' \
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_fallback":true,"fallback_enabled":%s}' \
     "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
-    "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
+    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
 }
 
 service_zapret2() {
@@ -297,7 +323,108 @@ _provider_cache_text() {
   fi
 }
 
+_client_scope_diagnostics_state() {
+  local enabled mask shift max desync postnat mask_n shift_n max_n desync_n postnat_n mode reason
+  local mask_json shift_json max_json scoped_count conflicts file manual_file
+  enabled="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)"
+  mask="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_MARK_MASK 2>/dev/null || true)"
+  shift="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_MARK_SHIFT 2>/dev/null || printf 0)"
+  max="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_MARK_MAX 2>/dev/null || printf 255)"
+  desync="$(config_get_var "$CONFIG_FILE" DESYNC_MARK 2>/dev/null || printf 0x40000000)"
+  postnat="$(config_get_var "$CONFIG_FILE" DESYNC_MARK_POSTNAT 2>/dev/null || printf 0x20000000)"
+  mask_json=0; shift_json=0; max_json=0
+  mode=disabled; reason=disabled
+  if [ "$enabled" = 1 ]; then
+    if [ -z "$mask" ]; then
+      reason=missing-mask
+    elif mask_n="$(config_client_scope_num "$mask" 2>/dev/null)"; then
+      mask_json="$mask_n"
+      shift_n="$(config_client_scope_num "$shift" 2>/dev/null || true)"
+      max_n="$(config_client_scope_num "$max" 2>/dev/null || true)"
+      [ -n "$shift_n" ] && shift_json="$shift_n"
+      [ -n "$max_n" ] && max_json="$max_n"
+      if [ -n "$shift_n" ] && [ -n "$max_n" ] &&
+         desync_n="$(config_client_scope_num "$desync" 2>/dev/null)" &&
+         postnat_n="$(config_client_scope_num "$postnat" 2>/dev/null)" &&
+         [ "$mask_n" -gt 0 ] && [ "$shift_n" -le 31 ] && [ "$max_n" -gt 0 ] &&
+         [ "$max_n" -le 255 ] && [ $((mask_n % (2 ** shift_n))) -eq 0 ]; then
+        if [ $((mask_n & desync_n)) -ne 0 ] || [ $((mask_n & postnat_n)) -ne 0 ]; then
+          reason=mask-conflict
+        else
+          mode=mark; reason=no-scoped-lock
+        fi
+      else
+        reason=invalid-mask
+      fi
+    else
+      reason=invalid-mask
+    fi
+  elif mask_n="$(config_client_scope_num "$mask" 2>/dev/null)" &&
+       shift_n="$(config_client_scope_num "$shift" 2>/dev/null)" &&
+       max_n="$(config_client_scope_num "$max" 2>/dev/null)"; then
+    mask_json="$mask_n"; shift_json="$shift_n"; max_json="$max_n"
+  fi
+  file="$ORCH_DIR/locked.tsv"; manual_file="$ORCH_DIR/locked.manual.tsv"
+  scoped_count="$(awk -F '\t' '$1 ~ /^mark:[0-9]+$/ && NF >= 4 {n++} END {print n+0}' "$file" "$manual_file" 2>/dev/null)"
+  conflicts="$(awk -F '\t' '$1 ~ /^mark:[0-9]+$/ && NF >= 4 {key=$1 SUBSEP $2 SUBSEP $3; seen[key SUBSEP $4]=1} END {for (item in seen) {split(item, fields, SUBSEP); keys[fields[1] SUBSEP fields[2] SUBSEP fields[3]]++} for (key in keys) if (keys[key] > 1) n++} END {print n+0}' "$file" "$manual_file" 2>/dev/null)"
+  printf '%s|%s|%s|%s|%s|%s|%s\n' \
+    "$mode" "$mask_json" "$shift_json" "$max_json" "${scoped_count:-0}" "${conflicts:-0}" "$reason"
+}
+
+_client_scope_diagnostics_json_from_state() {
+  local state="$1" mode mask_json shift_json max_json scoped_count conflicts reason
+  IFS='|' read -r mode mask_json shift_json max_json scoped_count conflicts reason <<< "$state"
+  printf '{"mode":"%s","mask":%s,"shift":%s,"max_scope":%s,"scoped_lock_count":%s,"conflicts":%s,"last_seen_scope":"unavailable","fallback_reason":"%s"}' \
+    "$mode" "$mask_json" "$shift_json" "$max_json" "$scoped_count" "$conflicts" "$reason"
+}
+
+client_scope_diagnostics_json() {
+  local state
+  state="$(_client_scope_diagnostics_state)"
+  _client_scope_diagnostics_json_from_state "$state"
+}
+
+client_scopes_json() {
+  local scopes scope first=1 enabled warning diagnostics diagnostic_state
+  local mode mask_json shift_json max_json scoped_count conflicts reason
+  scopes="$(orch_scoped_list_scopes 2>/dev/null | sort -u)"
+  diagnostic_state="$(_client_scope_diagnostics_state)"
+  IFS='|' read -r mode mask_json shift_json max_json scoped_count conflicts reason <<< "$diagnostic_state"
+  diagnostics="$(_client_scope_diagnostics_json_from_state "$diagnostic_state")"
+  enabled=false; warning=""
+  [ "$mode" = mark ] && enabled=true
+  case "$reason" in
+    missing-mask) warning="Client scope включён, но firewall mapping не задан." ;;
+    mask-conflict) warning="Маска client scope пересекается со служебной mark-маской; включён безопасный fallback." ;;
+    invalid-mask) warning="Маска client scope некорректна; включён безопасный fallback." ;;
+  esac
+  printf '{"enabled":%s,"warning":"%s","scopes":[' "$enabled" "$(json_escape "$warning")"
+  while IFS= read -r scope; do
+    [ -n "$scope" ] || continue
+    [ "$first" = 1 ] || printf ','
+    printf '"%s"' "$(json_escape "$scope")"
+    first=0
+  done <<< "$scopes"
+  printf '],"diagnostics":%s}' "$diagnostics"
+}
+
+scope_param_valid() {
+  case "${1:-default}" in
+    default) return 0 ;;
+    mark:*) [[ "${1#mark:}" =~ ^[0-9]+$ ]] && return 0 ;;
+  esac
+  return 1
+}
+
+api_scopes() {
+  parse_params
+  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
+  send_json "200 OK" "$(client_scopes_json)"
+}
+
 api_status() {
+  parse_params
+  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
   local running wg_raw wg_state
   if zapret2_running; then running=true; else running=false; fi
   wg_raw="$(_wg_state_get "$CONFIG_FILE")"
@@ -307,7 +434,7 @@ api_status() {
     *) wg_state="недоступно" ;;
   esac
   send_json "200 OK" "$(cat <<EOF
-{"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","auto_mode":"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")","rst_guard":"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")","reasm":"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")","quic443":"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")","provider":"$(json_escape "$(_provider_cache_text)")","profiles":$(all_profiles_json)}
+{"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","auto_mode":"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")","rst_guard":"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")","reasm":"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")","quic443":"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")","provider":"$(json_escape "$(_provider_cache_text)")","client_scope":$(client_scope_diagnostics_json),"profiles":$(all_profiles_json)}
 EOF
 )"
 }
@@ -316,6 +443,8 @@ api_set_lock() {
   parse_params
   [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   [[ "${PARAM_STRATEGY:-}" =~ ^[0-9]+$ ]] || send_error "400 Bad Request" "Некорректная стратегия"
+  local requested_scope="${PARAM_SCOPE:-default}"
+  orch_scope_validate "$requested_scope" "$PARAM_PROFILE" "$(profile_proto "$PARAM_PROFILE")" "$PARAM_STRATEGY" || send_error "400 Bad Request" "Некорректный scope или lock"
   case "$PARAM_PROFILE" in
     1|2|3|4)
       [ "$(config_mode_text auto_mode "$CONFIG_FILE")" = "включен" ] && \
@@ -330,7 +459,11 @@ api_set_lock() {
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
   old_udp_ports="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_UDP)"
-  profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$PARAM_STRATEGY" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
+  if [ "$requested_scope" = default ]; then
+    profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "$PARAM_STRATEGY" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сохранить состояние профиля"
+  else
+    orch_scoped_locked_set "$requested_scope" "$PARAM_PROFILE" "${proto_list%% *}" "$PARAM_STRATEGY" || send_error "500 Internal Server Error" "Не удалось сохранить scoped lock"
+  fi
   profile_config_voice_ports_changed "$PARAM_PROFILE" "$CONFIG_FILE" "$old_udp_ports" && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
   send_json "200 OK" "{\"ok\":true}"
@@ -345,11 +478,16 @@ api_clear_lock() {
         send_error "409 Conflict" "Профиль $PARAM_PROFILE управляется авторотацией TCP/HTTP. Сначала выключите авторотацию."
       ;;
   esac
-  local proto_list old_udp_ports
+  local requested_scope="${PARAM_SCOPE:-default}" proto_list old_udp_ports
+  orch_scope_validate "$requested_scope" "$PARAM_PROFILE" "$(profile_proto "$PARAM_PROFILE")" clear || send_error "400 Bad Request" "Некорректный scope"
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
   old_udp_ports="$(config_get_var "$CONFIG_FILE" NFQWS2_PORTS_UDP)"
-  profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "auto" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сбросить состояние профиля"
+  if [ "$requested_scope" = default ]; then
+    profile_state_set_and_apply "$PARAM_PROFILE" "$proto_list" "auto" "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не удалось сбросить состояние профиля"
+  else
+    orch_scoped_locked_clear "$requested_scope" "$PARAM_PROFILE" "${proto_list%% *}" || send_error "500 Internal Server Error" "Не удалось сбросить scoped lock"
+  fi
   profile_config_voice_ports_changed "$PARAM_PROFILE" "$CONFIG_FILE" "$old_udp_ports" && service_zapret2 restart >/dev/null 2>&1 || true
   telemetry_notify
   send_json "200 OK" "{\"ok\":true}"

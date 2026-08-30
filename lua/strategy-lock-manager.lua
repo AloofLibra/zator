@@ -108,7 +108,7 @@ end
 --- @param hostname string The hostname to check
 --- @param strategy number The strategy number to check
 --- @return boolean True if strategy is blocked for this hostname
-function slm_is_blocked(askey, hostname, strategy)
+function slm_is_blocked(askey, hostname, strategy, scope)
     if not BLOCKED_STRATEGIES then return false end
     if not hostname or not strategy then return false end
 
@@ -120,6 +120,9 @@ function slm_is_blocked(askey, hostname, strategy)
 
     -- Check two-level structure first: BLOCKED_STRATEGIES[askey][hostname]
     local as_blocked = BLOCKED_STRATEGIES[askey]
+    if scope and scope ~= "default" and as_blocked and type(as_blocked) == "table" then
+        as_blocked = as_blocked[tostring(scope)]
+    end
     if as_blocked and type(as_blocked) == "table" then
         -- Check exact match
         local blocked = as_blocked[key]
@@ -409,8 +412,9 @@ end
 -- Отслеживает успешность стратегий и лочит лучшую
 -- Логика адаптирована из combined-detector.lua
 
--- Global table for strategy quality scores (per askey, per host key)
--- Two-level structure: SLM_QUALITY[askey][hostkey] = quality record
+-- Global table for strategy quality scores (per askey, per scope, per host key).
+-- Legacy callers still use SLM_QUALITY[askey][hostkey] for the default scope;
+-- scoped callers use SLM_QUALITY[askey][scope][hostkey].
 -- askey: "tls", "http", "quic", "discord", "wireguard", "mtproto", "dns", "stun", or "default"
 SLM_QUALITY = SLM_QUALITY or {}
 
@@ -418,15 +422,26 @@ SLM_QUALITY = SLM_QUALITY or {}
 -- @param askey string Ключ autostate (tls, http, quic, etc.) - optional, defaults to "default"
 -- @param hostkey string Нормализованный ключ хоста
 -- @return table Quality record
-local function slm_get_quality_record(askey, hostkey)
+local function slm_scope_key(scope)
+    if scope == nil or scope == "" then return "default" end
+    return tostring(scope)
+end
+
+local function slm_get_quality_record(askey, hostkey, scope)
     askey = askey or "default"
+    scope = slm_scope_key(scope)
 
     if not SLM_QUALITY[askey] then
         SLM_QUALITY[askey] = {}
     end
 
-    if not SLM_QUALITY[askey][hostkey] then
-        SLM_QUALITY[askey][hostkey] = {
+    local bucket = SLM_QUALITY[askey]
+    if scope ~= "default" then
+        bucket[scope] = bucket[scope] or {}
+        bucket = bucket[scope]
+    end
+    if not bucket[hostkey] then
+        bucket[hostkey] = {
             strategy_successes = {},  -- strategy_id -> success count
             strategy_tests = {},      -- strategy_id -> total test count
             total_tests = 0,
@@ -435,7 +450,15 @@ local function slm_get_quality_record(askey, hostkey)
             is_user_lock = false      -- true if user manually locked this strategy
         }
     end
-    return SLM_QUALITY[askey][hostkey]
+    return bucket[hostkey]
+end
+
+local function slm_get_quality_bucket(askey, scope)
+    local bucket = SLM_QUALITY[askey]
+    if not bucket then return nil end
+    scope = slm_scope_key(scope)
+    if scope ~= "default" then return bucket[scope] end
+    return bucket
 end
 
 -- Serializes the whole SLM_AUTO_LOCKED table to `path`. Returns true on
@@ -443,11 +466,19 @@ end
 local function slm_write_auto_locked_to(path)
     local f = io.open(path, "w")
     if not f then return false end
-    for askey, hosts in pairs(SLM_AUTO_LOCKED) do
-        if type(hosts) == "table" then
-            for host, strat in pairs(hosts) do
-                if type(strat) == "number" then
-                    f:write(askey, "\t", host, "\t", tostring(strat), "\n")
+    for askey, scopes in pairs(SLM_AUTO_LOCKED) do
+        if type(scopes) == "table" then
+            for scope, hosts in pairs(scopes) do
+                if type(hosts) == "table" then
+                    for host, strat in pairs(hosts) do
+                        if type(strat) == "number" then
+                            if scope == "default" then
+                                f:write(askey, "\t", host, "\t", tostring(strat), "\n")
+                            else
+                                f:write(askey, "\t", scope, "\t", host, "\t", tostring(strat), "\n")
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -490,19 +521,21 @@ local function slm_save_auto_locked()
     end
 end
 
-local function slm_set_auto_locked(askey, hostkey, strategy_id)
+local function slm_set_auto_locked(askey, hostkey, strategy_id, scope)
     if not askey or not hostkey or not strategy_id then return end
+    scope = slm_scope_key(scope)
     if not SLM_AUTO_LOCKED[askey] then
         SLM_AUTO_LOCKED[askey] = {}
     end
-    if SLM_AUTO_LOCKED[askey][hostkey] == strategy_id then return end
-    SLM_AUTO_LOCKED[askey][hostkey] = strategy_id
+    SLM_AUTO_LOCKED[askey][scope] = SLM_AUTO_LOCKED[askey][scope] or {}
+    if SLM_AUTO_LOCKED[askey][scope][hostkey] == strategy_id then return end
+    SLM_AUTO_LOCKED[askey][scope][hostkey] = strategy_id
     slm_save_auto_locked()
 end
 
-local function slm_clear_auto_locked(askey, hostkey)
+local function slm_clear_auto_locked(askey, hostkey, scope)
     if not askey or not hostkey then return end
-    local hosts = SLM_AUTO_LOCKED[askey]
+    local hosts = SLM_AUTO_LOCKED[askey] and SLM_AUTO_LOCKED[askey][slm_scope_key(scope)]
     if hosts and hosts[hostkey] then
         hosts[hostkey] = nil
         slm_save_auto_locked()
@@ -511,20 +544,20 @@ end
 
 --- Commits an automatic lock and persists it in auto_locked.tsv.
 --- Unlike slm_set_locked, this never creates a user/manual lock.
-function slm_commit_auto_lock(askey, hostkey, strategy_id, reason)
+function slm_commit_auto_lock(askey, hostkey, strategy_id, reason, scope)
     if not hostkey or not strategy_id then return false end
     askey = askey or "default"
 
     local key = slm_normalize_hostkey(hostkey)
-    if not key or slm_is_blocked(askey, key, strategy_id) then return false end
+    if not key or slm_is_blocked(askey, key, strategy_id, scope) then return false end
 
-    local qrec = slm_get_quality_record(askey, key)
+    local qrec = slm_get_quality_record(askey, key, scope)
     if qrec.is_user_lock then return false end
 
     qrec.locked_strategy = strategy_id
     qrec.lock_reason = reason or "auto"
     qrec.is_user_lock = false
-    slm_set_auto_locked(askey, key, strategy_id)
+    slm_set_auto_locked(askey, key, strategy_id, scope)
     if DLOG then
         DLOG("slm_commit_auto_lock: [" .. askey .. "] " .. key .. " -> strat=" .. strategy_id ..
              " reason=" .. qrec.lock_reason)
@@ -537,7 +570,7 @@ end
 --- @param hostkey string Имя хоста (будет нормализовано)
 --- @param strategy_id number ID стратегии
 --- @param success boolean Успех или провал
-function slm_record_result(askey, hostkey, strategy_id, success)
+function slm_record_result(askey, hostkey, strategy_id, success, scope)
     if not hostkey or not strategy_id then return end
 
     -- Нормализуем askey
@@ -547,7 +580,7 @@ function slm_record_result(askey, hostkey, strategy_id, success)
     local key = slm_normalize_hostkey(hostkey)
     if not key then return end
 
-    local qrec = slm_get_quality_record(askey, key)
+    local qrec = slm_get_quality_record(askey, key, scope)
 
     -- Initialize counters for this strategy
     if not qrec.strategy_successes[strategy_id] then
@@ -579,7 +612,7 @@ end
 --- @return number|nil best_id Лучшая стратегия или nil
 --- @return number successes Количество успехов
 --- @return number tests Количество тестов
-function slm_get_best(askey, hostkey, skip_strategy)
+function slm_get_best(askey, hostkey, skip_strategy, scope)
     if not hostkey then return nil, 0, 0 end
 
     -- Нормализуем askey
@@ -589,7 +622,7 @@ function slm_get_best(askey, hostkey, skip_strategy)
     local key = slm_normalize_hostkey(hostkey)
     if not key then return nil, 0, 0 end
 
-    local as_table = SLM_QUALITY[askey]
+    local as_table = slm_get_quality_bucket(askey, scope)
     if not as_table then return nil, 0, 0 end
 
     local qrec = as_table[key]
@@ -618,7 +651,7 @@ function slm_get_best(askey, hostkey, skip_strategy)
                 DLOG("slm_get_best: skipping strategy " .. strat_id .. " (pass)")
             end
         -- Skip blocked strategies using slm_is_blocked
-        elseif slm_is_blocked(askey, key, strat_id) then
+        elseif slm_is_blocked(askey, key, strat_id, scope) then
             if DLOG then
                 DLOG("slm_get_best: skipping strategy " .. strat_id .. " (blocked for [" .. askey .. "] " .. key .. ")")
             end
@@ -645,7 +678,7 @@ end
 --- @param desync_arg table|nil Параметры: lock_successes, lock_tests, lock_rate, skip_strategy
 --- @return boolean should_lock Нужно ли лочить
 --- @return number|nil strategy_id ID стратегии для лока
-function slm_should_lock(askey, hostkey, desync_arg)
+function slm_should_lock(askey, hostkey, desync_arg, scope)
     if not hostkey then return false, nil end
 
     -- Нормализуем askey
@@ -655,7 +688,7 @@ function slm_should_lock(askey, hostkey, desync_arg)
     local key = slm_normalize_hostkey(hostkey)
     if not key then return false, nil end
 
-    local as_table = SLM_QUALITY[askey]
+    local as_table = slm_get_quality_bucket(askey, scope)
     if not as_table then return false, nil end
 
     local qrec = as_table[key]
@@ -664,7 +697,7 @@ function slm_should_lock(askey, hostkey, desync_arg)
     -- Already locked? Check if still valid (not blocked)
     if qrec.locked_strategy then
         -- If locked strategy is now blocked, unlock and find new one
-        if slm_is_blocked(askey, key, qrec.locked_strategy) then
+        if slm_is_blocked(askey, key, qrec.locked_strategy, scope) then
             if DLOG then
                 DLOG("slm_quality: UNLOCK [" .. askey .. "] " .. key .. " strat=" .. qrec.locked_strategy .. " (now blocked)")
             end
@@ -687,7 +720,7 @@ function slm_should_lock(askey, hostkey, desync_arg)
     end
 
     -- Find best strategy (excluding skip_strategy and blocked strategies)
-    local best_id, best_successes, best_tests = slm_get_best(askey, hostkey, skip_strategy)
+    local best_id, best_successes, best_tests = slm_get_best(askey, hostkey, skip_strategy, scope)
 
     if not best_id then
         return false, nil
@@ -713,7 +746,7 @@ function slm_should_lock(askey, hostkey, desync_arg)
         if desync_arg and desync_arg.validator then
             return true, best_id
         end
-        if slm_commit_auto_lock(askey, key, best_id, reason) then
+        if slm_commit_auto_lock(askey, key, best_id, reason, scope) then
             return true, best_id
         end
     end
@@ -725,7 +758,7 @@ end
 --- @param askey string Ключ autostate (tls, http, quic, etc.) - optional, defaults to "default"
 --- @param hostkey string Имя хоста (будет нормализовано)
 --- @return number|nil strategy_id Залоченная стратегия или nil
-function slm_get_locked(askey, hostkey)
+function slm_get_locked(askey, hostkey, scope)
     if not hostkey then return nil end
 
     -- Нормализуем askey
@@ -735,7 +768,7 @@ function slm_get_locked(askey, hostkey)
     local key = slm_normalize_hostkey(hostkey)
     if not key then return nil end
 
-    local as_table = SLM_QUALITY[askey]
+    local as_table = slm_get_quality_bucket(askey, scope)
     if not as_table then return nil end
 
     local qrec = as_table[key]
@@ -749,7 +782,7 @@ end
 --- @param askey string Ключ autostate (tls, http, quic, etc.) - optional, defaults to "default"
 --- @param hostkey string Имя хоста (будет нормализовано)
 --- @return boolean True если это user lock
-function slm_is_user_lock(askey, hostkey)
+function slm_is_user_lock(askey, hostkey, scope)
     if not hostkey then return false end
 
     -- Нормализуем askey
@@ -759,7 +792,7 @@ function slm_is_user_lock(askey, hostkey)
     local key = slm_normalize_hostkey(hostkey)
     if not key then return false end
 
-    local as_table = SLM_QUALITY[askey]
+    local as_table = slm_get_quality_bucket(askey, scope)
     if not as_table then return false end
 
     local qrec = as_table[key]
@@ -772,7 +805,7 @@ end
 --- @param strategy_id number ID стратегии
 --- @param reason string|nil Причина лока
 --- @return boolean Успех установки лока
-function slm_set_locked(askey, hostkey, strategy_id, reason)
+function slm_set_locked(askey, hostkey, strategy_id, reason, scope)
     if not hostkey or not strategy_id then return false end
 
     -- Нормализуем askey
@@ -783,16 +816,17 @@ function slm_set_locked(askey, hostkey, strategy_id, reason)
     if not key then return false end
 
     -- Проверка что стратегия не заблокирована
-    if slm_is_blocked(askey, key, strategy_id) then
+    if slm_is_blocked(askey, key, strategy_id, scope) then
         if DLOG then
             DLOG("slm_set_locked: REJECTED [" .. askey .. "] " .. key .. " strat=" .. strategy_id .. " (blocked)")
         end
         return false
     end
 
-    local qrec = slm_get_quality_record(askey, key)
+    local qrec = slm_get_quality_record(askey, key, scope)
     qrec.locked_strategy = strategy_id
     qrec.lock_reason = reason or "manual"
+    qrec.is_user_lock = true
 
     if DLOG then
         DLOG("slm_set_locked: [" .. askey .. "] " .. key .. " -> strat=" .. strategy_id .. " reason=" .. (reason or "manual"))
@@ -803,7 +837,7 @@ end
 --- Сбросить качество для хоста (для переобучения)
 --- @param askey string Ключ autostate (tls, http, quic, etc.) - optional, defaults to "default"
 --- @param hostkey string Имя хоста (будет нормализовано)
-function slm_reset(askey, hostkey)
+function slm_reset(askey, hostkey, scope)
     if not hostkey then return end
 
     -- Нормализуем askey
@@ -813,14 +847,14 @@ function slm_reset(askey, hostkey)
     local key = slm_normalize_hostkey(hostkey)
     if not key then return end
 
-    local as_table = SLM_QUALITY[askey]
+    local as_table = slm_get_quality_bucket(askey, scope)
     if not as_table then return end
 
     local qrec = as_table[key]
     if not qrec then return end
 
     if not qrec.is_user_lock then
-        slm_clear_auto_locked(askey, key)
+        slm_clear_auto_locked(askey, key, scope)
     end
 
     as_table[key] = nil
@@ -833,7 +867,7 @@ end
 --- @param askey string Ключ autostate (tls, http, quic, etc.) - optional, defaults to "default"
 --- @param hostkey string Имя хоста (будет нормализовано)
 --- @return string Статистика в виде строки
-function slm_get_stats(askey, hostkey)
+function slm_get_stats(askey, hostkey, scope)
     if not hostkey then return "no host" end
 
     -- Нормализуем askey
@@ -843,7 +877,7 @@ function slm_get_stats(askey, hostkey)
     local key = slm_normalize_hostkey(hostkey)
     if not key then return "invalid host" end
 
-    local as_table = SLM_QUALITY[askey]
+    local as_table = slm_get_quality_bucket(askey, scope)
     if not as_table then return "no data" end
 
     local qrec = as_table[key]
@@ -877,7 +911,7 @@ end
 --- @param strategy number Номер стратегии
 --- @param is_user_lock boolean|nil True если это пользовательский лок (защищён от auto-unlock)
 --- @return boolean Успех загрузки
-function slm_preload_locked(askey, hostname, strategy, is_user_lock)
+function slm_preload_locked(askey, hostname, strategy, is_user_lock, scope)
     -- Default askey to "tls" for backward compatibility
     if not askey or askey == "" then askey = "tls" end
     if not hostname then return false end
@@ -888,7 +922,7 @@ function slm_preload_locked(askey, hostname, strategy, is_user_lock)
     if not key then return false end
 
     -- Проверяем что стратегия не заблокирована
-    if slm_is_blocked(askey, key, strategy) then
+    if slm_is_blocked(askey, key, strategy, scope) then
         if DLOG then
             DLOG("slm_preload_locked: SKIP [" .. askey .. "] " .. key .. " strat=" .. strategy .. " (blocked)")
         end
@@ -897,7 +931,7 @@ function slm_preload_locked(askey, hostname, strategy, is_user_lock)
 
     -- Создаём запись качества и устанавливаем лок
     -- Передаём askey для правильного размещения в SLM_QUALITY[askey][hostkey]
-    local qrec = slm_get_quality_record(askey, key)
+    local qrec = slm_get_quality_record(askey, key, scope)
     qrec.locked_strategy = strategy
     qrec.is_user_lock = is_user_lock or false
 
@@ -934,8 +968,12 @@ local function slm_load_auto_locked()
     if not f then return end
     for line in f:lines() do
         if line and line ~= "" then
-            local askey, host, strat = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)$")
-            if askey and host and strat then
+            local askey, scope, host, strat = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)$")
+            if not askey then
+                askey, host, strat = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)$")
+                scope = "default"
+            end
+            if askey and scope and host and strat then
                 local n = tonumber(strat)
                 if n then
                     local key = slm_normalize_hostkey(host)
@@ -943,8 +981,9 @@ local function slm_load_auto_locked()
                         if not SLM_AUTO_LOCKED[askey] then
                             SLM_AUTO_LOCKED[askey] = {}
                         end
-                        SLM_AUTO_LOCKED[askey][key] = n
-                        slm_preload_locked(askey, key, n, false)
+                        SLM_AUTO_LOCKED[askey][scope] = SLM_AUTO_LOCKED[askey][scope] or {}
+                        SLM_AUTO_LOCKED[askey][scope][key] = n
+                        slm_preload_locked(askey, key, n, false, scope)
                     end
                 end
             end
@@ -963,7 +1002,7 @@ end
 --- @param hostname string Имя хоста
 --- @param strategies table Массив номеров заблокированных стратегий {1, 2, 3, ...}
 --- @return boolean Успех загрузки
-function slm_preload_blocked(askey, hostname, strategies)
+function slm_preload_blocked(askey, hostname, strategies, scope)
     -- Default askey to "default" for backward compatibility
     if not askey or askey == "" then askey = "default" end
     if not hostname then return false end
@@ -984,21 +1023,27 @@ function slm_preload_blocked(askey, hostname, strategies)
         BLOCKED_STRATEGIES[askey] = {}
     end
 
+    local blocked_bucket = BLOCKED_STRATEGIES[askey]
+    if scope and scope ~= "default" then
+        blocked_bucket[tostring(scope)] = blocked_bucket[tostring(scope)] or {}
+        blocked_bucket = blocked_bucket[tostring(scope)]
+    end
+
     -- Инициализируем массив для хоста или добавляем к существующему
-    if not BLOCKED_STRATEGIES[askey][key] then
-        BLOCKED_STRATEGIES[askey][key] = {}
+    if not blocked_bucket[key] then
+        blocked_bucket[key] = {}
     end
 
     -- Добавляем стратегии (избегая дубликатов)
     local existing = {}
-    for _, s in ipairs(BLOCKED_STRATEGIES[askey][key]) do
+    for _, s in ipairs(blocked_bucket[key]) do
         existing[s] = true
     end
 
     local added = 0
     for _, strat in ipairs(strategies) do
         if type(strat) == "number" and not existing[strat] then
-            table.insert(BLOCKED_STRATEGIES[askey][key], strat)
+            table.insert(blocked_bucket[key], strat)
             existing[strat] = true
             added = added + 1
         end
@@ -1059,7 +1104,7 @@ end
 --- @param successes number Количество успехов
 --- @param failures number Количество неудач
 --- @return boolean Успех загрузки
-function slm_preload_history(askey, hostname, strategy, successes, failures)
+function slm_preload_history(askey, hostname, strategy, successes, failures, scope)
     -- Default askey to "tls" for backward compatibility
     if not askey or askey == "" then askey = "tls" end
     if not hostname then return false end
@@ -1074,7 +1119,7 @@ function slm_preload_history(askey, hostname, strategy, successes, failures)
 
     -- Создаём запись качества
     -- Передаём askey для правильного размещения в SLM_QUALITY[askey][hostkey]
-    local qrec = slm_get_quality_record(askey, key)
+    local qrec = slm_get_quality_record(askey, key, scope)
 
     -- Устанавливаем счётчики
     qrec.strategy_successes[strategy] = successes

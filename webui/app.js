@@ -11,6 +11,8 @@ const state = {
   ports: null,
   provider: null,
   backups: null,
+  scopes: { enabled: false, warning: '', scopes: ['default'] },
+  scope: 'default',
   domains: { netrogat: null, custom_rkn: null, substring: null, netrogat_substring: null },
   activeSubview: 'netrogat',
 };
@@ -440,9 +442,13 @@ function renderStatus() {
   const providerName = providerCut > 0 ? providerRaw.slice(0, providerCut) : providerRaw;
   const providerCity = providerCut > 0 ? providerRaw.slice(providerCut + 3) : '';
 
+  const scopeDiagnostics = state.status.client_scope || {};
+  const scopeMode = scopeDiagnostics.mode === 'mark' ? 'mark' : 'disabled';
+  const scopeSubText = `mask: ${scopeDiagnostics.mask || '—'} / shift: ${scopeDiagnostics.shift ?? 0} / max: ${scopeDiagnostics.max_scope ?? 0} · последний scope: ${scopeDiagnostics.last_seen_scope || 'unavailable'} · locks: ${scopeDiagnostics.scoped_lock_count ?? 0} · conflicts: ${scopeDiagnostics.conflicts ?? 0} · fallback: ${scopeDiagnostics.fallback_reason || '—'}`;
   const cards = [
     ['zapret2', state.status.zapret2_running ? 'Запущен' : 'Остановлен', state.status.zapret2_running ? 'ok' : 'bad'],
     ['Локи стратегий', state.status.strategy_locks_status],
+    ['Client scopes', scopeMode, scopeMode === 'mark' ? 'ok' : '', scopeSubText],
     ['Авторотация', state.status.auto_mode, state.status.auto_mode === 'включен' ? 'ok' : ''],
     ['Фильтр', state.status.hostlist_mode],
     ['FW', state.status.fwtype],
@@ -520,6 +526,8 @@ function gatedReason(profile) {
 }
 
 function renderStrategies() {
+  const scopePicker = document.getElementById('client-scope');
+  if (scopePicker) scopePicker.value = state.scope;
   const container = document.getElementById('strategy-cards');
   const template = document.getElementById('strategy-card-template');
   container.innerHTML = '';
@@ -595,7 +603,7 @@ function renderStrategies() {
           await api('/cgi-bin/set-lock.cgi', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({ profile: profile.profile, strategy: value }),
+            body: new URLSearchParams({ profile: profile.profile, strategy: value, scope: state.scope }),
           });
           delete state.strategyChecks[profile.profile];
           await refreshAll();
@@ -604,7 +612,7 @@ function renderStrategies() {
               const checkPayload = await api('/cgi-bin/check.cgi', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({ profile: profile.profile }),
+                body: new URLSearchParams({ profile: profile.profile, scope: state.scope }),
               });
               state.strategyChecks[profile.profile] = checkPayload;
               renderStrategies();
@@ -629,7 +637,7 @@ function renderStrategies() {
           await api('/cgi-bin/clear-lock.cgi', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({ profile: profile.profile }),
+            body: new URLSearchParams({ profile: profile.profile, scope: state.scope }),
           });
           delete state.strategyChecks[profile.profile];
           await refreshAll();
@@ -715,9 +723,22 @@ function renderCheckResults(container, payload, emptyMessage, emptyIsHidden = tr
 }
 
 async function refreshAll() {
-  const status = await api('/cgi-bin/status.cgi');
+  const status = await api(`/cgi-bin/status.cgi?scope=${encodeURIComponent(state.scope)}`);
   state.status = status;
   state.locks = status.profiles || [];
+  try {
+    state.scopes = await api('/cgi-bin/scopes.cgi');
+    const picker = document.getElementById('client-scope');
+    if (picker) {
+      picker.innerHTML = '';
+      (state.scopes.scopes || ['default']).forEach((scope) => {
+        const option = document.createElement('option'); option.value = scope; option.textContent = scope; picker.appendChild(option);
+      });
+      picker.value = state.scope;
+    }
+    const warning = document.getElementById('scope-warning');
+    if (warning) { warning.textContent = state.scopes.warning || ''; warning.hidden = !state.scopes.warning; }
+  } catch (_) { /* scope discovery is optional for legacy routers */ }
   renderStatus();
   renderStrategies();
   document.getElementById('view-status').classList.remove('is-loading');
@@ -2351,6 +2372,10 @@ if (brandLink) {
 }
 
 document.getElementById('open-strategies').addEventListener('click', () => switchView('strategies'));
+document.getElementById('client-scope')?.addEventListener('change', (event) => {
+  state.scope = event.target.value || 'default';
+  refreshAll().catch((e) => showToast(e.message, 'error'));
+});
 document.getElementById('refresh-status').addEventListener('click', (event) => {
   withBusy(event.currentTarget, refreshAll).catch((e) => showToast(e.message, 'error'));
 });

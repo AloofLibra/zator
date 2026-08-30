@@ -12,7 +12,9 @@ JSON, `Content-Type: application/json; charset=utf-8`.
 для `GET` — из `QUERY_STRING`, для `POST` — из тела (`Content-Length`,
 `application/x-www-form-urlencoded`). Распознаются ключи `profile`,
 `strategy`, `action`, `setting`, `value`, `list`, `domain`, `name`, `city`,
-`proto`. Значения URL-декодируются (`%xx` → символ, `+` → пробел).
+`proto`, `scope`. Значения URL-декодируются (`%xx` → символ, `+` → пробел).
+
+Client scope: `scope` необязателен и по умолчанию равен `default`; допустимы только `default` и `mark:<decimal>`. Эндпоинт `GET /cgi-bin/scopes.cgi` возвращает `{enabled, warning, scopes}`. Поля профиля `scope` и `lock_source` показывают effective layer: `scoped`, `default`, `auto` или `conflict`.
 
 ---
 
@@ -389,6 +391,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 | `ports_remove` | `proto=tcp\|udp&value=<порт>` | удалить пользовательский порт (`ports_apply_remove`) |
 | `provider_set` | `name=<строка>&city=<строка>` | ручная установка провайдера (`provider_set_manual`) |
 | `provider_redetect` | — | переопределить провайдера по IP (`provider_force_redetect`, до ~20 с) |
+| `client_scope` | `client_scope_enable=0|1`, `client_scope_mark_mask=0x...|`, `client_scope_mark_shift=0..31`, `client_scope_mark_max=0..255` | настройка scoped client mark; пустая/конфликтующая маска безопасно отключает scope |
 
 Успех (`200 OK`):
 

@@ -1372,20 +1372,21 @@ local function validator_poll(hrec, desync, hostkey)
     validator_clear(hrec)
 
     local slm_askey = pending.slm_askey
+    local scope = pending.scope or "default"
 
     if status == "OK" then
-        if slm_commit_auto_lock(slm_askey, hostkey, strategy, "validator") then
+        if slm_commit_auto_lock(slm_askey, hostkey, strategy, "validator", scope) then
             hrec.nstrategy = strategy
             DLOG("circular_quality: validator OK " .. hostkey .. " -> strategy " .. strategy)
         end
     elseif status == "FAIL" then
         DLOG("circular_quality: validator FAIL " .. hostkey .. " strategy " .. strategy)
-        slm_reset(slm_askey, hostkey)
-        slm_preload_blocked(slm_askey, hostkey, { strategy })
+        slm_reset(slm_askey, hostkey, scope)
+        slm_preload_blocked(slm_askey, hostkey, { strategy }, scope)
         local next_strategy = strategy
         for _ = 1, hrec.ctstrategy do
             next_strategy = (next_strategy % hrec.ctstrategy) + 1
-            if not slm_is_blocked(slm_askey, hostkey, next_strategy) then break end
+            if not slm_is_blocked(slm_askey, hostkey, next_strategy, scope) then break end
         end
         hrec.nstrategy = next_strategy
     else
@@ -1397,6 +1398,7 @@ local function validator_enqueue(hrec, desync, hostkey, strategy)
     local worker = validator_path(desync.arg.validator)
     local hostname = hrec.validator_hostname or (desync.track and desync.track.hostname)
     local slm_askey = desync.arg.key or "default"
+    local scope = type(desync_client_scope) == "function" and desync_client_scope(desync) or "default"
     local askey = tostring(slm_askey)
     if not worker or hrec.validator_pending or not validator_token(askey) or
        not validator_token(hostkey) or not validator_hostname(hostname) then return false end
@@ -1416,7 +1418,7 @@ local function validator_enqueue(hrec, desync, hostkey, strategy)
 
     hrec.validator_pending = {
         id = id, askey = askey, hostkey = hostkey, strategy = strategy,
-        slm_askey = slm_askey,
+        slm_askey = slm_askey, scope = scope,
         deadline = os.time() + 30,
     }
     DLOG("circular_quality: validator request id=" .. id .. " host=" .. hostkey .. " strategy=" .. strategy)
@@ -1532,6 +1534,7 @@ function circular_quality(ctx, desync)
     end
     -- Normalize hostkey for slm_* functions
     hostkey = slm_normalize_hostkey(hostkey) or hostkey
+    local scope = type(desync_client_scope) == "function" and desync_client_scope(desync) or "default"
 
     -- Count strategies from desync.plan (already populated by orchestrate() at function start)
     count_strategies(hrec, desync.plan)
@@ -1576,22 +1579,22 @@ function circular_quality(ctx, desync)
     local is_success = not is_failure and success_detector(desync, crec)
 
     -- Check if we should use locked strategy
-    local locked = slm_get_locked(desync.arg.key, hostkey)
+    local locked = slm_get_locked(desync.arg.key, hostkey, scope)
     if locked then
         -- BLOCKED: If locked strategy is marked as blocked by user, reset and re-learn
-        if slm_is_blocked(desync.arg.key, hostkey, locked) then
+        if slm_is_blocked(desync.arg.key, hostkey, locked, scope) then
             DLOG("circular_quality: BLOCKED " .. (hostkey or "?") .. " -> locked=" .. locked .. " is blocked, resetting")
             -- Find next non-blocked strategy
             local next_strat = locked
             for i = 1, hrec.ctstrategy do
                 next_strat = (next_strat % hrec.ctstrategy) + 1
-                if not slm_is_blocked(desync.arg.key, hostkey, next_strat) then
+                if not slm_is_blocked(desync.arg.key, hostkey, next_strat, scope) then
                     break
                 end
             end
             hrec.nstrategy = next_strat
             -- Reset quality tracking so it can find a better strategy
-            slm_reset(desync.arg.key, hostkey)
+            slm_reset(desync.arg.key, hostkey, scope)
         else
             -- Use locked strategy
             hrec.nstrategy = locked
@@ -1603,19 +1606,19 @@ function circular_quality(ctx, desync)
             if is_failure and not crec.locked_failure_recorded then
                 crec.locked_failure_recorded = true
                 hrec.locked_fail_count = (hrec.locked_fail_count or 0) + 1
-                slm_record_result(desync.arg.key, hostkey, locked, false)
+                slm_record_result(desync.arg.key, hostkey, locked, false, scope)
                 DLOG("circular_quality: LOCKED strat " .. locked .. " FAIL #" .. hrec.locked_fail_count .. "/" .. unlock_fails .. " for " .. (hostkey or "?"))
 
                 if hrec.locked_fail_count >= unlock_fails then
                     -- Check if this is a user lock (protected from auto-unlock)
-                    if slm_is_user_lock(desync.arg.key, hostkey) then
+                    if slm_is_user_lock(desync.arg.key, hostkey, scope) then
                         -- User lock: do NOT reset, just log and clear fail counter
                         DLOG("circular_quality: USER LOCK protected for " .. (hostkey or "?") .. ", skipping auto-unlock (fails=" .. hrec.locked_fail_count .. ")")
                         hrec.locked_fail_count = 0
                     else
                         -- Auto lock: reset and re-learn as usual
                         DLOG("circular_quality: AUTO-UNLOCK " .. (hostkey or "?") .. " after " .. hrec.locked_fail_count .. " consecutive fails")
-                        slm_reset(desync.arg.key, hostkey)  -- This clears locked_strategy
+                        slm_reset(desync.arg.key, hostkey, scope)  -- This clears locked_strategy
                         hrec.locked_fail_count = 0
                         -- Start from next strategy (skip the failing one initially)
                         hrec.nstrategy = (locked % hrec.ctstrategy) + 1
@@ -1629,7 +1632,7 @@ function circular_quality(ctx, desync)
                     DLOG("circular_quality: LOCKED strat " .. locked .. " SUCCESS, reset fail counter (was " .. hrec.locked_fail_count .. ")")
                 end
                 hrec.locked_fail_count = 0
-                slm_record_result(desync.arg.key, hostkey, locked, true)
+                slm_record_result(desync.arg.key, hostkey, locked, true, scope)
             end
 
             DLOG("circular_quality: using LOCKED strategy " .. locked)
@@ -1646,6 +1649,9 @@ function circular_quality(ctx, desync)
                 -- Now uses two-level structure: SLM_QUALITY[askey][hostkey]
                 local askey = desync.arg.key or "default"
                 local as_table = SLM_QUALITY and SLM_QUALITY[askey]
+                if scope ~= "default" and as_table then
+                    as_table = as_table[scope]
+                end
                 local qrec = as_table and as_table[hostkey]
                 if qrec and qrec.strategy_successes and qrec.strategy_successes[hrec.nstrategy] then
                     qrec.strategy_successes[hrec.nstrategy] = math.max(0, qrec.strategy_successes[hrec.nstrategy] - 1)
@@ -1665,7 +1671,7 @@ function circular_quality(ctx, desync)
 
             if not crec.quality_failure_recorded then
                 crec.quality_failure_recorded = true
-                slm_record_result(desync.arg.key, hostkey, hrec.nstrategy, false)
+                slm_record_result(desync.arg.key, hostkey, hrec.nstrategy, false, scope)
 
                 local fails = tonumber(desync.arg.fails) or 1
                 local maxtime = tonumber(desync.arg.time) or 60
@@ -1674,14 +1680,14 @@ function circular_quality(ctx, desync)
                     local start_strat = hrec.nstrategy
                     repeat
                         hrec.nstrategy = (hrec.nstrategy % hrec.ctstrategy) + 1
-                        -- Skip blocked strategies
-                        if slm_is_blocked(desync.arg.key, hostkey, hrec.nstrategy) then
+                        -- Skip blocked strategies for this client scope
+                        if slm_is_blocked(desync.arg.key, hostkey, hrec.nstrategy, scope) then
                             DLOG("circular_quality: skipping BLOCKED strategy " .. hrec.nstrategy)
                         else
                             break
                         end
                     until hrec.nstrategy == start_strat  -- Prevent infinite loop
-                    DLOG("circular_quality: rotate to strategy " .. hrec.nstrategy .. " [" .. slm_get_stats(desync.arg.key, hostkey) .. "]")
+                    DLOG("circular_quality: rotate to strategy " .. hrec.nstrategy .. " [" .. slm_get_stats(desync.arg.key, hostkey, scope) .. "]")
                 end
             end
 
@@ -1689,7 +1695,7 @@ function circular_quality(ctx, desync)
         elseif is_success and not crec.quality_failure_recorded then
             if not crec.quality_success_recorded then
                 crec.quality_success_recorded = true
-                slm_record_result(desync.arg.key, hostkey, hrec.nstrategy, true)
+                slm_record_result(desync.arg.key, hostkey, hrec.nstrategy, true, scope)
             end
 
             -- Soft TCP progress contributes one learning result, but only a
@@ -1698,9 +1704,9 @@ function circular_quality(ctx, desync)
                 crec.quality_success_finalized = true
                 automate_failure_counter_reset(hrec)
                 if not validator_enabled then
-                    local should_lock_now, lock_strat = slm_should_lock(desync.arg.key, hostkey, desync.arg)
+                    local should_lock_now, lock_strat = slm_should_lock(desync.arg.key, hostkey, desync.arg, scope)
                     if should_lock_now then
-                        DLOG("circular_quality: LOCKED on strategy " .. lock_strat .. " [" .. slm_get_stats(desync.arg.key, hostkey) .. "]")
+                        DLOG("circular_quality: LOCKED on strategy " .. lock_strat .. " [" .. slm_get_stats(desync.arg.key, hostkey, scope) .. "]")
                         hrec.nstrategy = lock_strat
                     end
                 end
@@ -1710,7 +1716,7 @@ function circular_quality(ctx, desync)
             -- its one quality test can already make an established strategy a
             -- candidate, but it never commits the lock before validator OK.
             if validator_enabled and not hrec.validator_pending and not crec.quality_validator_checked then
-                local eligible, candidate = slm_should_lock(desync.arg.key, hostkey, desync.arg)
+                local eligible, candidate = slm_should_lock(desync.arg.key, hostkey, desync.arg, scope)
                 crec.quality_validator_checked = true
                 if eligible and candidate == hrec.nstrategy then
                     validator_enqueue(hrec, desync, hostkey, candidate)

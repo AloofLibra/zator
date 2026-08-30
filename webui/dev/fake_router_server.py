@@ -128,7 +128,7 @@ ERR_SERVICE = "Не удалось выполнить команду zapret2"
 AUTO_MODE_GATED_PROFILES = (1, 2, 3, 4)
 
 # Допустимые эндпоинты для --simulate-error
-SIMULATABLE = {"status", "service", "check", "set-lock", "clear-lock", "settings", "domains", "backups"}
+SIMULATABLE = {"status", "scopes", "service", "check", "set-lock", "clear-lock", "settings", "domains", "backups"}
 
 RST_GUARD_KEYS = ("1", "2", "3", "4", "8", "9")
 
@@ -417,6 +417,58 @@ def config_set_var(cfg_text, var, val):
     return "\n".join(lines) + "\n"
 
 
+def config_scope_number(value, default=0):
+    """Parse client-mark numbers exactly like the shell/config contract."""
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return default
+        return int(text, 16) if text.lower().startswith("0x") else int(text, 10)
+    except (TypeError, ValueError):
+        return default
+
+
+def config_client_scope_state(cfg_text):
+    """Safe client-mark settings, mirroring config_client_scope_ensure()."""
+    vals = {name: config_get_var(cfg_text, name) for name in (
+        "CLIENT_SCOPE_ENABLE", "CLIENT_SCOPE_MARK_MASK",
+        "CLIENT_SCOPE_MARK_SHIFT", "CLIENT_SCOPE_MARK_MAX")}
+    defaults = {"CLIENT_SCOPE_ENABLE": "0", "CLIENT_SCOPE_MARK_MASK": "",
+                "CLIENT_SCOPE_MARK_SHIFT": "0", "CLIENT_SCOPE_MARK_MAX": "255"}
+    for name, default in defaults.items():
+        if vals[name] is None:
+            vals[name] = default
+    mask = vals["CLIENT_SCOPE_MARK_MASK"] or ""
+    empty_noop = vals["CLIENT_SCOPE_ENABLE"] == "0" and not mask
+    valid = (empty_noop or (vals["CLIENT_SCOPE_ENABLE"] in ("0", "1") and
+             vals["CLIENT_SCOPE_MARK_SHIFT"].isdigit() and
+             vals["CLIENT_SCOPE_MARK_MAX"].isdigit() and
+             int(vals["CLIENT_SCOPE_MARK_SHIFT"]) <= 31 and
+             int(vals["CLIENT_SCOPE_MARK_MAX"]) <= 255 and
+             (bool(mask) and re.match(r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$", mask) is not None)))
+    mask_conflict = False
+    if valid and mask:
+        mask_value = config_scope_number(mask)
+        desync_mark = config_get_var(cfg_text, "DESYNC_MARK") or "0"
+        desync_postnat = config_get_var(cfg_text, "DESYNC_MARK_POSTNAT") or "0"
+        def parse_num(value):
+            try:
+                return int(value, 0) if value.lower().startswith("0x") else int(value, 10)
+            except (AttributeError, ValueError):
+                return 0
+        mask_conflict = ((mask_value & parse_num(desync_mark)) != 0 or
+                         (mask_value & parse_num(desync_postnat)) != 0)
+        valid = not mask_conflict
+    enabled = vals["CLIENT_SCOPE_ENABLE"] == "1" and valid
+    if not valid:
+        enabled = False
+    vals["enabled"] = enabled
+    vals["valid"] = valid
+    vals["mask_conflict"] = mask_conflict
+    return vals
+
+
+
 def config_profile_voice_ports_apply(cfg_text, state):
     """config_profile_voice_ports_apply() — lib/config.sh:438."""
     cur = config_get_var(cfg_text, "NFQWS2_PORTS_UDP") or ""
@@ -503,6 +555,51 @@ def _write_tsv(path, rows):
         for r in rows:
             fh.write("\t".join(str(x) for x in r) + "\n")
     os.replace(tmp, path)
+
+
+def orch_scoped_set(lock_file, scope, profile, proto, strategy):
+    """Scoped four-column equivalent of orch_scoped_locked_set()."""
+    if not re.match(r"^(default|mark:[0-9]+)$", str(scope)):
+        raise ValueError("Некорректный scope")
+    rows = [line.split("\t") for line in _read_lines(lock_file) if line]
+    key = [str(scope), str(profile), proto]
+    if scope == "default":
+        key = [str(profile), proto]
+    rows = [r for r in rows if not ((len(r) >= 4 and r[:3] == key) or (scope == "default" and len(r) >= 2 and r[:2] == key))]
+    rows.append(key + [str(strategy)])
+    _write_tsv(lock_file, rows)
+
+
+def orch_scoped_clear(lock_file, scope, profile, proto):
+    rows = [line.split("\t") for line in _read_lines(lock_file) if line]
+    rows = [r for r in rows if not ((scope != "default" and len(r) >= 4 and r[:3] == [scope, str(profile), proto]) or (scope == "default" and ((len(r) >= 3 and r[:2] == [str(profile), proto]) or (len(r) == 2 and r[0] == str(profile) and proto == "tls"))))]
+    _write_tsv(lock_file, rows)
+
+
+def orch_scoped_source(lock_file, scope, profile, proto):
+    rows = [r for r in (line.split("\t") for line in _read_lines(lock_file) if line) if r]
+    exact = [r for r in rows if len(r) >= 4 and r[:3] == [scope, str(profile), proto]]
+    if len(exact) > 1: return "conflict"
+    if exact: return "scoped"
+    default = [r for r in rows if (len(r) >= 3 and r[:2] == [str(profile), proto]) or (len(r) == 2 and r[0] == str(profile) and proto == "tls")]
+    if len(default) > 1: return "conflict"
+    return "default" if default else "auto"
+
+
+def orch_scoped_effective(lock_file, scope, profile, proto):
+    """Return current_lock for a selected scope, matching _lib.sh."""
+    source = orch_scoped_source(lock_file, scope, profile, proto)
+    rows = [r for r in (line.split("\t") for line in _read_lines(lock_file) if line) if r]
+    if source == "scoped":
+        for row in rows:
+            if len(row) >= 4 and row[:3] == [scope, str(profile), proto]:
+                return row[3]
+    if source == "default":
+        for row in rows:
+            if (len(row) >= 3 and row[:2] == [str(profile), proto]) or (len(row) == 2 and row[0] == str(profile) and proto == "tls"):
+                return row[-1]
+    return "conflict" if source == "conflict" else "auto"
+
 
 
 def orch_locked_set(lock_file, profile, proto, strategy):
@@ -1307,7 +1404,37 @@ class FakeRouterState:
                 return "Есть"
         return "Нет"
 
-    def profile_json(self, pid, label, desc):
+    def client_scope_diagnostics(self):
+        cfg = config_client_scope_state(self.cfg_text)
+        rows = _read_lines(self.lock_file) + _read_lines(self.lock_manual_file)
+        scoped = [line.split("\t") for line in rows
+                  if len(line.split("\t")) >= 4 and re.match(r"^mark:[0-9]+$", line.split("\t")[0])]
+        keys = {}
+        for fields in scoped:
+            key = tuple(fields[:3])
+            keys.setdefault(key, set()).add(fields[3])
+        conflicts = sum(1 for strategies in keys.values() if len(strategies) > 1)
+        if not cfg["enabled"]:
+            if cfg["CLIENT_SCOPE_ENABLE"] != "1":
+                reason = "disabled"
+            elif not cfg["CLIENT_SCOPE_MARK_MASK"]:
+                reason = "missing-mask"
+            else:
+                reason = "mask-conflict" if cfg.get("mask_conflict") else "invalid-mask"
+        else:
+            reason = "no-scoped-lock"
+        return {
+            "mode": "mark" if cfg["enabled"] else "disabled",
+            "mask": config_scope_number(cfg["CLIENT_SCOPE_MARK_MASK"]),
+            "shift": config_scope_number(cfg["CLIENT_SCOPE_MARK_SHIFT"]),
+            "max_scope": config_scope_number(cfg["CLIENT_SCOPE_MARK_MAX"]),
+            "scoped_lock_count": len(scoped),
+            "conflicts": conflicts,
+            "last_seen_scope": "unavailable",
+            "fallback_reason": reason,
+        }
+
+    def profile_json(self, pid, label, desc, scope="default"):
         proto = profile_proto(pid)
         is_fallback = pid in FALLBACK_PROFILES
         is_udp_games = (pid == UDP_GAMES_PROFILE)
@@ -1316,7 +1443,12 @@ class FakeRouterState:
         # живёт в locked.manual.tsv (profile_config_orch_set); config-блок не
         # хранит выбор стратегии (его делает runtime circular_locked:key=N).
         orch_file = self.lock_manual_file if is_fallback else self.lock_file
-        current = profile_state_get(self.profile_lock, orch_file, pid, proto)
+        if scope == "default":
+            # Preserve profile.lock precedence for the legacy/default view.
+            current = profile_state_get(self.profile_lock, orch_file, pid, proto)
+        else:
+            current = orch_scoped_effective(orch_file, scope, pid, proto)
+        lock_source = orch_scoped_source(orch_file, scope, pid, proto)
         fallback_enabled = (_fallback_state(self.cfg_text) == "включен") if is_fallback else None
         udp_games_enabled = (config_mode_text("udp_games", self.cfg_text) == "Включен") if is_udp_games else None
         maxstrat = config_profile_max_strategy(pid, self.cfg_text)
@@ -1325,6 +1457,8 @@ class FakeRouterState:
             "label": label,
             "description": desc,
             "current_lock": current,
+            "scope": scope,
+            "lock_source": lock_source,
             "max_strategy": maxstrat,
         }
         if is_fallback:
@@ -1335,10 +1469,10 @@ class FakeRouterState:
             result["udp_games_enabled"] = udp_games_enabled
         return result
 
-    def all_profiles_json(self):
-        return [self.profile_json(p, l, d) for (p, l, d) in PROFILES]
+    def all_profiles_json(self, scope="default"):
+        return [self.profile_json(p, l, d, scope) for (p, l, d) in PROFILES]
 
-    def build_status(self):
+    def build_status(self, scope="default"):
         wg_raw = config_wg_state(self.cfg_text)
         if wg_raw == "1":
             wg_state = "включено"
@@ -1359,7 +1493,8 @@ class FakeRouterState:
             "reasm": config_mode_text("reasm_disable", self.cfg_text),
             "quic443": config_quic443_state_text(self.cfg_text),
             "provider": self.provider,
-            "profiles": self.all_profiles_json(),
+            "client_scope": self.client_scope_diagnostics(),
+            "profiles": self.all_profiles_json(scope),
         }
 
     # --- генерация результатов проверок ----------------------------------
@@ -1684,6 +1819,8 @@ class FakeRouterState:
 
     def build_mode_settings(self, setting):
         """api_*_get() — _lib.sh."""
+        if setting == "client_scope":
+            return config_client_scope_state(self.cfg_text)
         if setting == "auto_mode":
             s = config_mode_text("auto_mode", self.cfg_text)
             return {"state": s, "enabled": s == "включен"}
@@ -1700,6 +1837,19 @@ class FakeRouterState:
             return {"state": config_quic443_state_text(self.cfg_text),
                     "enabled": config_quic443_state(self.cfg_text) == "1"}
         raise ValueError("Неизвестная настройка")
+
+    def apply_client_scope(self, params):
+        """Apply client scope values; invalid masks are a safe disabled no-op."""
+        for name in ("CLIENT_SCOPE_ENABLE", "CLIENT_SCOPE_MARK_MASK",
+                     "CLIENT_SCOPE_MARK_SHIFT", "CLIENT_SCOPE_MARK_MAX"):
+            key = name.lower()
+            if key in params:
+                self.cfg_text = config_set_var(self.cfg_text, name, params[key])
+        state = config_client_scope_state(self.cfg_text)
+        if not state["valid"]:
+            self.cfg_text = config_set_var(self.cfg_text, "CLIENT_SCOPE_ENABLE", "0")
+        self._save_config()
+        return {"ok": True, "reboot_required": True, **config_client_scope_state(self.cfg_text)}
 
     def apply_mode_setting(self, setting, value):
         """api_*_set() — _lib.sh: переиспользуют сеттеры lib/actions.sh."""
@@ -2128,6 +2278,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if d and d > 0:
             time.sleep(d)
 
+    @staticmethod
+    def _valid_scope(scope):
+        """Match the CGI scope validator for every scope-aware endpoint."""
+        return scope == "default" or bool(re.match(r"^mark:[0-9]+$", scope))
+
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         reason = _HTTP_STATUS.get(code, (code, ""))[1]
@@ -2202,12 +2357,42 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._send_error_json(500, "Симуляция ошибки эндпоинта '{0}'".format(endpoint))
             return
 
+        if endpoint == "scopes":
+            requested_scope = params.get("scope", "default") or "default"
+            if not self._valid_scope(requested_scope):
+                self._send_error_json(400, "Некорректный scope")
+                return
+            scopes = {"default"}
+            for line in (_read_lines(self.state.lock_file) +
+                         _read_lines(self.state.lock_manual_file)):
+                fields = line.split("\t")
+                if fields and re.match(r"^mark:[0-9]+$", fields[0]): scopes.add(fields[0])
+            diagnostics = self.state.client_scope_diagnostics()
+            reason = diagnostics.get("fallback_reason", "")
+            warning = ""
+            if reason == "missing-mask":
+                warning = "Client scope включён, но firewall mapping не задан."
+            elif reason == "mask-conflict":
+                warning = "Маска client scope пересекается со служебной mark-маской; включён безопасный fallback."
+            elif reason == "invalid-mask":
+                warning = "Маска client scope некорректна; включён безопасный fallback."
+            self._send_json({"enabled": diagnostics.get("mode") == "mark",
+                             "warning": warning,
+                             "scopes": sorted(scopes),
+                             "diagnostics": diagnostics})
+            return
+
         if endpoint == "status":
             self._sleep_for("status")
+            requested_scope = params.get("scope", "default") or "default"
+            if not self._valid_scope(requested_scope):
+                self._send_error_json(400, "Некорректный scope")
+                return
             self._log("GET {0} | nfqws2={1} locks={2}".format(
                 parsed.path, running, locks))
             with self.state.lock:
-                self._send_json(self.state.build_status())
+                payload = self.state.build_status(requested_scope)
+                self._send_json(payload)
             return
 
         if endpoint == "check":
@@ -2285,6 +2470,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if not re.match(r"^[0-9]+$", strategy):
             self._send_error_json(400, ERR_BAD_STRATEGY)
             return
+        scope = params.get("scope", "default") or "default"
+        if not self._valid_scope(scope):
+            self._send_error_json(400, "Некорректный scope")
+            return
         if int(profile) in AUTO_MODE_GATED_PROFILES and \
                 config_mode_text("auto_mode", self.state.cfg_text) == "включен":
             self._log("{0} {1} | profile={2} -> 409 (auto mode)".format(
@@ -2306,7 +2495,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
         self._sleep_for("set-lock")
         with self.state.lock:
-            ok = profile_state_set_and_apply(self.state, int(profile), pl, strategy)
+            if scope == "default":
+                ok = profile_state_set_and_apply(self.state, int(profile), pl, strategy)
+            else:
+                orch_scoped_set(self.state.lock_file, scope, profile, profile_proto(int(profile)), strategy)
+                ok = True
             if not ok:
                 self._send_error_json(500, ERR_SAVE_STATE)
                 return
@@ -2323,6 +2516,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if not re.match(r"^[1-9]$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
+        scope = params.get("scope", "default") or "default"
+        if not self._valid_scope(scope):
+            self._send_error_json(400, "Некорректный scope")
+            return
         if int(profile) in AUTO_MODE_GATED_PROFILES and \
                 config_mode_text("auto_mode", self.state.cfg_text) == "включен":
             self._send_error_json(
@@ -2335,7 +2532,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
         self._sleep_for("clear-lock")
         with self.state.lock:
-            ok = profile_state_set_and_apply(self.state, int(profile), pl, "auto")
+            if scope == "default":
+                ok = profile_state_set_and_apply(self.state, int(profile), pl, "auto")
+            else:
+                orch_scoped_clear(self.state.lock_file, scope, profile, profile_proto(int(profile)))
+                ok = True
             if not ok:
                 self._send_error_json(500, ERR_RESET_STATE)
                 return
@@ -2372,7 +2573,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 elif setting == "udp-games":
                     self._log("GET {0} | udp-games settings".format(parsed.path))
                     self._send_json(self.state.build_udp_games_settings())
-                elif setting in ("auto_mode", "hostlist", "rst_guard", "reasm", "quic443"):
+                elif setting in ("client_scope", "auto_mode", "hostlist", "rst_guard", "reasm", "quic443"):
                     self._log("GET {0} | mode settings {1}".format(parsed.path, setting))
                     self._send_json(self.state.build_mode_settings(setting))
                 elif setting == "ports":
@@ -2455,6 +2656,15 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     with self.state.lock:
                         result = self.state.apply_udp_games_state(value)
                         self._log("POST {0} | udp_games_state={1}".format(parsed.path, value))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "client_scope":
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_client_scope(params)
+                        self._log("POST {0} | client_scope".format(parsed.path))
                         self._send_json(result)
                 except ValueError as e:
                     self._send_error_json(400, str(e))

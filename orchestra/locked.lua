@@ -1,35 +1,119 @@
 local LOCKED_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.tsv"
 local LOCKED_MANUAL_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.manual.tsv"
+-- Per-mark lock-файлы: <orchestra>/scopes/mark_N.tsv (3 колонки, без колонки scope).
+-- Список активных mark'ов берём из маппинга клиентов — он и так перечисляет
+-- все mark'и, чей трафик маркируется firewall'ом.
+local LOCKED_DIR = string.match(LOCKED_PATH, "^(.*)/[^/]+$") or "/opt/zator/extra_strats/cache/orchestra"
+local SCOPED_DIR = LOCKED_DIR .. "/scopes"
+local SCOPED_MAP_PATH = LOCKED_DIR .. "/../client_scope.tsv"
 local last_load = 0
 local cache_ttl = 2
 local LOCKED_TLS = {}
 local LOCKED_HTTP = {}
 local LOCKED_UDP = {}
+local LOCKED_CONFLICTS = {}
+local LOCKED_CONFLICTS_TOTAL = 0
+local CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
+local LOCKED_TEST_LINES = nil
 local EXCLUDE_HOSTLISTS = {}
 local SUBSTRING_HOSTLISTS = {}
+
+local function trim(value)
+  return (value:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+function locked_parse_line(line)
+  if type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  if line == "" or string.match(line, "^%s*#") then return nil end
+  local fields = {}
+  for field in (line .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = trim(field) end
+  local scope, profile, proto, raw_strategy
+  if #fields == 4 then
+    scope, profile, proto, raw_strategy = fields[1], fields[2], fields[3], fields[4]
+    if scope == "" then return nil end
+  elseif #fields == 3 then
+    scope, profile, proto, raw_strategy = "default", fields[1], fields[2], fields[3]
+  elseif #fields == 2 then
+    scope, profile, proto, raw_strategy = "default", fields[1], "tls", fields[2]
+  else
+    return nil
+  end
+  if profile == "" or proto == "" or raw_strategy == "" then return nil end
+  proto = string.lower(proto)
+  if proto ~= "tls" and proto ~= "http" and proto ~= "udp" then return nil end
+  local strategy = tonumber(raw_strategy)
+  if not strategy or strategy < 0 or strategy % 1 ~= 0 then return nil end
+  return string.lower(scope), string.lower(profile), proto, strategy
+end
+
+local function lock_table(proto)
+  if proto == "http" then return LOCKED_HTTP end
+  if proto == "udp" then return LOCKED_UDP end
+  return LOCKED_TLS
+end
+
+local function store_locked(scope, profile, proto, strategy)
+  local values = lock_table(proto)
+  values[scope] = values[scope] or {}
+  LOCKED_CONFLICTS[scope] = LOCKED_CONFLICTS[scope] or {}
+  LOCKED_CONFLICTS[scope][proto] = LOCKED_CONFLICTS[scope][proto] or {}
+  local conflict = LOCKED_CONFLICTS[scope][proto]
+  local previous = values[scope][profile]
+  if conflict[profile] then return end
+  if previous ~= nil and previous ~= strategy then
+    conflict[profile] = true
+    values[scope][profile] = nil
+    LOCKED_CONFLICTS_TOTAL = LOCKED_CONFLICTS_TOTAL + 1
+    if type(DLOG_ERR) == "function" then
+      DLOG_ERR("locked.lua: conflicting lock scope="..scope.." profile="..profile.." proto="..proto)
+    end
+  elseif previous == nil then
+    values[scope][profile] = strategy
+  end
+end
+
+local function load_locked_lines(lines)
+  for _, line in ipairs(lines) do
+    local scope, profile, proto, strategy = locked_parse_line(line)
+    if scope then
+      if scope ~= "default" then CLIENT_SCOPE_SCOPED_LOCK_COUNT = CLIENT_SCOPE_SCOPED_LOCK_COUNT + 1 end
+      store_locked(scope, profile, proto, strategy)
+    end
+  end
+end
 
 local function load_locked_file(path)
   local f = io.open(path, "r")
   if not f then return end
+  local lines = {}
+  for line in f:lines() do lines[#lines + 1] = line end
+  f:close()
+  load_locked_lines(lines)
+end
+
+-- Per-mark файл: строки «profile<TAB>proto<TAB>strategy» без колонки scope.
+-- Скоуп подставляется из имени mark'а; валидация — общая через locked_parse_line.
+local function load_scoped_file(path, scope)
+  local f = io.open(path, "r")
+  if not f then return end
   for line in f:lines() do
-    if line ~= "" and not string.match(line, "^%s*#") then
-      local p1, p2, p3 = string.match(line, "^([^\t]+)\t([^\t]+)\t([^\t]+)$")
-      if p1 then
-        local profile = string.lower(p1)
-        local proto = string.lower(p2)
-        local strat = tonumber(p3)
-        if strat then
-          if proto == "http" then LOCKED_HTTP[profile] = strat
-          elseif proto == "udp" then LOCKED_UDP[profile] = strat
-          else LOCKED_TLS[profile] = strat end
-        end
-      else
-        local p, s = string.match(line, "^([^\t]+)\t([^\t]+)$")
-        if p and s then
-          local strat = tonumber(s)
-          if strat then LOCKED_TLS[string.lower(p)] = strat end
-        end
-      end
+    local s, profile, proto, strategy = locked_parse_line(scope .. "\t" .. line)
+    if s then
+      CLIENT_SCOPE_SCOPED_LOCK_COUNT = CLIENT_SCOPE_SCOPED_LOCK_COUNT + 1
+      store_locked(s, profile, proto, strategy)
+    end
+  end
+  f:close()
+end
+
+local function load_scoped_locks()
+  local f = io.open(SCOPED_MAP_PATH, "r")
+  if not f then return end
+  for line in f:lines() do
+    local mark = line:match("^mark:(%d+)\t")
+    if mark then
+      load_scoped_file(SCOPED_DIR .. "/mark_" .. mark .. ".tsv", "mark:" .. mark)
     end
   end
   f:close()
@@ -42,19 +126,59 @@ local function load_locked_tables()
   LOCKED_TLS = {}
   LOCKED_HTTP = {}
   LOCKED_UDP = {}
+  LOCKED_CONFLICTS = {}
+  LOCKED_CONFLICTS_TOTAL = 0
+  CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
 
-  load_locked_file(LOCKED_PATH)
-  load_locked_file(LOCKED_MANUAL_PATH)
+  if LOCKED_TEST_LINES then
+    load_locked_lines(LOCKED_TEST_LINES)
+  else
+    load_locked_file(LOCKED_PATH)
+    load_locked_file(LOCKED_MANUAL_PATH)
+    load_scoped_locks()
+  end
 end
 
-function locked_strategy_for_profile(profile, proto)
+function locked_strategy_for_profile(profile, proto, scope)
   if not profile then return nil end
   profile = string.lower(tostring(profile))
   proto = string.lower(tostring(proto or "tls"))
+  scope = string.lower(tostring(scope or "default"))
   load_locked_tables()
-  if proto == "http" then return LOCKED_HTTP[profile] end
-  if proto == "udp" then return LOCKED_UDP[profile] end
-  return LOCKED_TLS[profile]
+  local values = lock_table(proto)
+  local function lookup(candidate)
+    local conflicts = LOCKED_CONFLICTS[candidate]
+    if conflicts and conflicts[proto] and conflicts[proto][profile] then return nil, true end
+    return values[candidate] and values[candidate][profile], false
+  end
+  local result, conflict = lookup(scope)
+  if result ~= nil or conflict or scope == "default" then return result end
+  return lookup("default")
+end
+
+function locked_strategy_for_scope(scope, profile, proto)
+  return locked_strategy_for_profile(profile, proto, scope)
+end
+
+function locked_conflict_count()
+  load_locked_tables()
+  return LOCKED_CONFLICTS_TOTAL
+end
+
+function locked_load_lines_for_tests(lines)
+  LOCKED_TEST_LINES = lines or {}
+  last_load = 0
+  load_locked_tables()
+end
+
+-- Тестовый загрузчик per-mark файла: чистые таблицы + один файл под своим скоупом.
+function locked_load_scoped_file_for_tests(path, scope)
+  LOCKED_TEST_LINES = nil
+  last_load = os.time() or 0
+  LOCKED_TLS, LOCKED_HTTP, LOCKED_UDP = {}, {}, {}
+  LOCKED_CONFLICTS, LOCKED_CONFLICTS_TOTAL = {}, 0
+  CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
+  load_scoped_file(path, scope)
 end
 
 local function load_exclude_hostlist(path)
@@ -160,6 +284,131 @@ function substring_hostlist_matches_desync(desync, path, host)
     lua_state.substring_hostlists[path] = matched
   end
   return matched
+end
+
+-- Client scopes use a dedicated firewall-mark namespace.  Keep this helper
+-- self-contained: locked.lua is loaded before the other Lua extensions and
+-- must also work with Lua 5.1, where bit32 is not guaranteed to exist.
+local CLIENT_SCOPE_DEFAULT = "default"
+local CLIENT_SCOPE_DEFAULT_MARK = 0x40000000
+local CLIENT_SCOPE_DEFAULT_POSTNAT_MARK = 0x20000000
+local CLIENT_SCOPE_UINT32_MAX = 4294967295
+local CLIENT_SCOPE_LAST_SEEN = CLIENT_SCOPE_DEFAULT
+local CLIENT_SCOPE_LAST_REASON = "disabled"
+local function client_scope_value(name)
+  return rawget(_G, name)
+end
+
+local function client_scope_number(value)
+  local number
+  if type(value) == "number" then
+    number = value
+  elseif type(value) == "string" then
+    local text = string.match(value, "^%s*(.-)%s*$")
+    if string.match(text, "^0[xX][0-9a-fA-F]+$") then
+      number = tonumber(string.sub(text, 3), 16)
+    elseif string.match(text, "^%d+$") then
+      number = tonumber(text, 10)
+    end
+  end
+  if not number or number < 0 or number ~= math.floor(number)
+      or number > CLIENT_SCOPE_UINT32_MAX then return nil end
+  return number
+end
+
+local function client_scope_band(left, right)
+  local result, bit = 0, 1
+  while left > 0 and right > 0 do
+    if left % 2 == 1 and right % 2 == 1 then result = result + bit end
+    left, right, bit = math.floor(left / 2), math.floor(right / 2), bit * 2
+  end
+  return result
+end
+
+local function client_scope_config_status()
+  local enabled = client_scope_value("CLIENT_SCOPE_ENABLE")
+  local mask = client_scope_number(client_scope_value("CLIENT_SCOPE_MARK_MASK"))
+  local shift = client_scope_number(client_scope_value("CLIENT_SCOPE_MARK_SHIFT"))
+  local max_scope = client_scope_number(client_scope_value("CLIENT_SCOPE_MARK_MAX"))
+  if not (enabled == 1 or enabled == "1" or enabled == true) then return nil, "disabled" end
+  if not mask or mask == 0 then return nil, "missing-mask" end
+  if not shift or shift > 31 or not max_scope or max_scope == 0 then return nil, "invalid-mask" end
+  local service_mark = client_scope_number(client_scope_value("DESYNC_MARK")) or CLIENT_SCOPE_DEFAULT_MARK
+  local postnat_mark = client_scope_number(client_scope_value("DESYNC_MARK_POSTNAT")) or CLIENT_SCOPE_DEFAULT_POSTNAT_MARK
+  if client_scope_band(mask, service_mark) ~= 0 or client_scope_band(mask, postnat_mark) ~= 0 then
+    return nil, "mask-conflict"
+  end
+  if mask % (2 ^ shift) ~= 0 then return nil, "invalid-mask" end
+  return { mask = mask, shift = shift, max_scope = max_scope }, nil
+end
+
+local function client_scope_record(scope, reason)
+  CLIENT_SCOPE_LAST_SEEN = scope or CLIENT_SCOPE_DEFAULT
+  CLIENT_SCOPE_LAST_REASON = reason or "no-scoped-lock"
+end
+
+local function client_scope_store(desync, scope)
+  if type(desync.track) == "table" then
+    desync.track.lua_state = desync.track.lua_state or {}
+    desync.track.lua_state.client_scope = scope
+  end
+  return scope
+end
+
+function desync_client_scope(desync)
+  if type(desync) ~= "table" then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, "missing-mark")
+    return CLIENT_SCOPE_DEFAULT
+  end
+  local config, config_reason = client_scope_config_status()
+  if not config then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, config_reason)
+    return client_scope_store(desync, CLIENT_SCOPE_DEFAULT)
+  end
+  local state = type(desync.track) == "table" and desync.track.lua_state
+  if type(state) == "table" and state.client_scope == CLIENT_SCOPE_DEFAULT then
+    client_scope_record(state.client_scope, "missing-mark")
+    return state.client_scope
+  end
+  if type(state) == "table" then
+    local saved = string.match(tostring(state.client_scope), "^mark:(%d+)$")
+    local number = client_scope_number(saved)
+    if number and number > 0 and number <= config.max_scope then
+      client_scope_record(state.client_scope, "no-scoped-lock")
+      return state.client_scope
+    end
+  end
+  local fwmark = client_scope_number(desync.fwmark)
+  if not fwmark then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, "missing-mark")
+    return client_scope_store(desync, CLIENT_SCOPE_DEFAULT)
+  end
+  local scope_number = math.floor(client_scope_band(fwmark, config.mask) / (2 ^ config.shift))
+  if scope_number == 0 or scope_number > config.max_scope then
+    client_scope_record(CLIENT_SCOPE_DEFAULT, "invalid-mark")
+    return client_scope_store(desync, CLIENT_SCOPE_DEFAULT)
+  end
+  local scope = "mark:" .. tostring(scope_number)
+  client_scope_record(scope, "no-scoped-lock")
+  return client_scope_store(desync, scope)
+end
+
+-- Deliberately returns only aggregate, scope-safe fields.  Payloads and source
+-- addresses must never become part of normal diagnostics.
+function client_scope_diagnostics()
+  local config, reason = client_scope_config_status()
+  load_locked_tables()
+  local mode = config and "mark" or "disabled"
+  return {
+    mode = mode,
+    mask = config and config.mask or 0,
+    shift = config and config.shift or 0,
+    max_scope = config and config.max_scope or 0,
+    scoped_lock_count = CLIENT_SCOPE_SCOPED_LOCK_COUNT,
+    conflicts = LOCKED_CONFLICTS_TOTAL,
+    last_seen_scope = CLIENT_SCOPE_LAST_SEEN,
+    fallback_reason = config and (CLIENT_SCOPE_LAST_REASON == "disabled" and "no-scoped-lock" or CLIENT_SCOPE_LAST_REASON) or reason,
+  }
 end
 
 function desync_profile_key(desync)
@@ -317,9 +566,10 @@ function circular_locked(ctx, desync)
     error("circular_locked: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
   end
 
-  local locked = locked_strategy_for_profile(profile, proto)
+  local scope = desync_client_scope(desync)
+  local locked = locked_strategy_for_profile(profile, proto, scope)
   if (not locked) and profile ~= base_profile then
-    locked = locked_strategy_for_profile(base_profile, proto)
+    locked = locked_strategy_for_profile(base_profile, proto, scope)
     if locked then
       DLOG("circular_locked: fallback lock profile="..base_profile.." for host profile="..profile)
     end
@@ -329,7 +579,11 @@ function circular_locked(ctx, desync)
     return VERDICT_PASS
   elseif locked and locked >= 1 and locked <= hrec.ctstrategy then
     hrec.nstrategy = locked
-    DLOG("circular_locked: locked strategy "..hrec.nstrategy.." profile="..profile)
+    if scope ~= "default" then
+      DLOG("circular_locked: locked strategy "..hrec.nstrategy.." scope="..scope.." profile="..profile)
+    else
+      DLOG("circular_locked: locked strategy "..hrec.nstrategy.." profile="..profile)
+    end
   else
     hrec.nstrategy = 1
     DLOG("circular_locked: start from strategy 1 profile="..profile)
