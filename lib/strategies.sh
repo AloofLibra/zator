@@ -98,7 +98,6 @@ orch_profile_try() {
         done
         echo "Стратегия $s применена."
         if [ "$profile" = "10" ]; then
-            echo "Проверка резолва: nslookup ${Z2R_DNS_CHECK_DOMAIN} @ ${Z2R_DNS_CHECK_SERVER}"
             z2r_dns_check_print
         elif [ "$test_url" = "__RUN_CDN_TEST__" ]; then
             echo "Проверка доступа: CDN test (как в пункте 001)"

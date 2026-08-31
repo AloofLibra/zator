@@ -298,9 +298,9 @@ check_one_target_json() {
 
 check_one_dns_json() {
   local res state text
-  res="$(z2r_dns_check_target)"
+  res="$(z2r_dns_check_series | sed -n 1p)"
   state="$(z2r_dns_field "$res" 1)"
-  text="$(z2r_dns_text "$res")"
+  text="$(z2r_dns_series_text "$res")"
   printf '{"label":"DNS антиспуф","target":"%s","verdict":"%s","text":"%s"}' \
     "$(json_escape "nslookup ${Z2R_DNS_CHECK_DOMAIN} @ ${Z2R_DNS_CHECK_SERVER}")" \
     "$state" "$(json_escape "$text")"

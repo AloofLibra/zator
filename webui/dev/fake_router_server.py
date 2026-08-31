@@ -485,10 +485,12 @@ def dns_check_target(domain=None, server=None):
     try:
         if tool == "nslookup" or (tool == "auto" and not shutil.which("dig")):
             proc = subprocess.run(["nslookup", domain, server],
-                                  capture_output=True, text=True, timeout=10)
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=10)
         else:
             proc = subprocess.run(["dig", "+short", "+time=2", "+tries=1", domain, "@" + server],
-                                  capture_output=True, text=True, timeout=10)
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=10)
         text, rc = proc.stdout + proc.stderr, proc.returncode
     except Exception:
         return "fail|noanswer|||"
@@ -520,27 +522,67 @@ def dns_check_target(domain=None, server=None):
     return "fail|empty|||"
 
 
-def dns_check_text(res):
-    """z2r_dns_text() — lib/netcheck.sh (порт)."""
+def dns_check_series(domain=None, server=None, tries=None, interval=None):
+    """z2r_dns_check_series() — lib/netcheck.sh (порт): серия проб, агрегат
+    "state|reason|v4|v6|hits|ok|warn|fail". Одного ok достаточно: стратегия
+    пропускает настоящий резолв. Интервал — целые секунды (BusyBox sleep)."""
+    import time
+    domain = domain or DNS_CHECK_DOMAIN
+    server = server or DNS_CHECK_SERVER
+    tries = tries if tries is not None else int(os.environ.get("Z2R_DNS_TRIES", "3"))
+    interval = interval if interval is not None else int(os.environ.get("Z2R_DNS_INTERVAL", "1"))
+    n_ok = n_warn = n_fail = 0
+    best = None
+    first_fail_reason = ""
+    for i in range(tries):
+        if i > 0 and interval > 0:
+            time.sleep(interval)
+        res = dns_check_target(domain, server)
+        parts = res.split("|")
+        state, reason = parts[0], parts[1]
+        if state == "ok":
+            n_ok += 1
+            if best is None:
+                best = res
+        elif state == "warn":
+            n_warn += 1
+            if best is None:
+                best = res
+        else:
+            n_fail += 1
+            if not first_fail_reason:
+                first_fail_reason = reason
+    if n_ok > 0:
+        return "%s|%s|%s|%s|%s|%s" % (best, n_ok, n_warn, n_fail)
+    if n_warn > 0:
+        return "%s|%s|%s|%s" % (best, n_ok, n_warn, n_fail)
+    return "fail|%s||||%s|%s|%s" % (first_fail_reason or "empty", n_ok, n_warn, n_fail)
+
+
+def dns_series_text(res):
+    """z2r_dns_series_text() — lib/netcheck.sh (порт)."""
     parts = res.split("|")
     state, reason = parts[0], parts[1]
-    v4, hits = parts[2], parts[4] if len(parts) > 4 else ""
+    v4, hits = parts[2], parts[4]
+    n_ok, n_warn, n_fail = (int(x) for x in parts[5:8])
+    total = n_ok + n_warn + n_fail
     if state == "ok":
-        return ("Резолв настоящий: IPv4-адресов %s (%s), совпадение с эталоном torproject:%s"
-                % (len(v4.split()), v4, " " + hits if hits else ""))
+        return "резолв настоящий в %s из %s проверок (адреса: %s, эталон torproject:%s)" \
+            % (n_ok, total, v4, " " + hits if hits else "")
     if state == "warn":
-        return ("Резолв отвечает адресами (%s), но ни один не из эталонного набора torproject - "
+        return ("адреса приходят (%s из %s проверок), но не из эталонного набора torproject - "
                 "возможно, набор сменился. Сверьте вручную: dig +tcp %s @ %s"
-                % (v4, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER))
+                % (n_warn, total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER))
     if reason == "nxdomain":
-        return "Подмена DNS: %s @ %s отвечает NXDOMAIN/без адресов" % (DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
+        return "подмена DNS во всех %s проверках: NXDOMAIN/без адресов от %s @ %s" \
+            % (total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
     if reason == "noanswer":
-        return ("DNS не отвечает (%s @ %s: таймаут/отказ) - вероятно, дропается оригинал запроса"
-                % (DNS_CHECK_DOMAIN, DNS_CHECK_SERVER))
-    return "Ответ DNS пришёл без IPv4-адресов (%s @ %s)" % (DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
+        return "DNS не отвечает ни в одной из %s проверок (%s @ %s) - вероятно, дропается оригинал запроса" \
+            % (total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
+    return "ответ DNS без IPv4-адресов во всех %s проверках (%s @ %s)" \
+        % (total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
 
 
-# --- csv-хелперы для голосовых портов (lib/config.sh:369 / 438) ------------
 
 def _csv_contains(csv, token):
     return token in (csv.split(",") if csv else [])
@@ -1803,13 +1845,13 @@ class FakeRouterState:
 
     def _dns_check_item(self):
         """check_one_dns_json() — _lib.sh."""
-        res = dns_check_target()
+        res = dns_check_series()
         state = res.split("|")[0]
         return {
             "label": "DNS антиспуф",
             "target": "nslookup {0} @ {1}".format(DNS_CHECK_DOMAIN, DNS_CHECK_SERVER),
             "verdict": state,
-            "text": dns_check_text(res),
+            "text": dns_series_text(res),
         }
 
     # --- TLS blob -----------------------------------------------------------
