@@ -370,7 +370,6 @@ NFQWS2_OPT="
 --lua-desync=dnsclone:ttl=2:ip_id=rnd:resend=1:strategy=3
 --lua-desync=dnsclone:ttl=8:pad=8:ip_id=rnd:resend=1:strategy=4
 --lua-desync=udplen:payload=dns_query:increment=8:pattern=0x00000000:strategy=5
---lua-desync=send:dir=out:ipfrag:ipfrag_pos_udp=8:strategy=6 --lua-desync=drop:dir=out:payload=dns_query:strategy=6
 #Z2R_DNS_END
 
 --new

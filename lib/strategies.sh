@@ -118,7 +118,12 @@ orch_profile_try() {
             check_access "$test_url"
         fi
 
-        read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
+        # Ctrl+C в read возвращает не-ноль: считаем отменой, чтобы лок
+        # испробованной стратегии не остался в locked.tsv (restore ниже по break).
+        if ! read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer; then
+            echo
+            answer="0"
+        fi
         if [ "$answer" = "1" ]; then
             cfg="$(get_config_file)"
             old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
@@ -947,7 +952,11 @@ manage_custom_rkn_domain() {
         echo -e "${yellow}Запускается проверка, пожалуйста подождите:${plain}"
         check_access "$test_url"
 
-        read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
+        # Ctrl+C в read возвращает не-ноль: считаем отменой (локи восстанавливаются ниже).
+        if ! read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer; then
+            echo
+            answer="0"
+        fi
         if [ "$answer" = "1" ]; then
             if [ "$ORCH_ACTIVE_SCOPE" != default ]; then
                 echo "Стратегия $s сохранена для $user_domain (клиент $ORCH_ACTIVE_SCOPE)."

@@ -78,7 +78,7 @@ Client scope: `scope` необязателен и по умолчанию рав
     {"profile":7,"label":"UDP Games","description":"Игровой UDP (порты 1026-65531)","current_lock":"auto","max_strategy":20,"is_udp_games":true,"udp_games_enabled":false},
     {"profile":8,"label":"Fallback TLS","description":"Безразборный режим TLS (profile 8)","current_lock":"auto","max_strategy":43,"is_fallback":true,"fallback_enabled":false},
     {"profile":9,"label":"Fallback HTTP","description":"Безразборный режим HTTP (profile 9)","current_lock":"auto","max_strategy":8,"is_fallback":true,"fallback_enabled":false},
-    {"profile":10,"label":"DNS Антиспуф","description":"Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)","current_lock":"auto","max_strategy":6,"is_dns_desync":true,"dns_desync_enabled":false}
+    {"profile":10,"label":"DNS Антиспуф","description":"Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)","current_lock":"auto","max_strategy":5,"is_dns_desync":true,"dns_desync_enabled":false}
   ]
 }
 ```
@@ -101,11 +101,12 @@ Client scope: `scope` необязателен и по умолчанию рав
 Для профиля **10** (антиспуф DNS) дополнительно есть `"is_dns_desync":true` и
 `"dns_desync_enabled":bool` (блок `#Z2R_DNS_*` активен и порт 53 в
 `NFQWS2_PORTS_UDP`; `config_mode_text dns_desync`). Включение — пункт 8
-главного меню z2r (`menu_action_toggle_dns_desync`), стратегии 1–6:
-ttl 8 / ttl 4 / ttl 2 / ttl 8+pad / udplen / ipfrag+drop.
+главного меню z2r (`menu_action_toggle_dns_desync`), стратегии 1–5:
+ttl 8 / ttl 4 / ttl 2 / ttl 8+pad / udplen (ipfrag+drop исключена — дропает
+оригинал и на живых стендах полностью ломала резолв).
 
 `max_strategy` для `config.default`: **1→43, 2→43, 3→43, 4→28, 5→32, 6→32,
-7→20, 8→43, 9→8, 10→6** (см. `config_profile_max_strategy`).
+7→20, 8→43, 9→8, 10→5** (см. `config_profile_max_strategy`).
 Профили 8/9 — это fallback-блоки `#Z2R_FALLBACK_*` (TLS/HTTP).
 
 Ошибок через `send_error` нет (при отсутствии runtime-либ — `500` + `{"error":"missing z2r runtime libs"}`).
