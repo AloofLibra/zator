@@ -88,6 +88,7 @@ for runtime_file in \
   lua/strategy-lock-manager.lua \
   lua/combined-detector.lua \
   lua/silent-drop-detector.lua \
+  lua/dns-clone.lua \
   lua/strategy-validator.sh \
   init.d/openwrt/z2r-strategy-validator \
   Entware/z2r-strategy-validator; do
@@ -98,6 +99,7 @@ sh -n "$REPO_DIR/init.d/openwrt/z2r-strategy-validator"
 sh -n "$REPO_DIR/Entware/z2r-strategy-validator"
 grep -q '"lua/combined-detector.lua"' "$REPO_DIR/z2r.sh" || fail "combined detector is not deployed"
 grep -q '"lua/silent-drop-detector.lua"' "$REPO_DIR/z2r.sh" || fail "silent-drop detector is not deployed"
+grep -q '"lua/dns-clone.lua"' "$REPO_DIR/z2r.sh" || fail "dns-clone is not deployed"
 grep -q '"lua/strategy-lock-manager.lua"' "$REPO_DIR/z2r.sh" || fail "strategy lock manager is not deployed"
 grep -q '"lua/strategy-validator.sh"' "$REPO_DIR/z2r.sh" || fail "strategy validator is not deployed"
 grep -q '"init.d/openwrt/z2r-strategy-validator"' "$REPO_DIR/z2r.sh" || fail "strategy validator service is not deployed"
@@ -107,12 +109,31 @@ grep -q 'validator=/opt/zator/lua/strategy-validator.sh' "$TMP_DIR/config.defaul
 [ "$(grep -c '^--lua-init=@/opt/zator/lua/strategy-lock-manager.lua$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "strategy lock manager lua-init is missing or duplicated"
 [ "$(grep -c '^--lua-init=@/opt/zator/lua/combined-detector.lua$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "combined detector lua-init is missing or duplicated"
 [ "$(grep -c '^--lua-init=@/opt/zator/lua/silent-drop-detector.lua$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "silent-drop detector lua-init is missing or duplicated"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/dns-clone.lua$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "dns-clone lua-init is missing or duplicated"
 awk '
   /lua-init=@\/opt\/zator\/lua\/strategy-lock-manager\.lua/ {manager=NR}
   /lua-init=@\/opt\/zator\/lua\/combined-detector\.lua/ {combined=NR}
   /lua-init=@\/opt\/zator\/lua\/silent-drop-detector\.lua/ {silent=NR}
-  END {exit !(manager < combined && combined < silent)}
+  /lua-init=@\/opt\/zator\/lua\/dns-clone\.lua/ {dnsclone=NR}
+  END {exit !(manager < combined && combined < silent && silent < dnsclone)}
 ' "$REPO_DIR/config.default" || fail "circular lua-init order is invalid"
+
+# --- Профиль 10 (антиспуф DNS): маркеры и структура блока ---
+# Проверки с якорями — по нормализованной LF-копии (checkout может быть CRLF).
+[ "$(grep -c '^#Z2R_DNS_BEGIN$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "Z2R_DNS_BEGIN marker is missing or duplicated"
+[ "$(grep -c '^#Z2R_DNS_END$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "Z2R_DNS_END marker is missing or duplicated"
+dns_block="$(sed -n '/^#Z2R_DNS_BEGIN$/,/^#Z2R_DNS_END$/p' "$TMP_DIR/config.default.lf")"
+assert_contains "$dns_block" '^--skip --filter-udp=53$' "DNS profile must be disabled by default"
+assert_contains "$dns_block" 'circular_locked:key=10:proto=udp:allow_nohost=1' "DNS profile orchestrator changed"
+# Один номер стратегии = один TTL клона (1->8, 2->4, 3->2), без веера на одном номере.
+[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=8:ip_id=rnd:resend=1:strategy=1$')" -eq 1 ] || fail "DNS strategy 1 must be the canonical ttl=8 clone"
+[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=4:ip_id=rnd:resend=1:strategy=2$')" -eq 1 ] || fail "DNS strategy 2 must be ttl=4"
+[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=2:ip_id=rnd:resend=1:strategy=3$')" -eq 1 ] || fail "DNS strategy 3 must be ttl=2"
+[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=8:pad=8:ip_id=rnd:resend=1:strategy=4$')" -eq 1 ] || fail "DNS strategy 4 must be ttl=8 with padding"
+assert_not_contains "$dns_block" 'strategy=1.*strategy=1' "DNS strategy numbers must not repeat on one line"
+if printf '%s\n' "$dns_block" | grep -Eq '^[[:space:]]*#.*--'; then
+  fail "DNS block comments must not contain -- tokens (they stay active inside NFQWS2_OPT)"
+fi
 
 auto_pair_block() {
   local cfg="$1" kind="$2" id="$3"
@@ -143,7 +164,7 @@ auto_udp_snapshot() {
 
 profile_max_snapshot() {
   local profile
-  for profile in 1 2 3 4 5 6 7 8 9; do
+  for profile in 1 2 3 4 5 6 7 8 9 10; do
     printf '%s:%s\n' "$profile" "$(config_profile_max_strategy "$profile" "$1")"
   done
 }
@@ -172,9 +193,13 @@ assert_not_contains "$(auto_pair_block "$CFG" "" 3)" '^--hostlist=' "AUTO_3 must
 assert_not_contains "$(auto_pair_block "$CFG" "" 9)" 'circular_quality:key=9:.*allow_nohost' "AUTO_9 must not use allow_nohost"
 
 strategy_menu="$(sed -n '/^strategies_submenu()/,/^}/p' "$REPO_DIR/lib/submenus.sh")"
-for menu_id in 1 2 3 4 5 6 7 8 9 10; do
+for menu_id in 1 2 3 4 5 6 7 8 9 10 11; do
   [ "$(printf '%s\n' "$strategy_menu" | grep -Ec "submenu_item \"[[:space:]]*${menu_id}\"[[:space:]]")" -eq 1 ] || fail "strategy menu item $menu_id changed numbering"
 done
+assert_contains "$strategy_menu" 'Профиль 10: DNS антиспуф' "strategy menu item 10 must be the DNS profile"
+assert_contains "$strategy_menu" 'submenu_item "11" "Авторотация TCP/HTTP' "strategy menu item 11 must be autorotation"
+assert_contains "$strategy_menu" 'включите антиспуф DNS, п.8' "DNS menu item must be guarded by the main menu toggle"
+assert_contains "$strategy_menu" 'orch_profile_try "10"' "DNS menu item must run the profile 10 trial"
 assert_contains "$strategy_menu" 'if \[ "\$auto_enabled" = "1" \]' "strategy menu does not hide manual TCP actions in auto mode"
 assert_contains "$strategy_menu" '1\|2\|3\|4\|8\|9\)' "strategy menu does not guard manual TCP choices in auto mode"
 for menu_id in 5 6 7; do
@@ -184,7 +209,7 @@ fallback_toggle="$(sed -n '/^toggle_fallback_mode()/,/^}/p' "$REPO_DIR/lib/actio
 assert_contains "$fallback_toggle" 'config_mode_text auto_mode' "fallback menu action is not guarded in auto mode"
 assert_contains "$fallback_toggle" 'return 0' "fallback menu action does not stop in auto mode"
 
-for mapping in '1 tls http' '2 tls' '3 tls' '4 tls' '5 udp' '6 udp' '7 udp' '8 tls' '9 http'; do
+for mapping in '1 tls http' '2 tls' '3 tls' '4 tls' '5 udp' '6 udp' '7 udp' '8 tls' '9 http' '10 udp'; do
   set -- $mapping
   [ "$(config_profile_proto_list "$1")" = "${mapping#* }" ] || fail "logical profile $1 protocol mapping changed"
 done
@@ -392,6 +417,51 @@ if profile_apply_all "$CFG" >/dev/null 2>&1; then
   fail "profile_apply_all masked an orchestra lock write error"
 fi
 ORCH_LOCK_FILE="$saved_orch_lock_file"
+
+# --- Профиль 10: антиспуф DNS (тумблер, порт 53, локи, снапшот меню) ---
+[ "$(config_profile_max_strategy 10 "$CFG")" = "6" ] || fail "DNS profile max strategy must be 6"
+[ "$(config_mode_text dns_desync "$CFG")" = "Выключен" ] || fail "DNS antispoof must be disabled by default"
+assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "port 53 must not be in NFQWS2_PORTS_UDP by default"
+
+backup_smart_set_dns_desync "$CFG" 1
+config_profile_dns_ports_apply "$CFG" 1
+[ "$(config_mode_text dns_desync "$CFG")" = "Включен" ] || fail "DNS antispoof could not be enabled"
+assert_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "toggle did not add port 53"
+
+# повторное включение идемпотентно (порт не дублируется)
+backup_smart_set_dns_desync "$CFG" 1
+config_profile_dns_ports_apply "$CFG" 1
+assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53,53(,|$)' "toggle duplicated port 53"
+
+backup_smart_set_dns_desync "$CFG" 0
+config_profile_dns_ports_apply "$CFG" 0
+[ "$(config_mode_text dns_desync "$CFG")" = "Выключен" ] || fail "DNS antispoof could not be disabled"
+assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "toggle did not remove port 53"
+
+# smart restore сохраняет состояние тумблера между конфигами
+DNS_OLD_CFG="$TMP_DIR/dns-old.conf"
+DNS_NEW_CFG="$TMP_DIR/dns-new.conf"
+cp "$CFG" "$DNS_OLD_CFG"
+backup_smart_set_dns_desync "$DNS_OLD_CFG" 1
+config_profile_dns_ports_apply "$DNS_OLD_CFG" 1
+sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$DNS_NEW_CFG"
+backup_smart_apply_flags "$DNS_OLD_CFG" "$DNS_NEW_CFG"
+[ "$(config_mode_text dns_desync "$DNS_NEW_CFG")" = "Включен" ] || fail "smart restore lost DNS antispoof state"
+
+# сохранённый лок профиля 10 реанимируется на свежем config
+printf '10\tudp\t2\n' > "$PROFILE_STATE_FILE"
+profile_apply_all "$CFG" >/dev/null
+[ "$(orch_locked_get 10 udp)" = "2" ] || fail "stored DNS lock was not rehydrated into orchestra lock"
+printf '10\tudp\t99\n' > "$PROFILE_STATE_FILE"
+profile_apply_all "$CFG" >/dev/null
+[ "$(orch_locked_get 10 udp)" = "2" ] || fail "out-of-range DNS lock must be skipped, not applied"
+
+# снапшот главного меню: лимит профиля 10 и состояние тумблера
+menu_config_snapshot "$CFG"
+[ "$MENU_PROFILE_MAX_10" = "6" ] || fail "menu snapshot did not fill MENU_PROFILE_MAX_10"
+[ "$MENU_DNS_DESINC" = "Выключен" ] || fail "menu snapshot did not fill MENU_DNS_DESINC"
+menu_config_snapshot "$DNS_NEW_CFG"
+[ "$MENU_DNS_DESINC" = "Включен" ] || fail "menu snapshot did not detect enabled DNS antispoof"
 
 # --- Дата изменения config (# Last modified) для главного меню ---
 grep -q '^# Last modified: ' "$REPO_DIR/config.default" \

@@ -911,6 +911,11 @@ strategies_submenu() {
     local games_state games_disabled
     games_state="$MENU_UDP_GAMES"
     [ "$games_state" = "Выключен" ] && games_disabled=1 || games_disabled=0
+    # Состояние антиспуфа DNS (пункт 8 главного меню): если выключен,
+    # пункт 10 (профиль 10 DNS) становится недоступным.
+    local dns_state dns_disabled
+    dns_state="$MENU_DNS_DESINC"
+    [ "$dns_state" = "Выключен" ] && dns_disabled=1 || dns_disabled=0
 
     echo -e "${cyan}--- Управление стратегиями ---${plain}"
     if [ "$(client_scope_mode_text)" = "включен" ]; then
@@ -944,7 +949,12 @@ strategies_submenu() {
       submenu_item "8" "Fallback TLS (безразборный блок)" "" "$STRATEGY_STATE_FB_TLS"
       submenu_item "9" "Fallback HTTP (безразборный блок) [${MENU_PROFILE_MAX_9:-0}]" "" "$STRATEGY_STATE_FB_HTTP"
     fi
-    submenu_item "10" "Авторотация TCP/HTTP [${auto_state}]"
+    if [ "$dns_disabled" = "1" ]; then
+      echo -e "${Fcyan}	10.${plain} ${red}Профиль 10: DNS антиспуф UDP:53 [${MENU_PROFILE_MAX_10:-0}]${plain} ${red}[выключен — включите антиспуф DNS, п.8]${plain}"
+    else
+      submenu_item "10" "Профиль 10: DNS антиспуф UDP:53 [${MENU_PROFILE_MAX_10:-0}]" "udp" "$STRATEGY_STATE_DNS_UDP"
+    fi
+    submenu_item "11" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1010,6 +1020,16 @@ strategies_submenu() {
         fi
         ;;
       "10")
+        if [ "$dns_disabled" = "1" ]; then
+          echo -e "${red}Антиспуф DNS выключен.${plain}"
+          echo -e "${yellow}Сначала включите антиспуф DNS в главном меню, пункт 8.${plain}"
+          pause_enter
+        else
+          echo -e "${yellow}Проверьте резолв вручную: nslookup <домен> 8.8.8.8${plain}"
+          orch_profile_try "10" "Профиль 10: DNS антиспуф UDP:53" "udp" ""
+        fi
+        ;;
+      "11")
         toggle_auto_mode
         pause_enter
         ;;

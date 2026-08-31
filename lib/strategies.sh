@@ -525,7 +525,7 @@ get_orchestra_locks_info() {
     profile_state_file="$PROFILE_STATE_FILE"
     orch_lock_file="$ORCH_LOCK_FILE"
 
-    local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http"
+    local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http|10:udp"
     local stored_line orch_line
     if [ "${ORCH_ACTIVE_SCOPE:-default}" = default ]; then
       stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
@@ -540,8 +540,8 @@ get_orchestra_locks_info() {
     local s_vals o_vals
     IFS=$'\t' read -ra s_vals <<< "$stored_line"
     IFS=$'\t' read -ra o_vals <<< "$orch_line"
-    local labels=("YT_TLS" "GV_TLS" "RKN_TLS" "DS_TLS" "YT_QUIC_UDP" "VOICE_UDP" "GAMES_UDP" "FB_TLS" "FB_HTTP")
-    local state_vars=("STRATEGY_STATE_YT_TLS" "STRATEGY_STATE_GV_TLS" "STRATEGY_STATE_RKN_TLS" "STRATEGY_STATE_DS_TLS" "STRATEGY_STATE_YT_QUIC_UDP" "STRATEGY_STATE_VOICE_UDP" "STRATEGY_STATE_GAMES_UDP" "STRATEGY_STATE_FB_TLS" "STRATEGY_STATE_FB_HTTP")
+    local labels=("YT_TLS" "GV_TLS" "RKN_TLS" "DS_TLS" "YT_QUIC_UDP" "VOICE_UDP" "GAMES_UDP" "FB_TLS" "FB_HTTP" "DNS_UDP")
+    local state_vars=("STRATEGY_STATE_YT_TLS" "STRATEGY_STATE_GV_TLS" "STRATEGY_STATE_RKN_TLS" "STRATEGY_STATE_DS_TLS" "STRATEGY_STATE_YT_QUIC_UDP" "STRATEGY_STATE_VOICE_UDP" "STRATEGY_STATE_GAMES_UDP" "STRATEGY_STATE_FB_TLS" "STRATEGY_STATE_FB_HTTP" "STRATEGY_STATE_DNS_UDP")
     local i raw eff colored rendered=""
     for ((i = 0; i < ${#labels[@]}; i++)); do
         raw="${s_vals[i]:-auto}"
@@ -578,7 +578,7 @@ get_orchestra_locks_info() {
 _orchestra_multi_state() {
     local file="$1" pairs="$2"
     if [ -z "$file" ] || [ ! -f "$file" ]; then
-        printf 'auto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\n'
+        printf 'auto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\n'
         return 0
     fi
     awk -v pairs="$pairs" '

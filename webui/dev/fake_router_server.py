@@ -62,6 +62,7 @@ PROFILES = [
     (7, "UDP Games", "Игровой UDP (порты 1026-65531)"),
     (8, "Fallback TLS", "Безразборный режим TLS (profile 8)"),
     (9, "Fallback HTTP", "Безразборный режим HTTP (profile 9)"),
+    (10, "DNS Антиспуф", "Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)"),
 ]
 
 # Fallback profiles (is_fallback=True)
@@ -71,11 +72,15 @@ FALLBACK_PROFILES = {8, 9}
 # состоянию config_mode_text udp_games (наличие 1026-65531 в NFQWS2_PORTS_UDP).
 UDP_GAMES_PROFILE = 7
 
+# DNS antispoof profile (is_dns_desync=True) — гейтинг по состоянию
+# config_mode_text dns_desync (блок #Z2R_DNS_* активен + порт 53 в NFQWS2_PORTS_UDP).
+DNS_DESYNC_PROFILE = 10
+
 # config_profile_proto_list() — lib/config.sh:359
 _PROTO_LIST = {
     1: "tls http",
     2: "tls", 3: "tls", 4: "tls", 8: "tls",
-    5: "udp", 6: "udp", 7: "udp",
+    5: "udp", 6: "udp", 7: "udp", 10: "udp",
     9: "http",
 }
 
@@ -203,9 +208,64 @@ def _fallback_max_strategy(profile, cfg_text):
     return maxval
 
 
-def config_profile_max_strategy(profile, cfg_text):
-    """config_profile_max_strategy() — lib/config.sh:230 (порт awk 1:1)."""
+def _keyed_max_strategy(profile, cfg_text):
+    """Стадия 1 shell-версии (lib/config.sh): стратегии в блоках
+    с --lua-desync=(circular_locked|circular_quality|rst_guard_locked):key=N.
+    Порядок блоков не важен — профиль задаётся логическим key=N."""
     pid = int(profile)
+    key_re = re.compile(
+        r"--lua-desync=(circular_locked|circular_quality|rst_guard_locked):key="
+        + str(pid) + r"([^0-9]|$)")
+    inopt = False
+    in_template = False
+    active = False
+    tpl = ""
+    tplmax = {}
+    maxval = 0
+    for line in cfg_text.splitlines():
+        if re.match(r'^NFQWS2_OPT="', line):
+            inopt = True
+        if not inopt:
+            continue
+        if re.match(r"^--template=", line):
+            in_template = True
+            active = False
+            tpl = re.sub(r"^--template=", "", line)
+            tpl = re.sub(r"\s.*$", "", tpl)
+        elif re.match(r"^\s*--new\s*$", line):
+            in_template = False
+            active = False
+            tpl = ""
+        elif not in_template and key_re.search(line):
+            active = True
+        if (not in_template and active
+                and re.match(r"^--import([=\s]|$)", line)):
+            imp = re.sub(r"^--import[=\s]+", "", line)
+            imp = re.sub(r"\s.*$", "", imp)
+            if tplmax.get(imp, 0) > maxval:
+                maxval = tplmax[imp]
+        # scan_strategies(keyed): активный блок вне шаблона копит max
+        for m in _STRATEGY_RE.finditer(line):
+            num = int(m.group(0)[9:])
+            if in_template:
+                if num > tplmax.get(tpl, 0):
+                    tplmax[tpl] = num
+            elif active and num > maxval:
+                maxval = num
+        if re.match(r'^"$', line):
+            break
+    return maxval
+
+
+def config_profile_max_strategy(profile, cfg_text):
+    """config_profile_max_strategy() — lib/config.sh:230 (порт awk 1:1):
+    сначала keyed-разбор по key=N, затем маркеры #Z2R_FALLBACK_* для 8/9,
+    затем позиционный разбор старых конфигов без key=N."""
+    pid = int(profile)
+
+    keyed = _keyed_max_strategy(pid, cfg_text)
+    if keyed and keyed > 0:
+        return keyed
 
     # Профили 8/9 — отдельный fallback-разбор; при успехе возвращаем сразу.
     if pid in (8, 9):
@@ -323,6 +383,18 @@ def config_mode_text(mode, cfg_text):
         if ports:
             return "Выключен"
         return "Неизвестно"
+    if mode == "dns_desync":
+        # config_mode_text dns_desync — lib/config.sh.
+        # Блок #Z2R_DNS_* без --skip + порт 53 в NFQWS2_PORTS_UDP.
+        block = _dns_block_lines(cfg_text)
+        if not block:
+            return "Неизвестно"
+        active = any(re.match(r"^\s*--filter-udp=53\s*$", l) for l in block)
+        skipped = any(re.match(r"^\s*--skip\s+--filter-udp=53\s*$", l) for l in block)
+        ports = config_get_var(cfg_text, "NFQWS2_PORTS_UDP") or ""
+        if active and not skipped and re.search(r"(^|,)53(,|$)", ports):
+            return "Включен"
+        return "Выключен"
     if mode == "auto_mode":
         # config_mode_text auto_mode — lib/config.sh:248.
         has_on = any(re.match(r"^#Z2R_AUTO_MODE=1$", l) for l in cfg_text.splitlines())
@@ -370,6 +442,22 @@ def _fallback_block_lines(cfg_text):
             inblk = True
             continue
         if re.match(r"^\s*#Z2R_FALLBACK(_HTTP)?_END\s*$", line):
+            inblk = False
+            continue
+        if inblk:
+            lines.append(line)
+    return lines
+
+
+def _dns_block_lines(cfg_text):
+    """Строки блока #Z2R_DNS_* между маркерами."""
+    lines = []
+    inblk = False
+    for line in cfg_text.splitlines():
+        if re.match(r"^\s*#Z2R_DNS_BEGIN\s*$", line):
+            inblk = True
+            continue
+        if re.match(r"^\s*#Z2R_DNS_END\s*$", line):
             inblk = False
             continue
         if inblk:
@@ -1386,7 +1474,7 @@ class FakeRouterState:
                 continue
             prof_s, strat = token.split("=", 1)
             prof_s, strat = prof_s.strip(), strat.strip()
-            if not re.match(r"^[1-9]$", prof_s):
+            if not re.match(r"^[1-9][0-9]*$", prof_s):
                 continue
             prof = int(prof_s)
             pl = proto_list(prof)
@@ -1438,6 +1526,7 @@ class FakeRouterState:
         proto = profile_proto(pid)
         is_fallback = pid in FALLBACK_PROFILES
         is_udp_games = (pid == UDP_GAMES_PROFILE)
+        is_dns_desync = (pid == DNS_DESYNC_PROFILE)
         # current_lock читаем из profile.lock + orchestra-lock — как реальный
         # profile_json_fallback → profile_state_display. Для 8/9 orchestra-lock
         # живёт в locked.manual.tsv (profile_config_orch_set); config-блок не
@@ -1451,6 +1540,7 @@ class FakeRouterState:
         lock_source = orch_scoped_source(orch_file, scope, pid, proto)
         fallback_enabled = (_fallback_state(self.cfg_text) == "включен") if is_fallback else None
         udp_games_enabled = (config_mode_text("udp_games", self.cfg_text) == "Включен") if is_udp_games else None
+        dns_desync_enabled = (config_mode_text("dns_desync", self.cfg_text) == "Включен") if is_dns_desync else None
         maxstrat = config_profile_max_strategy(pid, self.cfg_text)
         result = {
             "profile": pid,
@@ -1467,6 +1557,9 @@ class FakeRouterState:
         if is_udp_games:
             result["is_udp_games"] = True
             result["udp_games_enabled"] = udp_games_enabled
+        if is_dns_desync:
+            result["is_dns_desync"] = True
+            result["dns_desync_enabled"] = dns_desync_enabled
         return result
 
     def all_profiles_json(self, scope="default"):
@@ -2398,7 +2491,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if endpoint == "check":
             self._sleep_for("check")
             profile = params.get("profile", "")
-            if re.match(r"^[1-9]$", profile):
+            if re.match(r"^[1-9][0-9]*$", profile):
                 self._log("{0} {1} | profile check profile={2} check_result={3}".format(
                     self.command, parsed.path, profile, self.state.check_result))
                 with self.state.lock:
@@ -2464,7 +2557,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         # api_set_lock() — _lib.sh:214
         profile = params.get("profile", "")
         strategy = params.get("strategy", "")
-        if not re.match(r"^[1-9]$", profile):
+        if not re.match(r"^[1-9][0-9]*$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
         if not re.match(r"^[0-9]+$", strategy):
@@ -2513,7 +2606,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
     def _handle_clear_lock(self, params, parsed):
         # api_clear_lock() — _lib.sh:232
         profile = params.get("profile", "")
-        if not re.match(r"^[1-9]$", profile):
+        if not re.match(r"^[1-9][0-9]*$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
         scope = params.get("scope", "default") or "default"

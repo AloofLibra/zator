@@ -1,4 +1,4 @@
-# Last modified: 2026-08-30 12:01:29 UTC
+# Last modified: 2026-08-31 12:00:00 UTC
 # this file is included from init scripts
 # change values here
 
@@ -95,6 +95,7 @@ NFQWS2_OPT="
 --lua-init=@/opt/zator/lua/strategy-lock-manager.lua
 --lua-init=@/opt/zator/lua/combined-detector.lua
 --lua-init=@/opt/zator/lua/silent-drop-detector.lua
+--lua-init=@/opt/zator/lua/dns-clone.lua
 --blob=maxru:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
 --blob=google_www:@/opt/zator/files/fake/tls_clienthello_www_google_com.bin
 --blob=tls4:@/opt/zator/files/fake/tls_clienthello_4.bin
@@ -353,6 +354,24 @@ NFQWS2_OPT="
 --lua-desync=fake:blob=stun_fake:badsum:repeats=4:out_range=-d10:strategy=18
 --lua-desync=fake:blob=discord_fake:badsum:repeats=4:out_range=-d10:strategy=19
 --lua-desync=fake:blob=stun_fake:badsum:repeats=4:out_range=-d10:strategy=20 --lua-desync=fake:blob=discord_fake:badsum:repeats=4:out_range=-d10:strategy=20
+
+--new
+
+#Z2R_DNS_BEGIN
+#Антиспуф DNS: защита от подмены DNS-ответов (клон запроса с малым TTL и меткой
+#transaction ID, дроп ответов по метке). По умолчанию выключен; порт 53 в
+#NFQWS2_PORTS_UDP добавляется тумблером (пункт 8 главного меню).
+--skip --filter-udp=53
+--lua-desync=circular_locked:key=10:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
+--in-range=a
+--payload=dns_query,dns_response
+--lua-desync=dnsclone:ttl=8:ip_id=rnd:resend=1:strategy=1
+--lua-desync=dnsclone:ttl=4:ip_id=rnd:resend=1:strategy=2
+--lua-desync=dnsclone:ttl=2:ip_id=rnd:resend=1:strategy=3
+--lua-desync=dnsclone:ttl=8:pad=8:ip_id=rnd:resend=1:strategy=4
+--lua-desync=udplen:payload=dns_query:increment=8:pattern=0x00000000:strategy=5
+--lua-desync=send:dir=out:ipfrag:ipfrag_pos_udp=8:strategy=6 --lua-desync=drop:dir=out:payload=dns_query:strategy=6
+#Z2R_DNS_END
 
 --new
 
