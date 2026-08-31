@@ -84,6 +84,82 @@ exit 1
 MOCK
 chmod +x "$TMP_DIR/bin/curl"
 
+# Мок nslookup/dig для движка z2r_dns_* (профиль 10, антиспуф DNS).
+# ok = живой ответ VPS из docs/dns_udp_desync.md (bind-формат, A + AAAA).
+cat > "$TMP_DIR/bin/nslookup" <<'MOCK'
+#!/bin/sh
+case "${MOCK_DNS_MODE:-ok}" in
+  ok)
+cat <<'EOF'
+Server:         8.8.8.8
+Address:        8.8.8.8#53
+
+Non-authoritative answer:
+deb.torproject.org      canonical name = static.torproject.org
+Name:   static.torproject.org
+Address: 204.8.99.146
+Name:   static.torproject.org
+Address: 95.216.163.36
+Name:   static.torproject.org
+Address: 116.202.120.166
+Name:   static.torproject.org
+Address: 116.202.120.165
+Name:   static.torproject.org
+Address: 204.8.99.144
+Name:   static.torproject.org
+Address: 2620:7:6002:0:466:39ff:fe7f:1826
+Name:   static.torproject.org
+Address: 2a01:4f8:fff0:4f:266:37ff:feae:3bbc
+EOF
+    exit 0 ;;
+  busybox)
+cat <<'EOF'
+Server:		8.8.8.8
+Address:	8.8.8.8:53
+
+Name:      deb.torproject.org
+Address 1: 204.8.99.146 static.torproject.org
+Address 2: 2a01:4f8:fff0:4f:266:37ff:feae:3bbc static.torproject.org
+EOF
+    exit 0 ;;
+  rotate)
+cat <<'EOF'
+Server:         8.8.8.8
+Address:        8.8.8.8#53
+
+Non-authoritative answer:
+Name:   static.torproject.org
+Address: 203.0.113.7
+EOF
+    exit 0 ;;
+  nxdomain)
+    echo "** server can't find deb.torproject.org: NXDOMAIN"
+    exit 3 ;;
+  timeout)
+    echo ";; connection timed out; no servers could be reached"
+    exit 1 ;;
+esac
+exit 1
+MOCK
+chmod +x "$TMP_DIR/bin/nslookup"
+
+# Мок dig для режима Z2R_DNS_TOOL=dig (dig +short ... domain @server).
+cat > "$TMP_DIR/bin/dig" <<'MOCK'
+#!/bin/sh
+case "${MOCK_DNS_MODE:-ok}" in
+  ok)
+    echo "static.torproject.org."
+    echo "204.8.99.146"
+    echo "95.216.163.36"
+    exit 0 ;;
+  nxdomain)
+    echo ";; ->>HEADER<<- status: NXDOMAIN"
+    exit 0 ;;
+esac
+exit 1
+MOCK
+chmod +x "$TMP_DIR/bin/dig"
+
 export COUNTER_DIR="$TMP_DIR/counter"
 export PATH="$TMP_DIR/bin:$PATH"
 export TMPDIR="$TMP_DIR"
@@ -636,6 +712,75 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   unset MOCK_VALIDATOR_RC
 )
 
+# == 18. DNS-антиспуф: движок z2r_dns_* (профиль 10) ==
+(
+  export COUNTER_DIR="$TMP_DIR/counter"
+  export PATH="$TMP_DIR/bin:$PATH"
+  export TMPDIR="$TMP_DIR"
+  export Z2R_DNS_TOOL=nslookup
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/webui/cgi-bin/_lib.sh"
+
+  export MOCK_DNS_MODE=ok
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: настоящий ответ должен быть ok: $res"
+  [ "$(z2r_dns_field "$res" 2)" = "match" ] || fail "сценарий 18: нет совпадения с эталоном torproject: $res"
+  case "$(z2r_dns_field "$res" 3)" in
+    *204.8.99.146*) : ;;
+    *) fail "сценарий 18: в адресах нет 204.8.99.146: $res" ;;
+  esac
+  for a in $(z2r_dns_field "$res" 3); do
+    [ "$a" != "8.8.8.8" ] || fail "сценарий 18: адрес резолвера попал в ответы: $res"
+  done
+  case "$(z2r_dns_field "$res" 4)" in
+    *2620:7:6002*) : ;;
+    *) fail "сценарий 18: IPv6 из ответа не разобран: $res" ;;
+  esac
+  z2r_dns_text "$res" | grep -q "совпадение с эталоном torproject" \
+    || fail "сценарий 18: текст ok без упоминания эталона"
+
+  export MOCK_DNS_MODE=busybox
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: busybox-формат nslookup должен давать ok: $res"
+
+  export MOCK_DNS_MODE=rotate
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "warn" ] || fail "сценарий 18: адреса вне эталона должны быть warn: $res"
+  z2r_dns_text "$res" | grep -q "эталонного набора" \
+    || fail "сценарий 18: текст warn без подсказки про эталон"
+
+  export MOCK_DNS_MODE=nxdomain
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "fail" ] || fail "сценарий 18: NXDOMAIN должен быть fail: $res"
+  [ "$(z2r_dns_field "$res" 2)" = "nxdomain" ] || fail "сценарий 18: причина не nxdomain: $res"
+  z2r_dns_text "$res" | grep -q "Подмена DNS" \
+    || fail "сценарий 18: текст NXDOMAIN без подмены"
+
+  export MOCK_DNS_MODE=timeout
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "fail" ] || fail "сценарий 18: таймаут должен быть fail: $res"
+  [ "$(z2r_dns_field "$res" 2)" = "noanswer" ] || fail "сценарий 18: причина не noanswer: $res"
+
+  # Режим dig: только A-записи, вывод +short
+  export Z2R_DNS_TOOL=dig
+  export MOCK_DNS_MODE=ok
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: dig +short должен давать ok: $res"
+  [ -z "$(z2r_dns_field "$res" 4)" ] || fail "сценарий 18: dig-режим не должен приносить AAAA: $res"
+  export Z2R_DNS_TOOL=nslookup
+
+  # WebUI: JSON-обёртка (check.cgi?profile=10)
+  export MOCK_DNS_MODE=nxdomain
+  json="$(check_one_dns_json)"
+  printf '%s' "$json" | grep -q '"verdict":"fail"' || fail "сценарий 18: JSON без verdict fail: $json"
+  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+    || fail "сценарий 18: JSON невалиден: $json"
+  export MOCK_DNS_MODE=ok
+  json="$(profile_check_json 10)"
+  printf '%s' "$json" | grep -q '"verdict":"ok"' || fail "сценарий 18: profile_check_json 10 без ok: $json"
+  printf '%s' "$json" | grep -q '"label":"DNS антиспуф"' || fail "сценарий 18: JSON без метки DNS"
+)
+
 # == 16. статический wiring ==
 lib_sh="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
 printf '%s' "$lib_sh" | grep -q 'LIB_DIR/netcheck\.sh' || fail "сценарий 16: _lib.sh не подключает netcheck.sh"
@@ -667,6 +812,11 @@ grep -q '\.domain-row \.domain-check \.check-title' "$REPO_DIR/webui/styles.css"
 grep -q '\.warn' "$REPO_DIR/webui/styles.css" || fail "сценарий 16: styles.css без .warn"
 fake="$REPO_DIR/webui/dev/fake_router_server.py"
 grep -q 'verdict' "$fake" || fail "сценарий 16: fake_router_server без verdict"
+grep -q 'z2r_dns_check_print' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 16: перебор профиля 10 без DNS-проверки"
+grep -q 'z2r_dns_check_target' "$REPO_DIR/lib/netcheck.sh" || fail "сценарий 16: нет движка DNS-проверки"
+grep -q 'Z2R_DNS_KNOWN_ADDRS' "$REPO_DIR/lib/netcheck.sh" || fail "сценарий 16: нет эталонных адресов torproject"
+grep -q 'check_one_dns_json' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail "сценарий 16: нет JSON-обёртки DNS-проверки"
+grep -q 'dns_check_target' "$fake" || fail "сценарий 16: fake_router_server без DNS-проверки"
 grep -q 'check_result == "random"' "$fake" || fail "сценарий 16: fake_router_server без режима random"
 grep -q '_download_zero_detail' "$fake" || fail "сценарий 16: fake_router_server без жёлтого сценария zero-download"
 grep -q 'action == "check"' "$fake" || fail "сценарий 16: fake_router_server без domains check"

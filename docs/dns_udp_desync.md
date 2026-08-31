@@ -363,6 +363,11 @@ DNS при этом работает по случайности: ошибка �
   на пункт 11); лимиты профилей расширены до 10 в `menu_config_snapshot`,
   `config_profile_proto_list/title`, `_pairs` в `lib/strategies.sh`,
   `all_profiles_json` в WebUI (карточка гейтится по `dns_desync_enabled`);
+- автопроверка при переборе стратегий и в WebUI: `z2r_dns_check_target`
+  (`lib/netcheck.sh`) — `nslookup deb.torproject.org @8.8.8.8` (dig при
+  наличии), A-записи сверяются с эталонными адресами torproject
+  (`Z2R_DNS_KNOWN_ADDRS`, могут ротироваться): ok = совпадение,
+  warn = адреса без совпадения, fail = NXDOMAIN/таймаут;
 - деплой `lua/dns-clone.lua`: скачивается `z2r.sh` при установке/обновлении
   (`circular_runtime_update_from_repo`), докачивается при отсутствии,
   мигрирует из `/opt/zapret2/lua` в `/opt/zator/lua`; внешнему лаунчеру

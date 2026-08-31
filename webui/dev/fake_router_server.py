@@ -38,6 +38,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -119,6 +120,17 @@ PROFILE_CHECK = {
 }
 UDP_CHECK_MESSAGE = ("Для UDP-профиля быстрая TLS-проверка неприменима. "
                      "Проверьте работу в браузере или приложении.")
+
+# z2r_dns_* — lib/netcheck.sh (профиль 10, антиспуф DNS)
+DNS_CHECK_DOMAIN = "deb.torproject.org"
+DNS_CHECK_SERVER = "8.8.8.8"
+DNS_KNOWN_ADDRS = (
+    "204.8.99.144", "204.8.99.146", "95.216.163.36",
+    "116.202.120.165", "116.202.120.166",
+    "2620:7:6002:0:466:39ff:fe7f:1826", "2620:7:6002:0:466:39ff:fe32:e3dd",
+    "2a01:4f8:fff0:4f:266:37ff:feae:3bbc", "2a01:4f8:fff0:4f:266:37ff:fe2c:5d19",
+    "2a01:4f9:c010:19eb::1",
+)
 
 # Сообщения об ошибках — дословно из _lib.sh (send_error)
 ERR_BAD_PROFILE = "Некорректный профиль"
@@ -463,6 +475,69 @@ def _dns_block_lines(cfg_text):
         if inblk:
             lines.append(line)
     return lines
+
+
+def dns_check_target(domain=None, server=None):
+    """z2r_dns_check_target() — lib/netcheck.sh (порт): "state|reason|v4|v6|hits"."""
+    domain = domain or DNS_CHECK_DOMAIN
+    server = server or DNS_CHECK_SERVER
+    tool = os.environ.get("Z2R_DNS_TOOL", "auto")
+    try:
+        if tool == "nslookup" or (tool == "auto" and not shutil.which("dig")):
+            proc = subprocess.run(["nslookup", domain, server],
+                                  capture_output=True, text=True, timeout=10)
+        else:
+            proc = subprocess.run(["dig", "+short", "+time=2", "+tries=1", domain, "@" + server],
+                                  capture_output=True, text=True, timeout=10)
+        text, rc = proc.stdout + proc.stderr, proc.returncode
+    except Exception:
+        return "fail|noanswer|||"
+    v4, v6, seen = [], [], set()
+    for tok in re.split(r"[\s,;()]+", text):
+        tok = re.sub(r"#.*$", "", tok).rstrip(":")
+        if not tok or tok == server or tok in seen:
+            continue
+        if re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", tok) \
+                and all(0 <= int(p) <= 255 for p in tok.split(".")):
+            seen.add(tok)
+            v4.append(tok)
+        elif ":" in tok and re.fullmatch(r"[0-9A-Fa-f:]+", tok):
+            seen.add(tok)
+            v6.append(tok)
+    if v4:
+        hits = [a for a in v4 + v6 if a in DNS_KNOWN_ADDRS]
+        if hits:
+            return "ok|match|%s|%s|%s" % (" ".join(v4), " ".join(v6), " ".join(hits))
+        return "warn|rotate|%s|%s|" % (" ".join(v4), " ".join(v6))
+    low = text.lower()
+    if any(s in low for s in ("nxdomain", "not found", "can't find", "non-existent", "no answer")):
+        return "fail|nxdomain|||"
+    if any(s in low for s in ("timed out", "timeout", "no servers", "refused",
+                              "unreachable", "servfail", "connection", "failure")):
+        return "fail|noanswer|||"
+    if rc != 0:
+        return "fail|noanswer|||"
+    return "fail|empty|||"
+
+
+def dns_check_text(res):
+    """z2r_dns_text() — lib/netcheck.sh (порт)."""
+    parts = res.split("|")
+    state, reason = parts[0], parts[1]
+    v4, hits = parts[2], parts[4] if len(parts) > 4 else ""
+    if state == "ok":
+        return ("Резолв настоящий: IPv4-адресов %s (%s), совпадение с эталоном torproject:%s"
+                % (len(v4.split()), v4, " " + hits if hits else ""))
+    if state == "warn":
+        return ("Резолв отвечает адресами (%s), но ни один не из эталонного набора torproject - "
+                "возможно, набор сменился. Сверьте вручную: dig +tcp %s @ %s"
+                % (v4, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER))
+    if reason == "nxdomain":
+        return "Подмена DNS: %s @ %s отвечает NXDOMAIN/без адресов" % (DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
+    if reason == "noanswer":
+        return ("DNS не отвечает (%s @ %s: таймаут/отказ) - вероятно, дропается оригинал запроса"
+                % (DNS_CHECK_DOMAIN, DNS_CHECK_SERVER))
+    return "Ответ DNS пришёл без IPv4-адресов (%s @ %s)" % (DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
 
 
 # --- csv-хелперы для голосовых портов (lib/config.sh:369 / 438) ------------
@@ -1714,6 +1789,8 @@ class FakeRouterState:
         pid = int(profile)
         if pid in (5, 6):
             return {"results": [], "message": UDP_CHECK_MESSAGE}
+        if pid == DNS_DESYNC_PROFILE:
+            return {"results": [self._dns_check_item()]}
         targets = PROFILE_CHECK.get(pid, [])
         if not targets:
             return {"results": []}
@@ -1723,6 +1800,17 @@ class FakeRouterState:
                 target = "https://{0}/".format(YT_CLUSTER_FALLBACK)
             results.append(self._check_item(label, target, i))
         return {"results": results}
+
+    def _dns_check_item(self):
+        """check_one_dns_json() — _lib.sh."""
+        res = dns_check_target()
+        state = res.split("|")[0]
+        return {
+            "label": "DNS антиспуф",
+            "target": "nslookup {0} @ {1}".format(DNS_CHECK_DOMAIN, DNS_CHECK_SERVER),
+            "verdict": state,
+            "text": dns_check_text(res),
+        }
 
     # --- TLS blob -----------------------------------------------------------
 

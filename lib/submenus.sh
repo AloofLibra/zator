@@ -1025,7 +1025,7 @@ strategies_submenu() {
           echo -e "${yellow}Сначала включите антиспуф DNS в главном меню, пункт 8.${plain}"
           pause_enter
         else
-          echo -e "${yellow}Проверьте резолв вручную: nslookup <домен> 8.8.8.8${plain}"
+          echo -e "${yellow}Каждая стратегия проверяется резолвом ${Z2R_DNS_CHECK_DOMAIN} @ ${Z2R_DNS_CHECK_SERVER} (эталон: адреса torproject).${plain}"
           orch_profile_try "10" "Профиль 10: DNS антиспуф UDP:53" "udp" ""
         fi
         ;;

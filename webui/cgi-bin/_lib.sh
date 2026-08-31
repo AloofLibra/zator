@@ -296,6 +296,16 @@ check_one_target_json() {
     "$(_tls_detail_json "$v12" 1.2)" "$(_tls_detail_json "$v13" 1.3)" "$dljson"
 }
 
+check_one_dns_json() {
+  local res state text
+  res="$(z2r_dns_check_target)"
+  state="$(z2r_dns_field "$res" 1)"
+  text="$(z2r_dns_text "$res")"
+  printf '{"label":"DNS антиспуф","target":"%s","verdict":"%s","text":"%s"}' \
+    "$(json_escape "nslookup ${Z2R_DNS_CHECK_DOMAIN} @ ${Z2R_DNS_CHECK_SERVER}")" \
+    "$state" "$(json_escape "$text")"
+}
+
 profile_check_json() {
   local profile="$1" gv
   case "$profile" in
@@ -314,6 +324,9 @@ profile_check_json() {
       ;;
     5|6)
       printf '{"results":[],"message":"%s"}' "$(json_escape "Для UDP-профиля быстрая TLS-проверка неприменима. Проверьте работу в браузере или приложении.")"
+      ;;
+    10)
+      printf '{"results":[%s]}' "$(check_one_dns_json)"
       ;;
     *)
       printf '{"results":[]}'

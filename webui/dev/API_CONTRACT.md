@@ -165,6 +165,7 @@ ttl 8 / ttl 4 / ttl 2 / ttl 8+pad / udplen / ipfrag+drop.
 | 3 | `Blocked Sites` / `https://meduza.io` |
 | 4 | `Discord` / `https://discord.com/` |
 | 5, 6 | `results: []` + `message`: «Для UDP-профиля быстрая TLS-проверка неприменима. Проверьте работу в браузере или приложении.» |
+| 10 | `DNS антиспуф` / `nslookup deb.torproject.org @ 8.8.8.8` — `z2r_dns_check_target`: `ok` (A-записи + совпадение с эталонными адресами torproject), `warn` (адреса есть, но не из эталона — набор ротируется), `fail` (NXDOMAIN/таймаут/нет IPv4). Эталон — `Z2R_DNS_KNOWN_ADDRS` в `lib/netcheck.sh` |
 | прочее | `results: []` |
 
 Каждый элемент результата — общий формат проверки цели (см. [§5](#5-post-cgi-bincheckcgi--api_check)).

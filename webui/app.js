@@ -498,7 +498,7 @@ function renderCurrentLock(el, value) {
 
 const FALLBACK_CHECK_HINT = 'Безразборный режим: быстрая проверка неприменима (применяется ко всем доменам).';
 const UDP_GAMES_CHECK_HINT = 'Игровой UDP: быстрая проверка неприменима (широкий диапазон портов).';
-const DNS_CHECK_HINT = 'Антиспуф DNS: быстрая проверка неприменима (проверяйте резолв вручную: nslookup домен 8.8.8.8).';
+const DNS_CHECK_HINT = 'Антиспуф DNS: нажмите «Проверить» — резолв сверяется с эталонными адресами torproject.';
 const AUTO_MODE_GATED_PROFILES = [1, 2, 3, 4];
 
 function isAutoModeGated(profile) {

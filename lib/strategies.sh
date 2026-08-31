@@ -97,7 +97,10 @@ orch_profile_try() {
             orch_locked_set "$profile" "$p" "$s"
         done
         echo "Стратегия $s применена."
-        if [ "$test_url" = "__RUN_CDN_TEST__" ]; then
+        if [ "$profile" = "10" ]; then
+            echo "Проверка резолва: nslookup ${Z2R_DNS_CHECK_DOMAIN} @ ${Z2R_DNS_CHECK_SERVER}"
+            z2r_dns_check_print
+        elif [ "$test_url" = "__RUN_CDN_TEST__" ]; then
             echo "Проверка доступа: CDN test (как в пункте 001)"
             if type run_cdn_test >/dev/null 2>&1; then
                 run_cdn_test

@@ -487,6 +487,150 @@ z2r_tls_version_badge() {
     esac
 }
 
+# --- DNS-антиспуф (профиль 10): проверка резолва через nslookup/dig ---
+
+# Эталонные адреса deb.torproject.org (CNAME static.torproject.org), сняты
+# 2026-08-31 с настоящего ответа Google DNS. Набор у torproject ротируется:
+# совпадение хотя бы одного адреса = ответ настоящий (ok); живые A-записи без
+# совпадений = жёлтый (сверить вручную); пусто/NXDOMAIN = подмена или обрыв.
+Z2R_DNS_KNOWN_ADDRS="204.8.99.144 204.8.99.146 95.216.163.36 116.202.120.165 116.202.120.166 2620:7:6002:0:466:39ff:fe7f:1826 2620:7:6002:0:466:39ff:fe32:e3dd 2a01:4f8:fff0:4f:266:37ff:feae:3bbc 2a01:4f8:fff0:4f:266:37ff:fe2c:5d19 2a01:4f9:c010:19eb::1"
+
+Z2R_DNS_CHECK_DOMAIN="${Z2R_DNS_CHECK_DOMAIN:-deb.torproject.org}"
+Z2R_DNS_CHECK_SERVER="${Z2R_DNS_CHECK_SERVER:-8.8.8.8}"
+Z2R_DNS_TOOL="${Z2R_DNS_TOOL:-auto}"
+
+z2r_dns_field() {
+    printf '%s' "$1" | awk -F '|' -v f="$2" '{print $f}'
+}
+
+# Резолв-проба: dig (+short, тип A) при наличии, иначе nslookup (BusyBox).
+z2r_dns_probe() {
+    local domain="$1" server="$2"
+    if [ "$Z2R_DNS_TOOL" = "nslookup" ] \
+       || { [ "$Z2R_DNS_TOOL" = "auto" ] && ! command -v dig >/dev/null 2>&1; }; then
+        nslookup "$domain" "$server" 2>&1
+    else
+        dig +short +time=2 +tries=1 "$domain" "@$server" 2>&1
+    fi
+}
+
+# Адреса из вывода nslookup/dig: "v4 v4|v6 v6". Адрес резолвера исключается:
+# первый Address в шапке nslookup — это сам сервер 8.8.8.8. BusyBox-совместимо
+# (без grep-альтернаций и grep -o).
+z2r_dns_parse_addrs() {
+    awk -v srv="$1" '
+        {
+            gsub(/[,;()]/, " ")
+            for (i = 1; i <= NF; i++) {
+                t = $i
+                sub(/#.*$/, "", t)
+                sub(/:$/, "", t)
+                if (t == "" || t == srv || seen[t]) continue
+                ok4 = (t ~ /^[0-9][0-9.]*[0-9]$/)
+                if (ok4) {
+                    n = split(t, a, ".")
+                    if (n != 4) ok4 = 0
+                    for (j = 1; ok4 && j <= 4; j++)
+                        if (a[j] !~ /^[0-9]+$/ || a[j] + 0 > 255) ok4 = 0
+                }
+                if (ok4) { seen[t] = 1; out4 = out4 " " t; continue }
+                if (t ~ /:/ && t ~ /^[0-9A-Fa-f:]+$/) { seen[t] = 1; out6 = out6 " " t }
+            }
+        }
+        END { sub(/^ /, "", out4); sub(/^ /, "", out6); printf "%s|%s\n", out4, out6 }
+    '
+}
+
+# Проверка одной цели: строка "state|reason|v4|v6|hits".
+# state: ok|warn|fail; reason: match|rotate|nxdomain|noanswer|empty.
+z2r_dns_check_target() {
+    local domain="${1:-$Z2R_DNS_CHECK_DOMAIN}" server="${2:-$Z2R_DNS_CHECK_SERVER}"
+    local out rc parsed v4 v6 hits a k
+    out="$(z2r_dns_probe "$domain" "$server")"; rc=$?
+    parsed="$(printf '%s\n' "$out" | z2r_dns_parse_addrs "$server")"
+    v4="${parsed%%|*}"
+    v6="${parsed#*|}"
+
+    if [ -n "$v4" ]; then
+        hits=""
+        for a in $v4 $v6; do
+            for k in $Z2R_DNS_KNOWN_ADDRS; do
+                [ "$a" = "$k" ] && hits="$hits $a"
+            done
+        done
+        if [ -n "$hits" ]; then
+            printf 'ok|match|%s|%s|%s\n' "$v4" "$v6" "${hits# }"
+        else
+            printf 'warn|rotate|%s|%s|\n' "$v4" "$v6"
+        fi
+        return 0
+    fi
+
+    case "$out" in
+        *NXDOMAIN*|*"not found"*|*"can't find"*|*"Non-existent"*|*"no answer"*)
+            printf 'fail|nxdomain||||\n'
+            ;;
+        *"timed out"*|*"timeout"*|*"no servers"*|*"refused"*|*"unreachable"*|*"SERVFAIL"*|*"connection"*|*"Failure"*)
+            printf 'fail|noanswer||||\n'
+            ;;
+        *)
+            if [ "$rc" -ne 0 ]; then
+                printf 'fail|noanswer||||\n'
+            else
+                printf 'fail|empty||||\n'
+            fi
+            ;;
+    esac
+}
+
+z2r_dns_text() {
+    local res="$1"
+    local state reason v4 v6 hits n4
+    state="$(z2r_dns_field "$res" 1)"; reason="$(z2r_dns_field "$res" 2)"
+    v4="$(z2r_dns_field "$res" 3)"; v6="$(z2r_dns_field "$res" 4)"
+    hits="$(z2r_dns_field "$res" 5)"
+    n4="$(printf '%s\n' "$v4" | wc -w)"; n4=$((n4 + 0))
+    case "$state" in
+        ok)
+            printf 'Резолв настоящий: IPv4-адресов %s (%s), совпадение с эталоном torproject:%s\n' \
+                "$n4" "$v4" "$hits"
+            ;;
+        warn)
+            printf 'Резолв отвечает адресами (%s), но ни один не из эталонного набора torproject - возможно, набор сменился. Сверьте вручную: dig +tcp %s @%s\n' \
+                "$v4" "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+            ;;
+        fail)
+            case "$reason" in
+                nxdomain)
+                    printf 'Подмена DNS: %s @ %s отвечает NXDOMAIN/без адресов\n' \
+                        "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+                    ;;
+                noanswer)
+                    printf 'DNS не отвечает (%s @ %s: таймаут/отказ) - вероятно, дропается оригинал запроса\n' \
+                        "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+                    ;;
+                *)
+                    printf 'Ответ DNS пришёл без IPv4-адресов (%s @ %s)\n' \
+                        "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# CLI-вывод для перебора стратегий профиля 10 (цвета как у TLS-проверок).
+z2r_dns_check_print() {
+    local res state color
+    res="$(z2r_dns_check_target "$@")"
+    state="$(z2r_dns_field "$res" 1)"
+    case "$state" in
+        ok) color="$green" ;;
+        warn) color="$yellow" ;;
+        *) color="$red" ;;
+    esac
+    echo -e "${color}$(z2r_dns_text "$res")${plain}"
+}
+
 check_access() {
     local TestURL="$1" out v12 v13 dl parts fact hint c12 c13 cd verdict vcolor
     out="$(z2r_tls_check_target "$TestURL")"

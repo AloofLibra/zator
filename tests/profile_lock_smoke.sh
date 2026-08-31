@@ -199,6 +199,7 @@ done
 assert_contains "$strategy_menu" 'Профиль 10: DNS антиспуф' "strategy menu item 10 must be the DNS profile"
 assert_contains "$strategy_menu" 'submenu_item "11" "Авторотация TCP/HTTP' "strategy menu item 11 must be autorotation"
 assert_contains "$strategy_menu" 'включите антиспуф DNS, п.8' "DNS menu item must be guarded by the main menu toggle"
+assert_contains "$strategy_menu" 'Каждая стратегия проверяется резолвом' "DNS menu item must mention the automatic resolver check"
 assert_contains "$strategy_menu" 'orch_profile_try "10"' "DNS menu item must run the profile 10 trial"
 assert_contains "$strategy_menu" 'if \[ "\$auto_enabled" = "1" \]' "strategy menu does not hide manual TCP actions in auto mode"
 assert_contains "$strategy_menu" '1\|2\|3\|4\|8\|9\)' "strategy menu does not guard manual TCP choices in auto mode"
