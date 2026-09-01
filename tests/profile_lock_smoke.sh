@@ -125,16 +125,22 @@ awk '
 dns_block="$(sed -n '/^#Z2R_DNS_BEGIN$/,/^#Z2R_DNS_END$/p' "$TMP_DIR/config.default.lf")"
 assert_contains "$dns_block" '^--skip --filter-udp=53$' "DNS profile must be disabled by default"
 assert_contains "$dns_block" 'circular_locked:key=10:proto=udp:allow_nohost=1' "DNS profile orchestrator changed"
-# Один номер стратегии = один TTL клона (1->8, 2->4, 3->2), без веера на одном номере.
+# Явные ограниченные диапазоны вместо in-range=a (рекомендация upstream:
+# бесконечный диапазон без верхней границы чреват при блоках ниже по конфигу).
+assert_not_contains "$dns_block" '--in-range=a' "DNS profile must not use unbounded in-range=a"
+assert_contains "$dns_block" '^--in-range=-d100$' "DNS profile must close the incoming range"
+assert_contains "$dns_block" '^--out-range=-d100$' "DNS profile must close the outgoing range"
+# Один номер стратегии = один TTL клона (1->8, 2->12, 3->14), без веера на одном номере.
 [ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=8:ip_id=rnd:resend=1:strategy=1$')" -eq 1 ] || fail "DNS strategy 1 must be the canonical ttl=8 clone"
-[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=4:ip_id=rnd:resend=1:strategy=2$')" -eq 1 ] || fail "DNS strategy 2 must be ttl=4"
-[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=2:ip_id=rnd:resend=1:strategy=3$')" -eq 1 ] || fail "DNS strategy 3 must be ttl=2"
-[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=8:pad=8:ip_id=rnd:resend=1:strategy=4$')" -eq 1 ] || fail "DNS strategy 4 must be ttl=8 with padding"
-[ "$(printf '%s\n' "$dns_block" | grep -c 'udplen:payload=dns_query:increment=8:pattern=0x00000000:strategy=5$')" -eq 1 ] || fail "DNS strategy 5 must be udplen"
+[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=12:ip_id=rnd:resend=1:strategy=2$')" -eq 1 ] || fail "DNS strategy 2 must be ttl=12"
+[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=14:ip_id=rnd:resend=1:strategy=3$')" -eq 1 ] || fail "DNS strategy 3 must be ttl=14"
+[ "$(printf '%s\n' "$dns_block" | grep -c 'dnsclone:ttl=8:pad=8:ip_id=rnd:resend=1:strategy=5$')" -eq 1 ] || fail "DNS strategy 5 must be ttl=8 with padding"
+[ "$(printf '%s\n' "$dns_block" | grep -c 'udplen:payload=dns_query:increment=8:pattern=0x00000000:strategy=18$')" -eq 1 ] || fail "DNS strategy 18 must be udplen"
+# Ровно 20 стратегий без пропусков (circular_locked требует нумерацию 1..N).
+[ "$(printf '%s\n' "$dns_block" | grep -c 'strategy=[0-9]')" -eq 20 ] || fail "DNS profile must have exactly 20 strategies"
 # Стратегия ipfrag+drop убрана из профиля: дропает оригинал запроса и на живом
 # стенде гарантированно убивала DNS полностью (docs/dns_udp_desync.md, раздел 6).
 assert_not_contains "$dns_block" 'drop:dir=out:payload=dns_query' "lethal ipfrag+drop strategy must stay out of the DNS profile"
-assert_not_contains "$dns_block" 'strategy=6' "DNS profile must have exactly 5 strategies"
 assert_not_contains "$dns_block" 'strategy=1.*strategy=1' "DNS strategy numbers must not repeat on one line"
 if printf '%s\n' "$dns_block" | grep -Eq '^[[:space:]]*#.*--'; then
   fail "DNS block comments must not contain -- tokens (they stay active inside NFQWS2_OPT)"
@@ -425,7 +431,7 @@ fi
 ORCH_LOCK_FILE="$saved_orch_lock_file"
 
 # --- Профиль 10: антиспуф DNS (тумблер, порт 53, локи, снапшот меню) ---
-[ "$(config_profile_max_strategy 10 "$CFG")" = "5" ] || fail "DNS profile max strategy must be 5"
+[ "$(config_profile_max_strategy 10 "$CFG")" = "20" ] || fail "DNS profile max strategy must be 20"
 [ "$(config_mode_text dns_desync "$CFG")" = "Выключен" ] || fail "DNS antispoof must be disabled by default"
 assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "port 53 must not be in NFQWS2_PORTS_UDP by default"
 
@@ -464,7 +470,7 @@ profile_apply_all "$CFG" >/dev/null
 
 # снапшот главного меню: лимит профиля 10 и состояние тумблера
 menu_config_snapshot "$CFG"
-[ "$MENU_PROFILE_MAX_10" = "5" ] || fail "menu snapshot did not fill MENU_PROFILE_MAX_10"
+[ "$MENU_PROFILE_MAX_10" = "20" ] || fail "menu snapshot did not fill MENU_PROFILE_MAX_10"
 [ "$MENU_DNS_DESINC" = "Выключен" ] || fail "menu snapshot did not fill MENU_DNS_DESINC"
 menu_config_snapshot "$DNS_NEW_CFG"
 [ "$MENU_DNS_DESINC" = "Включен" ] || fail "menu snapshot did not detect enabled DNS antispoof"

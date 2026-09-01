@@ -362,14 +362,30 @@ NFQWS2_OPT="
 #transaction ID, дроп ответов по метке). По умолчанию выключен; порт 53 в
 #NFQWS2_PORTS_UDP добавляется тумблером (пункт 8 главного меню).
 --skip --filter-udp=53
+--in-range=-d100
+--out-range=-d100
 --lua-desync=circular_locked:key=10:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
---in-range=a
 --payload=dns_query,dns_response
 --lua-desync=dnsclone:ttl=8:ip_id=rnd:resend=1:strategy=1
---lua-desync=dnsclone:ttl=4:ip_id=rnd:resend=1:strategy=2
---lua-desync=dnsclone:ttl=2:ip_id=rnd:resend=1:strategy=3
---lua-desync=dnsclone:ttl=8:pad=8:ip_id=rnd:resend=1:strategy=4
---lua-desync=udplen:payload=dns_query:increment=8:pattern=0x00000000:strategy=5
+--lua-desync=dnsclone:ttl=12:ip_id=rnd:resend=1:strategy=2
+--lua-desync=dnsclone:ttl=14:ip_id=rnd:resend=1:strategy=3
+--lua-desync=dnsclone:ttl=16:ip_id=rnd:resend=1:strategy=4
+--lua-desync=dnsclone:ttl=8:pad=8:ip_id=rnd:resend=1:strategy=5
+--lua-desync=dnsclone:ttl=8:pad=16:ip_id=rnd:resend=1:strategy=6
+--lua-desync=dnsclone:ttl=12:pad=8:ip_id=rnd:resend=1:strategy=7
+--lua-desync=dnsclone:ttl=14:pad=16:ip_id=rnd:resend=1:strategy=8
+--lua-desync=dnsclone:ttl=8:pad=32:ip_id=rnd:resend=1:strategy=9
+--lua-desync=dnsclone:ttl=8:badsum:ip_id=rnd:resend=1:strategy=10
+--lua-desync=dnsclone:ttl=12:badsum:ip_id=rnd:resend=1:strategy=11
+--lua-desync=dnsclone:ttl=8:ipfrag_pos_udp=8:ip_id=rnd:resend=1:strategy=12
+--lua-desync=dnsclone:ttl=8:ipfrag_pos_udp=16:ipfrag_disorder:ip_id=rnd:resend=1:strategy=13
+--lua-desync=dnsclone:ttl=12:ipfrag_pos_udp=8:ipfrag_disorder:ip_id=rnd:resend=1:strategy=14
+--lua-desync=dnsclone:ttl=8:pad=8:badsum:ip_id=rnd:resend=1:strategy=15
+--lua-desync=dnsclone:ttl=8:repeats=2:ip_id=rnd:resend=1:strategy=16
+--lua-desync=dnsclone:ttl=12:repeats=2:ip_id=rnd:resend=1:strategy=17
+--lua-desync=udplen:payload=dns_query:increment=8:pattern=0x00000000:strategy=18
+--lua-desync=udplen:payload=dns_query:increment=4:min=20:strategy=19
+--lua-desync=udplen:payload=dns_query:increment=16:pattern=0x00000000:min=20:strategy=20
 #Z2R_DNS_END
 
 --new
