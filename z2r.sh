@@ -2111,12 +2111,13 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "7")
     if [[ "$OSystem" == "VPS" ]]; then
-      apt install nano
+      apt install nano || echo -e "${yellow}Не удалось установить nano, пробую системный редактор.${plain}"
     else
-      opkg remove nano 2>/dev/null || apk del nano 2>/dev/null
-      opkg install nano-full 2>/dev/null || apk add nano-full 2>/dev/null
+      opkg remove nano 2>/dev/null || apk del nano 2>/dev/null || true
+      opkg install nano-full 2>/dev/null || apk add nano-full 2>/dev/null \
+        || echo -e "${yellow}Не удалось установить nano-full (репозиторий Entware недоступен?). Открою имеющийся редактор.${plain}"
     fi
-    nano "$ZAPRET2_ROOT/config"
+    nano "$ZAPRET2_ROOT/config" || { echo -e "${red}nano недоступен. Установите его вручную: opkg install nano-full${plain}"; pause_enter; }
     # после выхода из nano
     ;;
 
@@ -2279,11 +2280,14 @@ fi
  
 while true; do
  #entware keenetic and merlin preinstal env.
+ #Финальный || echo обязателен: при сбое opkg (например, bin.entware.net
+ #недоступен) и отсутствии apk цепочка вернёт ненулевой код, и set -e молча
+ #убьёт скрипт прямо на этом месте.
  if [ "$hardware" = "keenetic" ]; then
-  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || echo -e "${red}Не удалось доустановить Entware-пакеты (coreutils/grep/ipset/iptables): проверьте доступность bin.entware.net или выполните вручную 'opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy'. Продолжаю установку.${plain}"
   opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "${red}Не удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.${plain}"
  elif [ "$hardware" = "merlin" ]; then
-  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || echo -e "${red}Не удалось доустановить пакеты (coreutils/grep/ipset/iptables): проверьте доступность репозитория Entware. Продолжаю установку.${plain}"
  fi
  
  #Проверка наличия каталога opt и его создание при необходиомости (для некоторых роутеров), переход в tmp
