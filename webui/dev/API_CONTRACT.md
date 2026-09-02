@@ -69,15 +69,16 @@ Client scope: `scope` необязателен и по умолчанию рав
   "quic443": "выключены",                  // _quic443_state_text (backup_smart_quic443_state)
   "provider": "MTS - Moscow",              // _provider_cache_text (cache/provider.txt)
   "profiles": [
-    {"profile":1,"label":"YouTube TCP","description":"Основной TCP профиль для YouTube","current_lock":"auto","max_strategy":30},
-    {"profile":2,"label":"Googlevideo","description":"Видео-домены YouTube","current_lock":"auto","max_strategy":30},
-    {"profile":3,"label":"RKN Лист","description":"Основные блокировки сайтов","current_lock":"auto","max_strategy":30},
+    {"profile":1,"label":"YouTube TCP","description":"Основной TCP профиль для YouTube","current_lock":"auto","max_strategy":43},
+    {"profile":2,"label":"Googlevideo","description":"Видео-домены YouTube","current_lock":"auto","max_strategy":43},
+    {"profile":3,"label":"RKN Лист","description":"Основные блокировки сайтов","current_lock":"auto","max_strategy":43},
     {"profile":4,"label":"Discord TCP","description":"TCP профиль Discord","current_lock":"auto","max_strategy":28},
-    {"profile":5,"label":"YouTube QUIC","description":"UDP 443 для YouTube","current_lock":"auto","max_strategy":13},
+    {"profile":5,"label":"YouTube QUIC","description":"UDP 443 для YouTube","current_lock":"auto","max_strategy":32},
     {"profile":6,"label":"Voice UDP","description":"Discord/STUN и голосовые сервисы","current_lock":"auto","max_strategy":32},
-    {"profile":7,"label":"UDP Games","description":"Игровой UDP (порты 1026-65531)","current_lock":"auto","max_strategy":11,"is_udp_games":true,"udp_games_enabled":false},
-    {"profile":8,"label":"Fallback TLS","description":"Безразборный режим TLS (profile 8)","current_lock":"auto","max_strategy":30,"is_fallback":true,"fallback_enabled":false},
-    {"profile":9,"label":"Fallback HTTP","description":"Безразборный режим HTTP (profile 9)","current_lock":"auto","max_strategy":8,"is_fallback":true,"fallback_enabled":false}
+    {"profile":7,"label":"UDP Games","description":"Игровой UDP (порты 1026-65531)","current_lock":"auto","max_strategy":20,"is_udp_games":true,"udp_games_enabled":false},
+    {"profile":8,"label":"Fallback TLS","description":"Безразборный режим TLS (profile 8)","current_lock":"auto","max_strategy":43,"is_fallback":true,"fallback_enabled":false},
+    {"profile":9,"label":"Fallback HTTP","description":"Безразборный режим HTTP (profile 9)","current_lock":"auto","max_strategy":8,"is_fallback":true,"fallback_enabled":false},
+    {"profile":10,"label":"DNS Антиспуф","description":"Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)","current_lock":"auto","max_strategy":20,"is_dns_desync":true,"dns_desync_enabled":false}
   ]
 }
 ```
@@ -97,8 +98,16 @@ Client scope: `scope` необязателен и по умолчанию рав
 `locked.tsv`, `locked.manual.tsv`, `profile.lock`; иначе `"Нет"`
 ([`_lib.sh:139`](../cgi-bin/_lib.sh:139)).
 
-`max_strategy` для `config.default`: **1→30, 2→30, 3→30, 4→28, 5→13, 6→32,
-8→30, 9→8** (см. `config_profile_max_strategy`; профиль 7=11 в WebUI не виден).
+Для профиля **10** (антиспуф DNS) дополнительно есть `"is_dns_desync":true` и
+`"dns_desync_enabled":bool` (блок `#Z2R_DNS_*` активен и порт 53 в
+`NFQWS2_PORTS_UDP`; `config_mode_text dns_desync`). Включение — пункт 8
+главного меню z2r (`menu_action_toggle_dns_desync`), 20 стратегий по мотивам
+UDP-дурения QUIC/Discord: клоны ttl 8/12/14/16, паддинг pad 8/16/32, badsum,
+ipfrag (по клону), repeats, udplen (паддинг оригинала). ipfrag+drop исключена —
+дропает оригинал и на живых стендах полностью ломала резолв.
+
+`max_strategy` для `config.default`: **1→43, 2→43, 3→43, 4→28, 5→32, 6→32,
+7→20, 8→43, 9→8, 10→20** (см. `config_profile_max_strategy`).
 Профили 8/9 — это fallback-блоки `#Z2R_FALLBACK_*` (TLS/HTTP).
 
 Ошибок через `send_error` нет (при отсутствии runtime-либ — `500` + `{"error":"missing z2r runtime libs"}`).
@@ -113,7 +122,7 @@ Client scope: `scope` необязателен и по умолчанию рав
 
 | Условие | Код | Сообщение |
 | --- | --- | --- |
-| `profile` не `^[1-9]$` | `400 Bad Request` | `Некорректный профиль` |
+| `profile` не `^[1-9][0-9]*$` | `400 Bad Request` | `Некорректный профиль` |
 | `strategy` не `^[0-9]+$` | `400 Bad Request` | `Некорректная стратегия` |
 | авторотация включена, `profile` 1–4 | `409 Conflict` | `Профиль <N> управляется авторотацией TCP/HTTP. Сначала выключите авторотацию.` |
 | `strategy != 0` и вне `[1..max]` | `400 Bad Request` | `Стратегия вне диапазона` |
@@ -158,6 +167,7 @@ Client scope: `scope` необязателен и по умолчанию рав
 | 3 | `Blocked Sites` / `https://meduza.io` |
 | 4 | `Discord` / `https://discord.com/` |
 | 5, 6 | `results: []` + `message`: «Для UDP-профиля быстрая TLS-проверка неприменима. Проверьте работу в браузере или приложении.» |
+| 10 | `DNS антиспуф` / `nslookup deb.torproject.org @ 8.8.8.8` — серия из 3 проб с интервалом 1 с (`z2r_dns_check_series`, `Z2R_DNS_TRIES`/`Z2R_DNS_INTERVAL`, интервал целыми секундами): `ok` (хотя бы одна проба с A-записями из эталона torproject), `warn` (адреса есть, но не из эталона — набор ротируется), `fail` (все пробы: NXDOMAIN/таймаут/нет IPv4); текст итога со счётчиком «N из 3». Эталон — `Z2R_DNS_KNOWN_ADDRS` в `lib/netcheck.sh` |
 | прочее | `results: []` |
 
 Каждый элемент результата — общий формат проверки цели (см. [§5](#5-post-cgi-bincheckcgi--api_check)).
@@ -174,8 +184,8 @@ Client scope: `scope` необязателен и по умолчанию рав
 Параметры: `profile` (обяз.).
 
 | Условие | Код | Сообщение |
-| --- | --- | --- |
-| `profile` не `^[1-9]$` | `400 Bad Request` | `Некорректный профиль` |
+| --- | --- |
+| `profile` не `^[1-9][0-9]*$` | `400 Bad Request` | `Некорректный профиль` |
 | авторотация включена, `profile` 1–4 | `409 Conflict` | `Профиль <N> управляется авторотацией TCP/HTTP. Сначала выключите авторотацию.` |
 | пустой `proto_list` | `400 Bad Request` | `Не удалось определить протокол профиля` |
 | apply упала | `500 Internal Server Error` | `Не удалось сбросить состояние профиля` |

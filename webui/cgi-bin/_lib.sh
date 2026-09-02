@@ -178,7 +178,24 @@ all_profiles_json() {
   profile_json_fallback 8 "Fallback TLS" "Безразборный режим TLS (profile 8)"
   printf ','
   profile_json_fallback 9 "Fallback HTTP" "Безразборный режим HTTP (profile 9)"
+  printf ','
+  profile_json_dns 10 "DNS Антиспуф" "Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)"
   printf ']'
+}
+
+# Профиль 10 (антиспуф DNS): гейтинг по состоянию тумблера (п.8 главного меню),
+# как у UDP Games по config_mode_text udp_games.
+profile_json_dns() {
+  local id="$1" label="$2" desc="$3" proto current max dns_state scope source
+  scope="${PARAM_SCOPE:-default}"
+  proto="$(profile_proto "$id")"
+  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+  max="$(orch_max_strategy_for_profile "$id")"
+  dns_state="$(config_mode_text dns_desync "$CONFIG_FILE")"
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_dns_desync":true,"dns_desync_enabled":%s}' \
+    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
+    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$dns_state" = "Включен" ] && echo true || echo false)"
 }
 
 profile_json_udp_games() {
@@ -279,6 +296,16 @@ check_one_target_json() {
     "$(_tls_detail_json "$v12" 1.2)" "$(_tls_detail_json "$v13" 1.3)" "$dljson"
 }
 
+check_one_dns_json() {
+  local res state text
+  res="$(z2r_dns_check_series | sed -n 1p)"
+  state="$(z2r_dns_field "$res" 1)"
+  text="$(z2r_dns_series_text "$res")"
+  printf '{"label":"DNS антиспуф","target":"%s","verdict":"%s","text":"%s"}' \
+    "$(json_escape "nslookup ${Z2R_DNS_CHECK_DOMAIN} @ ${Z2R_DNS_CHECK_SERVER}")" \
+    "$state" "$(json_escape "$text")"
+}
+
 profile_check_json() {
   local profile="$1" gv
   case "$profile" in
@@ -297,6 +324,9 @@ profile_check_json() {
       ;;
     5|6)
       printf '{"results":[],"message":"%s"}' "$(json_escape "Для UDP-профиля быстрая TLS-проверка неприменима. Проверьте работу в браузере или приложении.")"
+      ;;
+    10)
+      printf '{"results":[%s]}' "$(check_one_dns_json)"
       ;;
     *)
       printf '{"results":[]}'
@@ -441,7 +471,7 @@ EOF
 
 api_set_lock() {
   parse_params
-  [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
+  [[ "${PARAM_PROFILE:-}" =~ ^[1-9][0-9]*$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   [[ "${PARAM_STRATEGY:-}" =~ ^[0-9]+$ ]] || send_error "400 Bad Request" "Некорректная стратегия"
   local requested_scope="${PARAM_SCOPE:-default}"
   orch_scope_validate "$requested_scope" "$PARAM_PROFILE" "$(profile_proto "$PARAM_PROFILE")" "$PARAM_STRATEGY" || send_error "400 Bad Request" "Некорректный scope или lock"
@@ -471,7 +501,7 @@ api_set_lock() {
 
 api_clear_lock() {
   parse_params
-  [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
+  [[ "${PARAM_PROFILE:-}" =~ ^[1-9][0-9]*$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   case "$PARAM_PROFILE" in
     1|2|3|4)
       [ "$(config_mode_text auto_mode "$CONFIG_FILE")" = "включен" ] && \
@@ -505,7 +535,7 @@ api_service() {
 
 api_check() {
   parse_params
-  if [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]]; then
+  if [[ "${PARAM_PROFILE:-}" =~ ^[1-9][0-9]*$ ]]; then
     send_json "200 OK" "$(profile_check_json "$PARAM_PROFILE")"
     return
   fi

@@ -84,6 +84,96 @@ exit 1
 MOCK
 chmod +x "$TMP_DIR/bin/curl"
 
+# Мок nslookup/dig для движка z2r_dns_* (профиль 10, антиспуф DNS).
+# ok = живой ответ VPS из docs/dns_udp_desync.md (bind-формат, A + AAAA).
+# flaky = ТСПУ отвечает инъекцией не на каждый запрос: 2-я проба NXDOMAIN.
+cat > "$TMP_DIR/bin/nslookup" <<'MOCK'
+#!/bin/sh
+print_ok() {
+cat <<'EOF'
+Server:         8.8.8.8
+Address:        8.8.8.8#53
+
+Non-authoritative answer:
+deb.torproject.org      canonical name = static.torproject.org
+Name:   static.torproject.org
+Address: 204.8.99.146
+Name:   static.torproject.org
+Address: 95.216.163.36
+Name:   static.torproject.org
+Address: 116.202.120.166
+Name:   static.torproject.org
+Address: 116.202.120.165
+Name:   static.torproject.org
+Address: 204.8.99.144
+Name:   static.torproject.org
+Address: 2620:7:6002:0:466:39ff:fe7f:1826
+Name:   static.torproject.org
+Address: 2a01:4f8:fff0:4f:266:37ff:feae:3bbc
+EOF
+}
+case "${MOCK_DNS_MODE:-ok}" in
+  ok)
+    print_ok
+    exit 0 ;;
+  flaky)
+    n=1
+    [ -f "$COUNTER_DIR/dns" ] && n=$(( $(cat "$COUNTER_DIR/dns") + 1 ))
+    echo "$n" > "$COUNTER_DIR/dns"
+    if [ "$n" = 2 ]; then
+      echo "** server can't find deb.torproject.org: NXDOMAIN"
+      exit 3
+    fi
+    print_ok
+    exit 0 ;;
+  busybox)
+cat <<'EOF'
+Server:		8.8.8.8
+Address:	8.8.8.8:53
+
+Name:      deb.torproject.org
+Address 1: 204.8.99.146 static.torproject.org
+Address 2: 2a01:4f8:fff0:4f:266:37ff:feae:3bbc static.torproject.org
+EOF
+    exit 0 ;;
+  rotate)
+cat <<'EOF'
+Server:         8.8.8.8
+Address:        8.8.8.8#53
+
+Non-authoritative answer:
+Name:   static.torproject.org
+Address: 203.0.113.7
+EOF
+    exit 0 ;;
+  nxdomain)
+    echo "** server can't find deb.torproject.org: NXDOMAIN"
+    exit 3 ;;
+  timeout)
+    echo ";; connection timed out; no servers could be reached"
+    exit 1 ;;
+esac
+exit 1
+MOCK
+chmod +x "$TMP_DIR/bin/nslookup"
+
+# Мок dig для режима Z2R_DNS_TOOL=dig (dig +short ... domain @server).
+cat > "$TMP_DIR/bin/dig" <<'MOCK'
+#!/bin/sh
+case "${MOCK_DNS_MODE:-ok}" in
+  ok)
+    echo "static.torproject.org."
+    echo "204.8.99.146"
+    echo "95.216.163.36"
+    exit 0 ;;
+  nxdomain)
+    echo ";; ->>HEADER<<- status: NXDOMAIN"
+    exit 0 ;;
+esac
+exit 1
+MOCK
+chmod +x "$TMP_DIR/bin/dig"
+
 export COUNTER_DIR="$TMP_DIR/counter"
 export PATH="$TMP_DIR/bin:$PATH"
 export TMPDIR="$TMP_DIR"
@@ -373,17 +463,24 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14c: профиль-вид с ответом 0 должен вернуть прежний лок"
   printf '%s' "$out" | grep -q "прежние стратегии профиля возвращены" || fail "сценарий 14c: нет сообщения возврата"
 
-  # добавка к паузе ($8) попадает в баннер; успех на 1-й стратегии -> без sleep
+  # интервал паузы ($8) попадает в баннер; успех на 1-й стратегии -> без sleep
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   export MOCK_HEAD_13=ok200
   out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 2 1 5)"
   printf '%s' "$out" | grep -q "пауза 5 сек" \
-    || fail "сценарий 14c: добавка к паузе не попала в баннер: $out"
-  cap="$(printf '5\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
+    || fail "сценарий 14c: интервал паузы не попал в баннер: $out"
+  cap="$(printf '5\n' | orch_ask_sweep_pause 2>/dev/null)"
   [ "$cap" = "5" ] || fail "сценарий 14c: хелпер паузы должен вернуть только число: $cap"
-  cap="$(printf 'abc\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
-  [ "$cap" = "0" ] || fail "сценарий 14c: неверный ввод хелпера паузы должен давать 0: $cap"
-  cap="$(printf '0\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
+  cap="$(printf '\n' | orch_ask_sweep_pause 2>/dev/null)"
+  [ "$cap" = "3" ] || fail "сценарий 14c: Enter в паузе должен давать 3 сек: $cap"
+  cap="$(printf 'abc\n' | orch_ask_sweep_pause 2>/dev/null)"
+  [ "$cap" = "3" ] || fail "сценарий 14c: неверный ввод после предупреждения должен давать 3 сек: $cap"
+  cap="$(printf '2\n' | orch_ask_sweep_pause 2>/dev/null)"
+  [ "$cap" = "3" ] || fail "сценарий 14c: меньше 3 сек после предупреждения должно давать 3 сек: $cap"
+  err="$(printf '2\n' | orch_ask_sweep_pause 2>&1 >/dev/null)"
+  printf '%s' "$err" | grep -q "не может быть меньше 3 секунд" \
+    || fail "сценарий 14c: нет предупреждения о минимуме 3 сек: $err"
+  cap="$(printf '0\n' | orch_ask_sweep_pause 2>/dev/null)"
   [ -z "$cap" ] || fail "сценарий 14c: 0 в паузе должен отменять: $cap"
   cap="$(printf '1\n' | orch_ask_sweep_tls_pref 2>/dev/null)"
   [ "$cap" = "12" ] || fail "сценарий 14c: выбор TLS 1.2: $cap"
@@ -419,6 +516,36 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   printf '%s' "$out" | grep -q "tls1.3 OK" || fail "сценарий 14c: нет бейджа tls1.3 OK"
   printf '%s' "$out" | grep -q "цель TLS 1.2+1.3" || fail "сценарий 14c: баннер без цели both"
   [ -z "${Z2R_TLS_WAIT_BOTH:-}" ] || fail "сценарий 14c: Z2R_TLS_WAIT_BOTH не восстановлен"
+
+  # регрессия: профиль без лока + неудачный прогон (Enter на «вернуть как было»)
+  # не должен писать лок 0 — профиль возвращается к стратегии по умолчанию (auto)
+  : > "$ORCH_LOCK_FILE"; : > "$PROFILE_STATE_FILE"
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  export MOCK_HEAD_12=timeout MOCK_HEAD_13=timeout
+  out="$(printf '\n' | orch_auto_sweep profile 4 tls https://discord.com/ 1 2 0 0 both)"
+  printf '%s' "$out" | grep -q "Рабочих стратегий не найдено" \
+    || fail "сценарий 14c: все красные не дали «не найдено»"
+  [ "$(orch_locked_state_get 4 tls)" = "auto" ] \
+    || fail "сценарий 14c: неудачный прогон оставил лок '$(orch_locked_state_get 4 tls)' вместо auto"
+  if grep -q '^4[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
+    fail "сценарий 14c: неудачный прогон записал лок 0 и выключил профиль"
+  fi
+
+  # регрессия: домен без лока + неудачный прогон — тоже без лока 0
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  out="$(printf '\n' | orch_auto_sweep domain ghost.org tls https://ghost.org/ 1 2 0 0 both)"
+  [ "$(orch_locked_state_get ghost.org tls)" = "auto" ] \
+    || fail "сценарий 14c: неудачный доменный прогон оставил лок '$(orch_locked_state_get ghost.org tls)'"
+  if grep -q '^ghost.org[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
+    fail "сценарий 14c: доменный прогон записал лок 0"
+  fi
+
+  # регрессия: явный 0 до прогона восстанавливается как 0 (пользователь сам выключил)
+  orch_locked_set 4 tls 0
+  printf '0\n' | orch_auto_sweep profile 4 tls https://discord.com/ 1 2 0 0 both >/dev/null
+  [ "$(orch_locked_state_get 4 tls)" = "0" ] \
+    || fail "сценарий 14c: явный 0 должен восстанавливаться как 0"
+  export MOCK_HEAD_13=seq_ok3
 
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   orch_locked_set example.org tls 7
@@ -636,6 +763,110 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   unset MOCK_VALIDATOR_RC
 )
 
+# == 18. DNS-антиспуф: движок z2r_dns_* (профиль 10) ==
+(
+  export COUNTER_DIR="$TMP_DIR/counter"
+  export PATH="$TMP_DIR/bin:$PATH"
+  export TMPDIR="$TMP_DIR"
+  export Z2R_DNS_TOOL=nslookup
+  export Z2R_DNS_TRIES=3 Z2R_DNS_INTERVAL=0
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/webui/cgi-bin/_lib.sh"
+
+  export MOCK_DNS_MODE=ok
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: настоящий ответ должен быть ok: $res"
+  [ "$(z2r_dns_field "$res" 2)" = "match" ] || fail "сценарий 18: нет совпадения с эталоном torproject: $res"
+  case "$(z2r_dns_field "$res" 3)" in
+    *204.8.99.146*) : ;;
+    *) fail "сценарий 18: в адресах нет 204.8.99.146: $res" ;;
+  esac
+  for a in $(z2r_dns_field "$res" 3); do
+    [ "$a" != "8.8.8.8" ] || fail "сценарий 18: адрес резолвера попал в ответы: $res"
+  done
+  case "$(z2r_dns_field "$res" 4)" in
+    *2620:7:6002*) : ;;
+    *) fail "сценарий 18: IPv6 из ответа не разобран: $res" ;;
+  esac
+
+  export MOCK_DNS_MODE=busybox
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: busybox-формат nslookup должен давать ok: $res"
+
+  export MOCK_DNS_MODE=rotate
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "warn" ] || fail "сценарий 18: адреса вне эталона должны быть warn: $res"
+
+  export MOCK_DNS_MODE=nxdomain
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "fail" ] || fail "сценарий 18: NXDOMAIN должен быть fail: $res"
+  [ "$(z2r_dns_field "$res" 2)" = "nxdomain" ] || fail "сценарий 18: причина не nxdomain: $res"
+
+  # Тексты итога серии (z2r_dns_series_text) по заготовленным строкам агрегата
+  z2r_dns_series_text "ok|match|204.8.99.146 95.216.163.36||204.8.99.146|1|0|0" \
+    | grep -q "эталон torproject" || fail "сценарий 18: текст ok без эталона"
+  z2r_dns_series_text "warn|rotate|203.0.113.7|||0|1|0" \
+    | grep -q "эталонного набора" || fail "сценарий 18: текст warn без подсказки про эталон"
+  z2r_dns_series_text "fail|nxdomain||||0|0|3" \
+    | grep -q "подмена DNS" || fail "сценарий 18: текст NXDOMAIN без подмены"
+  z2r_dns_series_text "fail|noanswer||||0|0|3" \
+    | grep -q "не отвечает" || fail "сценарий 18: текст таймаута без 'не отвечает'"
+
+  export MOCK_DNS_MODE=timeout
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "fail" ] || fail "сценарий 18: таймаут должен быть fail: $res"
+  [ "$(z2r_dns_field "$res" 2)" = "noanswer" ] || fail "сценарий 18: причина не noanswer: $res"
+
+  # Режим dig: только A-записи, вывод +short
+  export Z2R_DNS_TOOL=dig
+  export MOCK_DNS_MODE=ok
+  res="$(z2r_dns_check_target)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: dig +short должен давать ok: $res"
+  [ -z "$(z2r_dns_field "$res" 4)" ] || fail "сценарий 18: dig-режим не должен приносить AAAA: $res"
+  export Z2R_DNS_TOOL=nslookup
+
+  # Серия проб: флаки ТСПУ (ok, NXDOMAIN, ok) -> итог ok 2 из 3
+  export MOCK_DNS_MODE=flaky
+  rm -f "$COUNTER_DIR/dns"
+  out_series="$(z2r_dns_check_series)"
+  res="$(printf '%s\n' "$out_series" | sed -n 1p)"
+  states="$(printf '%s\n' "$out_series" | sed -n 2p)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: серия с одним ok должна давать ok: $res"
+  [ "$(z2r_dns_field "$res" 6)" = "2" ] || fail "сценарий 18: счётчик ok в серии неверен: $res"
+  case " $states " in
+    *" fail/nxdomain "*) : ;;
+    *) fail "сценарий 18: в серии нет провала: $states" ;;
+  esac
+  z2r_dns_series_text "$res" | grep -q "2 из 3" \
+    || fail "сценарий 18: итог серии без счётчика"
+
+  rm -f "$COUNTER_DIR/dns"
+  out="$(z2r_dns_check_print)"
+  printf '%s\n' "$out" | grep -q "3 проверки, интервал" || fail "сценарий 18: заголовок серии без параметров"
+  printf '%s\n' "$out" | grep -q "Итог:" || fail "сценарий 18: печать серии без итога"
+  printf '%s\n' "$out" | grep -q "\[2\]" || fail "сценарий 18: печать серии без номеров проб"
+  printf '%s\n' "$out" | grep -q "2 из 3" || fail "сценарий 18: печать серии без счётчика в итоге"
+
+  rm -f "$COUNTER_DIR/dns"
+  json="$(check_one_dns_json)"
+  printf '%s' "$json" | grep -q '"verdict":"ok"' || fail "сценарий 18: JSON серии без ok: $json"
+  printf '%s' "$json" | grep -q '2 из 3' || fail "сценарий 18: JSON серии без счётчика: $json"
+  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+    || fail "сценарий 18: JSON серии невалиден: $json"
+
+  # WebUI: JSON-обёртка (check.cgi?profile=10)
+  export MOCK_DNS_MODE=nxdomain
+  json="$(check_one_dns_json)"
+  printf '%s' "$json" | grep -q '"verdict":"fail"' || fail "сценарий 18: JSON без verdict fail: $json"
+  printf '%s' "$json" | grep -q 'во всех 3' || fail "сценарий 18: JSON fail без счётчика серии"
+  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+    || fail "сценарий 18: JSON невалиден: $json"
+  export MOCK_DNS_MODE=ok
+  json="$(profile_check_json 10)"
+  printf '%s' "$json" | grep -q '"verdict":"ok"' || fail "сценарий 18: profile_check_json 10 без ok: $json"
+  printf '%s' "$json" | grep -q '"label":"DNS антиспуф"' || fail "сценарий 18: JSON без метки DNS"
+)
+
 # == 16. статический wiring ==
 lib_sh="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
 printf '%s' "$lib_sh" | grep -q 'LIB_DIR/netcheck\.sh' || fail "сценарий 16: _lib.sh не подключает netcheck.sh"
@@ -667,6 +898,11 @@ grep -q '\.domain-row \.domain-check \.check-title' "$REPO_DIR/webui/styles.css"
 grep -q '\.warn' "$REPO_DIR/webui/styles.css" || fail "сценарий 16: styles.css без .warn"
 fake="$REPO_DIR/webui/dev/fake_router_server.py"
 grep -q 'verdict' "$fake" || fail "сценарий 16: fake_router_server без verdict"
+grep -q 'z2r_dns_check_print' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 16: перебор профиля 10 без DNS-проверки"
+grep -q 'z2r_dns_check_target' "$REPO_DIR/lib/netcheck.sh" || fail "сценарий 16: нет движка DNS-проверки"
+grep -q 'Z2R_DNS_KNOWN_ADDRS' "$REPO_DIR/lib/netcheck.sh" || fail "сценарий 16: нет эталонных адресов torproject"
+grep -q 'check_one_dns_json' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail "сценарий 16: нет JSON-обёртки DNS-проверки"
+grep -q 'dns_check_target' "$fake" || fail "сценарий 16: fake_router_server без DNS-проверки"
 grep -q 'check_result == "random"' "$fake" || fail "сценарий 16: fake_router_server без режима random"
 grep -q '_download_zero_detail' "$fake" || fail "сценарий 16: fake_router_server без жёлтого сценария zero-download"
 grep -q 'action == "check"' "$fake" || fail "сценарий 16: fake_router_server без domains check"

@@ -487,6 +487,227 @@ z2r_tls_version_badge() {
     esac
 }
 
+# --- DNS-антиспуф (профиль 10): проверка резолва через nslookup/dig ---
+
+# Эталонные адреса deb.torproject.org (CNAME static.torproject.org), сняты
+# 2026-08-31 с настоящего ответа Google DNS. Набор у torproject ротируется:
+# совпадение хотя бы одного адреса = ответ настоящий (ok); живые A-записи без
+# совпадений = жёлтый (сверить вручную); пусто/NXDOMAIN = подмена или обрыв.
+Z2R_DNS_KNOWN_ADDRS="204.8.99.144 204.8.99.146 95.216.163.36 116.202.120.165 116.202.120.166 2620:7:6002:0:466:39ff:fe7f:1826 2620:7:6002:0:466:39ff:fe32:e3dd 2a01:4f8:fff0:4f:266:37ff:feae:3bbc 2a01:4f8:fff0:4f:266:37ff:fe2c:5d19 2a01:4f9:c010:19eb::1"
+
+Z2R_DNS_CHECK_DOMAIN="${Z2R_DNS_CHECK_DOMAIN:-deb.torproject.org}"
+Z2R_DNS_CHECK_SERVER="${Z2R_DNS_CHECK_SERVER:-8.8.8.8}"
+Z2R_DNS_TOOL="${Z2R_DNS_TOOL:-auto}"
+# Серия проб: одиночный ответ у ТСПУ флаки (инъекция не на каждый запрос),
+# закономерность видна на серии. Интервал - ТОЛЬКО целые секунды:
+# BusyBox sleep на роутерах не умеет дробные значения.
+Z2R_DNS_TRIES="${Z2R_DNS_TRIES:-3}"
+Z2R_DNS_INTERVAL="${Z2R_DNS_INTERVAL:-1}"
+
+z2r_dns_field() {
+    printf '%s' "$1" | awk -F '|' -v f="$2" '{print $f}'
+}
+
+# Резолв-проба: dig (+short, тип A) при наличии, иначе nslookup (BusyBox).
+z2r_dns_probe() {
+    local domain="$1" server="$2"
+    if [ "$Z2R_DNS_TOOL" = "nslookup" ] \
+       || { [ "$Z2R_DNS_TOOL" = "auto" ] && ! command -v dig >/dev/null 2>&1; }; then
+        nslookup "$domain" "$server" 2>&1
+    else
+        dig +short +time=2 +tries=1 "$domain" "@$server" 2>&1
+    fi
+}
+
+# Адреса из вывода nslookup/dig: "v4 v4|v6 v6". Адрес резолвера исключается:
+# первый Address в шапке nslookup — это сам сервер 8.8.8.8. BusyBox-совместимо
+# (без grep-альтернаций и grep -o).
+z2r_dns_parse_addrs() {
+    awk -v srv="$1" '
+        {
+            gsub(/[,;()]/, " ")
+            for (i = 1; i <= NF; i++) {
+                t = $i
+                sub(/#.*$/, "", t)
+                sub(/:$/, "", t)
+                if (t == "" || t == srv || seen[t]) continue
+                ok4 = (t ~ /^[0-9][0-9.]*[0-9]$/)
+                if (ok4) {
+                    n = split(t, a, ".")
+                    if (n != 4) ok4 = 0
+                    for (j = 1; ok4 && j <= 4; j++)
+                        if (a[j] !~ /^[0-9]+$/ || a[j] + 0 > 255) ok4 = 0
+                }
+                if (ok4) { seen[t] = 1; out4 = out4 " " t; continue }
+                if (t ~ /:/ && t ~ /^[0-9A-Fa-f:]+$/) { seen[t] = 1; out6 = out6 " " t }
+            }
+        }
+        END { sub(/^ /, "", out4); sub(/^ /, "", out6); printf "%s|%s\n", out4, out6 }
+    '
+}
+
+# Проверка одной цели: строка "state|reason|v4|v6|hits".
+# state: ok|warn|fail; reason: match|rotate|nxdomain|noanswer|empty.
+z2r_dns_check_target() {
+    local domain="${1:-$Z2R_DNS_CHECK_DOMAIN}" server="${2:-$Z2R_DNS_CHECK_SERVER}"
+    local out rc parsed v4 v6 hits a k
+    out="$(z2r_dns_probe "$domain" "$server")"; rc=$?
+    parsed="$(printf '%s\n' "$out" | z2r_dns_parse_addrs "$server")"
+    v4="${parsed%%|*}"
+    v6="${parsed#*|}"
+
+    if [ -n "$v4" ]; then
+        hits=""
+        for a in $v4 $v6; do
+            for k in $Z2R_DNS_KNOWN_ADDRS; do
+                [ "$a" = "$k" ] && hits="$hits $a"
+            done
+        done
+        if [ -n "$hits" ]; then
+            printf 'ok|match|%s|%s|%s\n' "$v4" "$v6" "${hits# }"
+        else
+            printf 'warn|rotate|%s|%s|\n' "$v4" "$v6"
+        fi
+        return 0
+    fi
+
+    case "$out" in
+        *NXDOMAIN*|*"not found"*|*"can't find"*|*"Non-existent"*|*"no answer"*)
+            printf 'fail|nxdomain||||\n'
+            ;;
+        *"timed out"*|*"timeout"*|*"no servers"*|*"refused"*|*"unreachable"*|*"SERVFAIL"*|*"connection"*|*"Failure"*)
+            printf 'fail|noanswer||||\n'
+            ;;
+        *)
+            if [ "$rc" -ne 0 ]; then
+                printf 'fail|noanswer||||\n'
+            else
+                printf 'fail|empty||||\n'
+            fi
+            ;;
+    esac
+}
+
+# Серия проб с интервалом: одиночный ответ у ТСПУ флаки, вердикт ставим по
+# серии (одного настоящего ответа достаточно - стратегия пропускает резолв).
+# Выход - две строки: агрегат "state|reason|v4|v6|hits|ok|warn|fail" и
+# состояния проб "ok/match fail/nxdomain ..." (по одной на пробу).
+z2r_dns_check_series() {
+    local domain="${1:-$Z2R_DNS_CHECK_DOMAIN}" server="${2:-$Z2R_DNS_CHECK_SERVER}"
+    local i=0 res state reason states=""
+    local n_ok=0 n_warn=0 n_fail=0
+    local best_v4="" best_v6="" best_hits="" best_reason="" first_fail_reason=""
+    while [ "$i" -lt "$Z2R_DNS_TRIES" ]; do
+        i=$((i + 1))
+        if [ "$i" -gt 1 ] && [ "$Z2R_DNS_INTERVAL" -gt 0 ] 2>/dev/null; then
+            sleep "$Z2R_DNS_INTERVAL"
+        fi
+        res="$(z2r_dns_check_target "$domain" "$server")"
+        state="$(z2r_dns_field "$res" 1)"
+        reason="$(z2r_dns_field "$res" 2)"
+        states="${states} ${state}/${reason}"
+        case "$state" in
+            ok)
+                n_ok=$((n_ok + 1))
+                if [ -z "$best_v4" ]; then
+                    best_v4="$(z2r_dns_field "$res" 3)"
+                    best_v6="$(z2r_dns_field "$res" 4)"
+                    best_hits="$(z2r_dns_field "$res" 5)"
+                    best_reason="match"
+                fi
+                ;;
+            warn)
+                n_warn=$((n_warn + 1))
+                if [ -z "$best_v4" ]; then
+                    best_v4="$(z2r_dns_field "$res" 3)"
+                    best_v6="$(z2r_dns_field "$res" 4)"
+                    best_reason="rotate"
+                fi
+                ;;
+            *)
+                n_fail=$((n_fail + 1))
+                if [ -z "$first_fail_reason" ]; then
+                    first_fail_reason="$reason"
+                fi
+                ;;
+        esac
+    done
+    if [ "$n_ok" -gt 0 ]; then
+        printf 'ok|match|%s|%s|%s|%s|%s|%s\n' "$best_v4" "$best_v6" "$best_hits" "$n_ok" "$n_warn" "$n_fail"
+    elif [ "$n_warn" -gt 0 ]; then
+        printf 'warn|rotate|%s|%s||%s|%s|%s\n' "$best_v4" "$best_v6" "$n_ok" "$n_warn" "$n_fail"
+    else
+        printf 'fail|%s||||%s|%s|%s\n' "${first_fail_reason:-empty}" "$n_ok" "$n_warn" "$n_fail"
+    fi
+    printf '%s\n' "${states# }"
+}
+
+z2r_dns_series_text() {
+    local res="$1"
+    local state reason v4 hits n_ok n_warn n_fail total
+    state="$(z2r_dns_field "$res" 1)"; reason="$(z2r_dns_field "$res" 2)"
+    v4="$(z2r_dns_field "$res" 3)"; hits="$(z2r_dns_field "$res" 5)"
+    n_ok="$(z2r_dns_field "$res" 6)"; n_warn="$(z2r_dns_field "$res" 7)"
+    n_fail="$(z2r_dns_field "$res" 8)"
+    n_ok=$((n_ok + 0)); n_warn=$((n_warn + 0)); n_fail=$((n_fail + 0))
+    total=$((n_ok + n_warn + n_fail))
+    case "$state" in
+        ok)
+            printf 'резолв настоящий в %s из %s проверок (адреса: %s, эталон torproject:%s)\n' \
+                "$n_ok" "$total" "$v4" "$hits"
+            ;;
+        warn)
+            printf 'адреса приходят (%s из %s проверок), но не из эталонного набора torproject - возможно, набор сменился. Сверьте вручную: dig +tcp %s @%s\n' \
+                "$n_warn" "$total" "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+            ;;
+        *)
+            case "$reason" in
+                nxdomain)
+                    printf 'подмена DNS во всех %s проверках: NXDOMAIN/без адресов от %s @ %s\n' \
+                        "$total" "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+                    ;;
+                noanswer)
+                    printf 'DNS не отвечает ни в одной из %s проверок (%s @ %s) - вероятно, дропается оригинал запроса\n' \
+                        "$total" "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+                    ;;
+                *)
+                    printf 'ответ DNS без IPv4-адресов во всех %s проверках (%s @ %s)\n' \
+                        "$total" "$Z2R_DNS_CHECK_DOMAIN" "$Z2R_DNS_CHECK_SERVER"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# CLI-вывод для перебора стратегий профиля 10 (цвета как у TLS-проверок):
+# по одной короткой строке на пробу + цветной итог по серии.
+z2r_dns_check_print() {
+    local domain="${1:-$Z2R_DNS_CHECK_DOMAIN}" server="${2:-$Z2R_DNS_CHECK_SERVER}"
+    local out res states state color short i=0 s
+    echo "Проверка резолва: nslookup ${domain} @ ${server} (${Z2R_DNS_TRIES} проверки, интервал ${Z2R_DNS_INTERVAL} c)"
+    out="$(z2r_dns_check_series "$domain" "$server")"
+    res="$(printf '%s\n' "$out" | sed -n 1p)"
+    states="$(printf '%s\n' "$out" | sed -n 2p)"
+    for s in $states; do
+        i=$((i + 1))
+        case "$s" in
+            ok/*) color="$green"; short="настоящие адреса (эталон torproject)" ;;
+            warn/*) color="$yellow"; short="адреса есть, но не из эталона" ;;
+            fail/nxdomain) color="$red"; short="подмена: NXDOMAIN/без адресов" ;;
+            fail/noanswer) color="$red"; short="таймаут/нет ответа" ;;
+            *) color="$red"; short="ответ без IPv4-адресов" ;;
+        esac
+        echo -e "  [${i}] ${color}${short}${plain}"
+    done
+    state="$(z2r_dns_field "$res" 1)"
+    case "$state" in
+        ok) color="$green" ;;
+        warn) color="$yellow" ;;
+        *) color="$red" ;;
+    esac
+    echo -e "${color}Итог: $(z2r_dns_series_text "$res")${plain}"
+}
+
 check_access() {
     local TestURL="$1" out v12 v13 dl parts fact hint c12 c13 cd verdict vcolor
     out="$(z2r_tls_check_target "$TestURL")"

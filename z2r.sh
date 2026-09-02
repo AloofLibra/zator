@@ -304,7 +304,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua strategy-validator.sh; do
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua strategy-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -335,6 +335,7 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/strategy-lock-manager.lua#/opt/zator/lua/strategy-lock-manager.lua#g' \
       -e 's#/opt/zapret2/lua/combined-detector.lua#/opt/zator/lua/combined-detector.lua#g' \
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
+      -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
       -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
       -e 's#/opt/zapret2/extra_strats#/opt/zator/extra_strats#g' \
@@ -550,6 +551,7 @@ ORCH_LUA_LOCKED="$ZATOR_ROOT/lua/locked.lua"
 RST_GUARD_LUA="$ZATOR_ROOT/lua/rst-guard.lua"
 CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
+DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
@@ -586,6 +588,7 @@ circular_runtime_update_from_repo() {
   mkdir -p "$ZATOR_ROOT/lua"
   z2r_download_project_file "$CIRCULAR_DETECTOR_LUA" "lua/combined-detector.lua" || return 1
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
+  z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
@@ -683,6 +686,7 @@ if [ -f "$ZAPRET2_ROOT/config" ]; then
     rst_guard_lua_update_from_repo || true
   fi
   if [ ! -s "$CIRCULAR_DETECTOR_LUA" ] || [ ! -s "$SILENT_DROP_DETECTOR_LUA" ] || \
+     [ ! -s "$DNS_CLONE_LUA" ] || \
      [ ! -s "$STRATEGY_LOCK_MANAGER_LUA" ] || [ ! -s "$STRATEGY_VALIDATOR_WORKER" ]; then
     echo "Не найдены Lua-модули circular. Пытаюсь скачать из репозитория..."
     circular_runtime_update_from_repo || true
@@ -1904,6 +1908,14 @@ webui_submenu() {
   done
 }
 
+# Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки
+# и мимолётные сбои rawsend "Network (is) unreachable" (нет маршрута в момент
+# переключения WAN/IPv6; формулировка зависит от платформы): verdict-пакеты
+# идут штатно, это не авария демона.
+z2r_err_journal() {
+  grep -v '^seccomp:' "$1" 2>/dev/null | grep -vi '^rawsend: sendto.*network.*unreachable'
+}
+
 get_menu() {
     TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
@@ -1911,7 +1923,7 @@ get_menu() {
     fi
     provider_init_once
     init_telemetry
-    update_recommendations  
+    update_recommendations
   while true; do
   	local strategies_status
     strategies_status=$(get_orchestra_locks_info)
@@ -1920,8 +1932,8 @@ get_menu() {
     menu_config_snapshot "$_cfg_file"
     MENU_ERR_LINE=""
     MENU_ERR_STATE=""
-    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
-      MENU_ERR_N="$(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .)"
+    if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
+      MENU_ERR_N="$(z2r_err_journal /tmp/nfqws2_1.err | grep -c .)"
       MENU_ERR_LINE="${red}Ошибки nfqws2: ${MENU_ERR_N} — посмотрите п.666 меню${yellow}
 "
       MENU_ERR_STATE="${red} (ошибок: ${MENU_ERR_N})${yellow}"
@@ -1963,6 +1975,7 @@ ${Fcyan}4.${yellow} Удаление zator и zapret2, ${Fcyan} 44.${yellow} У�
 ${Fcyan}5.${yellow} Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
 ${Fcyan}6.${yellow} Управление доменами
 ${Fcyan}7.${yellow} Открыть в редакторе config (Установит nano редактор ~250kb)
+${Fcyan}8.${yellow} Антиспуф DNS (UDP:53): защита от подмены DNS-ответов провайдером. Сейчас: ${plain}[${MENU_DNS_DESINC}]${yellow}
 ${Fcyan}9.${yellow} Переключатель zapret2 на nftables/iptables. Актуально для OpenWRT 21+. Может помочь с войсами. Сейчас: ${plain}[${MENU_FWTYPE}]${yellow}
 ${Fcyan}10.${yellow} (Де)активировать обход UDP на 1026-65531 портах (BF6, Fifa и т.п.). Сейчас: ${plain}[${MENU_UDP_GAMES}]${yellow}
 ${Fcyan}11.${yellow} Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: ${plain}[${MENU_FLOWOFFLOAD}]${yellow}
@@ -2106,13 +2119,19 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "7")
     if [[ "$OSystem" == "VPS" ]]; then
-      apt install nano
+      apt install nano || echo -e "${yellow}Не удалось установить nano, пробую системный редактор.${plain}"
     else
-      opkg remove nano 2>/dev/null || apk del nano 2>/dev/null
-      opkg install nano-full 2>/dev/null || apk add nano-full 2>/dev/null
+      opkg remove nano 2>/dev/null || apk del nano 2>/dev/null || true
+      opkg install nano-full 2>/dev/null || apk add nano-full 2>/dev/null \
+        || echo -e "${yellow}Не удалось установить nano-full (репозиторий Entware недоступен?). Открою имеющийся редактор.${plain}"
     fi
-    nano "$ZAPRET2_ROOT/config"
+    nano "$ZAPRET2_ROOT/config" || { echo -e "${red}nano недоступен. Установите его вручную: opkg install nano-full${plain}"; pause_enter; }
     # после выхода из nano
+    ;;
+
+  "8")
+    menu_action_toggle_dns_desync
+    pause_enter
     ;;
 
   "9")
@@ -2185,13 +2204,13 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "666")
     echo "--- Ошибки nfqws2 (последний запуск) ---"
-    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
-      grep -v '^seccomp:' /tmp/nfqws2_1.err
+    if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
+      z2r_err_journal /tmp/nfqws2_1.err
       echo ""
-      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2)${plain}"
+      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2; seccomp-заметки и мимолётные rawsend 'Network unreachable' скрыты как безвредные)${plain}"
     elif command -v logread >/dev/null 2>&1 \
-      && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -q .; then
-      logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | tail -20
+      && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -vi 'rawsend: sendto.*network.*unreachable' | grep -q .; then
+      logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -vi 'rawsend: sendto.*network.*unreachable' | tail -20
       echo ""
       echo -e "${yellow}Источник: syslog (logread), последние 20 строк.${plain}"
     else
@@ -2269,11 +2288,14 @@ fi
  
 while true; do
  #entware keenetic and merlin preinstal env.
+ #Финальный || echo обязателен: при сбое opkg (например, bin.entware.net
+ #недоступен) и отсутствии apk цепочка вернёт ненулевой код, и set -e молча
+ #убьёт скрипт прямо на этом месте.
  if [ "$hardware" = "keenetic" ]; then
-  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || echo -e "${red}Не удалось доустановить Entware-пакеты (coreutils/grep/ipset/iptables): проверьте доступность bin.entware.net или выполните вручную 'opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy'. Продолжаю установку.${plain}"
   opkg install kmod_ndms 2>/dev/null || apk add kmod_ndms 2>/dev/null || echo -e "${red}Не удалось установить kmod_ndms. Если у вас не keenetic - игнорируйте.${plain}"
  elif [ "$hardware" = "merlin" ]; then
-  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null
+  opkg install coreutils-sort coreutils-nohup grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || apk add coreutils grep gzip ipset iptables xtables-addons_legacy 2>/dev/null || echo -e "${red}Не удалось доустановить пакеты (coreutils/grep/ipset/iptables): проверьте доступность репозитория Entware. Продолжаю установку.${plain}"
  fi
  
  #Проверка наличия каталога opt и его создание при необходиомости (для некоторых роутеров), переход в tmp

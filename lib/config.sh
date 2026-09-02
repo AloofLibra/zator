@@ -475,6 +475,20 @@ config_mode_text() {
         echo "Выключен"
       fi
       ;;
+    dns_desync)
+      # Блок активен и порт 53 заворачивается в очередь — только тогда «Включен».
+      local dns_block
+      dns_block="$(sed -n '/#Z2R_DNS_BEGIN/,/#Z2R_DNS_END/p' "$cfg" 2>/dev/null)"
+      if [ -z "$dns_block" ]; then
+        echo "Неизвестно"
+      elif printf '%s\n' "$dns_block" | grep -Eq '^[[:space:]]*--filter-udp=53[[:space:]]*$' \
+           && ! printf '%s\n' "$dns_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=53[[:space:]]*$' \
+           && printf "%s" "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" | grep -Eq '(^|,)53(,|$)'; then
+        echo "Включен"
+      else
+        echo "Выключен"
+      fi
+      ;;
     tls_blob_mode)
       config_tls_blob_mode_value "$cfg"
       ;;
@@ -516,6 +530,8 @@ menu_config_snapshot() {
   MENU_PROFILE_MAX_7=0
   MENU_PROFILE_MAX_8=0
   MENU_PROFILE_MAX_9=0
+  MENU_PROFILE_MAX_10=0
+  MENU_DNS_DESINC="Неизвестно"
 
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
 
@@ -535,7 +551,7 @@ menu_config_snapshot() {
         num = substr(line, RSTART + 9, RLENGTH - 9) + 0
         if (in_template && num > tplmax[tpl]) tplmax[tpl] = num
         if (!in_template && key_active && num > keymax[key_active]) keymax[key_active] = num
-        if (!in_template && pos_active && prof <= 9 && num > posmax[prof]) posmax[prof] = num
+        if (!in_template && pos_active && prof <= 10 && num > posmax[prof]) posmax[prof] = num
         if (!in_template && fb_profile && num > fbmax[fb_profile]) fbmax[fb_profile] = num
         line = substr(line, RSTART + RLENGTH)
       }
@@ -545,7 +561,7 @@ menu_config_snapshot() {
       sub(/^--import[=[:space:]]+/, "", imp)
       sub(/[[:space:]].*$/, "", imp)
       if (key_active && tplmax[imp] > keymax[key_active]) keymax[key_active] = tplmax[imp]
-      if (pos_active && prof <= 9 && tplmax[imp] > posmax[prof]) posmax[prof] = tplmax[imp]
+      if (pos_active && prof <= 10 && tplmax[imp] > posmax[prof]) posmax[prof] = tplmax[imp]
       if (fb_profile && tplmax[imp] > fbmax[fb_profile]) fbmax[fb_profile] = tplmax[imp]
     }
     { sub(/\r$/, "") }
@@ -622,7 +638,7 @@ menu_config_snapshot() {
             key_active = substr($0, RSTART, RLENGTH)
             sub(/^.*:key=/, "", key_active)
             key_active += 0
-            if (key_active < 1 || key_active > 9) key_active = 0
+            if (key_active < 1 || key_active > 10) key_active = 0
           }
           if ($0 ~ /^--import([=[:space:]]|$)/) import_template($0)
         }
@@ -652,7 +668,7 @@ menu_config_snapshot() {
       out_ports = (n > 0 ? "добавлено портов: " n : "дефолт")
       print "_udp_games=" out_udp
       print "_ports=" out_ports
-      for (pid = 1; pid <= 9; pid++) {
+      for (pid = 1; pid <= 10; pid++) {
         value = keymax[pid] + 0
         if (!value && (pid == 8 || pid == 9)) value = fbmax[pid] + 0
         if (!value) value = posmax[pid] + 0
@@ -675,7 +691,7 @@ menu_config_snapshot() {
       _blob_file) blob_file="$_v" ;;
       _udp_games) udp_games="$_v" ;;
       _ports) ports="$_v" ;;
-      _profile_max_[1-9])
+      _profile_max_10|_profile_max_[1-9])
         _profile="${_k#_profile_max_}"
         printf -v "MENU_PROFILE_MAX_${_profile}" '%s' "$_v"
         ;;
@@ -734,6 +750,7 @@ menu_config_snapshot() {
   if [ "$(config_get_var "$cfg" CLIENT_SCOPE_ENABLE 2>/dev/null || printf 0)" = "1" ]; then
     MENU_CLIENT_SCOPE="включен"
   fi
+  MENU_DNS_DESINC="$(config_mode_text dns_desync "$cfg")"
   return 0
 }
 
@@ -922,7 +939,7 @@ config_profile_proto_list() {
   case "$1" in
     1) echo "tls http" ;;
     2|3|4|8) echo "tls" ;;
-    5|6|7) echo "udp" ;;
+    5|6|7|10) echo "udp" ;;
     9) echo "http" ;;
     *) echo "" ;;
   esac
@@ -940,6 +957,7 @@ config_profile_title() {
     7) echo "UDP Games (1026-65531)" ;;
     8) echo "Fallback TLS" ;;
     9) echo "Fallback HTTP" ;;
+    10) echo "DNS антиспуф UDP:53" ;;
     *) echo "Профиль $1" ;;
   esac
 }
@@ -1090,6 +1108,30 @@ config_profile_voice_ports_apply() {
 
   [ -f "$cfg" ] || return 0
   ports="$(config_profile_voice_ports)"
+  case "$state" in
+    0)
+      new_ports="$(csv_remove_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
+      [ -n "$new_ports" ] || new_ports="443"
+      ;;
+    *)
+      new_ports="$(csv_add_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
+      ;;
+  esac
+  [ "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" = "$new_ports" ] || config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
+}
+
+# Порт(ы) DNS-профиля (10) в NFQWS2_PORTS_UDP: тумблер антиспуфа добавляет/убирает 53.
+config_profile_dns_ports() {
+  echo "53"
+}
+
+config_profile_dns_ports_apply() {
+  local cfg="$1"
+  local state="$2"
+  local ports new_ports
+
+  [ -f "$cfg" ] || return 0
+  ports="$(config_profile_dns_ports)"
   case "$state" in
     0)
       new_ports="$(csv_remove_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"

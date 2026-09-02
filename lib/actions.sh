@@ -181,6 +181,43 @@ menu_action_toggle_udp_range() {
   return 0
 }
 
+# Пункт 8: антиспуф DNS (UDP:53). Включение = снять --skip с блока #Z2R_DNS_*
+# и добавить порт 53 в NFQWS2_PORTS_UDP; выключение = обратное.
+# Стратегия (веер клонов, одиночный TTL, паддинг, udplen, ipfrag) фиксируется
+# в подменю стратегий (пункт 1), профиль 10.
+menu_action_toggle_dns_desync() {
+  local cfg state
+
+  if ! cfg="$(get_config_file)"; then
+    echo -e "${red}Не найден config/config.default.${plain}"
+    pause_enter
+    return 1
+  fi
+
+  state="$(config_mode_text dns_desync "$cfg")"
+
+  case "$state" in
+    Включен)
+      config_profile_dns_ports_apply "$cfg" 0
+      backup_smart_set_dns_desync "$cfg" 0
+      echo -e "${green}Антиспуф DNS ДЕактивирован. Порт 53 убран из NFQWS2_PORTS_UDP.${plain}"
+      ;;
+    Выключен)
+      config_profile_dns_ports_apply "$cfg" 1
+      backup_smart_set_dns_desync "$cfg" 1
+      echo -e "${green}Антиспуф DNS активирован. Порт 53 добавлен в NFQWS2_PORTS_UDP. Стратегия выбирается в пункте 1 (профиль 10).${plain}"
+      ;;
+    *)
+      echo -e "${yellow}Неизвестное состояние блока DNS в конфиге. Проверьте config вручную (блок Z2R_DNS_BEGIN/END).${plain}"
+      return 0
+      ;;
+  esac
+
+  z2r_service_action restart
+  echo -e "${green}Выполнение переключений завершено.${plain}"
+  return 0
+}
+
 menu_action_toggle_reasm_disable() {
   local cfg="/opt/zapret2/config"
   local state
@@ -1187,7 +1224,7 @@ backup_update_offer_restore() {
     echo -e "${yellow}Перейти в меню бэкапов для восстановления прошлых настроек?${plain}"
     echo -e "${yellow}(Полное восстановление будет заблокировано в контексте обновления.)${plain}"
     echo -e "  ${Fcyan}1${plain} — да, перейти в меню бэкапов"
-    echo -e "  ${Fyellow}0${plain} — нет, выйти"
+    echo -e "  ${Fyellow}0${plain} — нет, продолжить без восстановления из бэкапов"
     read -re -p "Ваш выбор: " ans
     case "$ans" in
       1|5|y|Y|д|Д)
@@ -1195,7 +1232,7 @@ backup_update_offer_restore() {
         backup_submenu 1 || true
         ;;
       *)
-        echo -e "${green}Выход без восстановления.${plain}"
+        echo -e "${green}Продолжаю без восстановления из бэкапов.${plain}"
         ;;
     esac
   fi
@@ -1423,6 +1460,17 @@ backup_smart_set_udp_games() {
   fi
 }
 
+# Пункт 8: антиспуф DNS (--skip перед --filter-udp=53 в блоке #Z2R_DNS_*).
+# Повторяет логическое ядро menu_action_toggle_dns_desync() (config-часть блока).
+backup_smart_set_dns_desync() {
+  local cfg="$1" want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Z2R_DNS_BEGIN/,/#Z2R_DNS_END/ s/^[[:space:]]*--skip[[:space:]]\+--filter-udp=53[[:space:]]*$/--filter-udp=53/' "$cfg"
+  else
+    sed -i '/#Z2R_DNS_BEGIN/,/#Z2R_DNS_END/ s/^[[:space:]]*--filter-udp=53[[:space:]]*$/--skip --filter-udp=53/' "$cfg"
+  fi
+}
+
 # Пункт 19: MODE_FILTER (hostlist/autohostlist) + плейсхолдер <HOSTLIST> для RKN.
 # Повторяет логическое ядро toggle_hostlist_mode(), но для одного указанного cfg.
 backup_smart_set_hostlist() {
@@ -1512,6 +1560,19 @@ backup_smart_apply_flags() {
   if [ "$s_old" != "$s_new" ]; then
     if [ "$s_old" = "Включен" ]; then backup_smart_set_udp_games "$new_cfg" 1
     else backup_smart_set_udp_games "$new_cfg" 0; fi
+  fi
+
+  # --- Пункт 8: антиспуф DNS (блок + порт 53) ---
+  s_old="$(config_mode_text dns_desync "$old_cfg")"
+  s_new="$(config_mode_text dns_desync "$new_cfg")"
+  if [ "$s_old" != "$s_new" ] && [ "$s_old" != "Неизвестно" ]; then
+    if [ "$s_old" = "Включен" ]; then
+      backup_smart_set_dns_desync "$new_cfg" 1
+      config_profile_dns_ports_apply "$new_cfg" 1
+    else
+      backup_smart_set_dns_desync "$new_cfg" 0
+      config_profile_dns_ports_apply "$new_cfg" 0
+    fi
   fi
 
   # --- Пункт 19: WireGuard ---

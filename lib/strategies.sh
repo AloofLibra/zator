@@ -88,7 +88,7 @@ orch_profile_try() {
     fi
 
     for p in $proto_list; do
-        prev_map["$p"]="$(orch_locked_get "$profile" "$p")"
+        prev_map["$p"]="$(orch_locked_state_get "$profile" "$p")"
         [ "$current_state" = "0" ] && prev_map["$p"]="0"
     done
 
@@ -97,7 +97,9 @@ orch_profile_try() {
             orch_locked_set "$profile" "$p" "$s"
         done
         echo "Стратегия $s применена."
-        if [ "$test_url" = "__RUN_CDN_TEST__" ]; then
+        if [ "$profile" = "10" ]; then
+            z2r_dns_check_print
+        elif [ "$test_url" = "__RUN_CDN_TEST__" ]; then
             echo "Проверка доступа: CDN test (как в пункте 001)"
             if type run_cdn_test >/dev/null 2>&1; then
                 run_cdn_test
@@ -116,7 +118,12 @@ orch_profile_try() {
             check_access "$test_url"
         fi
 
-        read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
+        # Ctrl+C в read возвращает не-ноль: считаем отменой, чтобы лок
+        # испробованной стратегии не остался в locked.tsv (restore ниже по break).
+        if ! read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer; then
+            echo
+            answer="0"
+        fi
         if [ "$answer" = "1" ]; then
             cfg="$(get_config_file)"
             old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
@@ -135,38 +142,44 @@ orch_profile_try() {
     done
 
     for p in $proto_list; do
-        if [ -n "${prev_map[$p]}" ] && [ "${prev_map[$p]}" -gt 0 ]; then
-            orch_locked_set "$profile" "$p" "${prev_map[$p]}"
-        elif [ "${prev_map[$p]}" = "0" ]; then
-            orch_locked_set "$profile" "$p" 0
-        else
-            orch_locked_clear "$profile" "$p"
-        fi
+        # auto/пусто = лока не было: убираем лок (профиль возвращается
+        # к стратегии по умолчанию), а не пишем 0 — 0 выключал бы профиль.
+        case "${prev_map[$p]}" in
+            ''|auto) orch_locked_clear "$profile" "$p" ;;
+            *) orch_locked_set "$profile" "$p" "${prev_map[$p]}" ;;
+        esac
     done
     echo "Изменения отменены."
     pause_enter
 }
 
-# Запрос добавки к паузе между стратегиями автопрогона: базовая пауза нужна,
-# чтобы частыми переключениями не словить блок ТСПУ. Enter/неверный ввод = 0,
-# 0 = отмена (пустой вывод). Все пояснения — в stderr: stdout функции
-# захватывает вызывающий код, там должна быть только цифра.
-orch_ask_sweep_extra_delay() {
-    local extra
-    echo "Пауза между стратегиями снижает риск блока ТСПУ: больше пауза — дольше прогон, но безопаснее." >&2
-    read -re -p "Добавить секунд к базовой паузе 3 сек (Enter - без добавки, 0 - отмена): " extra
-    if [ "$extra" = "0" ]; then
-        return 0
-    fi
-    if [ -n "$extra" ]; then
-        case "$extra" in
+# Запрос интервала паузы между стратегиями автопрогона: частые переключения
+# могут словить блок ТСПУ. Enter = 3 сек, 0 = отмена (пустой вывод),
+# не-число или меньше 3 сек — ругаемся и спрашиваем заново (по EOF - 3 сек).
+# Все пояснения — в stderr: stdout функции захватывает вызывающий код,
+# там должна быть только цифра.
+orch_ask_sweep_pause() {
+    local pause
+    while true; do
+        read -re -p "Укажите интервал паузы между стратегиями. Минимум 3 сек (Enter - 3 сек, 0 - отмена): " pause || pause=""
+        if [ "$pause" = "0" ]; then
+            return 0
+        fi
+        [ -n "$pause" ] || pause=3
+        case "$pause" in
             *[!0-9]*)
-                echo -e "${yellow}Неверный ввод, будет базовая пауза 3 сек.${plain}" >&2
-                extra=0
+                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум 3).${plain}" >&2
+                ;;
+            *)
+                if [ "$pause" -lt 3 ]; then
+                    echo -e "${yellow}Пауза не может быть меньше 3 секунд (введено ${pause}).${plain}" >&2
+                else
+                    echo "$pause"
+                    return 0
+                fi
                 ;;
         esac
-    fi
-    echo "${extra:-0}"
+    done
 }
 
 # Запрос требуемых версий TLS для автопрогона: 12|13|both (Enter - both).
@@ -188,11 +201,11 @@ orch_ask_sweep_tls_pref() {
     return 0
 }
 
-# Диалог автопрогона (режим → требуемый TLS → добавка к паузе) и запуск.
+# Диалог автопрогона (режим → требуемый TLS → интервал паузы) и запуск.
 # 0 на любом вопросе = отмена.
 orch_run_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
-    local mode tls_pref extra_pause
+    local mode tls_pref pause_total
     read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 2, 0 - отмена): " mode
     if [ "$mode" = "0" ]; then
         echo "Отмена."
@@ -209,22 +222,23 @@ orch_run_auto_sweep() {
         return 0
     fi
 
-    extra_pause="$(orch_ask_sweep_extra_delay)"
-    if [ -z "$extra_pause" ]; then
+    pause_total="$(orch_ask_sweep_pause)"
+    if [ -z "$pause_total" ]; then
         echo "Отмена."
         pause_enter
         return 0
     fi
 
-    orch_auto_sweep "$kind" "$key" "$proto_list" "$test_url" "$start" "$max" "$sok" "$extra_pause" "$tls_pref"
+    orch_auto_sweep "$kind" "$key" "$proto_list" "$test_url" "$start" "$max" "$sok" "$pause_total" "$tls_pref"
     pause_enter
 }
 
 # Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
 # прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
 # и выбор сохранения. kind=profile|domain; key=профиль или домен.
-# $8 (extra_pause) — добавка к базовой паузе между стратегиями
-# (база ${Z2R_SWEEP_PAUSE:-3} сек), пауза нужна против срабатывания ТСПУ.
+# $8 (pause_total) — интервал паузы между стратегиями, сек (из диалога
+# всегда >= 3); пауза нужна против срабатывания ТСПУ. Z2R_SWEEP_PAUSE —
+# технический override на весь интервал (smoke-тесты гоняют с 0).
 # $9 (tls_pref: any|12|13|both) — какие версии TLS обязаны работать, чтобы
 # стратегия считалась зелёной (в диалоге по умолчанию обе).
 orch_auto_sweep() {
@@ -240,11 +254,12 @@ orch_auto_sweep() {
 
     # case-проверка всей строки: grep -E '^[0-9]+$' построчный и пропускает
     # многострочный мусор, у которого одна из строк — число.
-    local extra_pause="${8:-0}"
-    case "$extra_pause" in ''|*[!0-9]*) extra_pause=0 ;; esac
-    local base_pause="${Z2R_SWEEP_PAUSE:-3}"
-    case "$base_pause" in ''|*[!0-9]*) base_pause=3 ;; esac
-    local pause_sec=$((base_pause + extra_pause))
+    local pause_sec="${8:-${Z2R_SWEEP_PAUSE:-3}}"
+    case "$pause_sec" in ''|*[!0-9]*) pause_sec=3 ;; esac
+    # Интервал из диалога не бывает < 3; технический override может быть любым.
+    if [ -z "${Z2R_SWEEP_PAUSE:-}" ] && [ "$pause_sec" -lt 3 ]; then
+        pause_sec=3
+    fi
 
     local tls_pref="${9:-any}"
     case "$tls_pref" in
@@ -259,10 +274,10 @@ orch_auto_sweep() {
     esac
 
     if [ "$kind" = "domain" ]; then
-        prev_str="$(orch_locked_get "$key" "tls")"
+        prev_str="$(orch_locked_state_get "$key" "tls")"
     else
         for p in $proto_list; do
-            prev_map["$p"]="$(orch_locked_get "$key" "$p")"
+            prev_map["$p"]="$(orch_locked_state_get "$key" "$p")"
         done
     fi
 
@@ -472,13 +487,11 @@ orch_auto_sweep() {
             echo "Стратегия ${best} сохранена для домена ${key}."
             telemetry_notify
         else
-            if [ -n "$prev_str" ] && [ "$prev_str" != "0" ]; then
-                orch_locked_set "$key" "tls" "$prev_str"
-            elif [ "$prev_str" = "0" ]; then
-                orch_locked_set "$key" "tls" 0
-            else
-                orch_locked_clear "$key" "tls"
-            fi
+            # auto/пусто = домен не имел лока: убираем лок, а не пишем 0.
+            case "$prev_str" in
+                ''|auto) orch_locked_clear "$key" "tls" ;;
+                *) orch_locked_set "$key" "tls" "$prev_str" ;;
+            esac
             echo "Изменения отменены, прежняя стратегия домена возвращена."
         fi
     else
@@ -503,13 +516,12 @@ orch_auto_sweep() {
             telemetry_notify
         else
             for p in $proto_list; do
-                if [ -n "${prev_map[$p]}" ] && [ "${prev_map[$p]}" -gt 0 ]; then
-                    orch_locked_set "$key" "$p" "${prev_map[$p]}"
-                elif [ "${prev_map[$p]}" = "0" ]; then
-                    orch_locked_set "$key" "$p" 0
-                else
-                    orch_locked_clear "$key" "$p"
-                fi
+                # auto/пусто = профиль не имел лока (работала стратегия по
+                # умолчанию): убираем лок, а не пишем 0 — 0 выключал бы профиль.
+                case "${prev_map[$p]}" in
+                    ''|auto) orch_locked_clear "$key" "$p" ;;
+                    *) orch_locked_set "$key" "$p" "${prev_map[$p]}" ;;
+                esac
             done
             echo "Изменения отменены, прежние стратегии профиля возвращены."
         fi
@@ -525,7 +537,7 @@ get_orchestra_locks_info() {
     profile_state_file="$PROFILE_STATE_FILE"
     orch_lock_file="$ORCH_LOCK_FILE"
 
-    local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http"
+    local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http|10:udp"
     local stored_line orch_line
     if [ "${ORCH_ACTIVE_SCOPE:-default}" = default ]; then
       stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
@@ -540,8 +552,8 @@ get_orchestra_locks_info() {
     local s_vals o_vals
     IFS=$'\t' read -ra s_vals <<< "$stored_line"
     IFS=$'\t' read -ra o_vals <<< "$orch_line"
-    local labels=("YT_TLS" "GV_TLS" "RKN_TLS" "DS_TLS" "YT_QUIC_UDP" "VOICE_UDP" "GAMES_UDP" "FB_TLS" "FB_HTTP")
-    local state_vars=("STRATEGY_STATE_YT_TLS" "STRATEGY_STATE_GV_TLS" "STRATEGY_STATE_RKN_TLS" "STRATEGY_STATE_DS_TLS" "STRATEGY_STATE_YT_QUIC_UDP" "STRATEGY_STATE_VOICE_UDP" "STRATEGY_STATE_GAMES_UDP" "STRATEGY_STATE_FB_TLS" "STRATEGY_STATE_FB_HTTP")
+    local labels=("YT_TLS" "GV_TLS" "RKN_TLS" "DS_TLS" "YT_QUIC_UDP" "VOICE_UDP" "GAMES_UDP" "FB_TLS" "FB_HTTP" "DNS_UDP")
+    local state_vars=("STRATEGY_STATE_YT_TLS" "STRATEGY_STATE_GV_TLS" "STRATEGY_STATE_RKN_TLS" "STRATEGY_STATE_DS_TLS" "STRATEGY_STATE_YT_QUIC_UDP" "STRATEGY_STATE_VOICE_UDP" "STRATEGY_STATE_GAMES_UDP" "STRATEGY_STATE_FB_TLS" "STRATEGY_STATE_FB_HTTP" "STRATEGY_STATE_DNS_UDP")
     local i raw eff colored rendered=""
     for ((i = 0; i < ${#labels[@]}; i++)); do
         raw="${s_vals[i]:-auto}"
@@ -578,7 +590,7 @@ get_orchestra_locks_info() {
 _orchestra_multi_state() {
     local file="$1" pairs="$2"
     if [ -z "$file" ] || [ ! -f "$file" ]; then
-        printf 'auto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\n'
+        printf 'auto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\n'
         return 0
     fi
     awk -v pairs="$pairs" '
@@ -945,7 +957,11 @@ manage_custom_rkn_domain() {
         echo -e "${yellow}Запускается проверка, пожалуйста подождите:${plain}"
         check_access "$test_url"
 
-        read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer
+        # Ctrl+C в read возвращает не-ноль: считаем отменой (локи восстанавливаются ниже).
+        if ! read -re -p "1 - сохранить, 0 - отмена, Enter - далее: " answer; then
+            echo
+            answer="0"
+        fi
         if [ "$answer" = "1" ]; then
             if [ "$ORCH_ACTIVE_SCOPE" != default ]; then
                 echo "Стратегия $s сохранена для $user_domain (клиент $ORCH_ACTIVE_SCOPE)."

@@ -498,6 +498,7 @@ function renderCurrentLock(el, value) {
 
 const FALLBACK_CHECK_HINT = 'Безразборный режим: быстрая проверка неприменима (применяется ко всем доменам).';
 const UDP_GAMES_CHECK_HINT = 'Игровой UDP: быстрая проверка неприменима (широкий диапазон портов).';
+const DNS_CHECK_HINT = 'Антиспуф DNS: нажмите «Проверить» — резолв сверяется с эталонными адресами torproject.';
 const AUTO_MODE_GATED_PROFILES = [1, 2, 3, 4];
 
 function isAutoModeGated(profile) {
@@ -509,6 +510,7 @@ function isProfileGated(profile) {
   if (isAutoModeGated(profile)) return true;
   if (profile.is_fallback && !profile.fallback_enabled) return true;
   if (profile.is_udp_games && !profile.udp_games_enabled) return true;
+  if (profile.is_dns_desync && !profile.dns_desync_enabled) return true;
   return false;
 }
 
@@ -521,6 +523,9 @@ function gatedReason(profile) {
   }
   if (profile.is_udp_games && !profile.udp_games_enabled) {
     return 'Сначала включите игровой UDP в настройках.';
+  }
+  if (profile.is_dns_desync && !profile.dns_desync_enabled) {
+    return 'Сначала включите антиспуф DNS (пункт 8 главного меню z2r).';
   }
   return '';
 }
@@ -559,6 +564,8 @@ function renderStrategies() {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile] || { results: [] }, FALLBACK_CHECK_HINT, false);
     } else if (profile.is_udp_games) {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile] || { results: [] }, UDP_GAMES_CHECK_HINT, false);
+    } else if (profile.is_dns_desync) {
+      renderCheckResults(inlineCheck, state.strategyChecks[profile.profile] || { results: [] }, DNS_CHECK_HINT, false);
     } else if (state.strategyChecks[profile.profile]) {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile], 'Нет результатов быстрой проверки.', false);
     }

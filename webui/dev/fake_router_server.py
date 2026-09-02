@@ -38,6 +38,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -62,6 +63,7 @@ PROFILES = [
     (7, "UDP Games", "Игровой UDP (порты 1026-65531)"),
     (8, "Fallback TLS", "Безразборный режим TLS (profile 8)"),
     (9, "Fallback HTTP", "Безразборный режим HTTP (profile 9)"),
+    (10, "DNS Антиспуф", "Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)"),
 ]
 
 # Fallback profiles (is_fallback=True)
@@ -71,11 +73,15 @@ FALLBACK_PROFILES = {8, 9}
 # состоянию config_mode_text udp_games (наличие 1026-65531 в NFQWS2_PORTS_UDP).
 UDP_GAMES_PROFILE = 7
 
+# DNS antispoof profile (is_dns_desync=True) — гейтинг по состоянию
+# config_mode_text dns_desync (блок #Z2R_DNS_* активен + порт 53 в NFQWS2_PORTS_UDP).
+DNS_DESYNC_PROFILE = 10
+
 # config_profile_proto_list() — lib/config.sh:359
 _PROTO_LIST = {
     1: "tls http",
     2: "tls", 3: "tls", 4: "tls", 8: "tls",
-    5: "udp", 6: "udp", 7: "udp",
+    5: "udp", 6: "udp", 7: "udp", 10: "udp",
     9: "http",
 }
 
@@ -114,6 +120,17 @@ PROFILE_CHECK = {
 }
 UDP_CHECK_MESSAGE = ("Для UDP-профиля быстрая TLS-проверка неприменима. "
                      "Проверьте работу в браузере или приложении.")
+
+# z2r_dns_* — lib/netcheck.sh (профиль 10, антиспуф DNS)
+DNS_CHECK_DOMAIN = "deb.torproject.org"
+DNS_CHECK_SERVER = "8.8.8.8"
+DNS_KNOWN_ADDRS = (
+    "204.8.99.144", "204.8.99.146", "95.216.163.36",
+    "116.202.120.165", "116.202.120.166",
+    "2620:7:6002:0:466:39ff:fe7f:1826", "2620:7:6002:0:466:39ff:fe32:e3dd",
+    "2a01:4f8:fff0:4f:266:37ff:feae:3bbc", "2a01:4f8:fff0:4f:266:37ff:fe2c:5d19",
+    "2a01:4f9:c010:19eb::1",
+)
 
 # Сообщения об ошибках — дословно из _lib.sh (send_error)
 ERR_BAD_PROFILE = "Некорректный профиль"
@@ -203,9 +220,64 @@ def _fallback_max_strategy(profile, cfg_text):
     return maxval
 
 
-def config_profile_max_strategy(profile, cfg_text):
-    """config_profile_max_strategy() — lib/config.sh:230 (порт awk 1:1)."""
+def _keyed_max_strategy(profile, cfg_text):
+    """Стадия 1 shell-версии (lib/config.sh): стратегии в блоках
+    с --lua-desync=(circular_locked|circular_quality|rst_guard_locked):key=N.
+    Порядок блоков не важен — профиль задаётся логическим key=N."""
     pid = int(profile)
+    key_re = re.compile(
+        r"--lua-desync=(circular_locked|circular_quality|rst_guard_locked):key="
+        + str(pid) + r"([^0-9]|$)")
+    inopt = False
+    in_template = False
+    active = False
+    tpl = ""
+    tplmax = {}
+    maxval = 0
+    for line in cfg_text.splitlines():
+        if re.match(r'^NFQWS2_OPT="', line):
+            inopt = True
+        if not inopt:
+            continue
+        if re.match(r"^--template=", line):
+            in_template = True
+            active = False
+            tpl = re.sub(r"^--template=", "", line)
+            tpl = re.sub(r"\s.*$", "", tpl)
+        elif re.match(r"^\s*--new\s*$", line):
+            in_template = False
+            active = False
+            tpl = ""
+        elif not in_template and key_re.search(line):
+            active = True
+        if (not in_template and active
+                and re.match(r"^--import([=\s]|$)", line)):
+            imp = re.sub(r"^--import[=\s]+", "", line)
+            imp = re.sub(r"\s.*$", "", imp)
+            if tplmax.get(imp, 0) > maxval:
+                maxval = tplmax[imp]
+        # scan_strategies(keyed): активный блок вне шаблона копит max
+        for m in _STRATEGY_RE.finditer(line):
+            num = int(m.group(0)[9:])
+            if in_template:
+                if num > tplmax.get(tpl, 0):
+                    tplmax[tpl] = num
+            elif active and num > maxval:
+                maxval = num
+        if re.match(r'^"$', line):
+            break
+    return maxval
+
+
+def config_profile_max_strategy(profile, cfg_text):
+    """config_profile_max_strategy() — lib/config.sh:230 (порт awk 1:1):
+    сначала keyed-разбор по key=N, затем маркеры #Z2R_FALLBACK_* для 8/9,
+    затем позиционный разбор старых конфигов без key=N."""
+    pid = int(profile)
+
+    keyed = _keyed_max_strategy(pid, cfg_text)
+    if keyed and keyed > 0:
+        return keyed
 
     # Профили 8/9 — отдельный fallback-разбор; при успехе возвращаем сразу.
     if pid in (8, 9):
@@ -323,6 +395,18 @@ def config_mode_text(mode, cfg_text):
         if ports:
             return "Выключен"
         return "Неизвестно"
+    if mode == "dns_desync":
+        # config_mode_text dns_desync — lib/config.sh.
+        # Блок #Z2R_DNS_* без --skip + порт 53 в NFQWS2_PORTS_UDP.
+        block = _dns_block_lines(cfg_text)
+        if not block:
+            return "Неизвестно"
+        active = any(re.match(r"^\s*--filter-udp=53\s*$", l) for l in block)
+        skipped = any(re.match(r"^\s*--skip\s+--filter-udp=53\s*$", l) for l in block)
+        ports = config_get_var(cfg_text, "NFQWS2_PORTS_UDP") or ""
+        if active and not skipped and re.search(r"(^|,)53(,|$)", ports):
+            return "Включен"
+        return "Выключен"
     if mode == "auto_mode":
         # config_mode_text auto_mode — lib/config.sh:248.
         has_on = any(re.match(r"^#Z2R_AUTO_MODE=1$", l) for l in cfg_text.splitlines())
@@ -375,6 +459,128 @@ def _fallback_block_lines(cfg_text):
         if inblk:
             lines.append(line)
     return lines
+
+
+def _dns_block_lines(cfg_text):
+    """Строки блока #Z2R_DNS_* между маркерами."""
+    lines = []
+    inblk = False
+    for line in cfg_text.splitlines():
+        if re.match(r"^\s*#Z2R_DNS_BEGIN\s*$", line):
+            inblk = True
+            continue
+        if re.match(r"^\s*#Z2R_DNS_END\s*$", line):
+            inblk = False
+            continue
+        if inblk:
+            lines.append(line)
+    return lines
+
+
+def dns_check_target(domain=None, server=None):
+    """z2r_dns_check_target() — lib/netcheck.sh (порт): "state|reason|v4|v6|hits"."""
+    domain = domain or DNS_CHECK_DOMAIN
+    server = server or DNS_CHECK_SERVER
+    tool = os.environ.get("Z2R_DNS_TOOL", "auto")
+    try:
+        if tool == "nslookup" or (tool == "auto" and not shutil.which("dig")):
+            proc = subprocess.run(["nslookup", domain, server],
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=10)
+        else:
+            proc = subprocess.run(["dig", "+short", "+time=2", "+tries=1", domain, "@" + server],
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=10)
+        text, rc = proc.stdout + proc.stderr, proc.returncode
+    except Exception:
+        return "fail|noanswer|||"
+    v4, v6, seen = [], [], set()
+    for tok in re.split(r"[\s,;()]+", text):
+        tok = re.sub(r"#.*$", "", tok).rstrip(":")
+        if not tok or tok == server or tok in seen:
+            continue
+        if re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", tok) \
+                and all(0 <= int(p) <= 255 for p in tok.split(".")):
+            seen.add(tok)
+            v4.append(tok)
+        elif ":" in tok and re.fullmatch(r"[0-9A-Fa-f:]+", tok):
+            seen.add(tok)
+            v6.append(tok)
+    if v4:
+        hits = [a for a in v4 + v6 if a in DNS_KNOWN_ADDRS]
+        if hits:
+            return "ok|match|%s|%s|%s" % (" ".join(v4), " ".join(v6), " ".join(hits))
+        return "warn|rotate|%s|%s|" % (" ".join(v4), " ".join(v6))
+    low = text.lower()
+    if any(s in low for s in ("nxdomain", "not found", "can't find", "non-existent", "no answer")):
+        return "fail|nxdomain|||"
+    if any(s in low for s in ("timed out", "timeout", "no servers", "refused",
+                              "unreachable", "servfail", "connection", "failure")):
+        return "fail|noanswer|||"
+    if rc != 0:
+        return "fail|noanswer|||"
+    return "fail|empty|||"
+
+
+def dns_check_series(domain=None, server=None, tries=None, interval=None):
+    """z2r_dns_check_series() — lib/netcheck.sh (порт): серия проб, агрегат
+    "state|reason|v4|v6|hits|ok|warn|fail". Одного ok достаточно: стратегия
+    пропускает настоящий резолв. Интервал — целые секунды (BusyBox sleep)."""
+    import time
+    domain = domain or DNS_CHECK_DOMAIN
+    server = server or DNS_CHECK_SERVER
+    tries = tries if tries is not None else int(os.environ.get("Z2R_DNS_TRIES", "3"))
+    interval = interval if interval is not None else int(os.environ.get("Z2R_DNS_INTERVAL", "1"))
+    n_ok = n_warn = n_fail = 0
+    best = None
+    first_fail_reason = ""
+    for i in range(tries):
+        if i > 0 and interval > 0:
+            time.sleep(interval)
+        res = dns_check_target(domain, server)
+        parts = res.split("|")
+        state, reason = parts[0], parts[1]
+        if state == "ok":
+            n_ok += 1
+            if best is None:
+                best = res
+        elif state == "warn":
+            n_warn += 1
+            if best is None:
+                best = res
+        else:
+            n_fail += 1
+            if not first_fail_reason:
+                first_fail_reason = reason
+    if n_ok > 0:
+        return "%s|%s|%s|%s|%s|%s" % (best, n_ok, n_warn, n_fail)
+    if n_warn > 0:
+        return "%s|%s|%s|%s" % (best, n_ok, n_warn, n_fail)
+    return "fail|%s||||%s|%s|%s" % (first_fail_reason or "empty", n_ok, n_warn, n_fail)
+
+
+def dns_series_text(res):
+    """z2r_dns_series_text() — lib/netcheck.sh (порт)."""
+    parts = res.split("|")
+    state, reason = parts[0], parts[1]
+    v4, hits = parts[2], parts[4]
+    n_ok, n_warn, n_fail = (int(x) for x in parts[5:8])
+    total = n_ok + n_warn + n_fail
+    if state == "ok":
+        return "резолв настоящий в %s из %s проверок (адреса: %s, эталон torproject:%s)" \
+            % (n_ok, total, v4, " " + hits if hits else "")
+    if state == "warn":
+        return ("адреса приходят (%s из %s проверок), но не из эталонного набора torproject - "
+                "возможно, набор сменился. Сверьте вручную: dig +tcp %s @ %s"
+                % (n_warn, total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER))
+    if reason == "nxdomain":
+        return "подмена DNS во всех %s проверках: NXDOMAIN/без адресов от %s @ %s" \
+            % (total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
+    if reason == "noanswer":
+        return "DNS не отвечает ни в одной из %s проверок (%s @ %s) - вероятно, дропается оригинал запроса" \
+            % (total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
+    return "ответ DNS без IPv4-адресов во всех %s проверках (%s @ %s)" \
+        % (total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
 
 
 # --- csv-хелперы для голосовых портов (lib/config.sh:369 / 438) ------------
@@ -1386,7 +1592,7 @@ class FakeRouterState:
                 continue
             prof_s, strat = token.split("=", 1)
             prof_s, strat = prof_s.strip(), strat.strip()
-            if not re.match(r"^[1-9]$", prof_s):
+            if not re.match(r"^[1-9][0-9]*$", prof_s):
                 continue
             prof = int(prof_s)
             pl = proto_list(prof)
@@ -1438,6 +1644,7 @@ class FakeRouterState:
         proto = profile_proto(pid)
         is_fallback = pid in FALLBACK_PROFILES
         is_udp_games = (pid == UDP_GAMES_PROFILE)
+        is_dns_desync = (pid == DNS_DESYNC_PROFILE)
         # current_lock читаем из profile.lock + orchestra-lock — как реальный
         # profile_json_fallback → profile_state_display. Для 8/9 orchestra-lock
         # живёт в locked.manual.tsv (profile_config_orch_set); config-блок не
@@ -1451,6 +1658,7 @@ class FakeRouterState:
         lock_source = orch_scoped_source(orch_file, scope, pid, proto)
         fallback_enabled = (_fallback_state(self.cfg_text) == "включен") if is_fallback else None
         udp_games_enabled = (config_mode_text("udp_games", self.cfg_text) == "Включен") if is_udp_games else None
+        dns_desync_enabled = (config_mode_text("dns_desync", self.cfg_text) == "Включен") if is_dns_desync else None
         maxstrat = config_profile_max_strategy(pid, self.cfg_text)
         result = {
             "profile": pid,
@@ -1467,6 +1675,9 @@ class FakeRouterState:
         if is_udp_games:
             result["is_udp_games"] = True
             result["udp_games_enabled"] = udp_games_enabled
+        if is_dns_desync:
+            result["is_dns_desync"] = True
+            result["dns_desync_enabled"] = dns_desync_enabled
         return result
 
     def all_profiles_json(self, scope="default"):
@@ -1621,6 +1832,8 @@ class FakeRouterState:
         pid = int(profile)
         if pid in (5, 6):
             return {"results": [], "message": UDP_CHECK_MESSAGE}
+        if pid == DNS_DESYNC_PROFILE:
+            return {"results": [self._dns_check_item()]}
         targets = PROFILE_CHECK.get(pid, [])
         if not targets:
             return {"results": []}
@@ -1630,6 +1843,17 @@ class FakeRouterState:
                 target = "https://{0}/".format(YT_CLUSTER_FALLBACK)
             results.append(self._check_item(label, target, i))
         return {"results": results}
+
+    def _dns_check_item(self):
+        """check_one_dns_json() — _lib.sh."""
+        res = dns_check_series()
+        state = res.split("|")[0]
+        return {
+            "label": "DNS антиспуф",
+            "target": "nslookup {0} @ {1}".format(DNS_CHECK_DOMAIN, DNS_CHECK_SERVER),
+            "verdict": state,
+            "text": dns_series_text(res),
+        }
 
     # --- TLS blob -----------------------------------------------------------
 
@@ -2398,7 +2622,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if endpoint == "check":
             self._sleep_for("check")
             profile = params.get("profile", "")
-            if re.match(r"^[1-9]$", profile):
+            if re.match(r"^[1-9][0-9]*$", profile):
                 self._log("{0} {1} | profile check profile={2} check_result={3}".format(
                     self.command, parsed.path, profile, self.state.check_result))
                 with self.state.lock:
@@ -2464,7 +2688,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         # api_set_lock() — _lib.sh:214
         profile = params.get("profile", "")
         strategy = params.get("strategy", "")
-        if not re.match(r"^[1-9]$", profile):
+        if not re.match(r"^[1-9][0-9]*$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
         if not re.match(r"^[0-9]+$", strategy):
@@ -2513,7 +2737,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
     def _handle_clear_lock(self, params, parsed):
         # api_clear_lock() — _lib.sh:232
         profile = params.get("profile", "")
-        if not re.match(r"^[1-9]$", profile):
+        if not re.match(r"^[1-9][0-9]*$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
         scope = params.get("scope", "default") or "default"
