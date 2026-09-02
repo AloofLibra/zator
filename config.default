@@ -361,7 +361,7 @@ NFQWS2_OPT="
 #Антиспуф DNS: защита от подмены DNS-ответов (клон запроса с малым TTL и меткой
 #transaction ID, дроп ответов по метке). По умолчанию выключен; порт 53 в
 #NFQWS2_PORTS_UDP добавляется тумблером (пункт 8 главного меню).
---skip --filter-udp=53
+--filter-udp=53
 --in-range=-d100
 --out-range=-d100
 --lua-desync=circular_locked:key=10:proto=udp:allow_nohost=1:exclude_hostlist=/opt/zator/lists/netrogat.txt:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt
