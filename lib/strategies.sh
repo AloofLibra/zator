@@ -88,7 +88,7 @@ orch_profile_try() {
     fi
 
     for p in $proto_list; do
-        prev_map["$p"]="$(orch_locked_get "$profile" "$p")"
+        prev_map["$p"]="$(orch_locked_state_get "$profile" "$p")"
         [ "$current_state" = "0" ] && prev_map["$p"]="0"
     done
 
@@ -142,13 +142,12 @@ orch_profile_try() {
     done
 
     for p in $proto_list; do
-        if [ -n "${prev_map[$p]}" ] && [ "${prev_map[$p]}" -gt 0 ]; then
-            orch_locked_set "$profile" "$p" "${prev_map[$p]}"
-        elif [ "${prev_map[$p]}" = "0" ]; then
-            orch_locked_set "$profile" "$p" 0
-        else
-            orch_locked_clear "$profile" "$p"
-        fi
+        # auto/пусто = лока не было: убираем лок (профиль возвращается
+        # к стратегии по умолчанию), а не пишем 0 — 0 выключал бы профиль.
+        case "${prev_map[$p]}" in
+            ''|auto) orch_locked_clear "$profile" "$p" ;;
+            *) orch_locked_set "$profile" "$p" "${prev_map[$p]}" ;;
+        esac
     done
     echo "Изменения отменены."
     pause_enter
@@ -275,10 +274,10 @@ orch_auto_sweep() {
     esac
 
     if [ "$kind" = "domain" ]; then
-        prev_str="$(orch_locked_get "$key" "tls")"
+        prev_str="$(orch_locked_state_get "$key" "tls")"
     else
         for p in $proto_list; do
-            prev_map["$p"]="$(orch_locked_get "$key" "$p")"
+            prev_map["$p"]="$(orch_locked_state_get "$key" "$p")"
         done
     fi
 
@@ -488,13 +487,11 @@ orch_auto_sweep() {
             echo "Стратегия ${best} сохранена для домена ${key}."
             telemetry_notify
         else
-            if [ -n "$prev_str" ] && [ "$prev_str" != "0" ]; then
-                orch_locked_set "$key" "tls" "$prev_str"
-            elif [ "$prev_str" = "0" ]; then
-                orch_locked_set "$key" "tls" 0
-            else
-                orch_locked_clear "$key" "tls"
-            fi
+            # auto/пусто = домен не имел лока: убираем лок, а не пишем 0.
+            case "$prev_str" in
+                ''|auto) orch_locked_clear "$key" "tls" ;;
+                *) orch_locked_set "$key" "tls" "$prev_str" ;;
+            esac
             echo "Изменения отменены, прежняя стратегия домена возвращена."
         fi
     else
@@ -519,13 +516,12 @@ orch_auto_sweep() {
             telemetry_notify
         else
             for p in $proto_list; do
-                if [ -n "${prev_map[$p]}" ] && [ "${prev_map[$p]}" -gt 0 ]; then
-                    orch_locked_set "$key" "$p" "${prev_map[$p]}"
-                elif [ "${prev_map[$p]}" = "0" ]; then
-                    orch_locked_set "$key" "$p" 0
-                else
-                    orch_locked_clear "$key" "$p"
-                fi
+                # auto/пусто = профиль не имел лока (работала стратегия по
+                # умолчанию): убираем лок, а не пишем 0 — 0 выключал бы профиль.
+                case "${prev_map[$p]}" in
+                    ''|auto) orch_locked_clear "$key" "$p" ;;
+                    *) orch_locked_set "$key" "$p" "${prev_map[$p]}" ;;
+                esac
             done
             echo "Изменения отменены, прежние стратегии профиля возвращены."
         fi

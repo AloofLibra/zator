@@ -517,6 +517,36 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   printf '%s' "$out" | grep -q "цель TLS 1.2+1.3" || fail "сценарий 14c: баннер без цели both"
   [ -z "${Z2R_TLS_WAIT_BOTH:-}" ] || fail "сценарий 14c: Z2R_TLS_WAIT_BOTH не восстановлен"
 
+  # регрессия: профиль без лока + неудачный прогон (Enter на «вернуть как было»)
+  # не должен писать лок 0 — профиль возвращается к стратегии по умолчанию (auto)
+  : > "$ORCH_LOCK_FILE"; : > "$PROFILE_STATE_FILE"
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  export MOCK_HEAD_12=timeout MOCK_HEAD_13=timeout
+  out="$(printf '\n' | orch_auto_sweep profile 4 tls https://discord.com/ 1 2 0 0 both)"
+  printf '%s' "$out" | grep -q "Рабочих стратегий не найдено" \
+    || fail "сценарий 14c: все красные не дали «не найдено»"
+  [ "$(orch_locked_state_get 4 tls)" = "auto" ] \
+    || fail "сценарий 14c: неудачный прогон оставил лок '$(orch_locked_state_get 4 tls)' вместо auto"
+  if grep -q '^4[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
+    fail "сценарий 14c: неудачный прогон записал лок 0 и выключил профиль"
+  fi
+
+  # регрессия: домен без лока + неудачный прогон — тоже без лока 0
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  out="$(printf '\n' | orch_auto_sweep domain ghost.org tls https://ghost.org/ 1 2 0 0 both)"
+  [ "$(orch_locked_state_get ghost.org tls)" = "auto" ] \
+    || fail "сценарий 14c: неудачный доменный прогон оставил лок '$(orch_locked_state_get ghost.org tls)'"
+  if grep -q '^ghost.org[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
+    fail "сценарий 14c: доменный прогон записал лок 0"
+  fi
+
+  # регрессия: явный 0 до прогона восстанавливается как 0 (пользователь сам выключил)
+  orch_locked_set 4 tls 0
+  printf '0\n' | orch_auto_sweep profile 4 tls https://discord.com/ 1 2 0 0 both >/dev/null
+  [ "$(orch_locked_state_get 4 tls)" = "0" ] \
+    || fail "сценарий 14c: явный 0 должен восстанавливаться как 0"
+  export MOCK_HEAD_13=seq_ok3
+
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   orch_locked_set example.org tls 7
   printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 200 0 >"$TMP_DIR/sweep_int.log" 2>&1 &

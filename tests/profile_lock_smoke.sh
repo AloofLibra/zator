@@ -56,6 +56,10 @@ source "$REPO_DIR/lib/config.sh"
 source "$REPO_DIR/lib/orchestra_state.sh"
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/actions.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/ui.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/strategies.sh"
 
 for file in \
   "$REPO_DIR/z2r.sh" \
@@ -474,6 +478,17 @@ menu_config_snapshot "$CFG"
 [ "$MENU_DNS_DESINC" = "Выключен" ] || fail "menu snapshot did not fill MENU_DNS_DESINC"
 menu_config_snapshot "$DNS_NEW_CFG"
 [ "$MENU_DNS_DESINC" = "Включен" ] || fail "menu snapshot did not detect enabled DNS antispoof"
+
+# --- Отмена ручного перебора/автопрогона не должна писать лок 0 профилю без лока ---
+# Прежний баг: orch_locked_get возвращал "0" для отсутствующего лока, и отмена
+# прогона писала явный 0 — профиль (YouTube и т.п.) выключался целиком.
+orch_locked_clear 4 tls
+printf '2\n0\n\n' | orch_profile_try 4 "Профиль 4: TCP 443 (Discord)" "tls" "" >/dev/null 2>&1 || true
+[ "$(orch_locked_state_get 4 tls)" = "auto" ] \
+  || fail "cancel of a lockless profile trial must leave auto, got: $(orch_locked_state_get 4 tls)"
+if grep -q '^4[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
+  fail "cancelled trial wrote lock 0 for a lockless profile"
+fi
 
 # --- Дата изменения config (# Last modified) для главного меню ---
 grep -q '^# Last modified: ' "$REPO_DIR/config.default" \
