@@ -1224,7 +1224,7 @@ backup_update_offer_restore() {
     echo -e "${yellow}Перейти в меню бэкапов для восстановления прошлых настроек?${plain}"
     echo -e "${yellow}(Полное восстановление будет заблокировано в контексте обновления.)${plain}"
     echo -e "  ${Fcyan}1${plain} — да, перейти в меню бэкапов"
-    echo -e "  ${Fyellow}0${plain} — нет, выйти"
+    echo -e "  ${Fyellow}0${plain} — нет, продолжить без восстановления из бэкапов"
     read -re -p "Ваш выбор: " ans
     case "$ans" in
       1|5|y|Y|д|Д)
@@ -1232,7 +1232,7 @@ backup_update_offer_restore() {
         backup_submenu 1 || true
         ;;
       *)
-        echo -e "${green}Выход без восстановления.${plain}"
+        echo -e "${green}Продолжаю без восстановления из бэкапов.${plain}"
         ;;
     esac
   fi

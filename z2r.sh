@@ -1908,6 +1908,14 @@ webui_submenu() {
   done
 }
 
+# Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки
+# и мимолётные сбои rawsend "Network (is) unreachable" (нет маршрута в момент
+# переключения WAN/IPv6; формулировка зависит от платформы): verdict-пакеты
+# идут штатно, это не авария демона.
+z2r_err_journal() {
+  grep -v '^seccomp:' "$1" 2>/dev/null | grep -vi '^rawsend: sendto.*network.*unreachable'
+}
+
 get_menu() {
     TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
@@ -1915,7 +1923,7 @@ get_menu() {
     fi
     provider_init_once
     init_telemetry
-    update_recommendations  
+    update_recommendations
   while true; do
   	local strategies_status
     strategies_status=$(get_orchestra_locks_info)
@@ -1924,8 +1932,8 @@ get_menu() {
     menu_config_snapshot "$_cfg_file"
     MENU_ERR_LINE=""
     MENU_ERR_STATE=""
-    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
-      MENU_ERR_N="$(grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -c .)"
+    if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
+      MENU_ERR_N="$(z2r_err_journal /tmp/nfqws2_1.err | grep -c .)"
       MENU_ERR_LINE="${red}Ошибки nfqws2: ${MENU_ERR_N} — посмотрите п.666 меню${yellow}
 "
       MENU_ERR_STATE="${red} (ошибок: ${MENU_ERR_N})${yellow}"
@@ -2196,13 +2204,13 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "666")
     echo "--- Ошибки nfqws2 (последний запуск) ---"
-    if [ -s /tmp/nfqws2_1.err ] && grep -v '^seccomp:' /tmp/nfqws2_1.err 2>/dev/null | grep -q .; then
-      grep -v '^seccomp:' /tmp/nfqws2_1.err
+    if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
+      z2r_err_journal /tmp/nfqws2_1.err
       echo ""
-      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2)${plain}"
+      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2; seccomp-заметки и мимолётные rawsend 'Network unreachable' скрыты как безвредные)${plain}"
     elif command -v logread >/dev/null 2>&1 \
-      && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -q .; then
-      logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | tail -20
+      && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -vi 'rawsend: sendto.*network.*unreachable' | grep -q .; then
+      logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -vi 'rawsend: sendto.*network.*unreachable' | tail -20
       echo ""
       echo -e "${yellow}Источник: syslog (logread), последние 20 строк.${plain}"
     else
