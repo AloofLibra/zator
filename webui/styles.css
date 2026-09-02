@@ -316,6 +316,7 @@ h3 { font-size: 1rem; line-height: 1.25; }
 .toast.success { border-color: color-mix(in srgb, var(--success) 35%, var(--line)); }
 .toast.error   { border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); }
 .toast.warning { border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); }
+.toast.info    { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
 
 .toast-message { min-width: 0; line-height: 1.35; }
 

@@ -78,7 +78,7 @@ Client scope: `scope` необязателен и по умолчанию рав
     {"profile":7,"label":"UDP Games","description":"Игровой UDP (порты 1026-65531)","current_lock":"auto","max_strategy":20,"is_udp_games":true,"udp_games_enabled":false},
     {"profile":8,"label":"Fallback TLS","description":"Безразборный режим TLS (profile 8)","current_lock":"auto","max_strategy":43,"is_fallback":true,"fallback_enabled":false},
     {"profile":9,"label":"Fallback HTTP","description":"Безразборный режим HTTP (profile 9)","current_lock":"auto","max_strategy":8,"is_fallback":true,"fallback_enabled":false},
-    {"profile":10,"label":"DNS Антиспуф","description":"Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)","current_lock":"auto","max_strategy":20,"is_dns_desync":true,"dns_desync_enabled":false}
+    {"profile":10,"label":"DNS Антиспуф","description":"Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)","current_lock":"auto","max_strategy":20,"is_dns_desync":true,"dns_desync_enabled":true}
   ]
 }
 ```
@@ -100,8 +100,10 @@ Client scope: `scope` необязателен и по умолчанию рав
 
 Для профиля **10** (антиспуф DNS) дополнительно есть `"is_dns_desync":true` и
 `"dns_desync_enabled":bool` (блок `#Z2R_DNS_*` активен и порт 53 в
-`NFQWS2_PORTS_UDP`; `config_mode_text dns_desync`). Включение — пункт 8
-главного меню z2r (`menu_action_toggle_dns_desync`), 20 стратегий по мотивам
+`NFQWS2_PORTS_UDP`; `config_mode_text dns_desync`) — на свежем конфиге
+апстрима `true` (включён по умолчанию). Управление — тумблер
+«Антиспуф DNS» в настройках WebUI (`setting=dns_desync_state`, то же ядро, что
+у пункта 8 главного меню z2r — `menu_action_toggle_dns_desync`), 20 стратегий по мотивам
 UDP-дурения QUIC/Discord: клоны ttl 8/12/14/16, паддинг pad 8/16/32, badsum,
 ipfrag (по клону), repeats, udplen (паддинг оригинала). ipfrag+drop исключена —
 дропает оригинал и на живых стендах полностью ломала резолв.
@@ -307,6 +309,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 | `rst_guard` | `api_rst_guard_get` | защита от RST-инъекций |
 | `reasm` | `api_reasm_get` | `--reasm-disable` |
 | `quic443` | `api_quic443_get` | фейки QUIC на UDP 443 |
+| `dns_desync` | `api_dns_desync_get` | антиспуф DNS, профиль 10 (UDP:53) |
 | `ports` | `api_ports_get` | пользовательские порты NFQWS2 |
 | `provider` | `api_provider_get` | провайдер (cache/provider.txt) |
 
@@ -397,6 +400,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 | `rst_guard_state` | `value=0\|1` | вкл/выкл RST-guard (`backup_smart_set_rst_guard`) |
 | `reasm_state` | `value=0\|1` | вкл/выкл `--reasm-disable` (`backup_smart_set_reasm`) |
 | `quic443_state` | `value=0\|1` | вкл/выкл фейков QUIC 443 (`backup_smart_set_quic443`) |
+| `dns_desync_state` | `value=0\|1` | вкл/выкл антиспуфа DNS, профиль 10 (`backup_smart_set_dns_desync` + порт 53 в `NFQWS2_PORTS_UDP` через `config_profile_dns_ports_apply`) |
 | `ports_add` | `proto=tcp\|udp&value=<порты>` | добавить пользовательские порты (`ports_apply_add`; TCP синхронизирует `--filter-tcp` RKN) |
 | `ports_remove` | `proto=tcp\|udp&value=<порт>` | удалить пользовательский порт (`ports_apply_remove`) |
 | `provider_set` | `name=<строка>&city=<строка>` | ручная установка провайдера (`provider_set_manual`) |
@@ -406,11 +410,13 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 Успех (`200 OK`):
 
 ```jsonc
-{ "ok": true, "reboot_required": true }
+{ "ok": true, "restarted": true|false }   // авто-рестарт zapret2, если он был запущен (_service_apply_restart)
 // auto_mode_state: { "ok": true, "restarted": true|false, "state": "включен|выключен" }
-// ports_add:       { "ok": true, "added": "8080,9000-9100", "skipped": "", "reboot_required": true }
+// ports_add:       { "ok": true, "added": "8080,9000-9100", "skipped": "", "restarted": true|false }
 // provider_*:      { "ok": true, "provider": "MTS - Moscow" }
-// hostlist/rst_guard/reasm/quic443 также возвращают актуальное "state"
+// hostlist/rst_guard/reasm/quic443/dns_desync также возвращают актуальное "state"
+// wg_blob/wg_repeats/wg_state принимают restart=0 — отложить рестарт (форма WG
+// меняет до трёх настроек одним сабмитом и рестартит один раз, последним запросом)
 ```
 
 Ошибки режимов и портов:
@@ -423,6 +429,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 | `rst_guard=1` без `/opt/zator/lua/rst-guard.lua` | `500` | `Файл rst-guard.lua отсутствует на устройстве. Включите защиту один раз через CLI (пункт 18)...` |
 | `reasm`: нет `NFQWS2_OPT="` | `500` | `Не найден блок NFQWS2_OPT в конфиге. Обновите конфиг через CLI (пункт 5 главного меню).` |
 | `quic443`: нет блока `#Z2R_QUIC443_*` | `500` | `Блок QUIC (UDP443) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню).` |
+| `dns_desync`: нет блока `#Z2R_DNS_*` | `500` | `Блок DNS (UDP:53) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню).` |
 | `ports_add`: `proto` не tcp/udp | `400` | `Некорректный протокол: <proto>` |
 | `ports_add`: ничего не добавлено | `400` | `Ничего не добавлено (некорректные значения или дубликаты): <список>` |
 | `ports_remove`: UDP `1026-65531` | `400` | `Диапазон 1026-65531 управляется переключателем игрового UDP на вкладке Настройки` |
@@ -505,7 +512,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 | `value` не `0\|1` | `400` | `Некорректное значение: <value>` |
 | авторотация включена | `409 Conflict` | `Безразборный режим недоступен при включённой авторотации TCP/HTTP. Сначала выключите авторотацию.` |
 
-Успех: `{"ok":true,"reboot_required":true}`.
+Успех: `{"ok":true,"restarted":true|false}`.
 
 Блокировка взаимная: включить `auto_mode_state=1` при включённом безразборе тоже
 нельзя — `409 Conflict` (см. таблицу ошибок режимов в §6).
@@ -608,7 +615,7 @@ CLI-логики в [`_lib.sh`](../cgi-bin/_lib.sh) (`netrogat_file`, `custom_rk
 
 Метод не из {GET,POST} → `405` `Метод не поддерживается`.
 
-> Ответы доменных действий **не содержат** `reboot_required` (списки не требуют
+> Ответы доменных действий **не содержат** `restarted` (списки не требуют
 > рестарта). В отличие от `set-lock.cgi`, `set_strategy` для домена меняет только
 > `locked.tsv`, который читается Lua-стороной runtime.
 

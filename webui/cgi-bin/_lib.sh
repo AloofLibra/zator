@@ -244,6 +244,17 @@ service_zapret2() {
   esac
 }
 
+# Автоперезапуск после изменения настройки: только когда zapret2 запущен.
+# PARAM_RESTART=0 — отложить рестарт (WireGuard-форма меняет до трёх настроек
+# одним сабмитом). Результат — в _SERVICE_RESTARTED (true/false) для JSON.
+_service_apply_restart() {
+  _SERVICE_RESTARTED=false
+  [ "${PARAM_RESTART:-1}" = "0" ] && return 0
+  zapret2_running || return 0
+  service_zapret2 restart && _SERVICE_RESTARTED=true
+  return 0
+}
+
 strategy_locks_status_text() {
   if [ -s "$ORCH_DIR/locked.tsv" ] || [ -s "$ORCH_DIR/locked.manual.tsv" ] || [ -s "$(profile_state_file)" ]; then
     echo "Есть"
@@ -622,7 +633,8 @@ api_tls_blob_set() {
     sed -i $sed_ereg "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${blob}#g" "$cfg"
   fi
 
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 api_wg_blob_get() {
@@ -686,7 +698,8 @@ api_wg_blob_set() {
 
   sed -i $sed_ereg "s#--blob=fakewgblob:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${blob}#g" "$cfg"
 
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 _fallback_state() {
@@ -740,7 +753,8 @@ api_fallback_state_set() {
   else
     _fallback_set_state "$cfg" "$value"
   fi
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 api_wg_repeats_set() {
@@ -765,7 +779,8 @@ api_wg_repeats_set() {
   sed_ereg="$(config_sed_ereg)"
   sed -i $sed_ereg "s#(blob=fakewgblob:repeats=)[0-9]+#\\1${repeats}#g" "$cfg"
 
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 _wg_state_get() {
@@ -818,7 +833,8 @@ api_wg_state_set() {
 
   _wg_state_set "$cfg" "$value"
 
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 _udp_games_set_skip() {
@@ -871,7 +887,8 @@ api_udp_games_set() {
     _udp_games_set_skip "$cfg" 0
   fi
 
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 _require_config() {
@@ -886,7 +903,7 @@ api_auto_mode_get() {
 }
 
 api_auto_mode_set() {
-  local value="$PARAM_VALUE" cfg restarted=false
+  local value="$PARAM_VALUE" cfg
   case "$value" in
     0|1) ;;
     *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
@@ -903,10 +920,8 @@ api_auto_mode_set() {
     [ -f "$cfg" ] || continue
     config_set_auto_mode "$cfg" "$value" || send_error "500 Internal Server Error" "Не удалось переключить авторотацию в $cfg"
   done
-  if zapret2_running; then
-    service_zapret2 restart && restarted=true
-  fi
-  send_json "200 OK" "{\"ok\":true,\"restarted\":$restarted,\"state\":\"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")\"}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"state\":\"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")\"}"
 }
 
 api_hostlist_get() {
@@ -927,7 +942,8 @@ api_hostlist_set() {
     [ -f "$cfg" ] || continue
     backup_smart_set_hostlist "$cfg" "$value"
   done
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")\"}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"state\":\"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")\"}"
 }
 
 api_rst_guard_get() {
@@ -948,7 +964,8 @@ api_rst_guard_set() {
     send_error "500 Internal Server Error" "Файл rst-guard.lua отсутствует на устройстве. Включите защиту один раз через CLI (пункт 18) — при включении файл скачивается автоматически."
   fi
   backup_smart_set_rst_guard "$CONFIG_FILE" "$value"
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")\"}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"state\":\"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")\"}"
 }
 
 api_reasm_get() {
@@ -967,7 +984,8 @@ api_reasm_set() {
   _require_config
   grep -q '^NFQWS2_OPT="' "$CONFIG_FILE" || send_error "500 Internal Server Error" "Не найден блок NFQWS2_OPT в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."
   backup_smart_set_reasm "$CONFIG_FILE" "$value"
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")\"}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"state\":\"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")\"}"
 }
 
 api_quic443_get() {
@@ -987,7 +1005,37 @@ api_quic443_set() {
   [ -n "$(backup_smart_quic443_state "$CONFIG_FILE")" ] || \
     send_error "500 Internal Server Error" "Блок QUIC (UDP443) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."
   backup_smart_set_quic443 "$CONFIG_FILE" "$value"
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true,\"state\":\"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")\"}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"state\":\"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")\"}"
+}
+
+# Антиспуф DNS (профиль 10, UDP:53). Ядро — те же сеттеры, что и в пункте 8
+# главного меню (menu_action_toggle_dns_desync): блок #Z2R_DNS_* + порт 53
+# в NFQWS2_PORTS_UDP. Состояние — config_mode_text dns_desync.
+api_dns_desync_get() {
+  local state
+  _require_config
+  state="$(config_mode_text dns_desync "$CONFIG_FILE")"
+  [ "$state" != "Неизвестно" ] || \
+    send_error "500 Internal Server Error" "Блок DNS (UDP:53) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."
+  send_json "200 OK" "{\"state\":\"$(json_escape "$state")\",\"enabled\":$([ "$state" = "Включен" ] && echo true || echo false)}"
+}
+
+api_dns_desync_set() {
+  local value="$PARAM_VALUE"
+  case "$value" in
+    0|1) ;;
+    *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
+  esac
+  _require_config
+  [ "$(config_mode_text dns_desync "$CONFIG_FILE")" != "Неизвестно" ] || \
+    send_error "500 Internal Server Error" "Блок DNS (UDP:53) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."
+  type backup_smart_set_dns_desync >/dev/null 2>&1 || \
+    send_error "500 Internal Server Error" "Сеттеры lib/actions.sh недоступны. Обновите z2r."
+  backup_smart_set_dns_desync "$CONFIG_FILE" "$value"
+  config_profile_dns_ports_apply "$CONFIG_FILE" "$value"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"state\":\"$(json_escape "$(config_mode_text dns_desync "$CONFIG_FILE")")\"}"
 }
 
 _ports_tokens_json() {
@@ -1034,7 +1082,8 @@ api_ports_add() {
   if ! ports_apply_add "$PARAM_PROTO" "$PARAM_VALUE" "$CONFIG_FILE"; then
     send_error "400 Bad Request" "Ничего не добавлено (некорректные значения или дубликаты): ${PORTS_APPLY_SKIPPED:-}"
   fi
-  send_json "200 OK" "{\"ok\":true,\"added\":\"$(json_escape "$PORTS_APPLY_ADDED")\",\"skipped\":\"$(json_escape "$PORTS_APPLY_SKIPPED")\",\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"added\":\"$(json_escape "$PORTS_APPLY_ADDED")\",\"skipped\":\"$(json_escape "$PORTS_APPLY_SKIPPED")\",\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 api_ports_remove() {
@@ -1046,7 +1095,8 @@ api_ports_remove() {
   _require_config
   ports_apply_remove "$PARAM_PROTO" "$PARAM_VALUE" "$CONFIG_FILE" || \
     send_error "400 Bad Request" "Порт не найден среди добавленных: $PARAM_VALUE"
-  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
 }
 
 api_provider_get() {

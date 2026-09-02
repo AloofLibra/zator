@@ -32,6 +32,9 @@ case "${REQUEST_METHOD:-GET}" in
       quic443)
         api_quic443_get
         ;;
+      dns_desync)
+        api_dns_desync_get
+        ;;
       ports)
         api_ports_get
         ;;
@@ -78,6 +81,9 @@ case "${REQUEST_METHOD:-GET}" in
         ;;
       quic443_state)
         api_quic443_set
+        ;;
+      dns_desync_state)
+        api_dns_desync_set
         ;;
       ports_add)
         api_ports_add
