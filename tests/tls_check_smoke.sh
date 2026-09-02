@@ -463,17 +463,24 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14c: профиль-вид с ответом 0 должен вернуть прежний лок"
   printf '%s' "$out" | grep -q "прежние стратегии профиля возвращены" || fail "сценарий 14c: нет сообщения возврата"
 
-  # добавка к паузе ($8) попадает в баннер; успех на 1-й стратегии -> без sleep
+  # интервал паузы ($8) попадает в баннер; успех на 1-й стратегии -> без sleep
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   export MOCK_HEAD_13=ok200
   out="$(printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 2 1 5)"
   printf '%s' "$out" | grep -q "пауза 5 сек" \
-    || fail "сценарий 14c: добавка к паузе не попала в баннер: $out"
-  cap="$(printf '5\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
+    || fail "сценарий 14c: интервал паузы не попал в баннер: $out"
+  cap="$(printf '5\n' | orch_ask_sweep_pause 2>/dev/null)"
   [ "$cap" = "5" ] || fail "сценарий 14c: хелпер паузы должен вернуть только число: $cap"
-  cap="$(printf 'abc\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
-  [ "$cap" = "0" ] || fail "сценарий 14c: неверный ввод хелпера паузы должен давать 0: $cap"
-  cap="$(printf '0\n' | orch_ask_sweep_extra_delay 2>/dev/null)"
+  cap="$(printf '\n' | orch_ask_sweep_pause 2>/dev/null)"
+  [ "$cap" = "3" ] || fail "сценарий 14c: Enter в паузе должен давать 3 сек: $cap"
+  cap="$(printf 'abc\n' | orch_ask_sweep_pause 2>/dev/null)"
+  [ "$cap" = "3" ] || fail "сценарий 14c: неверный ввод после предупреждения должен давать 3 сек: $cap"
+  cap="$(printf '2\n' | orch_ask_sweep_pause 2>/dev/null)"
+  [ "$cap" = "3" ] || fail "сценарий 14c: меньше 3 сек после предупреждения должно давать 3 сек: $cap"
+  err="$(printf '2\n' | orch_ask_sweep_pause 2>&1 >/dev/null)"
+  printf '%s' "$err" | grep -q "не может быть меньше 3 секунд" \
+    || fail "сценарий 14c: нет предупреждения о минимуме 3 сек: $err"
+  cap="$(printf '0\n' | orch_ask_sweep_pause 2>/dev/null)"
   [ -z "$cap" ] || fail "сценарий 14c: 0 в паузе должен отменять: $cap"
   cap="$(printf '1\n' | orch_ask_sweep_tls_pref 2>/dev/null)"
   [ "$cap" = "12" ] || fail "сценарий 14c: выбор TLS 1.2: $cap"

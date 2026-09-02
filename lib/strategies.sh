@@ -154,26 +154,33 @@ orch_profile_try() {
     pause_enter
 }
 
-# Запрос добавки к паузе между стратегиями автопрогона: базовая пауза нужна,
-# чтобы частыми переключениями не словить блок ТСПУ. Enter/неверный ввод = 0,
-# 0 = отмена (пустой вывод). Все пояснения — в stderr: stdout функции
-# захватывает вызывающий код, там должна быть только цифра.
-orch_ask_sweep_extra_delay() {
-    local extra
-    echo "Пауза между стратегиями снижает риск блока ТСПУ: больше пауза — дольше прогон, но безопаснее." >&2
-    read -re -p "Добавить секунд к базовой паузе 3 сек (Enter - без добавки, 0 - отмена): " extra
-    if [ "$extra" = "0" ]; then
-        return 0
-    fi
-    if [ -n "$extra" ]; then
-        case "$extra" in
+# Запрос интервала паузы между стратегиями автопрогона: частые переключения
+# могут словить блок ТСПУ. Enter = 3 сек, 0 = отмена (пустой вывод),
+# не-число или меньше 3 сек — ругаемся и спрашиваем заново (по EOF - 3 сек).
+# Все пояснения — в stderr: stdout функции захватывает вызывающий код,
+# там должна быть только цифра.
+orch_ask_sweep_pause() {
+    local pause
+    while true; do
+        read -re -p "Укажите интервал паузы между стратегиями. Минимум 3 сек (Enter - 3 сек, 0 - отмена): " pause || pause=""
+        if [ "$pause" = "0" ]; then
+            return 0
+        fi
+        [ -n "$pause" ] || pause=3
+        case "$pause" in
             *[!0-9]*)
-                echo -e "${yellow}Неверный ввод, будет базовая пауза 3 сек.${plain}" >&2
-                extra=0
+                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум 3).${plain}" >&2
+                ;;
+            *)
+                if [ "$pause" -lt 3 ]; then
+                    echo -e "${yellow}Пауза не может быть меньше 3 секунд (введено ${pause}).${plain}" >&2
+                else
+                    echo "$pause"
+                    return 0
+                fi
                 ;;
         esac
-    fi
-    echo "${extra:-0}"
+    done
 }
 
 # Запрос требуемых версий TLS для автопрогона: 12|13|both (Enter - both).
@@ -195,11 +202,11 @@ orch_ask_sweep_tls_pref() {
     return 0
 }
 
-# Диалог автопрогона (режим → требуемый TLS → добавка к паузе) и запуск.
+# Диалог автопрогона (режим → требуемый TLS → интервал паузы) и запуск.
 # 0 на любом вопросе = отмена.
 orch_run_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
-    local mode tls_pref extra_pause
+    local mode tls_pref pause_total
     read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 2, 0 - отмена): " mode
     if [ "$mode" = "0" ]; then
         echo "Отмена."
@@ -216,22 +223,23 @@ orch_run_auto_sweep() {
         return 0
     fi
 
-    extra_pause="$(orch_ask_sweep_extra_delay)"
-    if [ -z "$extra_pause" ]; then
+    pause_total="$(orch_ask_sweep_pause)"
+    if [ -z "$pause_total" ]; then
         echo "Отмена."
         pause_enter
         return 0
     fi
 
-    orch_auto_sweep "$kind" "$key" "$proto_list" "$test_url" "$start" "$max" "$sok" "$extra_pause" "$tls_pref"
+    orch_auto_sweep "$kind" "$key" "$proto_list" "$test_url" "$start" "$max" "$sok" "$pause_total" "$tls_pref"
     pause_enter
 }
 
 # Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
 # прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
 # и выбор сохранения. kind=profile|domain; key=профиль или домен.
-# $8 (extra_pause) — добавка к базовой паузе между стратегиями
-# (база ${Z2R_SWEEP_PAUSE:-3} сек), пауза нужна против срабатывания ТСПУ.
+# $8 (pause_total) — интервал паузы между стратегиями, сек (из диалога
+# всегда >= 3); пауза нужна против срабатывания ТСПУ. Z2R_SWEEP_PAUSE —
+# технический override на весь интервал (smoke-тесты гоняют с 0).
 # $9 (tls_pref: any|12|13|both) — какие версии TLS обязаны работать, чтобы
 # стратегия считалась зелёной (в диалоге по умолчанию обе).
 orch_auto_sweep() {
@@ -247,11 +255,12 @@ orch_auto_sweep() {
 
     # case-проверка всей строки: grep -E '^[0-9]+$' построчный и пропускает
     # многострочный мусор, у которого одна из строк — число.
-    local extra_pause="${8:-0}"
-    case "$extra_pause" in ''|*[!0-9]*) extra_pause=0 ;; esac
-    local base_pause="${Z2R_SWEEP_PAUSE:-3}"
-    case "$base_pause" in ''|*[!0-9]*) base_pause=3 ;; esac
-    local pause_sec=$((base_pause + extra_pause))
+    local pause_sec="${8:-${Z2R_SWEEP_PAUSE:-3}}"
+    case "$pause_sec" in ''|*[!0-9]*) pause_sec=3 ;; esac
+    # Интервал из диалога не бывает < 3; технический override может быть любым.
+    if [ -z "${Z2R_SWEEP_PAUSE:-}" ] && [ "$pause_sec" -lt 3 ]; then
+        pause_sec=3
+    fi
 
     local tls_pref="${9:-any}"
     case "$tls_pref" in
