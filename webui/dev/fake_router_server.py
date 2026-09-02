@@ -583,6 +583,7 @@ def dns_series_text(res):
         % (total, DNS_CHECK_DOMAIN, DNS_CHECK_SERVER)
 
 
+# --- csv-хелперы для голосовых портов (lib/config.sh:369 / 438) ------------
 
 def _csv_contains(csv, token):
     return token in (csv.split(",") if csv else [])

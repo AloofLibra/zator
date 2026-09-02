@@ -803,10 +803,14 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   [ "$(z2r_dns_field "$res" 2)" = "nxdomain" ] || fail "сценарий 18: причина не nxdomain: $res"
 
   # Тексты итога серии (z2r_dns_series_text) по заготовленным строкам агрегата
-  z2r_dns_series_text "ok|match|204.8.99.146 95.216.163.36||204.8.99.146|1|0|0"     | grep -q "эталон torproject" || fail "сценарий 18: текст ok без эталона"
-  z2r_dns_series_text "warn|rotate|203.0.113.7|||0|1|0"     | grep -q "эталонного набора" || fail "сценарий 18: текст warn без подсказки про эталон"
-  z2r_dns_series_text "fail|nxdomain||||0|0|3"     | grep -q "подмена DNS" || fail "сценарий 18: текст NXDOMAIN без подмены"
-  z2r_dns_series_text "fail|noanswer||||0|0|3"     | grep -q "не отвечает" || fail "сценарий 18: текст таймаута без 'не отвечает'"
+  z2r_dns_series_text "ok|match|204.8.99.146 95.216.163.36||204.8.99.146|1|0|0" \
+    | grep -q "эталон torproject" || fail "сценарий 18: текст ok без эталона"
+  z2r_dns_series_text "warn|rotate|203.0.113.7|||0|1|0" \
+    | grep -q "эталонного набора" || fail "сценарий 18: текст warn без подсказки про эталон"
+  z2r_dns_series_text "fail|nxdomain||||0|0|3" \
+    | grep -q "подмена DNS" || fail "сценарий 18: текст NXDOMAIN без подмены"
+  z2r_dns_series_text "fail|noanswer||||0|0|3" \
+    | grep -q "не отвечает" || fail "сценарий 18: текст таймаута без 'не отвечает'"
 
   export MOCK_DNS_MODE=timeout
   res="$(z2r_dns_check_target)"
