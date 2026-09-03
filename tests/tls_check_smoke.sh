@@ -666,6 +666,16 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: нет скрытого п.666 для просмотра ошибок nfqws2"
   grep -q "grep -v '\^seccomp:'" "$REPO_DIR/z2r.sh" \
     || fail "сценарий 14e: безвредный seccomp-шум должен фильтроваться из строки ошибок"
+  grep -q "network.\*unreachable|operation not permitted" "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: мимолётные rawsend-отказы (unreachable/EPERM) должны фильтроваться"
+  err_sample="$TMP_DIR/nfqws2_err_sample"
+  printf 'seccomp: something\nrawsend: sendto (1278): Network is unreachable\nrawsend: sendto (1278): Operation not permitted\nrawsend: sendto (1278): Invalid argument\n' > "$err_sample"
+  z2r_err_journal_extracted="$(sed -n '/^z2r_err_journal()/,/^}/p' "$REPO_DIR/z2r.sh")"
+  eval "${z2r_err_journal_extracted}"
+  [ "$(z2r_err_journal "$err_sample" | grep -c .)" -eq 1 ] \
+    || fail "сценарий 14e: фильтр ошибок пропускает не только безвредные строки"
+  z2r_err_journal "$err_sample" | grep -q 'Invalid argument' \
+    || fail "сценарий 14e: реальная ошибка rawsend не должна фильтроваться"
   # OpenWRT: wrt_fixes патчит procd-инит (stderr->syslog + линейный contains),
   # 666 умеет fallback на logread
   grep -q '^wrt_fixes()' "$REPO_DIR/z2r.sh" \
