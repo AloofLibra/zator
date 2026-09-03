@@ -1909,11 +1909,13 @@ webui_submenu() {
 }
 
 # Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки
-# и мимолётные сбои rawsend "Network (is) unreachable" (нет маршрута в момент
-# переключения WAN/IPv6; формулировка зависит от платформы): verdict-пакеты
-# идут штатно, это не авария демона.
+# и мимолётные сбои rawsend "Network (is) unreachable" / "Operation not
+# permitted" (нет маршрута в момент переключения WAN/IPv6 или временный отказ
+# raw-сокета; формулировка зависит от платформы): verdict-пакеты идут штатно,
+# это не авария демона.
 z2r_err_journal() {
-  grep -v '^seccomp:' "$1" 2>/dev/null | grep -vi '^rawsend: sendto.*network.*unreachable'
+  grep -v '^seccomp:' "$1" 2>/dev/null \
+    | grep -viE '^rawsend: sendto.*(network.*unreachable|operation not permitted)'
 }
 
 get_menu() {

@@ -76,6 +76,14 @@ function showToast(message, type = 'success') {
   activeToastTimer = window.setTimeout(dismissToast, duration);
 }
 
+function announceRestart() {
+  if (state.status?.zapret2_running) showToast('Применяем настройку — перезапускаем zapret2…', 'info');
+}
+
+function restartSuffix(payload) {
+  return payload?.restarted ? ' zapret2 перезапущен.' : ' Применится при следующем запуске zapret2.';
+}
+
 // Переиспользуемое модальное окно подтверждения — замена window.confirm.
 // Возвращает Promise<boolean>: true — подтверждено, false — отменено.
 // Поддерживает Escape (отмена), Enter (подтверждение) и клик по фону (отмена).
@@ -187,6 +195,7 @@ const ACTION_SELECTORS = [
   '#rst-guard-form button[type="submit"]',
   '#reasm-form button[type="submit"]',
   '#quic443-form button[type="submit"]',
+  '#dns-desync-form button[type="submit"]',
   '#ports-tcp-form button[type="submit"]',
   '#ports-udp-form button[type="submit"]',
   '.port-remove',
@@ -498,7 +507,6 @@ function renderCurrentLock(el, value) {
 
 const FALLBACK_CHECK_HINT = 'Безразборный режим: быстрая проверка неприменима (применяется ко всем доменам).';
 const UDP_GAMES_CHECK_HINT = 'Игровой UDP: быстрая проверка неприменима (широкий диапазон портов).';
-const DNS_CHECK_HINT = 'Антиспуф DNS: нажмите «Проверить» — резолв сверяется с эталонными адресами torproject.';
 const AUTO_MODE_GATED_PROFILES = [1, 2, 3, 4];
 
 function isAutoModeGated(profile) {
@@ -525,7 +533,7 @@ function gatedReason(profile) {
     return 'Сначала включите игровой UDP в настройках.';
   }
   if (profile.is_dns_desync && !profile.dns_desync_enabled) {
-    return 'Сначала включите антиспуф DNS (пункт 8 главного меню z2r).';
+    return 'Сначала включите антиспуф DNS в настройках.';
   }
   return '';
 }
@@ -564,8 +572,6 @@ function renderStrategies() {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile] || { results: [] }, FALLBACK_CHECK_HINT, false);
     } else if (profile.is_udp_games) {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile] || { results: [] }, UDP_GAMES_CHECK_HINT, false);
-    } else if (profile.is_dns_desync) {
-      renderCheckResults(inlineCheck, state.strategyChecks[profile.profile] || { results: [] }, DNS_CHECK_HINT, false);
     } else if (state.strategyChecks[profile.profile]) {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile], 'Нет результатов быстрой проверки.', false);
     }
@@ -844,18 +850,13 @@ async function applyTlsBlob(blob) {
     return;
   }
   try {
+    announceRestart();
     const payload = await api('/cgi-bin/settings.cgi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ setting: 'tls_blob', value: blob }),
     });
-
-    if (payload.reboot_required) {
-      showToast('TLS-блоб изменён. Перезапустите zapret2 для применения.', 'warning');
-    } else {
-      showToast('TLS-блоб успешно изменён.');
-    }
-
+    showToast('TLS-блоб изменён.' + restartSuffix(payload));
     await refreshTlsBlobSettings();
   } catch (error) {
     showToast(error.message, 'error');
@@ -944,8 +945,9 @@ document.getElementById('udp-games-form').addEventListener('submit', async (even
 
   await withBusy(submitButton, async () => {
     try {
-      await applyUdpGames(checkbox.checked);
-      showToast(checkbox.checked ? 'Игровой UDP включён.' : 'Игровой UDP выключен.');
+      announceRestart();
+      const payload = await applyUdpGames(checkbox.checked);
+      showToast((checkbox.checked ? 'Игровой UDP включён.' : 'Игровой UDP выключен.') + restartSuffix(payload));
       await refreshUdpGamesSettings();
       await refreshAll();
     } catch (error) {
@@ -1014,19 +1016,19 @@ async function refreshWgBlobSettings() {
   }
 }
 
-async function applyWgBlob(blob) {
+async function applyWgBlob(blob, restart = true) {
   return api('/cgi-bin/settings.cgi', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ setting: 'wg_blob', value: blob }),
+    body: new URLSearchParams({ setting: 'wg_blob', value: blob, ...(restart ? {} : { restart: '0' }) }),
   });
 }
 
-async function applyWgRepeats(repeats) {
+async function applyWgRepeats(repeats, restart = true) {
   return api('/cgi-bin/settings.cgi', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ setting: 'wg_repeats', value: String(repeats) }),
+    body: new URLSearchParams({ setting: 'wg_repeats', value: String(repeats), ...(restart ? {} : { restart: '0' }) }),
   });
 }
 
@@ -1063,11 +1065,11 @@ async function refreshWgStateSettings() {
   }
 }
 
-async function applyWgState(enabled) {
+async function applyWgState(enabled, restart = true) {
   return api('/cgi-bin/settings.cgi', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ setting: 'wg_state', value: enabled ? '1' : '0' }),
+    body: new URLSearchParams({ setting: 'wg_state', value: enabled ? '1' : '0', ...(restart ? {} : { restart: '0' }) }),
   });
 }
 
@@ -1171,10 +1173,14 @@ document.getElementById('wg-blob-form').addEventListener('submit', async (event)
 
   await withBusy(submitButton, async () => {
     try {
-      await applyWgState(enabled);
-      if (enabled) {
-        await applyWgBlob(blob);
-        await applyWgRepeats(repeats);
+      const applyCalls = [];
+      if (stateChanged) applyCalls.push((last) => applyWgState(enabled, last));
+      if (enabled && blob && blob !== select.dataset.saved) applyCalls.push((last) => applyWgBlob(blob, last));
+      if (enabled && repeatsRaw && repeatsRaw !== repeatsInput.dataset.saved) applyCalls.push((last) => applyWgRepeats(repeats, last));
+      announceRestart();
+      let payload = {};
+      for (let i = 0; i < applyCalls.length; i++) {
+        payload = await applyCalls[i](i === applyCalls.length - 1) || payload;
       }
       let msg;
       if (stateChanged) {
@@ -1182,7 +1188,7 @@ document.getElementById('wg-blob-form').addEventListener('submit', async (event)
       } else {
         msg = 'Настройки WireGuard сохранены.';
       }
-      showToast(msg + ' Перезапустите zapret2 для применения.', 'warning');
+      showToast(msg + restartSuffix(payload));
       await refreshWgBlobSettings();
       await refreshWgStateSettings();
       await refreshAll();
@@ -1229,11 +1235,11 @@ if (fallbackStateForm) {
         ? [
             'Обход будет применяться ко всему трафику на выбранных портах, а не только к доменам из списков.',
             'После включения выберите стратегии для TLS (профиль 8) и HTTP (профиль 9) во вкладке «Стратегии».',
-            'Изменение применяется после перезапуска zapret2.',
+            'zapret2 перезапустится сразу.',
           ]
         : [
             'Обход снова будет применяться только к доменам из списков и выбранным стратегиям.',
-            'Изменение применяется после перезапуска zapret2.',
+            'zapret2 перезапустится сразу.',
           ],
       confirmText: enable ? 'Включить' : 'Выключить',
       cancelText: 'Отмена',
@@ -1246,10 +1252,11 @@ if (fallbackStateForm) {
 
     await withBusy(submitButton, async () => {
       try {
-        await applyFallbackState(enable);
-        showToast(enable
-          ? 'Безразборный режим включён. Перезапустите zapret2 для применения.'
-          : 'Безразборный режим выключен. Перезапустите zapret2 для применения.', 'warning');
+        announceRestart();
+        const payload = await applyFallbackState(enable);
+        showToast((enable
+          ? 'Безразборный режим включён.'
+          : 'Безразборный режим выключен.') + restartSuffix(payload));
         await refreshFallbackSettings();
         await refreshAll();
       } catch (error) {
@@ -1270,7 +1277,6 @@ const MODE_TOGGLES = [
     offChip: 'выключена',
     onToast: 'Авторотация включена.',
     offToast: 'Авторотация выключена.',
-    needsRestart: false,
     askConfirm: true,
     confirm: {
       titleOn: 'Включить авторотацию?',
@@ -1294,22 +1300,21 @@ const MODE_TOGGLES = [
     enabledField: 'auto',
     onChip: 'автосбор',
     offChip: 'по листам',
-    onToast: 'Автосбор списков включён. Перезапустите zapret2 для применения.',
-    offToast: 'Фильтрация только по спискам. Перезапустите zapret2 для применения.',
-    needsRestart: true,
+    onToast: 'Автосбор списков включён.',
+    offToast: 'Фильтрация только по спискам.',
     askConfirm: true,
     confirm: {
       titleOn: 'Включить автосбор списков?',
       messageOn: [
         'zapret2 начнёт сам определять заблокированные домены и пополнять список — обход будет работать шире.',
         'Пока автосбор включён, добавление доменов в RKN-списки (TCP_Custom и подстроки RKN) отключено. Списки исключений не затрагиваются.',
-        'Изменение применяется после перезапуска zapret2.',
+        'zapret2 перезапустится сразу.',
       ],
       titleOff: 'Выключить автосбор списков?',
       messageOff: [
         'Обход снова будет применяться только к доменам из ваших списков.',
         'Ручное добавление доменов в RKN-списки вернётся.',
-        'Изменение применяется после перезапуска zapret2.',
+        'zapret2 перезапустится сразу.',
       ],
     },
   },
@@ -1321,9 +1326,8 @@ const MODE_TOGGLES = [
     enabledField: 'enabled',
     onChip: 'включена',
     offChip: 'выключена',
-    onToast: 'Защита от RST-инъекций включена. Перезапустите zapret2 для применения.',
-    offToast: 'Защита от RST-инъекций выключена. Перезапустите zapret2 для применения.',
-    needsRestart: true,
+    onToast: 'Защита от RST-инъекций включена.',
+    offToast: 'Защита от RST-инъекций выключена.',
   },
   {
     setting: 'reasm',
@@ -1333,9 +1337,8 @@ const MODE_TOGGLES = [
     enabledField: 'enabled',
     onChip: 'включен',
     offChip: 'выключен',
-    onToast: 'Параметр --reasm-disable включён. Перезапустите zapret2 для применения.',
-    offToast: 'Параметр --reasm-disable выключен. Перезапустите zapret2 для применения.',
-    needsRestart: true,
+    onToast: 'Параметр --reasm-disable включён.',
+    offToast: 'Параметр --reasm-disable выключен.',
   },
   {
     setting: 'quic443',
@@ -1345,9 +1348,19 @@ const MODE_TOGGLES = [
     enabledField: 'enabled',
     onChip: 'включены',
     offChip: 'выключены',
-    onToast: 'Фейки QUIC на порту 443 включены. Перезапустите zapret2 для применения.',
-    offToast: 'Фейки QUIC на порту 443 выключены. Перезапустите zapret2 для применения.',
-    needsRestart: true,
+    onToast: 'Фейки QUIC на порту 443 включены.',
+    offToast: 'Фейки QUIC на порту 443 выключены.',
+  },
+  {
+    setting: 'dns_desync',
+    postKey: 'dns_desync_state',
+    formId: 'dns-desync-form',
+    chipId: 'dns-desync-chip',
+    enabledField: 'enabled',
+    onChip: 'включен',
+    offChip: 'выключен',
+    onToast: 'Антиспуф DNS включён.',
+    offToast: 'Антиспуф DNS выключен.',
   },
 ];
 
@@ -1472,16 +1485,13 @@ function bindModeToggle(toggle) {
 
     try {
       await withBusy(submitButton, async () => {
+        announceRestart();
         const payload = await api('/cgi-bin/settings.cgi', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({ setting: toggle.postKey, value: enable ? '1' : '0' }),
         });
-        let message = enable ? toggle.onToast : toggle.offToast;
-        if (toggle.setting === 'auto_mode') {
-          message += payload.restarted ? ' zapret2 перезапущен.' : ' Применится при следующем запуске zapret2.';
-        }
-        showToast(message, toggle.needsRestart ? 'warning' : 'success');
+        showToast((enable ? toggle.onToast : toggle.offToast) + restartSuffix(payload));
         await refreshModeSetting(toggle);
         if (toggle.setting === 'auto_mode') {
           await refreshFallbackSettings();
@@ -1584,13 +1594,14 @@ async function addPorts(proto) {
   }
   try {
     await withBusy(submitButton, async () => {
+      announceRestart();
       const payload = await api('/cgi-bin/settings.cgi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ setting: 'ports_add', proto, value }),
       });
       const skipped = payload.skipped ? ` Пропущено: ${payload.skipped}.` : '';
-      showToast(`Добавлено: ${payload.added}.${skipped} Перезапустите zapret2 для применения.`, 'warning');
+      showToast(`Добавлено: ${payload.added}.${skipped}` + restartSuffix(payload));
       input.value = '';
       updatePortsSubmit(submitButton.form);
       await refreshPorts();
@@ -1604,12 +1615,13 @@ async function addPorts(proto) {
 async function removePort(proto, token, button) {
   try {
     await withBusy(button, async () => {
-      await api('/cgi-bin/settings.cgi', {
+      announceRestart();
+      const payload = await api('/cgi-bin/settings.cgi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ setting: 'ports_remove', proto, value: token }),
       });
-      showToast(`Порт ${token} удалён. Перезапустите zapret2 для применения.`, 'warning');
+      showToast(`Порт ${token} удалён.` + restartSuffix(payload));
       await refreshPorts();
       await refreshAll();
     });

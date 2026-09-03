@@ -1188,6 +1188,27 @@ def _udp_games_set_skip(cfg_text, want_on):
     return "\n".join(result) + ("\n" if cfg_text.endswith("\n") else "")
 
 
+def _dns_desync_set_skip(cfg_text, want_on):
+    """backup_smart_set_dns_desync() — lib/actions.sh: добавляет/убирает --skip
+    перед --filter-udp=53 в блоке #Z2R_DNS_* (профиль 10)."""
+    lines = cfg_text.splitlines()
+    result = []
+    inblk = False
+    for line in lines:
+        if re.match(r"^\s*#Z2R_DNS_BEGIN\s*$", line):
+            inblk = True
+        elif re.match(r"^\s*#Z2R_DNS_END\s*$", line):
+            inblk = False
+
+        if inblk:
+            if want_on:
+                line = re.sub(r"^--skip\s+--filter-udp=53\s*$", "--filter-udp=53", line)
+            else:
+                line = re.sub(r"^--filter-udp=53\s*$", "--skip --filter-udp=53", line)
+        result.append(line)
+    return "\n".join(result) + ("\n" if cfg_text.endswith("\n") else "")
+
+
 # ===========================================================================
 # Порт сеттеров lib/actions.sh: RST guard, reasm, QUIC443, hostlist, авторотация
 # ===========================================================================
@@ -1580,6 +1601,13 @@ class FakeRouterState:
         with open(self.config_path, "w", encoding="utf-8") as fh:
             fh.write(self.cfg_text)
 
+    def _apply_restart(self, restart=True):
+        """_service_apply_restart() — _lib.sh: рестарт только когда nfqws2 запущен."""
+        if not restart or not self.nfqws2_running:
+            return False
+        time.sleep(self.delays.get("service", 0.0) or 0.0)
+        return True
+
     def _apply_lock_state(self, lock_state):
         """Разбор --lock-state: 'none' | 'profile=strat,...' (strat: N|0|auto)."""
         if not lock_state or lock_state == "none":
@@ -1873,16 +1901,16 @@ class FakeRouterState:
         if blob == "fake_default_tls":
             self.cfg_text = _apply_tls_blob_default(self.cfg_text)
             self._save_config()
-            return {"ok": True, "reboot_required": True}
+            return {"ok": True, "restarted": self._apply_restart()}
         if not (blob.startswith("tls_") and blob.endswith(".bin")) and blob != "custom_tls.bin":
             raise ValueError("Некорректное значение блоба: {0}".format(blob))
         if not os.path.isfile(os.path.join(self.fake_dir, blob)):
             raise ValueError("Файл блоба не существует: {0}".format(blob))
-        if not re.search(r"--blob=maxru:@/opt/(?:zapret2|zator)/files/fake/", self.cfg_text):
+        if not re.search(r"--blob=maxru:@/opt/(zapret2|zator)/files/fake/", self.cfg_text):
             raise ValueError("Строка --blob=maxru не найдена в конфиге")
         self.cfg_text = _apply_tls_blob(self.cfg_text, blob)
         self._save_config()
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True, "restarted": self._apply_restart()}
 
     # --- WireGuard blob / repeats -----------------------------------------
 
@@ -1897,7 +1925,7 @@ class FakeRouterState:
             "available_blobs": available_blobs,
         }
 
-    def apply_wg_blob(self, blob):
+    def apply_wg_blob(self, blob, restart=True):
         """api_wg_blob_set() — _lib.sh."""
         # Валидация: только wg_initial_fake_*
         if not blob.startswith("wg_initial_fake_"):
@@ -1908,9 +1936,9 @@ class FakeRouterState:
             raise ValueError("Стратегия WireGuard не найдена в конфиге (нет --blob=fakewgblob:@...)")
         self.cfg_text = _apply_wg_blob(self.cfg_text, blob)
         self._save_config()
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True, "restarted": self._apply_restart(restart)}
 
-    def apply_wg_repeats(self, repeats):
+    def apply_wg_repeats(self, repeats, restart=True):
         """api_wg_repeats_set() — _lib.sh."""
         # Валидация: целое число 2..99 (как в menu_action_wg_repeats)
         if not re.match(r"^[0-9]+$", str(repeats)):
@@ -1922,7 +1950,7 @@ class FakeRouterState:
             raise ValueError("Стратегия WireGuard не найдена в конфиге (нет blob=fakewgblob:repeats=)")
         self.cfg_text = _apply_wg_repeats(self.cfg_text, val)
         self._save_config()
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True, "restarted": self._apply_restart(restart)}
 
     def build_wg_state_settings(self):
         """api_wg_state_get() — _lib.sh.
@@ -1936,7 +1964,7 @@ class FakeRouterState:
             "enabled": state == "1",
         }
 
-    def apply_wg_state(self, enabled):
+    def apply_wg_state(self, enabled, restart=True):
         """api_wg_state_set() — _lib.sh.
 
         Повторяет menu_action_toggle_wireguard_fake (lib/actions.sh:340):
@@ -1948,7 +1976,7 @@ class FakeRouterState:
             raise ValueError("Стратегия WireGuard не найдена в конфиге (нет блока #Z2R_WG_*)")
         self.cfg_text = _apply_wg_state(self.cfg_text, want_on)
         self._save_config()
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True, "restarted": self._apply_restart(restart)}
 
     # --- Fallback (безразборный режим) ------------------------------------
 
@@ -1980,7 +2008,7 @@ class FakeRouterState:
                                 "Сначала выключите авторотацию.")
         self.cfg_text = _fallback_set_state(self.cfg_text, want_on)
         self._save_config()
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True, "restarted": self._apply_restart()}
 
     def build_udp_games_settings(self):
         """api_udp_games_get() — _lib.sh.
@@ -2014,7 +2042,7 @@ class FakeRouterState:
             self.cfg_text = config_set_var(self.cfg_text, "NFQWS2_PORTS_UDP", new_ports)
             self.cfg_text = _udp_games_set_skip(self.cfg_text, False)
         self._save_config()
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True, "restarted": self._apply_restart()}
 
     def apply_fallback_strategy(self, profile, strategy):
         """api_fallback_strategy_set() — _lib.sh.
@@ -2037,7 +2065,7 @@ class FakeRouterState:
             raise ValueError("Не удалось определить протокол профиля")
         if not profile_state_set_and_apply(self, profile, pl, str(strat)):
             raise ValueError("Не удалось сохранить стратегию")
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True}
 
     # --- Режимы (авторотация, hostlist, RST guard, reasm, QUIC443) -------
 
@@ -2060,6 +2088,9 @@ class FakeRouterState:
         if setting == "quic443":
             return {"state": config_quic443_state_text(self.cfg_text),
                     "enabled": config_quic443_state(self.cfg_text) == "1"}
+        if setting == "dns_desync":
+            s = config_mode_text("dns_desync", self.cfg_text)
+            return {"state": s, "enabled": s == "Включен"}
         raise ValueError("Неизвестная настройка")
 
     def apply_client_scope(self, params):
@@ -2073,7 +2104,8 @@ class FakeRouterState:
         if not state["valid"]:
             self.cfg_text = config_set_var(self.cfg_text, "CLIENT_SCOPE_ENABLE", "0")
         self._save_config()
-        return {"ok": True, "reboot_required": True, **config_client_scope_state(self.cfg_text)}
+        return {"ok": True, "restarted": self._apply_restart(),
+                **config_client_scope_state(self.cfg_text)}
 
     def apply_mode_setting(self, setting, value):
         """api_*_set() — _lib.sh: переиспользуют сеттеры lib/actions.sh."""
@@ -2093,14 +2125,13 @@ class FakeRouterState:
                 raise ValueError("Не удалось переключить авторотацию")
             self.cfg_text = new
             self._save_config()
-            restarted = bool(self.nfqws2_running)
-            return {"ok": True, "restarted": restarted,
+            return {"ok": True, "restarted": self._apply_restart(),
                     "state": config_mode_text("auto_mode", self.cfg_text)}
 
         if setting == "hostlist":
             self.cfg_text = _apply_hostlist(self.cfg_text, want_on)
             self._save_config()
-            return {"ok": True, "reboot_required": True,
+            return {"ok": True, "restarted": self._apply_restart(),
                     "state": config_mode_text("hostlist", self.cfg_text)}
 
         if setting == "rst_guard":
@@ -2109,13 +2140,13 @@ class FakeRouterState:
                                  "Включите защиту один раз через CLI (пункт 18).")
             self.cfg_text = _apply_rst_guard(self.cfg_text, want_on)
             self._save_config()
-            return {"ok": True, "reboot_required": True,
+            return {"ok": True, "restarted": self._apply_restart(),
                     "state": config_mode_text("rst_guard", self.cfg_text)}
 
         if setting == "reasm":
             self.cfg_text = _apply_reasm(self.cfg_text, want_on)
             self._save_config()
-            return {"ok": True, "reboot_required": True,
+            return {"ok": True, "restarted": self._apply_restart(),
                     "state": config_mode_text("reasm_disable", self.cfg_text)}
 
         if setting == "quic443":
@@ -2124,8 +2155,26 @@ class FakeRouterState:
                                  "Обновите конфиг через CLI (пункт 5 главного меню).")
             self.cfg_text = _apply_quic443(self.cfg_text, want_on)
             self._save_config()
-            return {"ok": True, "reboot_required": True,
+            return {"ok": True, "restarted": self._apply_restart(),
                     "state": config_quic443_state_text(self.cfg_text)}
+
+        if setting == "dns_desync":
+            # api_dns_desync_set() — _lib.sh: как menu_action_toggle_dns_desync
+            # (lib/actions.sh), меняет ОБА механизма — --skip в блоке #Z2R_DNS_*
+            # и порт 53 в NFQWS2_PORTS_UDP.
+            if config_mode_text("dns_desync", self.cfg_text) == "Неизвестно":
+                raise ValueError("Блок DNS (UDP:53) не найден в конфиге. "
+                                 "Обновите конфиг через CLI (пункт 5 главного меню).")
+            ports = config_get_var(self.cfg_text, "NFQWS2_PORTS_UDP") or ""
+            if want_on:
+                new_ports = csv_add_tokens(ports, "53")
+            else:
+                new_ports = csv_remove_tokens(ports, "53") or "443"
+            self.cfg_text = config_set_var(self.cfg_text, "NFQWS2_PORTS_UDP", new_ports)
+            self.cfg_text = _dns_desync_set_skip(self.cfg_text, want_on)
+            self._save_config()
+            return {"ok": True, "restarted": self._apply_restart(),
+                    "state": config_mode_text("dns_desync", self.cfg_text)}
 
         raise ValueError("Неизвестная настройка")
 
@@ -2148,7 +2197,7 @@ class FakeRouterState:
         if not added:
             raise ValueError("Ничего не добавлено (некорректные значения или дубликаты): {0}".format(",".join(skipped)))
         return {"ok": True, "added": ",".join(added), "skipped": ",".join(skipped),
-                "reboot_required": True}
+                "restarted": self._apply_restart()}
 
     def apply_ports_remove(self, proto, value):
         """api_ports_remove() — _lib.sh."""
@@ -2162,7 +2211,7 @@ class FakeRouterState:
             raise ValueError("Порт не найден среди добавленных: {0}".format(value))
         self.cfg_text = new
         self._save_config()
-        return {"ok": True, "reboot_required": True}
+        return {"ok": True, "restarted": self._apply_restart()}
 
     # --- Провайдер ----------------------------------------------------------
 
@@ -2797,7 +2846,8 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 elif setting == "udp-games":
                     self._log("GET {0} | udp-games settings".format(parsed.path))
                     self._send_json(self.state.build_udp_games_settings())
-                elif setting in ("client_scope", "auto_mode", "hostlist", "rst_guard", "reasm", "quic443"):
+                elif setting in ("client_scope", "auto_mode", "hostlist", "rst_guard",
+                                 "reasm", "quic443", "dns_desync"):
                     self._log("GET {0} | mode settings {1}".format(parsed.path, setting))
                     self._send_json(self.state.build_mode_settings(setting))
                 elif setting == "ports":
@@ -2824,9 +2874,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 return
             if setting == "wg_blob":
                 blob = params.get("value", "")
+                restart = params.get("restart", "1") != "0"
                 try:
                     with self.state.lock:
-                        result = self.state.apply_wg_blob(blob)
+                        result = self.state.apply_wg_blob(blob, restart)
                         self._log("POST {0} | wg_blob={1}".format(parsed.path, blob))
                         self._send_json(result)
                 except ValueError as e:
@@ -2834,9 +2885,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 return
             if setting == "wg_repeats":
                 repeats = params.get("value", "")
+                restart = params.get("restart", "1") != "0"
                 try:
                     with self.state.lock:
-                        result = self.state.apply_wg_repeats(repeats)
+                        result = self.state.apply_wg_repeats(repeats, restart)
                         self._log("POST {0} | wg_repeats={1}".format(parsed.path, repeats))
                         self._send_json(result)
                 except ValueError as e:
@@ -2844,9 +2896,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 return
             if setting == "wg_state":
                 value = params.get("value", "")
+                restart = params.get("restart", "1") != "0"
                 try:
                     with self.state.lock:
-                        result = self.state.apply_wg_state(value)
+                        result = self.state.apply_wg_state(value, restart)
                         self._log("POST {0} | wg_state={1}".format(parsed.path, value))
                         self._send_json(result)
                 except ValueError as e:
@@ -2894,7 +2947,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     self._send_error_json(400, str(e))
                 return
             if setting in ("auto_mode_state", "hostlist_state", "rst_guard_state",
-                           "reasm_state", "quic443_state"):
+                           "reasm_state", "quic443_state", "dns_desync_state"):
                 value = params.get("value", "")
                 mode = setting[:-len("_state")]
                 try:
@@ -3180,6 +3233,19 @@ def _default_repo_root():
     return os.path.abspath(os.path.join(_default_webui_root(), os.pardir))
 
 
+def _seed_provider_from_real_cache():
+    """Дефолт --provider: реальный кэш CLI (lib/provider.sh пишет туда же,
+    откуда читает _provider_cache.sh в _lib.sh). На машине без установленного
+    zator файла нет — остаётся «Не определён»."""
+    try:
+        with open("/opt/zator/extra_strats/cache/provider.txt",
+                  encoding="utf-8") as fh:
+            value = fh.readline().strip()
+        return value or "Не определён"
+    except OSError:
+        return "Не определён"
+
+
 def _parse_args(argv):
     p = argparse.ArgumentParser(
         description="Фейковый dev-сервер zapret2 WebUI (имитация роутера). "
@@ -3204,9 +3270,10 @@ def _parse_args(argv):
     p.add_argument("--simulate-error", default="",
                    help="Эндпоинты, отдающие 500 (через запятую): "
                         + ",".join(sorted(SIMULATABLE)))
-    p.add_argument("--provider", default="Не определён",
-                   help="Строка провайдера (только для лога/dev-состояния; "
-                        "в реальном WebUI этого поля нет)")
+    p.add_argument("--provider", default=None,
+                   help="Строка провайдера (по умолчанию — реальный кэш "
+                        "/opt/zator/extra_strats/cache/provider.txt, если "
+                        "читается, иначе «Не определён»)")
     p.add_argument("--delay", type=float, default=3.0, metavar="SECONDS",
                    help="Искусственная задержка (сек) на медленных операциях "
                         "(service/check/set-lock/clear-lock) — чтобы тестировать "
@@ -3257,7 +3324,8 @@ def main(argv=None):
         lock_state=args.lock_state,
         check_result=args.check_result,
         simulate_error=sim_errors,
-        provider=args.provider,
+        provider=args.provider if args.provider is not None
+                  else _seed_provider_from_real_cache(),
         fake_dir=fake_dir,
         repo_root=repo_root,
         delay=args.delay,

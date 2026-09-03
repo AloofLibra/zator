@@ -127,7 +127,11 @@ awk '
 [ "$(grep -c '^#Z2R_DNS_BEGIN$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "Z2R_DNS_BEGIN marker is missing or duplicated"
 [ "$(grep -c '^#Z2R_DNS_END$' "$TMP_DIR/config.default.lf")" -eq 1 ] || fail "Z2R_DNS_END marker is missing or duplicated"
 dns_block="$(sed -n '/^#Z2R_DNS_BEGIN$/,/^#Z2R_DNS_END$/p' "$TMP_DIR/config.default.lf")"
-assert_contains "$dns_block" '^--skip --filter-udp=53$' "DNS profile must be disabled by default"
+# Дефолт апстрима: блок активен (без --skip) и порт 53 уже в NFQWS2_PORTS_UDP.
+assert_contains "$dns_block" '^--filter-udp=53$' "DNS profile block must be present"
+assert_not_contains "$dns_block" '^--skip ' "DNS profile block must be active by default (no --skip)"
+assert_contains "$(grep '^NFQWS2_PORTS_UDP=' "$TMP_DIR/config.default.lf")" ',53$' \
+  "port 53 must be in NFQWS2_PORTS_UDP by default (upstream default)"
 assert_contains "$dns_block" 'circular_locked:key=10:proto=udp:allow_nohost=1' "DNS profile orchestrator changed"
 # Явные ограниченные диапазоны вместо in-range=a (рекомендация upstream:
 # бесконечный диапазон без верхней границы чреват при блоках ниже по конфигу).
@@ -436,13 +440,9 @@ ORCH_LOCK_FILE="$saved_orch_lock_file"
 
 # --- Профиль 10: антиспуф DNS (тумблер, порт 53, локи, снапшот меню) ---
 [ "$(config_profile_max_strategy 10 "$CFG")" = "20" ] || fail "DNS profile max strategy must be 20"
-[ "$(config_mode_text dns_desync "$CFG")" = "Выключен" ] || fail "DNS antispoof must be disabled by default"
-assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "port 53 must not be in NFQWS2_PORTS_UDP by default"
-
-backup_smart_set_dns_desync "$CFG" 1
-config_profile_dns_ports_apply "$CFG" 1
-[ "$(config_mode_text dns_desync "$CFG")" = "Включен" ] || fail "DNS antispoof could not be enabled"
-assert_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "toggle did not add port 53"
+# Дефолт апстрима: блок активен (без --skip) И порт 53 в NFQWS2_PORTS_UDP.
+[ "$(config_mode_text dns_desync "$CFG")" = "Включен" ] || fail "DNS antispoof must be enabled by default"
+assert_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "port 53 must be in NFQWS2_PORTS_UDP by default"
 
 # повторное включение идемпотентно (порт не дублируется)
 backup_smart_set_dns_desync "$CFG" 1
@@ -454,15 +454,20 @@ config_profile_dns_ports_apply "$CFG" 0
 [ "$(config_mode_text dns_desync "$CFG")" = "Выключен" ] || fail "DNS antispoof could not be disabled"
 assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "toggle did not remove port 53"
 
-# smart restore сохраняет состояние тумблера между конфигами
+backup_smart_set_dns_desync "$CFG" 1
+config_profile_dns_ports_apply "$CFG" 1
+[ "$(config_mode_text dns_desync "$CFG")" = "Включен" ] || fail "DNS antispoof could not be re-enabled"
+assert_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "toggle did not re-add port 53"
+
+# smart restore сохраняет выключенное состояние поверх нового дефолта «включён»
 DNS_OLD_CFG="$TMP_DIR/dns-old.conf"
 DNS_NEW_CFG="$TMP_DIR/dns-new.conf"
 cp "$CFG" "$DNS_OLD_CFG"
-backup_smart_set_dns_desync "$DNS_OLD_CFG" 1
-config_profile_dns_ports_apply "$DNS_OLD_CFG" 1
+backup_smart_set_dns_desync "$DNS_OLD_CFG" 0
+config_profile_dns_ports_apply "$DNS_OLD_CFG" 0
 sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$DNS_NEW_CFG"
 backup_smart_apply_flags "$DNS_OLD_CFG" "$DNS_NEW_CFG"
-[ "$(config_mode_text dns_desync "$DNS_NEW_CFG")" = "Включен" ] || fail "smart restore lost DNS antispoof state"
+[ "$(config_mode_text dns_desync "$DNS_NEW_CFG")" = "Выключен" ] || fail "smart restore lost DNS antispoof state"
 
 # сохранённый лок профиля 10 реанимируется на свежем config
 printf '10\tudp\t2\n' > "$PROFILE_STATE_FILE"
@@ -475,9 +480,9 @@ profile_apply_all "$CFG" >/dev/null
 # снапшот главного меню: лимит профиля 10 и состояние тумблера
 menu_config_snapshot "$CFG"
 [ "$MENU_PROFILE_MAX_10" = "20" ] || fail "menu snapshot did not fill MENU_PROFILE_MAX_10"
-[ "$MENU_DNS_DESINC" = "Выключен" ] || fail "menu snapshot did not fill MENU_DNS_DESINC"
+[ "$MENU_DNS_DESINC" = "Включен" ] || fail "menu snapshot did not fill MENU_DNS_DESINC"
 menu_config_snapshot "$DNS_NEW_CFG"
-[ "$MENU_DNS_DESINC" = "Включен" ] || fail "menu snapshot did not detect enabled DNS antispoof"
+[ "$MENU_DNS_DESINC" = "Выключен" ] || fail "menu snapshot did not detect disabled DNS antispoof"
 
 # --- Отмена ручного перебора/автопрогона не должна писать лок 0 профилю без лока ---
 # Прежний баг: orch_locked_get возвращал "0" для отсутствующего лока, и отмена

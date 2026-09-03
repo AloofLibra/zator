@@ -71,10 +71,10 @@ command -v python >/dev/null 2>&1 && python -m py_compile "$REPO_DIR/webui/dev/f
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '\$LIB_DIR/actions\.sh' "_lib.sh не подключает lib/actions.sh"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '\$LIB_DIR/provider\.sh' "_lib.sh не подключает lib/provider.sh"
 
-for fn in api_auto_mode_get api_hostlist_get api_rst_guard_get api_reasm_get api_quic443_get api_ports_get api_provider_get; do
+for fn in api_auto_mode_get api_hostlist_get api_rst_guard_get api_reasm_get api_quic443_get api_dns_desync_get api_ports_get api_provider_get; do
   assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" "$fn" "settings.cgi GET не вызывает $fn"
 done
-for fn in api_auto_mode_set api_hostlist_set api_rst_guard_set api_reasm_set api_quic443_set api_ports_add api_ports_remove api_provider_set api_provider_redetect; do
+for fn in api_auto_mode_set api_hostlist_set api_rst_guard_set api_reasm_set api_quic443_set api_dns_desync_set api_ports_add api_ports_remove api_provider_set api_provider_redetect; do
   assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" "$fn" "settings.cgi POST не вызывает $fn"
 done
 
@@ -90,24 +90,34 @@ for key in auto_mode rst_guard reasm quic443 provider; do
 done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'rst-guard\.lua' "rst_guard set без guard на lua-файл"
 
-for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form ports-tcp-form ports-udp-form provider-form backup-create-btn backup-import-btn backup-import-file; do
+for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form ports-tcp-form ports-udp-form provider-form backup-create-btn backup-import-btn backup-import-file; do
   grep -q "id=\"$id\"" "$REPO_DIR/webui/index.html" || fail "index.html не содержит #$id"
 done
 
 app_js="$(cat "$REPO_DIR/webui/app.js")"
-for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' '/cgi-bin/backups.cgi' "action: 'create'" "action: 'delete'" 'action=download' 'action=upload' 'download-btn' 'backups-toggle' 'confirmDialog'; do
+for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'dns_desync_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' '/cgi-bin/backups.cgi' "action: 'create'" "action: 'delete'" 'action=download' 'action=upload' 'download-btn' 'backups-toggle' 'confirmDialog'; do
   assert_contains "$app_js" "$needle" "app.js не использует $needle"
 done
 assert_contains "$app_js" 'AUTO_MODE_GATED_PROFILES' "app.js не гейтит профили 1-4 при авторотации"
 assert_contains "$app_js" 'inlineCheck.classList.remove' "подсказка гейтинга скрыта классом empty (display:none)"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'управляется авторотацией' "_lib.sh: set-lock/clear-lock без guard'а авторотации"
 
+# Автоперезапуск после изменения настройки: общий хелпер в CGI, тосты в JS,
+# симуляция в fake-сервере; ручных «Перезапустите zapret2» больше нет.
+_lib_sh="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
+assert_contains "$_lib_sh" '_service_apply_restart\(\)' "_lib.sh: нет общего хелпера автоперезапуска"
+assert_not_contains "$_lib_sh" 'reboot_required' "_lib.sh: остался старый флаг reboot_required"
+assert_contains "$app_js" 'announceRestart' "app.js: нет тоста о перезапуске"
+assert_contains "$app_js" 'restartSuffix' "app.js: нет суффикса про перезапуск"
+assert_not_contains "$app_js" 'Перезапустите zapret2' "app.js: остался ручной призыв перезапустить"
+assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" '_apply_restart' "fake_router_server.py: нет симуляции автоперезапуска"
+
 assert_contains "$(cat "$REPO_DIR/lib/actions.sh")" 'ports_apply_add "\$proto" "\$input"' "CLI ports_add не использует ядро ports_apply_add"
 assert_contains "$(cat "$REPO_DIR/lib/actions.sh")" 'ports_apply_remove "\$proto" "\$target"' "CLI ports_manage не использует ядро ports_apply_remove"
 assert_contains "$(cat "$REPO_DIR/lib/actions.sh")" 'backup_create_core 2>/dev/null' "CLI menu_action_backup_create не использует ядро backup_create_core"
 
 fake_py="$(cat "$REPO_DIR/webui/dev/fake_router_server.py")"
-for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'ports_add' 'provider_set' 'provider_redetect' 'apply_backup_create' 'apply_backup_delete' 'apply_backup_import' 'ConflictError'; do
+for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'dns_desync_state' 'ports_add' 'provider_set' 'provider_redetect' 'apply_backup_create' 'apply_backup_delete' 'apply_backup_import' 'ConflictError'; do
   assert_contains "$fake_py" "$needle" "fake_router_server.py не реализует $needle"
 done
 assert_contains "$fake_py" 'netrogat_substring' "fake_router_server.py не поддерживает список netrogat_substring"
@@ -149,6 +159,33 @@ backup_smart_set_quic443 "$CFG" 1
 [ "$(backup_smart_quic443_state "$CFG")" = "1" ] || fail "quic443 set 1 не определился"
 sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' "$CFG" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443' \
   && fail "quic443 включен, но --skip остался"
+
+# == 4a. Антиспуф DNS (профиль 10): ядро тумблера WebUI/CLI ==
+# Дефолт апстрима: блок активен (без --skip) И порт 53 в NFQWS2_PORTS_UDP —
+# config_mode_text dns_desync = Включен. Тумблер меняет блок + порт.
+
+[ "$(config_mode_text dns_desync "$CFG")" = "Включен" ] \
+  || fail "свежий config.default: антиспуф DNS должен быть Включен (блок + порт 53)"
+sed -n '/#Z2R_DNS_BEGIN/,/#Z2R_DNS_END/p' "$CFG" | grep -q '^--filter-udp=53$' \
+  || fail "блок #Z2R_DNS_* должен быть активен по умолчанию (без --skip)"
+assert_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' \
+  "порт 53 должен быть в NFQWS2_PORTS_UDP по умолчанию"
+
+# повторное включение не дублирует порт
+backup_smart_set_dns_desync "$CFG" 1
+config_profile_dns_ports_apply "$CFG" 1
+assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53,53(,|$)' "dns_desync set 1 задублировал порт 53"
+
+backup_smart_set_dns_desync "$CFG" 0
+config_profile_dns_ports_apply "$CFG" 0
+[ "$(config_mode_text dns_desync "$CFG")" = "Выключен" ] || fail "dns_desync set 0 не выключился"
+assert_not_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)53(,|$)' "dns_desync set 0 не убрал порт 53"
+sed -n '/#Z2R_DNS_BEGIN/,/#Z2R_DNS_END/p' "$CFG" | grep -q '^--skip --filter-udp=53$' \
+  || fail "dns_desync set 0 не вернул --skip в блок #Z2R_DNS_*"
+# возврат в дефолтное состояние (блок активен, порт на месте)
+backup_smart_set_dns_desync "$CFG" 1
+config_profile_dns_ports_apply "$CFG" 1
+[ "$(config_mode_text dns_desync "$CFG")" = "Включен" ] || fail "dns_desync set 1 не включился обратно"
 
 # == 5. RST guard ==
 

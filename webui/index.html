@@ -135,7 +135,7 @@
           <span class="chip" id="tls-blob-status"></span>
         </div>
         <p class="panel-desc">
-          Выбор TLS-блоба для стратегий обхода. Изменение требует перезапуска zapret2.
+          Выбор TLS-блоба для стратегий обхода. При изменении zapret2 перезапускается автоматически.
         </p>
 
         <form id="tls-blob-form" class="settings-form">
@@ -229,7 +229,7 @@
           их пополняет zapret2. Списки исключений работают как обычно.
         </p>
         <p class="panel-desc">
-          Изменение требует перезапуска zapret2.
+          При изменении zapret2 перезапускается автоматически.
         </p>
 
         <form id="hostlist-form" class="settings-form">
@@ -253,7 +253,7 @@
         </p>
         <p class="panel-desc">
           Включите режим, затем выберите стратегию для профиля 7 во вкладке «Стратегии».
-          Изменение требует перезапуска zapret2.
+          При изменении zapret2 перезапускается автоматически.
         </p>
 
         <form id="udp-games-form" class="settings-form">
@@ -272,6 +272,32 @@
 
       <section class="panel">
         <div class="panel-header">
+          <h2>Антиспуф DNS (профиль 10)</h2>
+          <span class="chip" id="dns-desync-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Защита от подмены DNS-ответов провайдером на UDP:53 — клон запроса с
+          малым TTL и дроп поддельного ответа.
+        </p>
+        <p class="panel-desc">
+          Включите режим, затем выберите стратегию для профиля 10 во вкладке
+          «Стратегии»: после сохранения резолв проверяется автоматически.
+          При изменении zapret2 перезапускается автоматически.
+        </p>
+
+        <form id="dns-desync-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="dns-desync-toggle">
+            <span>Включить антиспуф DNS</span>
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
           <h2>WireGuard</h2>
           <span class="chip" id="wg-state-chip"></span>
         </div>
@@ -281,7 +307,7 @@
         </p>
         <p class="panel-desc">
           Здесь можно включить/выключить стратегию, выбрать fake-пакет и количество его
-          повторов (repeats). Изменение требует перезапуска zapret2.
+          повторов (repeats). При изменении zapret2 перезапускается автоматически.
         </p>
 
         <form id="wg-blob-form" class="settings-form">
@@ -329,7 +355,7 @@
         </p>
         <p class="panel-desc">
           Функция экспериментальная: если соединения станут менее стабильными, выключите
-          её. Изменение требует перезапуска zapret2.
+          её. При изменении zapret2 перезапускается автоматически.
         </p>
 
         <form id="rst-guard-form" class="settings-form">
@@ -369,7 +395,7 @@
         <p class="panel-desc">
           Быстрая проверка: откройте в новом инкогнито-окне
           <a href="https://img.reg.ru/news/showcase-main-page__hero-slider_image_domains.webp" target="_blank" rel="noopener">картинку-тест</a> —
-          если она открывается, параметр обычно не нужен. Изменение требует перезапуска zapret2.
+          если она открывается, параметр обычно не нужен. При изменении zapret2 перезапускается автоматически.
         </p>
 
         <form id="reasm-form" class="settings-form">
@@ -393,8 +419,8 @@
           не только для YouTube.
         </p>
         <p class="panel-desc">
-          Выключите, если видео или приложения на QUIC начали работать хуже. Изменение
-          требует перезапуска zapret2.
+          Выключите, если видео или приложения на QUIC начали работать хуже. При изменении
+          zapret2 перезапускается автоматически.
         </p>
 
         <form id="quic443-form" class="settings-form">
@@ -419,7 +445,7 @@
         </p>
         <p class="panel-desc">
           Формат ввода: один порт (8080) или диапазон (9000-9100), несколько значений —
-          через запятую. Изменение требует перезапуска zapret2.
+          через запятую. При изменении zapret2 перезапускается автоматически.
         </p>
 
         <div class="ports-section">
