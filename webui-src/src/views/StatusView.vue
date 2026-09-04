@@ -26,11 +26,10 @@ async function check() {
     const payload = await withBusy('run-check', () => runCheck())
     statusCheck.value = payload
     statusCheckRan.value = true
-    showToast('Проверка завершена.')
     await nextTick()
     const panel = document.getElementById('check-panel')
     if (!panel) return
-    panel.scrollIntoView({ block: 'start' })
+    panel.scrollIntoView({ block: 'start', behavior: 'smooth' })
     panel.classList.add('is-target')
     window.setTimeout(() => panel.classList.remove('is-target'), 6100)
   } catch (error) {
