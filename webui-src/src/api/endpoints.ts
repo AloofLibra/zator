@@ -2,11 +2,14 @@ import { api, formBody } from './client'
 import type {
   ApplyResult, BackupsPayload, CheckPayload, DomainsImportResult, DomainsListPayload,
   FallbackSettings, ModeSettingData, PortInfo, PortsSettings, ProfileInfo, ProviderSettings,
-  ScopesPayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, WgBlobSettings, WgStateSettings,
+  ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, WgBlobSettings, WgStateSettings,
 } from './types'
 
 export const fetchStatus = (scope: string) =>
   api<StatusPayload>(`/cgi-bin/status.cgi?scope=${encodeURIComponent(scope)}`)
+
+export const fetchState = (scope: string) =>
+  api<StatePayload>(`/cgi-bin/state.cgi?scope=${encodeURIComponent(scope)}`)
 
 export const fetchScopes = () => api<ScopesPayload>('/cgi-bin/scopes.cgi')
 

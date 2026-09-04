@@ -2,9 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { busyActive } from './stores/busy'
-import { loadAllSettings, settingsLoaded } from './stores/settings'
-import { refreshAll, statusLoaded } from './stores/status'
-import { refreshBackups } from './stores/backups'
+import { fetchAndApplyState } from './stores/state'
 import { showToast } from './stores/toast'
 import { theme, type ThemeMode } from './stores/theme'
 import ToastHost from './components/ui/ToastHost.vue'
@@ -26,13 +24,7 @@ const themeSelect = computed({
 })
 
 onMounted(() => {
-  refreshAll()
-    .catch((error) => showToast((error as Error).message, 'error'))
-    .finally(() => { statusLoaded.value = true })
-  loadAllSettings()
-    .then(() => refreshBackups())
-    .then(() => { settingsLoaded.value = true })
-    .catch((error) => showToast((error as Error).message, 'error'))
+  fetchAndApplyState().catch((error) => showToast((error as Error).message, 'error'))
 })
 </script>
 

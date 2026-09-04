@@ -4,7 +4,6 @@ import type {
   FallbackSettings, ModeSettingData, PortsSettings, ProviderSettings,
   TlsBlobSettings, UdpGamesSettings, WgBlobSettings, WgStateSettings,
 } from '../api/types'
-import { showToast } from './toast'
 
 export const tlsBlobSettings = ref<TlsBlobSettings | null>(null)
 export const wgBlobSettings = ref<WgBlobSettings | null>(null)
@@ -29,20 +28,4 @@ export const refreshProvider = () => fetchSetting.provider().then((data) => { pr
 
 export function refreshModeSetting(setting: string) {
   return fetchSetting[setting as ModeSettingKey]().then((data) => { modeSettings[setting] = data })
-}
-
-export async function loadAllSettings() {
-  const jobs: Promise<unknown>[] = [
-    refreshTlsBlobSettings(),
-    refreshWgBlobSettings(),
-    refreshWgStateSettings(),
-    refreshUdpGamesSettings(),
-    refreshFallbackSettings(),
-    ...MODE_SETTINGS.map((key) => refreshModeSetting(key)),
-    refreshPorts(),
-    refreshProvider(),
-  ]
-  const errors: unknown[] = []
-  await Promise.all(jobs.map((job) => job.catch((error) => { errors.push(error) })))
-  for (const error of errors) showToast(String(error), 'error')
 }

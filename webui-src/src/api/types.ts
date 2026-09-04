@@ -150,3 +150,22 @@ export interface DomainsImportResult {
   duplicates?: number
   skipped?: number
 }
+
+export interface StatePayload {
+  status: StatusPayload
+  scopes: ScopesPayload
+  tls_blob: TlsBlobSettings
+  wg_blob: WgBlobSettings
+  wg_state: WgStateSettings
+  fallback: FallbackSettings
+  udp_games: UdpGamesSettings
+  auto_mode: ModeSettingData
+  hostlist: ModeSettingData
+  rst_guard: ModeSettingData
+  reasm: ModeSettingData
+  quic443: ModeSettingData
+  dns_desync: ModeSettingData
+  ports: PortsSettings
+  provider: ProviderSettings
+  backups: BackupsPayload
+}

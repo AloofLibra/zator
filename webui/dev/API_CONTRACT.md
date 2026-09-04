@@ -116,6 +116,42 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
 
 ---
 
+## 1a. `GET /cgi-bin/state.cgi` → `api_state`
+
+Агрегат для начальной инициализации webui: **один** CGI-процесс вместо ~15
+отдельных запросов (`status`, `scopes`, все `settings`, `backups`). Параметры:
+необязательный `scope` (как у `status.cgi`; ошибки идентичны).
+
+```jsonc
+{
+  "status":   { /* payload status.cgi целиком */ },
+  "scopes":   { /* payload scopes.cgi целиком (client_scopes_json) */ },
+  "tls_blob": { /* settings.cgi без setting= */ },
+  "wg_blob":  { /* settings.cgi?setting=wg_blob */ },
+  "wg_state": { /* settings.cgi?setting=wg_state */ },
+  "fallback": { /* settings.cgi?setting=fallback */ },
+  "udp_games":{ /* settings.cgi?setting=udp-games */ },
+  "auto_mode":{ /* settings.cgi?setting=auto_mode */ },
+  "hostlist": { /* settings.cgi?setting=hostlist */ },
+  "rst_guard":{ /* settings.cgi?setting=rst_guard */ },
+  "reasm":    { /* settings.cgi?setting=reasm */ },
+  "quic443":  { /* settings.cgi?setting=quic443 */ },
+  "dns_desync":{/* settings.cgi?setting=dns_desync */ },
+  "ports":    { /* settings.cgi?setting=ports */ },
+  "provider": { /* settings.cgi?setting=provider */ },
+  "backups":  { /* GET backups.cgi (список) */ }
+}
+```
+
+Если отдельная секция не может быть собрана, она приходит как
+`{"_error":"<текст>"}` (остальные секции не затрагиваются).
+
+Фронтенд использует `state.cgi` при старте и по кнопкам «Обновить»;
+точечные `settings.cgi?setting=…` — только для перепроверки после изменения
+одной настройки.
+
+---
+
 ## 2. `POST /cgi-bin/set-lock.cgi` → `api_set_lock`
 
 Параметры: `profile` (обяз.), `strategy` (обяз.).

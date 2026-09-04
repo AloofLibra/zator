@@ -2635,24 +2635,35 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             if not self._valid_scope(requested_scope):
                 self._send_error_json(400, "Некорректный scope")
                 return
-            scopes = {"default"}
-            for line in (_read_lines(self.state.lock_file) +
-                         _read_lines(self.state.lock_manual_file)):
-                fields = line.split("\t")
-                if fields and re.match(r"^mark:[0-9]+$", fields[0]): scopes.add(fields[0])
-            diagnostics = self.state.client_scope_diagnostics()
-            reason = diagnostics.get("fallback_reason", "")
-            warning = ""
-            if reason == "missing-mask":
-                warning = "Client scope включён, но firewall mapping не задан."
-            elif reason == "mask-conflict":
-                warning = "Маска client scope пересекается со служебной mark-маской; включён безопасный fallback."
-            elif reason == "invalid-mask":
-                warning = "Маска client scope некорректна; включён безопасный fallback."
-            self._send_json({"enabled": diagnostics.get("mode") == "mark",
-                             "warning": warning,
-                             "scopes": sorted(scopes),
-                             "diagnostics": diagnostics})
+            self._send_json(self._build_scopes())
+            return
+
+        if endpoint == "state":
+            # api_state() из _lib.sh: агрегат для начальной инициализации webui
+            requested_scope = params.get("scope", "default") or "default"
+            if not self._valid_scope(requested_scope):
+                self._send_error_json(400, "Некорректный scope")
+                return
+            self._log("GET {0} | state aggregate".format(parsed.path))
+            with self.state.lock:
+                self._send_json({
+                    "status": self.state.build_status(requested_scope),
+                    "scopes": self._build_scopes(),
+                    "tls_blob": self.state.build_tls_blob_settings(),
+                    "wg_blob": self.state.build_wg_blob_settings(),
+                    "wg_state": self.state.build_wg_state_settings(),
+                    "fallback": self.state.build_fallback_settings(),
+                    "udp_games": self.state.build_udp_games_settings(),
+                    "auto_mode": self.state.build_mode_settings("auto_mode"),
+                    "hostlist": self.state.build_mode_settings("hostlist"),
+                    "rst_guard": self.state.build_mode_settings("rst_guard"),
+                    "reasm": self.state.build_mode_settings("reasm"),
+                    "quic443": self.state.build_mode_settings("quic443"),
+                    "dns_desync": self.state.build_mode_settings("dns_desync"),
+                    "ports": self.state.build_ports_settings(),
+                    "provider": self.state.build_provider_settings(),
+                    "backups": self.state.build_backups_list(),
+                })
             return
 
         if endpoint == "status":
@@ -2710,6 +2721,27 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         self._send_error_json(404, "Неизвестный эндпоинт: {0}".format(endpoint))
 
     # --- обработчики эндпоинтов ------------------------------------------
+
+    def _build_scopes(self):
+        """Сборка payload эндпоинта scopes (общая для scopes и state)."""
+        scopes = {"default"}
+        for line in (_read_lines(self.state.lock_file) +
+                     _read_lines(self.state.lock_manual_file)):
+            fields = line.split("\t")
+            if fields and re.match(r"^mark:[0-9]+$", fields[0]): scopes.add(fields[0])
+        diagnostics = self.state.client_scope_diagnostics()
+        reason = diagnostics.get("fallback_reason", "")
+        warning = ""
+        if reason == "missing-mask":
+            warning = "Client scope включён, но firewall mapping не задан."
+        elif reason == "mask-conflict":
+            warning = "Маска client scope пересекается со служебной mark-маской; включён безопасный fallback."
+        elif reason == "invalid-mask":
+            warning = "Маска client scope некорректна; включён безопасный fallback."
+        return {"enabled": diagnostics.get("mode") == "mark",
+                "warning": warning,
+                "scopes": sorted(scopes),
+                "diagnostics": diagnostics}
 
     def _handle_service(self, params, parsed):
         # api_service() — _lib.sh:244

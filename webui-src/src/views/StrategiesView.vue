@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
+import { fetchAndApplyState } from '../stores/state'
 import { locks, refreshAll, scope, scopes } from '../stores/status'
 import { showToast } from '../stores/toast'
 import StrategyCard from '../components/strategies/StrategyCard.vue'
@@ -28,7 +29,7 @@ function changeScope(value: string) {
 
 async function refresh() {
   try {
-    await withBusy('refresh-locks', refreshAll)
+    await withBusy('refresh-locks', fetchAndApplyState)
   } catch (error) {
     showToast((error as Error).message, 'error')
   }

@@ -85,6 +85,15 @@ for fn in api_backups_list api_backups_create api_backups_delete api_backups_dow
 done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'send_tar_file' "_lib.sh не отдаёт tar-файлы"
 
+# Агрегирующий state.cgi: одна загрузка вместо ~15 CGI при старте webui
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'api_state\(\)' "_lib.sh: нет агрегирующего api_state"
+[ -f "$REPO_DIR/webui/cgi-bin/state.cgi" ] || fail "state.cgi отсутствует"
+grep -q 'api_state' "$REPO_DIR/webui/cgi-bin/state.cgi" || fail "state.cgi не вызывает api_state"
+grep -q 'cgi-bin/state.cgi' "$REPO_DIR/z2r.sh" || fail "z2r.sh не устанавливает state.cgi"
+grep -rq 'state\.cgi' "$REPO_DIR/webui-src/src" || fail "webui-src не использует state.cgi"
+grep -q '"state"' "$REPO_DIR/webui/dev/fake_router_server.py" || fail "fake_router_server.py без эндпоинта state"
+grep -q 'state\.cgi' "$REPO_DIR/webui/dev/API_CONTRACT.md" || fail "API_CONTRACT.md без state.cgi"
+
 for key in auto_mode rst_guard reasm quic443 provider; do
   assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" "\\\"$key\\\"" "api_status не отдаёт поле $key"
 done

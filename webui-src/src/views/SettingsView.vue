@@ -2,8 +2,8 @@
 import { nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
-import { refreshBackups } from '../stores/backups'
-import { loadAllSettings, settingsLoaded } from '../stores/settings'
+import { fetchAndApplyState } from '../stores/state'
+import { settingsLoaded } from '../stores/settings'
 import { showToast } from '../stores/toast'
 import { settingsPanels } from '../components/settings/panels'
 
@@ -11,10 +11,7 @@ const route = useRoute()
 
 async function refresh() {
   try {
-    await withBusy('refresh-settings', async () => {
-      await loadAllSettings()
-      await refreshBackups()
-    })
+    await withBusy('refresh-settings', fetchAndApplyState)
   } catch (error) {
     showToast((error as Error).message, 'error')
   }
@@ -28,7 +25,7 @@ function scrollToPanel(highlight: boolean) {
   element.scrollIntoView({ block: 'start' })
   if (!highlight) return
   element.classList.add('is-target')
-  window.setTimeout(() => element.classList.remove('is-target'), 2600)
+  window.setTimeout(() => element.classList.remove('is-target'), 6100)
 }
 
 watch(() => route.params.panel, async () => {

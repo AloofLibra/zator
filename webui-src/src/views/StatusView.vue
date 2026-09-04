@@ -3,7 +3,8 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { runCheck } from '../api/endpoints'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
-import { refreshAll, statusCheck, statusCheckRan, statusLoaded } from '../stores/status'
+import { fetchAndApplyState } from '../stores/state'
+import { statusCheck, statusCheckRan, statusLoaded } from '../stores/status'
 import { showToast } from '../stores/toast'
 import CheckResults from '../components/ui/CheckResults.vue'
 import ServiceControls from '../components/status/ServiceControls.vue'
@@ -14,7 +15,7 @@ const router = useRouter()
 
 async function refresh() {
   try {
-    await withBusy('refresh-status', refreshAll)
+    await withBusy('refresh-status', fetchAndApplyState)
   } catch (error) {
     showToast((error as Error).message, 'error')
   }

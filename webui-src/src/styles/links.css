@@ -2,11 +2,11 @@
 
 a.tab, a.subtab { color: inherit; text-decoration: none; }
 
-/* диплинк /settings/:panel останавливается чуть ниже верха экрана */
-.panel { scroll-margin-top: 24px; }
-
 .tab.is-locked, .subtab.is-locked { cursor: not-allowed; opacity: 0.5; }
 .tab.is-active.is-locked, .subtab.is-active.is-locked { opacity: 1; }
+
+/* диплинк /settings/:panel останавливается чуть ниже верха экрана */
+.panel { scroll-margin-top: 18px; }
 
 a.stat-card.is-link {
   color: inherit;
@@ -26,6 +26,14 @@ a.stat-card.is-link:focus-visible {
   font-weight: 600;
 }
 
+/* CLI-only карточки кликабельны (тост-подсказка) */
+.stat-card.is-cli { cursor: pointer; }
+.stat-card.is-cli:hover,
+.stat-card.is-cli:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .cli-hint {
   margin-left: 6px;
   padding: 1px 7px;
@@ -37,11 +45,12 @@ a.stat-card.is-link:focus-visible {
   white-space: nowrap;
 }
 
+/* кольцо держится ~3.5с, затем плавно гаснет */
 @keyframes z2r-panel-target {
-  from { box-shadow: 0 0 0 3px var(--accent); }
-  to { box-shadow: 0 0 0 3px transparent; }
+  0%, 55% { box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
 }
 
 .panel.is-target {
-  animation: z2r-panel-target 2.4s ease-out forwards;
+  animation: z2r-panel-target 6s ease-out forwards;
 }

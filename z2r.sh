@@ -1644,6 +1644,7 @@ webui_install_files() {
   webui_repo_fetch "run-webui.sh" "$WEBUI_RUNNER" || return 1
   webui_repo_fetch "cgi-bin/_lib.sh" "$WEBUI_CGI/_lib.sh" || return 1
   webui_repo_fetch "cgi-bin/status.cgi" "$WEBUI_CGI/status.cgi" || return 1
+  webui_repo_fetch "cgi-bin/state.cgi" "$WEBUI_CGI/state.cgi" || return 1
   webui_repo_fetch "cgi-bin/set-lock.cgi" "$WEBUI_CGI/set-lock.cgi" || return 1
   webui_repo_fetch "cgi-bin/clear-lock.cgi" "$WEBUI_CGI/clear-lock.cgi" || return 1
   webui_repo_fetch "cgi-bin/service.cgi" "$WEBUI_CGI/service.cgi" || return 1

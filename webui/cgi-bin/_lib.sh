@@ -463,9 +463,7 @@ api_scopes() {
   send_json "200 OK" "$(client_scopes_json)"
 }
 
-api_status() {
-  parse_params
-  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
+status_json() {
   local running wg_raw wg_state
   if zapret2_running; then running=true; else running=false; fi
   wg_raw="$(_wg_state_get "$CONFIG_FILE")"
@@ -474,8 +472,32 @@ api_status() {
     0) wg_state="выключено" ;;
     *) wg_state="недоступно" ;;
   esac
-  send_json "200 OK" "$(cat <<EOF
+  cat <<EOF
 {"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","auto_mode":"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")","rst_guard":"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")","reasm":"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")","quic443":"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")","provider":"$(json_escape "$(_provider_cache_text)")","client_scope":$(client_scope_diagnostics_json),"profiles":$(all_profiles_json)}
+EOF
+}
+
+api_status() {
+  parse_params
+  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
+  send_json "200 OK" "$(status_json)"
+}
+
+# Выполняет api_*_get в под-оболочке с подменённым выводом и отдаёт чистый JSON.
+# Для начальной инициализации webui: один state.cgi вместо ~15 отдельных CGI.
+_state_capture() {
+  (
+    send_json() { printf '%s' "$2"; }
+    send_error() { printf '{"_error":"%s"}' "$(json_escape "$2")"; exit 0; }
+    "$1"
+  )
+}
+
+api_state() {
+  parse_params
+  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
+  send_json "200 OK" "$(cat <<EOF
+{"status":$(status_json),"scopes":$(client_scopes_json),"tls_blob":$(_state_capture api_tls_blob_get),"wg_blob":$(_state_capture api_wg_blob_get),"wg_state":$(_state_capture api_wg_state_get),"fallback":$(_state_capture api_fallback_get),"udp_games":$(_state_capture api_udp_games_get),"auto_mode":$(_state_capture api_auto_mode_get),"hostlist":$(_state_capture api_hostlist_get),"rst_guard":$(_state_capture api_rst_guard_get),"reasm":$(_state_capture api_reasm_get),"quic443":$(_state_capture api_quic443_get),"dns_desync":$(_state_capture api_dns_desync_get),"ports":$(_state_capture api_ports_get),"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
