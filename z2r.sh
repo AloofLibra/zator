@@ -1912,12 +1912,13 @@ webui_submenu() {
 
 # Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки
 # и мимолётные сбои rawsend "Network (is) unreachable" / "Operation not
-# permitted" (нет маршрута в момент переключения WAN/IPv6 или временный отказ
-# raw-сокета; формулировка зависит от платформы): verdict-пакеты идут штатно,
-# это не авария демона.
+# permitted" / "Message too large" (нет маршрута в момент переключения WAN/IPv6,
+# временный отказ raw-сокета или слишком крупный датаграмм для интерфейса —
+# MTU/fragmentation; формулировка зависит от платформы): verdict-пакеты идут
+# штатно, это не авария демона.
 z2r_err_journal() {
   grep -v '^seccomp:' "$1" 2>/dev/null \
-    | grep -viE '^rawsend: sendto.*(network.*unreachable|operation not permitted)'
+    | grep -viE '^rawsend: sendto.*(network.*unreachable|operation not permitted|message too large)'
 }
 
 get_menu() {
@@ -2211,10 +2212,10 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
       z2r_err_journal /tmp/nfqws2_1.err
       echo ""
-      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2; seccomp-заметки и мимолётные rawsend 'Network unreachable' скрыты как безвредные)${plain}"
+      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2; seccomp-заметки и мимолётные rawsend 'Network unreachable' / 'Message too large' скрыты как безвредные)${plain}"
     elif command -v logread >/dev/null 2>&1 \
-      && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -vi 'rawsend: sendto.*network.*unreachable' | grep -q .; then
-      logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -vi 'rawsend: sendto.*network.*unreachable' | tail -20
+      && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | grep -q .; then
+      logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | tail -20
       echo ""
       echo -e "${yellow}Источник: syslog (logread), последние 20 строк.${plain}"
     else
