@@ -2,7 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { busyActive } from './stores/busy'
-import { loadAllSettings } from './stores/settings'
+import { loadAllSettings, settingsLoaded } from './stores/settings'
 import { refreshAll, statusLoaded } from './stores/status'
 import { refreshBackups } from './stores/backups'
 import { showToast } from './stores/toast'
@@ -31,6 +31,7 @@ onMounted(() => {
     .finally(() => { statusLoaded.value = true })
   loadAllSettings()
     .then(() => refreshBackups())
+    .then(() => { settingsLoaded.value = true })
     .catch((error) => showToast((error as Error).message, 'error'))
 })
 </script>

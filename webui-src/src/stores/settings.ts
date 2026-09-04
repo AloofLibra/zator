@@ -14,6 +14,7 @@ export const udpGamesSettings = ref<UdpGamesSettings | null>(null)
 export const modeSettings = reactive<Record<string, ModeSettingData | undefined>>({})
 export const ports = ref<PortsSettings | null>(null)
 export const provider = ref<ProviderSettings | null>(null)
+export const settingsLoaded = ref(false)
 
 export const MODE_SETTINGS = ['auto_mode', 'hostlist', 'rst_guard', 'reasm', 'quic443', 'dns_desync'] as const
 export type ModeSettingKey = typeof MODE_SETTINGS[number]
