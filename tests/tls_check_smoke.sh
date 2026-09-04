@@ -889,23 +889,24 @@ fi
 [ "$(grep -c 'profile_check_json' webui/cgi-bin/_lib.sh)" = "2" ]   || fail "сценарий 16: profile_check_json должен зваться только из api_check (без инлайна в set-lock)"
 grep -q 'PARAM_PROFILE.*\[\[\|\[\[ "\${PARAM_PROFILE' webui/cgi-bin/_lib.sh   || grep -q 'api_check' webui/cgi-bin/_lib.sh || true
 grep -q '2>/dev/null </dev/null &' lib/netcheck.sh   || fail "сценарий 16: фоновые пробы не отсоединены от CGI stdio"
-grep -q "body: new URLSearchParams({ profile: profile.profile" webui/app.js   || fail "сценарий 16: app.js не дергает проверку после set-lock"
-[ "$(grep -c "check.cgi" webui/app.js)" -ge 2 ]   || fail "сценарий 16: check.cgi должен вызываться и из кнопки, и после set-lock"
+SRC_DIR="$REPO_DIR/webui-src/src"
+grep -rq "profileCheck(props.profile.profile" "$SRC_DIR"   || fail "сценарий 16: стратегия не проверяется после set-lock"
+[ "$(grep -c "check.cgi" "$SRC_DIR/api/endpoints.ts")" -ge 2 ]   || fail "сценарий 16: check.cgi должен вызываться и из кнопки, и после set-lock"
 [ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "2" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
 printf '%s' "$lib_sh" | grep -q '^    check)' || fail "сценарий 16: нет действия check в domains"
-grep -q 'checkVerdictClass' "$REPO_DIR/webui/app.js" || fail "сценарий 16: app.js не рендерит verdict"
-grep -q 'renderDomainCheck' "$REPO_DIR/webui/app.js" || fail "сценарий 16: app.js без renderDomainCheck"
-grep -q "action: 'check'" "$REPO_DIR/webui/app.js" || fail "сценарий 16: app.js не дергает action=check"
-if grep -q 'domain-check-results' "$REPO_DIR/webui/app.js" "$REPO_DIR/webui/index.html"; then
+grep -rq 'verdictClass' "$SRC_DIR" || fail "сценарий 16: WebUI не рендерит verdict"
+grep -rq 'domainChecks' "$SRC_DIR/components/domains" || fail "сценарий 16: WebUI без inline-проверки домена"
+grep -q "action: 'check'" "$SRC_DIR/api/endpoints.ts" || fail "сценарий 16: WebUI не дергает action=check"
+if grep -rq 'domain-check-results' "$SRC_DIR"; then
   fail "сценарий 16: осталась глобальная коробка domain-check-results"
 fi
-grep -q 'class="checks domain-check"' "$REPO_DIR/webui/index.html" || fail "сценарий 16: index.html без inline-бокса проверки в строке домена"
-grep -q 'domain-check-btn' "$REPO_DIR/webui/index.html" || fail "сценарий 16: index.html без кнопки Проверить"
-grep -A 4 '^\.check-pair {' "$REPO_DIR/webui/styles.css" | grep -q 'flex-direction: column' \
+grep -rq 'class="checks domain-check"' "$SRC_DIR/components/domains" || fail "сценарий 16: нет inline-бокса проверки в строке домена"
+grep -rq 'domain-check-btn' "$SRC_DIR/components/domains" || fail "сценарий 16: нет кнопки Проверить"
+grep -A 4 '^\.check-pair {' "$SRC_DIR/styles/base.css" | grep -q 'flex-direction: column' \
   || fail "сценарий 16: строки проверки не вертикальные"
-grep -q '\.domain-row \.domain-check \.check-title' "$REPO_DIR/webui/styles.css" \
+grep -q '\.domain-row \.domain-check \.check-title' "$SRC_DIR/styles/base.css" \
   || fail "сценарий 16: нет компактных стилей проверки в строке домена"
-grep -q '\.warn' "$REPO_DIR/webui/styles.css" || fail "сценарий 16: styles.css без .warn"
+grep -q '\.warn' "$SRC_DIR/styles/base.css" || fail "сценарий 16: styles без .warn"
 fake="$REPO_DIR/webui/dev/fake_router_server.py"
 grep -q 'verdict' "$fake" || fail "сценарий 16: fake_router_server без verdict"
 grep -q 'z2r_dns_check_print' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 16: перебор профиля 10 без DNS-проверки"

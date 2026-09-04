@@ -108,7 +108,7 @@ Normal flow:
 - `lua/domain-grouping.lua`: grouping logic for related domains.
 - `lua/silent-drop-detector.lua`: silent-drop detection.
 - `lua/rst-guard.lua`: runtime RST injection guard loaded from `config.default`.
-- `webui/`: static assets, CGI endpoints, and runner for the local WebUI on port `17682`.
+- `webui/`: static assets, CGI endpoints, and runner for the local WebUI on port `17682`. `index.html`/`app.js`/`styles.css` are build artifacts — the frontend sources live in `webui-src/` (Vue 3 + TypeScript, hash-router); rebuild with `cd webui-src && npm install && npm run build` (Vite emits exactly `app.js` + `styles.css` + `index.html` into `webui/` and stamps `?v=<sha256>` cache-busting). Dev: `npm run dev` proxies `/cgi-bin` to `webui/dev/fake_router_server.py`.
 - `Entware/`: Entware/Keenetic startup and integration patches.
 
 ## Architecture Notes
@@ -271,6 +271,25 @@ bash tests/webui_smoke.sh
 
 ```text
 webui smoke ok
+```
+
+```bash
+bash tests/webui_build_smoke.sh
+```
+
+Проверка собранных артефактов WebUI (`webui/index.html`, `app.js`, `styles.css`):
+
+- файловый состав прежний (контракт установки `z2r.sh`): нет `*.map`, чанков
+  `index-*`, каталога `assets`;
+- `app.js` подключён classic-скриптом с `?v=` в конце body, `styles.css` — в
+  head раньше скрипта;
+- `?v=` равен первым 8 символам sha256 соответствующего файла (кэш-бастинг
+  сборки актуален), `webui/app.js` парсится как JS.
+
+Успешный результат:
+
+```text
+webui build smoke ok
 ```
 
 ```bash

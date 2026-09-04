@@ -1,0 +1,44 @@
+/* Добавки к base.css для роутинга: кликабельные статус-карточки и подсказки CLI */
+
+a.tab, a.subtab { color: inherit; text-decoration: none; }
+
+.tab.is-locked, .subtab.is-locked { cursor: not-allowed; opacity: 0.5; }
+.tab.is-active.is-locked, .subtab.is-active.is-locked { opacity: 1; }
+
+a.stat-card.is-link {
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+a.stat-card.is-link:hover,
+a.stat-card.is-link:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.card-go {
+  margin-left: 6px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.cli-hint {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-muted);
+  white-space: nowrap;
+}
+
+@keyframes z2r-panel-target {
+  from { box-shadow: 0 0 0 3px var(--accent); }
+  to { box-shadow: 0 0 0 3px transparent; }
+}
+
+.panel.is-target {
+  animation: z2r-panel-target 2.4s ease-out forwards;
+}

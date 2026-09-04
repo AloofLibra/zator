@@ -91,15 +91,15 @@ done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'rst-guard\.lua' "rst_guard set без guard на lua-файл"
 
 for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form ports-tcp-form ports-udp-form provider-form backup-create-btn backup-import-btn backup-import-file; do
-  grep -q "id=\"$id\"" "$REPO_DIR/webui/index.html" || fail "index.html не содержит #$id"
+  grep -rq "$id" "$REPO_DIR/webui-src/src" || fail "webui-src не содержит #$id"
 done
 
-app_js="$(cat "$REPO_DIR/webui/app.js")"
+app_js="$(find "$REPO_DIR/webui-src/src" -type f \( -name '*.vue' -o -name '*.ts' \) -exec cat {} +)"
 for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'dns_desync_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' '/cgi-bin/backups.cgi' "action: 'create'" "action: 'delete'" 'action=download' 'action=upload' 'download-btn' 'backups-toggle' 'confirmDialog'; do
-  assert_contains "$app_js" "$needle" "app.js не использует $needle"
+  assert_contains "$app_js" "$needle" "webui-src не использует $needle"
 done
-assert_contains "$app_js" 'AUTO_MODE_GATED_PROFILES' "app.js не гейтит профили 1-4 при авторотации"
-assert_contains "$app_js" 'inlineCheck.classList.remove' "подсказка гейтинга скрыта классом empty (display:none)"
+assert_contains "$app_js" 'AUTO_MODE_GATED_PROFILES' "webui-src не гейтит профили 1-4 при авторотации"
+assert_contains "$app_js" 'fallback-hint' "webui-src без подсказки гейтинга профиля"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'управляется авторотацией' "_lib.sh: set-lock/clear-lock без guard'а авторотации"
 
 # Автоперезапуск после изменения настройки: общий хелпер в CGI, тосты в JS,
@@ -107,9 +107,9 @@ assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'управляетс
 _lib_sh="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
 assert_contains "$_lib_sh" '_service_apply_restart\(\)' "_lib.sh: нет общего хелпера автоперезапуска"
 assert_not_contains "$_lib_sh" 'reboot_required' "_lib.sh: остался старый флаг reboot_required"
-assert_contains "$app_js" 'announceRestart' "app.js: нет тоста о перезапуске"
-assert_contains "$app_js" 'restartSuffix' "app.js: нет суффикса про перезапуск"
-assert_not_contains "$app_js" 'Перезапустите zapret2' "app.js: остался ручной призыв перезапустить"
+assert_contains "$app_js" 'announceRestart' "webui-src: нет тоста о перезапуске"
+assert_contains "$app_js" 'restartSuffix' "webui-src: нет суффикса про перезапуск"
+assert_not_contains "$app_js" 'Перезапустите zapret2' "webui-src: остался ручной призыв перезапустить"
 assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" '_apply_restart' "fake_router_server.py: нет симуляции автоперезапуска"
 
 assert_contains "$(cat "$REPO_DIR/lib/actions.sh")" 'ports_apply_add "\$proto" "\$input"' "CLI ports_add не использует ядро ports_apply_add"
@@ -123,11 +123,9 @@ done
 assert_contains "$fake_py" 'netrogat_substring' "fake_router_server.py не поддерживает список netrogat_substring"
 assert_contains "$fake_py" 'AUTO_MODE_GATED_PROFILES' "fake_router_server.py не гейтит профили 1-4 при авторотации"
 
-html="$(cat "$REPO_DIR/webui/index.html")"
-auto_line="$(printf '%s\n' "$html" | grep -n 'id="auto-mode-form"' | cut -d: -f1)"
-settings_line="$(printf '%s\n' "$html" | grep -n 'id="view-settings"' | cut -d: -f1)"
-[ -n "$auto_line" ] && [ -n "$settings_line" ] && [ "$auto_line" -gt "$settings_line" ] \
-  || fail "панель авторотации должна быть во вкладке Настройки (внутри view-settings)"
+# Панель авторотации обязана жить в реестре панелей настроек (роут /settings/auto-mode)
+grep -q "'auto-mode'" "$REPO_DIR/webui-src/src/components/settings/panels.ts" \
+  || fail "панель авторотации отсутствует в реестре настроек"
 
 # == 2. Hostlist: autohostlist и плейсхолдер <HOSTLIST> ==
 
