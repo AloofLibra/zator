@@ -105,8 +105,12 @@ a.fallback-hint.is-link {
 }
 a.fallback-hint.is-link:hover { text-decoration: underline; }
 
-/* кнопка «наверх»: видна, когда шапка ушла из вида; стиль как у primary-кнопок */
-body { padding-bottom: 64px; }
+/* кнопка «наверх»: видна, когда шапка ушла из вида; стиль как у primary-кнопок.
+   На широких экранах (>=1360px) она попадает в пустые поля рядом с
+   центрированным контейнером и ничего не перекрывает — запас снизу не нужен. */
+@media (max-width: 1359px) {
+  body { padding-bottom: 64px; }
+}
 #to-top {
   position: fixed;
   right: 16px;
