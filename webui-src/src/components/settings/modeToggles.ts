@@ -11,6 +11,7 @@ export interface ModeToggleConfig {
   title: string
   beta?: boolean
   descriptions: string[]
+  strategyProfile?: number
   postKey: string
   formId: string
   chipId: string
@@ -154,6 +155,7 @@ export const MODE_TOGGLES: ModeToggleConfig[] = [
       'Защита от подмены DNS-ответов провайдером на UDP:53 — клон запроса с малым TTL и дроп поддельного ответа.',
       'Включите режим, затем выберите стратегию для профиля 10 во вкладке «Стратегии»: после сохранения резолв проверяется автоматически. При изменении zapret2 перезапускается автоматически.',
     ],
+    strategyProfile: 10,
     postKey: 'dns_desync_state',
     formId: 'dns-desync-form',
     chipId: 'dns-desync-chip',

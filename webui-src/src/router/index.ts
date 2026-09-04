@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { busyActive } from '../stores/busy'
+import { statusLoaded } from '../stores/status'
 import StatusView from '../views/StatusView.vue'
 import StrategiesView from '../views/StrategiesView.vue'
 import DomainsView from '../views/DomainsView.vue'
@@ -16,5 +17,13 @@ export const router = createRouter({
   ],
 })
 
-// во время активной операции навигация запрещена — как switchView в старом app.js
-router.beforeEach(() => !busyActive.value)
+// Первая (стартовая) навигация всегда разрешена — иначе диплинк не откроется.
+// Дальше: во время операции и первичной загрузки переходы запрещены.
+let firstNavigation = true
+router.beforeEach(() => {
+  if (firstNavigation) {
+    firstNavigation = false
+    return true
+  }
+  return !busyActive.value && statusLoaded.value
+})

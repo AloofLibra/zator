@@ -10,7 +10,8 @@ const profiles = computed(() => locks.value)
 
 <template>
   <div class="profile-grid" :class="{ compact }" id="status-profiles">
-    <article v-for="profile in profiles" :key="profile.profile" class="profile-card">
+    <router-link v-for="profile in profiles" :key="profile.profile" class="profile-card is-link"
+      :to="{ path: '/strategies', query: { focus: profile.profile } }">
       <h3>{{ profile.label }}</h3>
       <p class="desc">{{ profile.description }}</p>
       <div class="meta-line">
@@ -19,6 +20,6 @@ const profiles = computed(() => locks.value)
           {{ currentLockText(profile.current_lock) }}
         </strong>
       </div>
-    </article>
+    </router-link>
   </div>
 </template>

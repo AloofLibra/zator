@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
 import { fetchAndApplyState } from '../stores/state'
@@ -12,6 +12,22 @@ const router = useRouter()
 
 const scopeOptions = computed(() => scopes.value.scopes || ['default'])
 const scopeWarning = computed(() => scopes.value.warning || '')
+
+// диплинк /strategies?focus=N: скролл к карточке профиля + подсветка
+function focusProfileCard() {
+  const focus = route.query.focus
+  if (!focus) return
+  const element = document.getElementById(`strategy-card-${focus}`)
+  if (!element) return
+  element.scrollIntoView({ block: 'start' })
+  element.classList.add('is-target')
+  window.setTimeout(() => element.classList.remove('is-target'), 6100)
+}
+
+watch(() => route.query.focus, async () => {
+  await nextTick()
+  focusProfileCard()
+}, { immediate: true })
 
 onMounted(() => {
   const fromUrl = route.query.scope

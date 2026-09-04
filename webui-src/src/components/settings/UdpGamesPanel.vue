@@ -34,6 +34,7 @@ async function submit() {
   <section class="panel">
     <div class="panel-header">
       <h2>Игровой UDP (профиль 7)</h2>
+      <router-link class="ghost" :to="{ path: '/strategies', query: { focus: 7 } }">Выбрать стратегию →</router-link>
       <span class="chip" id="udp-games-state-chip" :class="{ 'is-ok': savedEnabled }">
         {{ savedEnabled ? 'включен' : 'выключен' }}
       </span>

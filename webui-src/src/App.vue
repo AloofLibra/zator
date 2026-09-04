@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { busyActive } from './stores/busy'
 import { fetchAndApplyState } from './stores/state'
+import { statusLoaded } from './stores/status'
 import { showToast } from './stores/toast'
 import { theme, type ThemeMode } from './stores/theme'
 import ToastHost from './components/ui/ToastHost.vue'
@@ -23,8 +24,33 @@ const themeSelect = computed({
   set: (value: string) => { theme.value = value as ThemeMode },
 })
 
+const heroHidden = ref(false)
+
+// IntersectionObserver не диспатчится в части встроенных WebView —
+// опираемся на scroll + геометрию шапки: кнопка видна ровно когда hero ушёл вверх
+function checkHero() {
+  const hero = document.querySelector('header.hero')
+  heroHidden.value = hero
+    ? hero.getBoundingClientRect().bottom < 0
+    : window.scrollY > 200
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
 onMounted(() => {
-  fetchAndApplyState().catch((error) => showToast((error as Error).message, 'error'))
+  window.addEventListener('scroll', checkHero, { passive: true })
+  window.addEventListener('resize', checkHero, { passive: true })
+  checkHero()
+  fetchAndApplyState()
+    .catch((error) => showToast((error as Error).message, 'error'))
+    .finally(() => { statusLoaded.value = true })
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', checkHero)
+  window.removeEventListener('resize', checkHero)
 })
 </script>
 
@@ -42,7 +68,7 @@ onMounted(() => {
       <div class="header-controls">
         <nav class="tabs" aria-label="Разделы">
           <router-link v-for="tab in tabs" :key="tab.view" :to="tab.view === 'status' ? '/' : `/${tab.view}`"
-            class="tab" :class="{ 'is-active': activeView === tab.view, 'is-locked': busyActive }">
+            class="tab" :class="{ 'is-active': activeView === tab.view, 'is-locked': busyActive || !statusLoaded }">
             {{ tab.label }}
           </router-link>
         </nav>
@@ -59,6 +85,9 @@ onMounted(() => {
     </header>
 
     <router-view />
+
+    <button id="to-top" type="button" aria-label="Наверх" :class="{ 'is-visible': heroHidden }"
+      @click="scrollToTop">↑</button>
 
     <ToastHost />
     <ConfirmDialog />

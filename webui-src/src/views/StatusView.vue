@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { runCheck } from '../api/endpoints'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
@@ -27,6 +27,12 @@ async function check() {
     statusCheck.value = payload
     statusCheckRan.value = true
     showToast('Проверка завершена.')
+    await nextTick()
+    const panel = document.getElementById('check-panel')
+    if (!panel) return
+    panel.scrollIntoView({ block: 'start' })
+    panel.classList.add('is-target')
+    window.setTimeout(() => panel.classList.remove('is-target'), 6100)
   } catch (error) {
     showToast((error as Error).message, 'error')
   }
@@ -37,7 +43,7 @@ const checkEmpty = ref('Нажмите «Проверить доступ», чт
 
 <template>
   <section class="view is-active" :class="{ 'is-loading': !statusLoaded }" id="view-status">
-    <div class="actions">
+    <div v-if="statusLoaded" class="actions">
       <ServiceControls />
       <button id="refresh-status" :class="{ 'is-busy': busyButton === 'refresh-status' }" :disabled="busyActive"
         type="button" @click="refresh">Обновить</button>
@@ -58,7 +64,7 @@ const checkEmpty = ref('Нажмите «Проверить доступ», чт
       <ProfileGrid compact />
     </section>
 
-    <section class="panel">
+    <section class="panel" id="check-panel">
       <div class="panel-header">
         <h2>Проверка доступа</h2>
       </div>

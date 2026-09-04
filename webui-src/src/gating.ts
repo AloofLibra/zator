@@ -28,6 +28,15 @@ export function gatedReason(profile: ProfileInfo) {
   return ''
 }
 
+// Панель настроек, включающая профиль (для перехода по клику из подсказки)
+export function gatedPanel(profile: ProfileInfo): string | null {
+  if (isAutoModeGated(profile)) return 'auto-mode'
+  if (profile.is_fallback && !profile.fallback_enabled) return 'fallback'
+  if (profile.is_udp_games && !profile.udp_games_enabled) return 'udp-games'
+  if (profile.is_dns_desync && !profile.dns_desync_enabled) return 'dns-desync'
+  return null
+}
+
 export function currentLockText(value: string | undefined) {
   const lock = String(value ?? '0')
   return lock === '0' ? '0 (выключено)' : lock === 'auto' ? 'def' : lock

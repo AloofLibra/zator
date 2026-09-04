@@ -37,8 +37,20 @@ const autoBlocked = computed(() =>
 
 const addValue = ref('')
 const importText = ref('')
+const domainsReady = ref(false)
+const domainsLoading = ref(false)
 
-onMounted(() => { refreshDomains() })
+async function loadDomains() {
+  domainsLoading.value = true
+  try {
+    await refreshDomains()
+  } finally {
+    domainsLoading.value = false
+    domainsReady.value = true
+  }
+}
+
+onMounted(() => { loadDomains() })
 
 watch(activeList, () => {
   addValue.value = ''
@@ -46,7 +58,7 @@ watch(activeList, () => {
 
 async function refresh() {
   try {
-    await withBusy('refresh-domains', refreshDomains)
+    await withBusy('refresh-domains', loadDomains)
   } catch (error) {
     showToast((error as Error).message, 'error')
   }
@@ -147,7 +159,11 @@ async function copyList() {
         type="button" @click="refresh">Обновить</button>
     </div>
 
-    <section class="panel" id="domains-panel">
+    <section v-if="!domainsReady || domainsLoading" class="panel">
+      <div class="status-loading" aria-live="polite">Пожалуйста подождите, загружаю списки доменов...</div>
+    </section>
+
+    <section v-else class="panel" id="domains-panel">
       <div class="panel-header">
         <h2 id="domains-title">{{ listData?.title || activeList }}</h2>
         <span class="chip" :class="{ 'is-ok': items.length > 0 }" id="domains-count">{{ items.length }}</span>

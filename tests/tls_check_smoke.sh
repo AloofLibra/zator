@@ -878,10 +878,10 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
 )
 
 # == 16. статический wiring ==
-lib_sh="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
-printf '%s' "$lib_sh" | grep -q 'LIB_DIR/netcheck\.sh' || fail "сценарий 16: _lib.sh не подключает netcheck.sh"
-if printf '%s' "$lib_sh" | grep -q -- '--tls-max 1\.2'; then fail "сценарий 16: в _lib.sh осталась локальная curl-логика TLS"; fi
-printf '%s' "$lib_sh" | grep -q '_domains_check_json' || fail "сценарий 16: нет _domains_check_json"
+lib_sh="$REPO_DIR/webui/cgi-bin/_lib.sh"
+grep -q 'LIB_DIR/netcheck\.sh' "$lib_sh" || fail "сценарий 16: _lib.sh не подключает netcheck.sh"
+if grep -q -- '--tls-max 1\.2' "$lib_sh"; then fail "сценарий 16: в _lib.sh осталась локальная curl-логика TLS"; fi
+grep -q '_domains_check_json' "$lib_sh" || fail "сценарий 16: нет _domains_check_json"
 grep -q 'orch_auto_sweep' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 16: нет orch_auto_sweep"
 if grep -q 'check_json="$(profile_check_json' webui/cgi-bin/_lib.sh 2>/dev/null; then
   :
@@ -893,7 +893,7 @@ SRC_DIR="$REPO_DIR/webui-src/src"
 grep -rq "profileCheck(props.profile.profile" "$SRC_DIR"   || fail "сценарий 16: стратегия не проверяется после set-lock"
 [ "$(grep -c "check.cgi" "$SRC_DIR/api/endpoints.ts")" -ge 2 ]   || fail "сценарий 16: check.cgi должен вызываться и из кнопки, и после set-lock"
 [ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "2" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
-printf '%s' "$lib_sh" | grep -q '^    check)' || fail "сценарий 16: нет действия check в domains"
+grep -q '^    check)' "$lib_sh" || fail "сценарий 16: нет действия check в domains"
 grep -rq 'verdictClass' "$SRC_DIR" || fail "сценарий 16: WebUI не рендерит verdict"
 grep -rq 'domainChecks' "$SRC_DIR/components/domains" || fail "сценарий 16: WebUI без inline-проверки домена"
 grep -q "action: 'check'" "$SRC_DIR/api/endpoints.ts" || fail "сценарий 16: WebUI не дергает action=check"

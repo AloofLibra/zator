@@ -2640,6 +2640,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 
         if endpoint == "state":
             # api_state() из _lib.sh: агрегат для начальной инициализации webui
+            self._sleep_for("status")
             requested_scope = params.get("scope", "default") or "default"
             if not self._valid_scope(requested_scope):
                 self._send_error_json(400, "Некорректный scope")

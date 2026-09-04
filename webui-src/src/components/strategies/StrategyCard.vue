@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { clearLock, profileCheck, setLock } from '../../api/endpoints'
 import type { CheckPayload, ProfileInfo } from '../../api/types'
-import { FALLBACK_CHECK_HINT, UDP_GAMES_CHECK_HINT, currentLockText, gatedReason, isProfileGated } from '../../gating'
+import { FALLBACK_CHECK_HINT, UDP_GAMES_CHECK_HINT, currentLockText, gatedPanel, gatedReason, isProfileGated } from '../../gating'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
 import { refreshAll, scope, strategyChecks } from '../../stores/status'
 import { showToast } from '../../stores/toast'
@@ -88,7 +88,7 @@ async function clearLockAction() {
 </script>
 
 <template>
-  <article :class="['profile-card', { 'is-disabled': gated }]">
+  <article :id="`strategy-card-${profile.profile}`" :class="['profile-card', { 'is-disabled': gated }]">
     <div class="card-top">
       <div>
         <h3>{{ profile.label }}</h3>
@@ -117,6 +117,10 @@ async function clearLockAction() {
       <CheckResults v-if="!gated && inlinePayload" class="inline-check" :payload="inlinePayload"
         :empty-message="inlineEmpty" :empty-hidden="false" />
       <p v-if="gated" class="fallback-hint">{{ reason }}</p>
+      <router-link v-if="gated && gatedPanel(profile)" class="fallback-hint is-link"
+        :to="`/settings/${gatedPanel(profile)}`">
+        Перейти к настройке, включающей профиль →
+      </router-link>
       <div class="card-actions">
         <button type="submit" class="primary" :class="{ 'is-busy': busyButton === 'save' }" :disabled="submitDisabled">Сохранить</button>
         <button type="button" class="ghost clear-lock" :class="{ 'is-busy': busyButton === 'clear' }"

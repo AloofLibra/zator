@@ -532,6 +532,12 @@ menu_config_snapshot() {
   MENU_PROFILE_MAX_9=0
   MENU_PROFILE_MAX_10=0
   MENU_DNS_DESINC="Неизвестно"
+  MENU_REASM="выключено"
+  MENU_QUIC443="неизвестно"
+  MENU_WG_STATE="недоступно"
+  MENU_WG_BLOB=""
+  MENU_WG_REPEATS=""
+  MENU_TLS_BLOB_MODE=""
 
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
 
@@ -544,6 +550,11 @@ menu_config_snapshot() {
   auto_mode="" has_skip=0 has_filter_tcp=0 has_tls_maxru=0 has_tls_default=0 has_rst=0 blob_file=""
 
   local _k _v _tmp _profile
+  local reasm quic_on quic_skip wg_on wg_skip wg_blob wg_repeats dns_exists dns_on53 dns_skip53
+  local quic wg_state dns_on ports_tcp_full ports_udp_full
+  reasm=0 quic_on=0 quic_skip=0 wg_on=0 wg_skip=0 wg_blob="" wg_repeats="" dns_exists=0 dns_on53=0 dns_skip53=0
+  quic="" wg_state="" dns_on="" ports_tcp_full="" ports_udp_full=""
+  _blob_mode=""
   _tmp="/tmp/z2r_menu_cfg_$$"
   awk '
     function scan_strategies(line, num) {
@@ -597,11 +608,39 @@ menu_config_snapshot() {
     /^[[:space:]]*#Z2R_FALLBACK_END[[:space:]]*$/        { in_fb = 0; fb_profile = 0 }
     /^[[:space:]]*#Z2R_FALLBACK_HTTP_BEGIN[[:space:]]*$/ { in_fb = 1; fb_profile = 9 }
     /^[[:space:]]*#Z2R_FALLBACK_HTTP_END[[:space:]]*$/   { in_fb = 0; fb_profile = 0 }
+    /^[[:space:]]*#Z2R_QUIC443_BEGIN[[:space:]]*$/ { in_quic = 1; next }
+    /^[[:space:]]*#Z2R_QUIC443_END[[:space:]]*$/   { in_quic = 0; next }
+    /^[[:space:]]*#Z2R_WG_BEGIN[[:space:]]*$/      { in_wg = 1; next }
+    /^[[:space:]]*#Z2R_WG_END[[:space:]]*$/        { in_wg = 0; next }
+    /^[[:space:]]*#Z2R_DNS_BEGIN[[:space:]]*$/     { in_dns = 1; dns_exists = 1; next }
+    /^[[:space:]]*#Z2R_DNS_END[[:space:]]*$/       { in_dns = 0; next }
     {
       if (in_fb) {
         if ($0 ~ /^[[:space:]]*--skip([[:space:]]|$)/) print "_has_skip=1"
         if ($0 ~ /^[[:space:]]*--filter-tcp=/) print "_has_filter_tcp=1"
       }
+      if (in_quic) {
+        if ($0 ~ /^[[:space:]]*--filter-udp=443[[:space:]]*$/) quic_on = 1
+        if ($0 ~ /^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$/) quic_skip = 1
+      }
+      if (in_wg) {
+        if ($0 ~ /--filter-l7=wireguard/) wg_on = 1
+        if ($0 ~ /^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$/) wg_skip = 1
+      }
+      # WG blob/repeats задаются глобальными строками (вне блока #Z2R_WG_*)
+      if (match($0, /--blob=fakewgblob:@\/opt\/(zapret2|zator)\/files\/fake\/[^[:space:]]+/)) {
+        wg_blob = $0
+        sub(/^.*--blob=fakewgblob:@\/opt\/(zapret2|zator)\/files\/fake\//, "", wg_blob)
+        sub(/[[:space:]].*$/, "", wg_blob)
+      }
+      if (match($0, /blob=fakewgblob:repeats=[0-9]+/)) {
+        wg_repeats = substr($0, RSTART + 24, RLENGTH - 24) + 0
+      }
+      if (in_dns) {
+        if ($0 ~ /^[[:space:]]*--filter-udp=53[[:space:]]*$/) dns_on53 = 1
+        if ($0 ~ /^[[:space:]]*--skip[[:space:]]+--filter-udp=53[[:space:]]*$/) dns_skip53 = 1
+      }
+      if (inopt && $0 ~ /^[[:space:]]*--reasm-disable/) reasm = 1
       if ($0 ~ /--lua-desync=/ && $0 ~ /blob=maxru/ && $0 !~ /strategy=26/) print "_has_tls_maxru=1"
       if ($0 ~ /--lua-desync=/ && $0 ~ /blob=fake_default_tls/ && $0 !~ /strategy=26/) print "_has_tls_default=1"
       if ($0 ~ /--lua-desync=rst_guard_locked:key=/) print "_has_rst=1"
@@ -668,6 +707,15 @@ menu_config_snapshot() {
       out_ports = (n > 0 ? "добавлено портов: " n : "дефолт")
       print "_udp_games=" out_udp
       print "_ports=" out_ports
+      print "_tcp_full=" ports_tcp
+      print "_udp_full=" ports_udp
+      print "_reasm=" (reasm ? 1 : 0)
+      print "_quic443=" (quic_on ? 1 : (quic_skip ? 0 : ""))
+      print "_wg_state=" (wg_skip ? 0 : (wg_on ? 1 : ""))
+      print "_wg_blob=" wg_blob
+      print "_wg_repeats=" wg_repeats
+      if (!dns_exists) print "_dns_on="
+      else print "_dns_on=" ((dns_on53 && !dns_skip53 && ports_udp ~ /(^|,)53(,|$)/) ? 1 : 0)
       for (pid = 1; pid <= 10; pid++) {
         value = keymax[pid] + 0
         if (!value && (pid == 8 || pid == 9)) value = fbmax[pid] + 0
@@ -691,6 +739,14 @@ menu_config_snapshot() {
       _blob_file) blob_file="$_v" ;;
       _udp_games) udp_games="$_v" ;;
       _ports) ports="$_v" ;;
+      _tcp_full) ports_tcp_full="$_v" ;;
+      _udp_full) ports_udp_full="$_v" ;;
+      _reasm) reasm="$_v" ;;
+      _quic443) quic="$_v" ;;
+      _wg_state) wg_state="$_v" ;;
+      _wg_blob) wg_blob="$_v" ;;
+      _wg_repeats) wg_repeats="$_v" ;;
+      _dns_on) dns_on="$_v" ;;
       _profile_max_10|_profile_max_[1-9])
         _profile="${_k#_profile_max_}"
         printf -v "MENU_PROFILE_MAX_${_profile}" '%s' "$_v"
@@ -741,6 +797,30 @@ menu_config_snapshot() {
   if [ "$has_rst" = "1" ]; then
     MENU_RST_GUARD="включен"
   fi
+  if [ "$reasm" = "1" ]; then
+    MENU_REASM="включено"
+  else
+    MENU_REASM="выключено"
+  fi
+  case "$quic" in
+    1) MENU_QUIC443="включены" ;;
+    0) MENU_QUIC443="выключены" ;;
+  esac
+  case "$wg_state" in
+    1) MENU_WG_STATE="включено" ;;
+    0) MENU_WG_STATE="выключено" ;;
+  esac
+  MENU_WG_BLOB="$wg_blob"
+  MENU_WG_REPEATS="$wg_repeats"
+  MENU_WG_STATE_RAW="$wg_state"
+  MENU_BLOB_FILE="$blob_file"
+  case "$dns_on" in
+    1) MENU_DNS_DESINC="Включен" ;;
+    0) MENU_DNS_DESINC="Выключен" ;;
+  esac
+  MENU_TLS_BLOB_MODE="$_blob_mode"
+  MENU_PORTS_TCP_FULL="$ports_tcp_full"
+  MENU_PORTS_UDP_FULL="$ports_udp_full"
   if [ -n "$udp_games" ]; then
     MENU_UDP_GAMES="$udp_games"
   fi

@@ -64,7 +64,7 @@ for file in \
   bash -n "$file"
 done
 command -v node >/dev/null 2>&1 && node --check "$REPO_DIR/webui/app.js"
-command -v python >/dev/null 2>&1 && python -m py_compile "$REPO_DIR/webui/dev/fake_router_server.py"
+command -v python >/dev/null 2>&1 && python -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$REPO_DIR/webui/dev/fake_router_server.py"
 
 # == 1. Статические инварианты wiring'а ==
 

@@ -79,6 +79,8 @@ async function submit() {
   <section v-if="config" class="panel">
     <div class="panel-header">
       <h2>{{ config.title }}<span v-if="config.beta" class="chip beta-chip">BETA</span></h2>
+      <router-link v-if="config.strategyProfile" class="ghost"
+        :to="{ path: '/strategies', query: { focus: config.strategyProfile } }">Выбрать стратегию →</router-link>
       <span class="chip" :id="config.chipId" :class="{ 'is-ok': savedEnabled }">
         {{ savedEnabled ? config.onChip : config.offChip }}
       </span>
