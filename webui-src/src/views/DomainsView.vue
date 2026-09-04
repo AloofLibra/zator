@@ -148,7 +148,7 @@ async function copyList() {
 </script>
 
 <template>
-  <section class="view is-active" id="view-domains">
+  <section class="view is-active" id="view-domains" :class="{ 'is-loading': !domainsReady || domainsLoading }">
     <div class="actions">
       <nav class="subtabs" aria-label="Списки доменов">
         <button v-for="sub in subtabs" :key="sub.name" class="subtab"
