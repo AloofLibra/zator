@@ -6,6 +6,7 @@ export interface ConfirmOptions {
   confirmText?: string
   cancelText?: string
   danger?: boolean
+  info?: boolean
 }
 
 export const confirmState = ref<ConfirmOptions | null>(null)

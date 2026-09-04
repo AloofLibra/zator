@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { RouteLocationRaw } from 'vue-router'
-import { showToast } from '../../stores/toast'
+import { confirmDialog } from '../../stores/confirm'
 
 const props = defineProps<{
   label: string
@@ -16,7 +16,12 @@ const isLong = computed(() => props.value.length > 18)
 const hasSub = computed(() => Boolean(props.subText))
 
 function cliHint() {
-  showToast(`Изменение «${props.label}» доступно только в CLI: пункт ${props.cli?.replace('п.', '')} меню z2r.`, 'info')
+  confirmDialog({
+    title: `«${props.label}» настраивается в CLI`,
+    message: `Эта настройка недоступна в Web-панели. Запустите меню z2r на роутере и выберите пункт ${props.cli?.replace('п.', '')}.`,
+    confirmText: 'Понятно',
+    info: true,
+  })
 }
 </script>
 
