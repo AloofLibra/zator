@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
 import { fetchAndApplyState } from '../stores/state'
-import { locks, refreshAll, scope, scopes } from '../stores/status'
+import { locks, refreshAll, scope, scopes, statusLoaded } from '../stores/status'
 import { showToast } from '../stores/toast'
 import StrategyCard from '../components/strategies/StrategyCard.vue'
 
@@ -53,8 +53,8 @@ async function refresh() {
 </script>
 
 <template>
-  <section class="view is-active" id="view-strategies">
-    <div class="actions">
+  <section class="view is-active" id="view-strategies" :class="{ 'is-loading': !statusLoaded }">
+    <div v-if="statusLoaded" class="actions">
       <label class="scope-picker" for="client-scope"><span>Scope клиента</span>
         <select id="client-scope" :disabled="busyActive" @change="changeScope(($event.target as HTMLSelectElement).value)">
           <option v-if="!scopeOptions.includes(scope)" :value="scope">{{ scope }}</option>
@@ -65,7 +65,8 @@ async function refresh() {
       <button id="refresh-locks" :class="{ 'is-busy': busyButton === 'refresh-locks' }" :disabled="busyActive"
         type="button" @click="refresh">Обновить</button>
     </div>
-    <div class="profile-grid" id="strategy-cards">
+    <div v-if="!statusLoaded" class="status-loading" aria-live="polite">Пожалуйста подождите...</div>
+    <div v-else class="profile-grid" id="strategy-cards">
       <StrategyCard v-for="profile in locks" :key="profile.profile" :profile="profile" />
     </div>
   </section>

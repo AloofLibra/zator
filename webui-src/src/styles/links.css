@@ -5,8 +5,8 @@ a.tab, a.subtab { color: inherit; text-decoration: none; }
 .tab.is-locked, .subtab.is-locked { cursor: not-allowed; opacity: 0.5; }
 .tab.is-active.is-locked, .subtab.is-active.is-locked { opacity: 1; }
 
-/* индикатор загрузки списков доменов */
-#view-domains.is-loading .status-loading { display: grid; }
+/* индикатор первичной загрузки на всех вкладках */
+.view.is-loading .status-loading { display: grid; }
 
 /* диплинк /settings/:panel останавливается чуть ниже верха экрана */
 .panel { scroll-margin-top: 18px; }

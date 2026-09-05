@@ -35,18 +35,22 @@ watch(() => route.params.panel, async () => {
 
 // догрузка данных настроек сдвигает layout — доскролливаем ещё раз после неё
 watch(settingsLoaded, (loaded) => {
-  if (loaded) nextTick(() => scrollToPanel(false))
+  if (loaded) nextTick(() => scrollToPanel(true))
 })
 </script>
 
 <template>
-  <section class="view is-active" id="view-settings">
-    <div class="actions">
+  <section class="view is-active" id="view-settings" :class="{ 'is-loading': !settingsLoaded }">
+    <div v-if="settingsLoaded" class="actions">
       <button id="refresh-settings" :class="{ 'is-busy': busyButton === 'refresh-settings' }" :disabled="busyActive"
         type="button" @click="refresh">Обновить</button>
     </div>
 
-    <component :is="panel.component" v-for="panel in settingsPanels" :key="panel.id" v-bind="panel.props"
-      :id="`settings-${panel.id}`" />
+    <div v-if="!settingsLoaded" class="status-loading" aria-live="polite">Пожалуйста подождите...</div>
+
+    <template v-else>
+      <component :is="panel.component" v-for="panel in settingsPanels" :key="panel.id" v-bind="panel.props"
+        :id="`settings-${panel.id}`" />
+    </template>
   </section>
 </template>
