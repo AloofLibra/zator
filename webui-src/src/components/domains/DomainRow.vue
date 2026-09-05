@@ -47,11 +47,13 @@ function toggleTrial() {
   expandedDomain.value = props.item.value
 }
 
-async function trialStep() {
-  // NumberStepper уже обновил trialValue через v-model до эмита step —
-  // здесь остаётся применить текущее значение, иначе шаг удваивается.
+// Стрелки степпера меняют только номер (v-model NumberStepper): применение и
+// проверка запускаются явными кнопками, чтобы серию кликов не превращать в
+// серию проверок на роутере.
+async function trialApplyCurrent() {
   try {
-    await runTrialApply(trialValue.value)
+    await withBusy('trial-current', async () => { await runTrialApply(trialValue.value) })
+    showToast(`Применена стратегия ${trialValue.value}. Проверьте доступ.`)
   } catch (error) {
     showToast((error as Error).message, 'error')
   }
@@ -65,6 +67,20 @@ async function trialNext() {
   trialValue.value = String(Number(trialValue.value) + 1)
   try {
     await withBusy('trial-next', async () => { await runTrialApply(trialValue.value) })
+    showToast(`Применена стратегия ${trialValue.value}. Проверьте доступ.`)
+  } catch (error) {
+    showToast((error as Error).message, 'error')
+  }
+}
+
+async function trialPrev() {
+  if (Number(trialValue.value) - 1 < 1) {
+    showToast('Это первая стратегия.', 'warning')
+    return
+  }
+  trialValue.value = String(Number(trialValue.value) - 1)
+  try {
+    await withBusy('trial-prev', async () => { await runTrialApply(trialValue.value) })
     showToast(`Применена стратегия ${trialValue.value}. Проверьте доступ.`)
   } catch (error) {
     showToast((error as Error).message, 'error')
@@ -186,13 +202,18 @@ async function submitRename() {
       <div class="trial-meta">
         <span>Стратегия</span>
         <NumberStepper v-model="trialValue" :min="1" :max="trialMax" up-label="Увеличить" down-label="Уменьшить"
-          :disabled="busyActive" @step="trialStep" />
+          :disabled="busyActive" />
         <span class="trial-max">из {{ trialMax }}</span>
-        <span class="trial-hint">Проверьте доступ к сайту в браузере и подтвердите.</span>
+        <span class="trial-hint">Стрелками выберите номер стратегии, затем проверьте «Текущую», соседними
+          кнопками шагайте вперёд/назад. Доступ к сайту проверьте в браузере и подтвердите «Сохранить».</span>
       </div>
       <div class="card-actions">
         <button type="button" class="primary trial-save" :class="{ 'is-busy': busyButton === 'trial-save' }"
           :disabled="busyActive" @click="trialSave">Сохранить</button>
+        <button type="button" class="ghost trial-prev" :class="{ 'is-busy': busyButton === 'trial-prev' }"
+          :disabled="busyActive" @click="trialPrev">← Предыдущая</button>
+        <button type="button" class="ghost trial-current" :class="{ 'is-busy': busyButton === 'trial-current' }"
+          :disabled="busyActive" @click="trialApplyCurrent">Текущая</button>
         <button type="button" class="ghost trial-next" :class="{ 'is-busy': busyButton === 'trial-next' }"
           :disabled="busyActive" @click="trialNext">Следующая →</button>
         <button type="button" class="ghost trial-cancel" :disabled="busyActive" @click="trialCancel">Отмена</button>
