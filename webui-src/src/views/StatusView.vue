@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { runCheck } from '../api/endpoints'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
 import { fetchAndApplyState } from '../stores/state'
+import { ports } from '../stores/settings'
 import { statusCheck, statusCheckRan, statusLoaded } from '../stores/status'
 import { showToast } from '../stores/toast'
 import CheckResults from '../components/ui/CheckResults.vue'
@@ -12,6 +13,9 @@ import StatusCards from '../components/status/StatusCards.vue'
 import ProfileGrid from '../components/status/ProfileGrid.vue'
 
 const router = useRouter()
+
+const tcpPortsFull = computed(() => String(ports.value?.tcp?.full || '').trim())
+const udpPortsFull = computed(() => String(ports.value?.udp?.full || '').trim())
 
 async function refresh() {
   try {
@@ -53,6 +57,23 @@ const checkEmpty = ref('Нажмите «Проверить доступ», чт
     <div v-if="!statusLoaded" class="status-loading" aria-live="polite">Пожалуйста подождите...</div>
 
     <StatusCards />
+
+    <section class="panel" id="status-ports-panel">
+      <div class="panel-header">
+        <h2>Порты NFQWS2</h2>
+        <router-link class="ghost" :to="{ path: '/settings/ports' }">Управление портами →</router-link>
+      </div>
+      <div class="meta">
+        <div class="meta-line">
+          <span>TCP&nbsp;</span>
+          <strong id="status-ports-tcp">{{ tcpPortsFull || '—' }}</strong>
+        </div>
+        <div class="meta-line">
+          <span>UDP&nbsp;</span>
+          <strong id="status-ports-udp">{{ udpPortsFull || '—' }}</strong>
+        </div>
+      </div>
+    </section>
 
     <section class="panel">
       <div class="panel-header">

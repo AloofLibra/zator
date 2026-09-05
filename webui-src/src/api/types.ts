@@ -98,7 +98,7 @@ export interface ModeSettingData {
 }
 
 export interface PortInfo {
-  full?: string[]
+  full?: string
   user?: string[]
   base?: string
 }
