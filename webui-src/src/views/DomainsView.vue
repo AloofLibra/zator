@@ -36,6 +36,7 @@ const autoBlocked = computed(() =>
   AUTO_RKN_LISTS.includes(activeList.value) && status.value?.hostlist_mode === 'авто')
 
 const addValue = ref('')
+const domainAddInput = ref<HTMLInputElement | null>(null)
 const importText = ref('')
 
 // один раз при первом заходе; повторные переходы берут списки из стора
@@ -61,6 +62,10 @@ async function addDomain() {
   try {
     await withBusy('domain-add', async () => {
       const payload = await domains.add(activeList.value, value)
+      // Поле очищается при любом завершённом результате (в т.ч. «уже есть»),
+      // при ошибке текст остаётся для повторной попытки.
+      addValue.value = ''
+      domainAddInput.value?.focus()
       if (payload?.duplicate) showToast('Уже есть в списке.')
       else showToast('Добавлено.')
       await refreshDomainList(activeList.value)
@@ -162,8 +167,8 @@ async function copyList() {
       <form id="domain-add-form" class="settings-form" @submit.prevent="addDomain">
         <label>
           <span id="domain-add-label">{{ meta.addLabel }}</span>
-          <input type="text" id="domain-add-input" v-model="addValue" :disabled="autoBlocked || busyActive"
-            required :placeholder="meta.placeholder">
+          <input type="text" id="domain-add-input" ref="domainAddInput" v-model="addValue"
+            :disabled="autoBlocked || busyActive" required :placeholder="meta.placeholder">
         </label>
         <div class="card-actions">
           <button type="submit" class="primary" id="domain-add-submit" :disabled="autoBlocked || busyActive">Добавить</button>
