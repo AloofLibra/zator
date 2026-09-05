@@ -5,7 +5,7 @@ import { domains } from '../api/endpoints'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
 import { confirmDialog } from '../stores/confirm'
 import {
-  DOMAIN_LISTS, DOMAIN_META, domainChecks, domainLists, refreshDomainList, refreshDomains,
+  DOMAIN_LISTS, DOMAIN_META, domainChecks, domainLists, domainsLoaded, refreshDomainList, refreshDomains,
   type DomainListName,
 } from '../stores/domains'
 import { status } from '../stores/status'
@@ -37,20 +37,11 @@ const autoBlocked = computed(() =>
 
 const addValue = ref('')
 const importText = ref('')
-const domainsReady = ref(false)
-const domainsLoading = ref(false)
 
-async function loadDomains() {
-  domainsLoading.value = true
-  try {
-    await refreshDomains()
-  } finally {
-    domainsLoading.value = false
-    domainsReady.value = true
-  }
-}
-
-onMounted(() => { loadDomains() })
+// один раз при первом заходе; повторные переходы берут списки из стора
+onMounted(() => {
+  if (!domainsLoaded.value) refreshDomains()
+})
 
 watch(activeList, () => {
   addValue.value = ''
@@ -58,7 +49,7 @@ watch(activeList, () => {
 
 async function refresh() {
   try {
-    await withBusy('refresh-domains', loadDomains)
+    await withBusy('refresh-domains', refreshDomains)
   } catch (error) {
     showToast((error as Error).message, 'error')
   }
@@ -148,7 +139,7 @@ async function copyList() {
 </script>
 
 <template>
-  <section class="view is-active" id="view-domains" :class="{ 'is-loading': !domainsReady || domainsLoading }">
+  <section class="view is-active" id="view-domains" :class="{ 'is-loading': !domainsLoaded }">
     <div class="actions">
       <nav class="subtabs" aria-label="Списки доменов">
         <button v-for="sub in subtabs" :key="sub.name" class="subtab"
@@ -159,9 +150,7 @@ async function copyList() {
         type="button" @click="refresh">Обновить</button>
     </div>
 
-    <section v-if="!domainsReady || domainsLoading" class="panel">
-      <div class="status-loading" aria-live="polite">Пожалуйста подождите, загружаю списки доменов...</div>
-    </section>
+    <div v-if="!domainsLoaded" class="status-loading" aria-live="polite">Пожалуйста подождите, загружаю списки доменов...</div>
 
     <section v-else class="panel" id="domains-panel">
       <div class="panel-header">

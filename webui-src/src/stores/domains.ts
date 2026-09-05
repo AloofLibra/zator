@@ -21,6 +21,9 @@ export const domainLists = reactive<Record<DomainListName, DomainsListPayload | 
 })
 export const domainChecks = reactive<Record<string, CheckPayload>>({})
 export const expandedDomain = ref<string | null>(null)
+// списки грузятся один раз (первый заход на вкладку) и дальше живут в сторе:
+// обновление — кнопкой «Обновить» и точечно после мутаций
+export const domainsLoaded = ref(false)
 
 export async function refreshDomainList(name: DomainListName) {
   try {
@@ -32,4 +35,5 @@ export async function refreshDomainList(name: DomainListName) {
 
 export async function refreshDomains() {
   await Promise.all(DOMAIN_LISTS.map((name) => refreshDomainList(name)))
+  domainsLoaded.value = true
 }
