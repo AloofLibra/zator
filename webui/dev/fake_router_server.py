@@ -831,6 +831,36 @@ def orch_locked_clear(lock_file, profile, proto):
     _write_tsv(lock_file, keep)
 
 
+def orch_locked_rename(lock_file, old, new):
+    """orch_scoped_locked_rename() — orchestra_state.sh: замена первого поля
+    (old -> new) с сохранением позиции строки."""
+    rows = [line.split("\t") for line in _read_lines(lock_file) if line]
+    for r in rows:
+        if r and r[0] == old:
+            r[0] = new
+    _write_tsv(lock_file, rows)
+
+
+def orch_locked_domain_names(lock_file):
+    """Доменоподобные профили из лока — порт custom_rkn_restore_from_locks()
+    (lib/strategies.sh): $1 не число (профили 1..N), не mark:* и не IP,
+    содержит букву; порядок файла сохраняется, дубликаты схлопываются."""
+    out = []
+    for line in _read_lines(lock_file):
+        if not line:
+            continue
+        f = line.split("\t")
+        if len(f) < 2:
+            continue
+        name = f[0].lower()
+        if (name.startswith("mark:") or name.isdigit() or re.match(r"^[0-9.]+$", name)
+                or not re.search(r"[a-z]", name)):
+            continue
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def z2r_normalize_domain(value):
     """z2r_normalize_domain() — z2r.sh:239. Возвращает нормализованный домен или None."""
     d = value.strip()
@@ -2315,6 +2345,15 @@ class FakeRouterState:
         path, kind, title, desc = self._domains_resolve(name)
         is_custom_rkn = (name == "custom_rkn")
         if is_custom_rkn:
+            # Самолечение из _lib.sh: домены из лока, пропавшие из списка,
+            # возвращаются перед чтением.
+            existing = set(_read_lines(path))
+            for domain in orch_locked_domain_names(self.lock_file):
+                if domain in existing:
+                    continue
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(domain + "\n")
+                existing.add(domain)
             max_strat = config_profile_max_strategy(3, self.cfg_text)
             if not isinstance(max_strat, int) or max_strat <= 0:
                 max_strat = 19
@@ -2372,7 +2411,19 @@ class FakeRouterState:
         orch_locked_clear(self.lock_file, domain, "http")
         orch_locked_clear(self.lock_file, domain, "udp")
 
-    def apply_domains_action(self, name, action, domain, strategy):
+    def _custom_rkn_rename_domain(self, old, new):
+        """custom_rkn_rename_domain() — _lib.sh: замена строки списка на месте
+        (позиция сохраняется) + перенос первого поля лока."""
+        lines = _read_lines(self.custom_rkn_file)
+        if old not in lines:
+            return False
+        with open(self.custom_rkn_file, "w", encoding="utf-8") as fh:
+            for ln in lines:
+                fh.write((new if ln == old else ln) + "\n")
+        orch_locked_rename(self.lock_file, old, new)
+        return True
+
+    def apply_domains_action(self, name, action, domain, strategy, new_domain=""):
         """api_domains_action() — _lib.sh. ValueError → 400 в handler."""
         path, kind, _title, _desc = self._domains_resolve(name)
 
@@ -2406,6 +2457,22 @@ class FakeRouterState:
             else:
                 self._domain_list_remove(path, domain)
             return {"ok": True}
+
+        if action == "rename":
+            if name != "custom_rkn":
+                raise ValueError("Переименование применяется только к TCP_Custom")
+            if not domain:
+                raise ValueError("Не указан домен")
+            norm = z2r_normalize_domain(new_domain or "")
+            if norm is None:
+                raise ValueError("Некорректный домен: {0}".format(new_domain))
+            if norm == domain:
+                return {"ok": True, "domain": norm}
+            if norm in set(_read_lines(path)):
+                raise ConflictError("Домен {0} уже есть в списке".format(norm))
+            if not self._custom_rkn_rename_domain(domain, norm):
+                raise ValueError("Домена нет в списке")
+            return {"ok": True, "domain": norm}
 
         if action == "import":
             if not domain:
@@ -3046,7 +3113,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         """Обработчик endpoint /cgi-bin/domains.cgi (api_domains_* из _lib.sh).
 
         GET  ?list=netrogat|custom_rkn|substring            -> содержимое списка
-        POST action=add|remove|import|clear|set_strategy|clear_strategy
+        POST action=add|remove|rename|import|clear|set_strategy|clear_strategy
         """
         name = params.get("list", "")
 
@@ -3064,9 +3131,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             action = params.get("action", "")
             domain = params.get("domain", "")
             strategy = params.get("strategy", "")
+            new_domain = params.get("new_domain", "")
             try:
                 with self.state.lock:
-                    result = self.state.apply_domains_action(name, action, domain, strategy)
+                    result = self.state.apply_domains_action(name, action, domain, strategy, new_domain)
                     self._log("POST {0} | domains list={1} action={2}".format(
                         parsed.path, name, action))
                     self._send_json(result)

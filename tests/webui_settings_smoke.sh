@@ -49,6 +49,10 @@ source "$REPO_DIR/lib/orchestra_state.sh"
 source "$REPO_DIR/lib/actions.sh"
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/provider.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/ui.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/strategies.sh"
 
 PROVIDER_CACHE="$TMP_DIR/provider.txt"
 Z2R_BACKUP_DIR="$TMP_DIR/backups"
@@ -360,5 +364,65 @@ provider_set_manual "Beeline" "" || fail "provider_set_manual без город�
 if provider_set_manual "" "City"; then
   fail "provider_set_manual должен отклонять пустое имя"
 fi
+
+# == 10. Кастомные домены: самолечение из locked.tsv и переименование ==
+# Старые обновления затирали TCP_Custom.txt пустым Custom.txt из репозитория,
+# при этом локи доменов в locked.tsv переживали: список пуст, локи живы.
+
+export ZATOR_ROOT="$TMP_DIR/zator"
+CUSTOM_FILE="$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
+mkdir -p "$ZATOR_ROOT/extra_strats"
+
+# locked.tsv: числовые профили, mark-строки, IP и домены. В список переезжают
+# только домены, отсутствующие в нём, в порядке lock-файла.
+cat > "$ORCH_LOCK_FILE" <<'EOF'
+1	tls	28
+3	tls	26
+mark:2	tls	7
+10.0.0.1	tls	5
+rustorka.com	tls	20
+amnezia.org	tls	27
+EOF
+printf 'amnezia.org\n' > "$CUSTOM_FILE"
+
+restored="$(custom_rkn_restore_from_locks)"
+[ "$restored" = "1" ] || fail "custom_rkn_restore_from_locks должен добавить 1 домен, добавлено: $restored"
+[ "$(cat "$CUSTOM_FILE")" = "amnezia.org
+rustorka.com" ] || fail "восстановление вставило домен не туда/не то: $(cat "$CUSTOM_FILE" | tr '\n' ',')"
+restored="$(custom_rkn_restore_from_locks)"
+[ "$restored" = "0" ] || fail "повторное восстановление должно быть no-op, добавлено: $restored"
+
+# Переименование: позиция строки в списке и в lock-файле сохраняется.
+printf 'rustorka.com\namnezia.org\n' > "$CUSTOM_FILE"
+custom_rkn_rename_domain "amnezia.org" "nova.example.org" || fail "custom_rkn_rename_domain упал"
+[ "$(cat "$CUSTOM_FILE")" = "rustorka.com
+nova.example.org" ] || fail "переименование не сохранило позицию строки в списке"
+awk -F '\t' '$1=="nova.example.org" && $2=="tls" && $3=="27" {ok=1} END{exit !ok}' "$ORCH_LOCK_FILE" \
+  || fail "лок домена не переименован"
+awk -F '\t' '$1=="rustorka.com" && $2=="tls" && $3=="20" {ok=1} END{exit !ok}' "$ORCH_LOCK_FILE" \
+  || fail "чужие локи повреждены при переименовании"
+rm_rc=0
+custom_rkn_rename_domain "absent.example" "x.example.org" 2>/dev/null || rm_rc=$?
+[ "$rm_rc" = "2" ] || fail "переименование отсутствующего домена должно давать 2, получено: $rm_rc"
+
+# Статика: деплой TCP_Custom в z2r.sh не безусловный, самолечение подключено
+# на старте z2r и в CGI чтения списка, rename присутствует во всех слоях.
+tcp_custom_downloads="$(grep -c 'z2r_download_project_file "\$ZATOR_ROOT/extra_strats/TCP_Custom\.txt"' "$REPO_DIR/z2r.sh")"
+tcp_custom_guards="$(grep -c 'if \[ ! -f "\$ZATOR_ROOT/extra_strats/TCP_Custom\.txt" \]; then' "$REPO_DIR/z2r.sh")"
+[ "$tcp_custom_downloads" -ge 1 ] && [ "$tcp_custom_downloads" = "$tcp_custom_guards" ] \
+  || fail "z2r.sh: есть скачивание TCP_Custom.txt без guard'а [ ! -f ] (затирает список)"
+grep -q 'custom_rkn_restore_from_locks' "$REPO_DIR/z2r.sh" || fail "z2r.sh не вызывает custom_rkn_restore_from_locks на старте"
+assert_contains "$_lib_sh" 'custom_rkn_restore_from_locks' "_lib.sh: чтение custom_rkn не лечит список"
+assert_contains "$_lib_sh" 'rename)' "_lib.sh: нет действия rename в api_domains_action"
+assert_contains "$_lib_sh" 'PARAM_NEW_DOMAIN' "_lib.sh: нет параметра new_domain"
+assert_contains "$(cat "$REPO_DIR/lib/strategies.sh")" 'custom_rkn_rename_domain\(\)' "lib/strategies.sh: нет custom_rkn_rename_domain"
+assert_contains "$(cat "$REPO_DIR/lib/orchestra_state.sh")" 'orch_locked_rename_everywhere\(\)' "lib/orchestra_state.sh: нет orch_locked_rename_everywhere"
+for needle in 'orch_locked_rename' 'orch_locked_domain_names' '"rename"'; do
+  assert_contains "$fake_py" "$needle" "fake_router_server.py не реализует $needle"
+done
+src_all="$(find "$REPO_DIR/webui-src/src" -type f \( -name '*.vue' -o -name '*.ts' \) -exec cat {} +)"
+for needle in "action: 'rename'" 'new_domain' 'domain-rename-input' 'rename-btn'; do
+  assert_contains "$src_all" "$needle" "webui-src не использует $needle"
+done
 
 echo "webui settings smoke ok"

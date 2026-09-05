@@ -95,6 +95,8 @@ const domainsPost = (body: Record<string, string>) =>
 export const domains = {
   add: (list: string, domain: string) => domainsPost({ list, action: 'add', domain }),
   remove: (list: string, domain: string) => domainsPost({ list, action: 'remove', domain }),
+  rename: (list: string, domain: string, new_domain: string) =>
+    domainsPost({ list, action: 'rename', domain, new_domain }),
   import: (list: string, domain: string) => domainsPost({ list, action: 'import', domain }),
   clear: (list: string) => domainsPost({ list, action: 'clear' }),
   check: (domain: string) => domainsPost({ list: 'custom_rkn', action: 'check', domain }),

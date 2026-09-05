@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { domains } from '../../api/endpoints'
 import type { DomainItem } from '../../api/types'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
@@ -47,11 +47,9 @@ function toggleTrial() {
   expandedDomain.value = props.item.value
 }
 
-async function trialStep(direction: number) {
-  let n = Number(trialValue.value) + direction
-  if (n < 1) n = 1
-  if (n > trialMax.value) n = trialMax.value
-  trialValue.value = String(n)
+async function trialStep() {
+  // NumberStepper уже обновил trialValue через v-model до эмита step —
+  // здесь остаётся применить текущее значение, иначе шаг удваивается.
   try {
     await runTrialApply(trialValue.value)
   } catch (error) {
@@ -125,19 +123,60 @@ async function removeDomain() {
     showToast((error as Error).message, 'error')
   }
 }
+
+// Переименование (только TCP_Custom): правка имени на месте — позиция в
+// списке и подобранная стратегия сохраняются, удалять/добавлять не нужно.
+const renaming = ref(false)
+const renameValue = ref('')
+const renameInput = ref<HTMLInputElement | null>(null)
+
+function startRename() {
+  renameValue.value = props.item.value
+  renaming.value = true
+  nextTick(() => renameInput.value?.focus())
+}
+
+async function submitRename() {
+  const next = renameValue.value.trim()
+  if (!next || next === props.item.value) {
+    renaming.value = false
+    return
+  }
+  try {
+    await withBusy('domain-rename', async () => {
+      await domains.rename(props.list, props.item.value, next)
+      if (expandedDomain.value === props.item.value) expandedDomain.value = null
+      delete domainChecks[props.item.value]
+      showToast(`Домен переименован в «${next}».`)
+      await refreshDomainList(props.list)
+    })
+    renaming.value = false
+  } catch (error) {
+    showToast((error as Error).message, 'error')
+  }
+}
 </script>
 
 <template>
   <li :class="['domain-row', { 'is-expanded': expanded }]" :data-value="item.value">
     <div class="domain-row-main">
-      <span class="domain-value">{{ item.value }}</span>
+      <span v-if="!renaming" class="domain-value">{{ item.value }}</span>
+      <form v-else class="domain-rename" @submit.prevent="submitRename">
+        <input ref="renameInput" v-model="renameValue" type="text" class="domain-rename-input" aria-label="Новое имя домена"
+          :disabled="busyActive" @keydown.esc="renaming = false">
+        <button type="submit" class="ghost domain-rename-save" :disabled="busyActive">OK</button>
+        <button type="button" class="ghost domain-rename-cancel" :disabled="busyActive"
+          @click="renaming = false">Отмена</button>
+      </form>
       <span v-if="isCustomRkn" class="domain-strategy chip" :class="{ 'is-ok': (item.strategy || 0) > 0 }">
         {{ strategyChip }}
       </span>
       <div class="domain-actions">
-        <button v-if="isCustomRkn" type="button" class="ghost domain-check-btn" :disabled="busyActive" @click="checkDomain">Проверить</button>
-        <button v-if="isCustomRkn" type="button" class="ghost trial-btn" :disabled="busyActive" @click="toggleTrial">Подобрать</button>
-        <button type="button" class="ghost danger remove-btn" :disabled="busyActive" aria-label="Удалить" @click="removeDomain">×</button>
+        <button v-if="isCustomRkn && !renaming" type="button" class="ghost domain-check-btn" :disabled="busyActive" @click="checkDomain">Проверить</button>
+        <button v-if="isCustomRkn && !renaming" type="button" class="ghost trial-btn" :disabled="busyActive" @click="toggleTrial">Подобрать</button>
+        <button v-if="isCustomRkn && !renaming" type="button" class="ghost rename-btn" :disabled="busyActive"
+          aria-label="Переименовать" title="Переименовать" @click="startRename">✎</button>
+        <button v-if="!renaming" type="button" class="ghost danger remove-btn" :disabled="busyActive" aria-label="Удалить" @click="removeDomain">×</button>
       </div>
     </div>
     <div v-if="hasCheck" class="checks domain-check">
