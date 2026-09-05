@@ -108,7 +108,17 @@ Normal flow:
 - `lua/domain-grouping.lua`: grouping logic for related domains.
 - `lua/silent-drop-detector.lua`: silent-drop detection.
 - `lua/rst-guard.lua`: runtime RST injection guard loaded from `config.default`.
-- `webui/`: static assets, CGI endpoints, and runner for the local WebUI on port `17682`.
+- `webui/`: static assets, CGI endpoints, and runner for the local WebUI on port `17682`. `index.html`/`app.js`/`styles.css` are build artifacts — the frontend sources live in `webui-src/` (Vue 3 + TypeScript, hash-router); rebuild with `cd webui-src && npm install && npm run build` (Vite emits exactly `app.js` + `styles.css` + `index.html` into `webui/` and stamps `?v=<sha256>` cache-busting). Dev: `npm run dev` proxies `/cgi-bin` to `webui/dev/fake_router_server.py`.
+
+### WebUI frontend build workflow (webui-src/)
+
+- Node.js >= 18 required. `npm run build` = `vite build` + `scripts/stamp-assets.mjs` (also run `npm run check` for `vue-tsc` type checking).
+- Never edit `webui/app.js`, `webui/styles.css`, or `webui/index.html` by hand — edit sources in `webui-src/src/`, rebuild, and commit the rebuilt artifacts together with the sources. Devices fetch these three files by exact name from the `zator` branch, so the artifacts must always be committed and in sync with the sources.
+- The build output is a single classic IIFE script (es2018, no sourcemaps, no chunks) — keep it that way: old Android WebViews and busybox httpd/uhttpd serve it fine. `stamp-assets.mjs` rewrites the tags to `<link rel="stylesheet" href="styles.css?v=…">` in head and `<script src="app.js?v=…">` at the end of body.
+- Static wiring smoke tests grep the **sources** (`webui-src/src/**`), not the minified bundle; `tests/webui_build_smoke.sh` verifies artifact names, tag order, and that `?v=` matches sha256 of the shipped files.
+- Many panel/form element ids (`auto-mode-form`, `ports-tcp-form`, `backup-create-btn`, …) are asserted by tests — keep ids stable when refactoring templates.
+- Backend contract: CGI endpoints are frozen; the aggregated `GET /cgi-bin/state.cgi` (api_state) is used for initial load and «Обновить» buttons; per-setting `settings.cgi?setting=…` GETs stay for post-change re-checks. Keep `webui/dev/fake_router_server.py`, `webui/dev/API_CONTRACT.md`, `webui-src/src/api/types.ts`, and `_lib.sh` in sync when changing the API.
+- Debugging on a real router: copy the rebuilt `app.js`/`styles.css`/`index.html` to `/opt/zator/webui/www/` and hard-refresh; `?v=` changes invalidate the cache automatically.
 - `Entware/`: Entware/Keenetic startup and integration patches.
 
 ## Architecture Notes
@@ -271,6 +281,25 @@ bash tests/webui_smoke.sh
 
 ```text
 webui smoke ok
+```
+
+```bash
+bash tests/webui_build_smoke.sh
+```
+
+Проверка собранных артефактов WebUI (`webui/index.html`, `app.js`, `styles.css`):
+
+- файловый состав прежний (контракт установки `z2r.sh`): нет `*.map`, чанков
+  `index-*`, каталога `assets`;
+- `app.js` подключён classic-скриптом с `?v=` в конце body, `styles.css` — в
+  head раньше скрипта;
+- `?v=` равен первым 8 символам sha256 соответствующего файла (кэш-бастинг
+  сборки актуален), `webui/app.js` парсится как JS.
+
+Успешный результат:
+
+```text
+webui build smoke ok
 ```
 
 ```bash

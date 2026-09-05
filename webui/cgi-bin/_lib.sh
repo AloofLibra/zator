@@ -120,8 +120,91 @@ set_zapret2_init() {
   fi
 }
 
+# Единый скан конфига из lib/config.sh (им же пользуется шапка CLI-меню):
+# один awk-проход отдаёт все режимы, порты, WG/DNS/QUIC и max-стратегии
+# профилей — веб-панель читает конфиг ровно так же, «в лёт».
+_snapshot_once() {
+  [ -n "${MENU_SNAPSHOT_DONE:-}" ] && return 0
+  menu_config_snapshot "$CONFIG_FILE"
+  MENU_SNAPSHOT_DONE=1
+}
+
 orch_max_strategy_for_profile() {
   config_profile_max_strategy "$1" "$CONFIG_FILE"
+}
+
+# JSON-escape без форка (awk json_escape стоит процесс на каждое поле);
+# для значений без управляющих символов: lock-значения, режимы, имена файлов.
+_json_esc() {
+  REPLY="${1//\\/\\\\}"
+  REPLY="${REPLY//\"/\\\"}"
+}
+
+# Пакетное чтение lock-состояний профилей: один проход по файлам
+# (locked.tsv, locked.manual.tsv, profile.lock) вместо ~4 внешних процессов
+# на каждый профиль. Семантика orch_scoped_lock_source / orch_locked_state_get /
+# profile_state_stored_get / profile_state_normalize сохранена; L — locked.tsv,
+# M — locked.manual.tsv (fallback-профили 8/9).
+_profile_states_scan() {
+  local line pr rest po val cur var file tag
+  _PS_LOADED=1
+  for tag in L M; do
+    if [ "$tag" = "L" ]; then file="$ORCH_LOCK_FILE"; else file="$ORCH_DIR/locked.manual.tsv"; fi
+    [ -f "$file" ] || continue
+    while IFS= read -r line; do
+      case "$line" in ""|"#"*) continue ;; esac
+      pr="${line%%	*}"
+      rest="${line#*	}"
+      [ "$rest" = "$line" ] && continue
+      po="${rest%%	*}"
+      if [ "$po" = "$rest" ]; then val="$po"; po="tls"; else val="${rest#*	}"; fi
+      case "$pr" in ""|*[!0-9]*) continue ;; esac
+      var="_${tag}CNT_${pr}_${po}"
+      cur="${!var:-0}"
+      printf -v "$var" '%s' "$((cur + 1))"
+      if [ "$cur" = "0" ]; then
+        printf -v "_${tag}VAL_${pr}_${po}" '%s' "$val"
+      fi
+    done < "$file"
+  done
+  # profile.lock: profile proto state (или старый profile state = tls)
+  file="${PROFILE_STATE_FILE:-/etc/z2r/profile.lock}"
+  [ -f "$file" ] || return 0
+  local first second
+  while read -r pr first second _; do
+    case "$pr" in ""|"#"*|*[!0-9]*) continue ;; esac
+    if [ -n "$second" ]; then
+      printf -v "_STORE_${pr}_${first}" '%s' "$second"
+    elif [ -n "$first" ]; then
+      printf -v "_STORE_${pr}_tls" '%s' "$first"
+    fi
+  done < "$file"
+}
+
+_profile_cur_cached() {  # $1=profile $2=proto $3=L|M -> REPLY
+  local var stored
+  var="_STORE_$1_$2"
+  stored="${!var:-auto}"
+  if [ "$stored" = "auto" ]; then
+    var="_$3VAL_$1_$2"
+    stored="${!var:-auto}"
+  fi
+  case "$stored" in
+    ""|auto) REPLY="auto" ;;
+    0|skip) REPLY="0" ;;
+    *[!0-9]*) REPLY="auto" ;;
+    *) REPLY="$stored" ;;
+  esac
+}
+
+_profile_src_cached() {  # $1=profile $2=proto $3=L|M -> REPLY
+  local var cnt
+  var="_$3CNT_$1_$2"
+  cnt="${!var:-0}"
+  if [ "$cnt" -gt 1 ]; then REPLY="conflict"
+  elif [ "$cnt" = "1" ]; then REPLY="default"
+  else REPLY="auto"
+  fi
 }
 
 profile_proto() {
@@ -149,17 +232,27 @@ profile_scoped_state_display() {
 }
 
 profile_json() {
-  local id="$1" label="$2" desc="$3" proto current max scope source
+  local id="$1" label="$2" desc="$3" proto current max scope source mvar
   scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
-  max="$(orch_max_strategy_for_profile "$id")"
+  if [ "$scope" = "default" ]; then
+    [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
+    _profile_cur_cached "$id" "$proto" L; current="$REPLY"
+    _profile_src_cached "$id" "$proto" L; source="$REPLY"
+  else
+    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+  fi
+  mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
+  _json_esc "$label"; local jlabel="$REPLY"
+  _json_esc "$desc"; local jdesc="$REPLY"
+  _json_esc "$current"; local jcurrent="$REPLY"
   printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s"}' \
-    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" "$(json_escape "$scope")" "$(json_escape "$source")"
+    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source"
 }
 
 all_profiles_json() {
+  _snapshot_once
   printf '['
   profile_json 1 "YouTube TCP" "Основной TCP профиль для YouTube"
   printf ','
@@ -186,48 +279,73 @@ all_profiles_json() {
 # Профиль 10 (антиспуф DNS): гейтинг по состоянию тумблера (п.8 главного меню),
 # как у UDP Games по config_mode_text udp_games.
 profile_json_dns() {
-  local id="$1" label="$2" desc="$3" proto current max dns_state scope source
+  local id="$1" label="$2" desc="$3" proto current max dns_state scope source mvar
   scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
-  max="$(orch_max_strategy_for_profile "$id")"
-  dns_state="$(config_mode_text dns_desync "$CONFIG_FILE")"
+  if [ "$scope" = "default" ]; then
+    [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
+    _profile_cur_cached "$id" "$proto" L; current="$REPLY"
+    _profile_src_cached "$id" "$proto" L; source="$REPLY"
+  else
+    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+  fi
+  mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
+  dns_state="$MENU_DNS_DESINC"
+  _json_esc "$label"; local jlabel="$REPLY"
+  _json_esc "$desc"; local jdesc="$REPLY"
+  _json_esc "$current"; local jcurrent="$REPLY"
   printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_dns_desync":true,"dns_desync_enabled":%s}' \
-    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
-    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$dns_state" = "Включен" ] && echo true || echo false)"
+    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" \
+    "$scope" "$source" "$([ "$dns_state" = "Включен" ] && echo true || echo false)"
 }
 
 profile_json_udp_games() {
-  local id="$1" label="$2" desc="$3" proto current max games_state scope source
+  local id="$1" label="$2" desc="$3" proto current max games_state scope source mvar
   scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
-  max="$(orch_max_strategy_for_profile "$id")"
-  games_state="$(config_mode_text udp_games "$CONFIG_FILE")"
+  if [ "$scope" = "default" ]; then
+    [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
+    _profile_cur_cached "$id" "$proto" L; current="$REPLY"
+    _profile_src_cached "$id" "$proto" L; source="$REPLY"
+  else
+    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+  fi
+  mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
+  games_state="$MENU_UDP_GAMES"
+  _json_esc "$label"; local jlabel="$REPLY"
+  _json_esc "$desc"; local jdesc="$REPLY"
+  _json_esc "$current"; local jcurrent="$REPLY"
   printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_udp_games":true,"udp_games_enabled":%s}' \
-    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
-    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$games_state" = "Включен" ] && echo true || echo false)"
+    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" \
+    "$scope" "$source" "$([ "$games_state" = "Включен" ] && echo true || echo false)"
 }
 
 profile_json_fallback() {
-  local id="$1" label="$2" desc="$3" proto current max fallback_state scope source
-  local saved_lock_file
+  local id="$1" label="$2" desc="$3" proto current max fallback_state scope source mvar
   scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
-  # Для профилей 8/9 (fallback) состояние стратегии хранится в locked.manual.tsv,
-  # а не в locked.tsv. Временно переключаем ORCH_LOCK_FILE для чтения.
-  saved_lock_file="$ORCH_LOCK_FILE"
-  ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
-  current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-  source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
-  ORCH_LOCK_FILE="$saved_lock_file"
-  max="$(orch_max_strategy_for_profile "$id")"
-  fallback_state="$(_fallback_state "$CONFIG_FILE")"
+  # Для профилей 8/9 состояние стратегии хранится в locked.manual.tsv.
+  if [ "$scope" = "default" ]; then
+    [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
+    _profile_cur_cached "$id" "$proto" M; current="$REPLY"
+    _profile_src_cached "$id" "$proto" M; source="$REPLY"
+  else
+    local saved_lock_file="$ORCH_LOCK_FILE"
+    ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
+    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+    ORCH_LOCK_FILE="$saved_lock_file"
+  fi
+  mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
+  fallback_state="$MENU_FALLBACK"
+  _json_esc "$label"; local jlabel="$REPLY"
+  _json_esc "$desc"; local jdesc="$REPLY"
+  _json_esc "$current"; local jcurrent="$REPLY"
   printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_fallback":true,"fallback_enabled":%s}' \
-    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
-    "$(json_escape "$scope")" "$(json_escape "$source")" "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
+    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" \
+    "$scope" "$source" "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
 }
 
 service_zapret2() {
@@ -463,19 +581,92 @@ api_scopes() {
   send_json "200 OK" "$(client_scopes_json)"
 }
 
+status_json() {
+  local running locks_text provider_text
+  _snapshot_once
+  if zapret2_running; then running=true; else running=false; fi
+  locks_text="$(strategy_locks_status_text)"
+  provider_text="$(_provider_cache_text)"
+  _json_esc "$locks_text"; locks_text="$REPLY"
+  _json_esc "$provider_text"; provider_text="$REPLY"
+  _json_esc "$MENU_HOSTLIST"; local hostlist_text="$REPLY"
+  _json_esc "$MENU_FWTYPE"; local fw_text="$REPLY"
+  _json_esc "$MENU_FLOWOFFLOAD"; local offload_text="$REPLY"
+  _json_esc "$MENU_TLS_BLOB"; local tls_text="$REPLY"
+  _json_esc "$MENU_WG_STATE"; local wg_text="$REPLY"
+  _json_esc "$MENU_AUTO_MODE"; local auto_text="$REPLY"
+  _json_esc "$MENU_RST_GUARD"; local rst_text="$REPLY"
+  _json_esc "$MENU_REASM"; local reasm_text="$REPLY"
+  _json_esc "$MENU_QUIC443"; local quic_text="$REPLY"
+  cat <<EOF
+{"zapret2_running":$running,"strategy_locks_status":"$locks_text","hostlist_mode":"$hostlist_text","fwtype":"$fw_text","flowoffload":"$offload_text","tls_blob_mode":"$tls_text","wireguard":"$wg_text","auto_mode":"$auto_text","rst_guard":"$rst_text","reasm":"$reasm_text","quic443":"$quic_text","provider":"$provider_text","client_scope":$(client_scope_diagnostics_json),"profiles":$(all_profiles_json)}
+EOF
+}
+
 api_status() {
   parse_params
   scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
-  local running wg_raw wg_state
-  if zapret2_running; then running=true; else running=false; fi
-  wg_raw="$(_wg_state_get "$CONFIG_FILE")"
-  case "$wg_raw" in
-    1) wg_state="включено" ;;
-    0) wg_state="выключено" ;;
-    *) wg_state="недоступно" ;;
-  esac
+  send_json "200 OK" "$(status_json)"
+}
+
+# Выполняет api_*_get в под-оболочке с подменённым выводом и отдаёт чистый JSON.
+# Для начальной инициализации webui: один state.cgi вместо ~15 отдельных CGI.
+_state_capture() {
+  (
+    send_json() { printf '%s' "$2"; }
+    send_error() { printf '{"_error":"%s"}' "$(json_escape "$2")"; exit 0; }
+    "$1"
+  )
+}
+
+# Токены CSV-портов в JSON-массив без внешних процессов (значения —
+# только цифры и дефисы, escape не нужен).
+_csv_tokens_json() {
+  local out="" t first=1 old_ifs="$IFS"
+  IFS=','
+  for t in $1; do
+    [ -n "$t" ] || continue
+    if [ "$first" = "1" ]; then first=0; else out="${out},"; fi
+    out="${out}\"${t}\""
+  done
+  IFS="$old_ifs"
+  printf '%s' "$out"
+}
+
+api_state() {
+  parse_params
+  scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
+  _snapshot_once
+  local fake_dir="/opt/zator/files/fake" f b blobs_tls="" blobs_wg=""
+  for f in "$fake_dir"/*.bin; do
+    [ -f "$f" ] || continue
+    b="${f##*/}"
+    case "$b" in tls_*.bin|custom_tls.bin)
+      blobs_tls="${blobs_tls}${blobs_tls:+,}\"${b}\"" ;;
+    esac
+  done
+  for f in "$fake_dir"/wg_initial_fake_*; do
+    [ -f "$f" ] || continue
+    b="${f##*/}"
+    blobs_wg="${blobs_wg}${blobs_wg:+,}\"${b}\""
+  done
+  ports_split "$MENU_PORTS_TCP_FULL" "80"
+  local tcp_full="$MENU_PORTS_TCP_FULL" tcp_user="$_PORTS_USER" tcp_base="$_PORTS_BASE"
+  ports_split "$MENU_PORTS_UDP_FULL" "443"
+  local udp_full="$MENU_PORTS_UDP_FULL" udp_user="$_PORTS_USER" udp_base="$_PORTS_BASE"
+  local quic_json dns_json
+  if [ "$MENU_QUIC443" = "неизвестно" ]; then
+    quic_json='{"_error":"Блок QUIC (UDP443) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."}'
+  else
+    quic_json="{\"state\":\"$MENU_QUIC443\",\"enabled\":$([ "$MENU_QUIC443" = "включены" ] && echo true || echo false)}"
+  fi
+  if [ "$MENU_DNS_DESINC" = "Неизвестно" ]; then
+    dns_json='{"_error":"Блок DNS (UDP:53) не найден в конфиге. Обновите конфиг через CLI (пункт 5 главного меню)."}'
+  else
+    dns_json="{\"state\":\"$MENU_DNS_DESINC\",\"enabled\":$([ "$MENU_DNS_DESINC" = "Включен" ] && echo true || echo false)}"
+  fi
   send_json "200 OK" "$(cat <<EOF
-{"zapret2_running":$running,"strategy_locks_status":"$(json_escape "$(strategy_locks_status_text)")","hostlist_mode":"$(json_escape "$(config_mode_text hostlist "$CONFIG_FILE")")","fwtype":"$(json_escape "$(config_mode_text fwtype "$CONFIG_FILE")")","flowoffload":"$(json_escape "$(config_mode_text flowoffload "$CONFIG_FILE")")","tls_blob_mode":"$(json_escape "$(config_mode_text tls_blob_menu "$CONFIG_FILE")")","wireguard":"$(json_escape "$wg_state")","auto_mode":"$(json_escape "$(config_mode_text auto_mode "$CONFIG_FILE")")","rst_guard":"$(json_escape "$(config_mode_text rst_guard "$CONFIG_FILE")")","reasm":"$(json_escape "$(config_mode_text reasm_disable "$CONFIG_FILE")")","quic443":"$(json_escape "$(_quic443_state_text "$CONFIG_FILE")")","provider":"$(json_escape "$(_provider_cache_text)")","client_scope":$(client_scope_diagnostics_json),"profiles":$(all_profiles_json)}
+{"status":$(status_json),"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls]},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -1137,20 +1328,28 @@ _backup_date_from_name() {
 }
 
 api_backups_list() {
-  local list_file f items="" first=1 name size date_str
+  local list_file f items="" first=1 name size date_str d
   if ! type backup_build_list_file >/dev/null 2>&1; then
     send_error "500 Internal Server Error" "Модуль бэкапов недоступен"
   fi
   list_file="/tmp/z2r_webui_backups_$$"
   backup_build_list_file "$list_file"
-  while IFS= read -r f; do
-    [ -f "$f" ] || continue
+  # Размеры одним wc на все файлы: форк на каждый бэкап слишком дорог на
+  # слабых роутерах; дата парсится из имени средствами самого bash.
+  while read -r size f; do
+    [ -n "$f" ] || continue
+    [ "$f" = "total" ] && continue
+    name="${f##*/}"
+    case "$name" in
+      z2r_backup_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9].tar)
+        d="${name#z2r_backup_}"; d="${d%.tar}"
+        date_str="${d:0:4}-${d:4:2}-${d:6:2} ${d:9:2}:${d:11:2}:${d:13:2}"
+        ;;
+      *) date_str="" ;;
+    esac
     if [ "$first" = "1" ]; then first=0; else items="${items},"; fi
-    name="$(basename "$f")"
-    size="$(wc -c < "$f" | tr -d '[:space:]')"
-    date_str="$(_backup_date_from_name "$name")"
-    items="${items}{\"name\":\"$(json_escape "$name")\",\"size\":${size:-0},\"date\":\"$(json_escape "$date_str")\"}"
-  done < "$list_file"
+    items="${items}{\"name\":\"${name}\",\"size\":${size:-0},\"date\":\"${date_str}\"}"
+  done < <(wc -c $(cat "$list_file") 2>/dev/null)
   rm -f "$list_file"
   send_json "200 OK" "{\"items\":[${items}]}"
 }

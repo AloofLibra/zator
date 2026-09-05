@@ -1,0 +1,141 @@
+/* Добавки к base.css для роутинга: кликабельные статус-карточки и подсказки CLI */
+
+a.tab, a.subtab { color: inherit; text-decoration: none; }
+
+.tab.is-locked, .subtab.is-locked { cursor: not-allowed; opacity: 0.5; }
+.tab.is-active.is-locked, .subtab.is-active.is-locked { opacity: 1; }
+
+/* индикатор первичной загрузки на всех вкладках */
+.view.is-loading .status-loading { display: grid; }
+
+/* диплинк /settings/:panel останавливается чуть ниже верха экрана */
+.panel { scroll-margin-top: 18px; }
+
+a.stat-card.is-link {
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+a.stat-card.is-link:hover,
+a.stat-card.is-link:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.card-go {
+  margin-left: 6px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* CLI-only карточки кликабельны (тост-подсказка) */
+.stat-card.is-cli { cursor: pointer; }
+.stat-card.is-cli:hover,
+.stat-card.is-cli:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.cli-hint {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-muted);
+  white-space: nowrap;
+}
+
+/* кольцо держится ~3.5с, затем плавно гаснет */
+@keyframes z2r-panel-target {
+  0%, 55% { box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+.panel.is-target,
+.profile-card.is-target {
+  animation: z2r-panel-target 6s ease-out forwards;
+}
+
+/* кликабельные карточки профилей (статус → стратегии) */
+.profile-card { scroll-margin-top: 18px; }
+a.profile-card.is-link {
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+a.profile-card.is-link:hover,
+a.profile-card.is-link:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ссылка-кнопка ghost в заголовках панелей (button.ghost, но для <a>) */
+.panel-header a.ghost {
+  display: inline-block;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 0.65rem 1.1rem;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.panel-header a.ghost:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  box-shadow: var(--shadow);
+}
+
+/* кликабельная подсказка гейтинга (стратегии → настройки):
+   выключенная карточка гасит pointer-events — возвращаем ссылке клик */
+.profile-card.is-disabled a.fallback-hint.is-link {
+  pointer-events: auto;
+  opacity: 1;
+}
+a.fallback-hint.is-link {
+  display: block;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  cursor: pointer;
+}
+a.fallback-hint.is-link:hover { text-decoration: underline; }
+
+/* кнопка «наверх»: видна, когда шапка ушла из вида; стиль как у primary-кнопок.
+   На широких экранах (>=1360px) она попадает в пустые поля рядом с
+   центрированным контейнером и ничего не перекрывает — запас снизу не нужен. */
+@media (max-width: 1359px) {
+  body { padding-bottom: 64px; }
+}
+#to-top {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 500;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  box-shadow: var(--shadow-strong);
+}
+#to-top.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+#to-top:hover { filter: brightness(1.08); }
+#to-top:active { transform: translateY(1px); }

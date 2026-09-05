@@ -6,7 +6,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 grep -q 'PARAM_SCOPE="default"' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'legacy scope default'
 grep -q 'api_scopes' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scope dispatcher'
 grep -q 'scope' "$REPO_DIR/webui/cgi-bin/scopes.cgi" || fail 'scopes CGI'
-grep -q 'scope: state.scope' "$REPO_DIR/webui/app.js" || fail 'client sends scope'
+grep -rq 'scope.value' "$REPO_DIR/webui-src/src" || fail 'client sends scope'
 grep -q 'lock_source' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'effective source JSON'
 grep -q ' Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || grep -q 'Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'invalid scope response'
 grep -q 'scopes' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake router scopes'
@@ -65,7 +65,7 @@ grep -q 'orch_scoped_effective' "$REPO_DIR/webui/dev/fake_router_server.py" || f
 grep -q 'client_scope_diagnostics' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake diagnostics contract'
 grep -q 'client_scope_diagnostics_json' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scope diagnostics API'
 grep -q 'fallback_reason' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'fallback reason API'
-grep -q 'last_seen_scope' "$REPO_DIR/webui/app.js" || fail 'scope diagnostics UI'
+grep -rq 'last_seen_scope' "$REPO_DIR/webui-src/src" || fail 'scope diagnostics UI'
 PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
 from pathlib import Path
 text = Path('webui/cgi-bin/_lib.sh').read_text(encoding='utf-8')

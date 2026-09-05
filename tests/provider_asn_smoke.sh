@@ -178,8 +178,8 @@ grep -q '^# ZATOR_PROVIDER_DB_VERSION=' "$REPO_DIR/data/providers/asn.txt" \
   || fail "data/providers/asn.txt без строки версии"
 grep -q 'Определено:' "$REPO_DIR/lib/provider.sh" \
   || fail "provider_force_redetect не сообщает результат детекта"
-grep -q 'document.activeElement' "$REPO_DIR/webui/app.js" \
-  || fail "renderProvider не обновляет подставленные значения после редетекта"
+grep -rq 'document.activeElement' "$REPO_DIR/webui-src/src" \
+  || fail "панель провайдера не обновляет подставленные значения после редетекта"
 
 # == 11. Успешное обновление recommendations заменяет базу ==
 
