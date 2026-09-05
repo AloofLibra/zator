@@ -140,8 +140,8 @@ async function removeDomain() {
   }
 }
 
-// Переименование (только TCP_Custom): правка имени на месте — позиция в
-// списке и подобранная стратегия сохраняются, удалять/добавлять не нужно.
+// Переименование записи на месте (все списки: исключения, TCP_Custom,
+// подстроки): позиция строки сохраняется, для TCP_Custom переносятся и локи.
 const renaming = ref(false)
 const renameValue = ref('')
 const renameInput = ref<HTMLInputElement | null>(null)
@@ -163,7 +163,7 @@ async function submitRename() {
       await domains.rename(props.list, props.item.value, next)
       if (expandedDomain.value === props.item.value) expandedDomain.value = null
       delete domainChecks[props.item.value]
-      showToast(`Домен переименован в «${next}».`)
+      showToast(`Переименовано в «${next}».`)
       await refreshDomainList(props.list)
     })
     renaming.value = false
@@ -178,7 +178,7 @@ async function submitRename() {
     <div class="domain-row-main">
       <span v-if="!renaming" class="domain-value">{{ item.value }}</span>
       <form v-else class="domain-rename" @submit.prevent="submitRename">
-        <input ref="renameInput" v-model="renameValue" type="text" class="domain-rename-input" aria-label="Новое имя домена"
+        <input ref="renameInput" v-model="renameValue" type="text" class="domain-rename-input" aria-label="Новое значение"
           :disabled="busyActive" @keydown.esc="renaming = false">
         <button type="submit" class="ghost domain-rename-save" :disabled="busyActive">OK</button>
         <button type="button" class="ghost domain-rename-cancel" :disabled="busyActive"
@@ -190,7 +190,7 @@ async function submitRename() {
       <div class="domain-actions">
         <button v-if="isCustomRkn && !renaming" type="button" class="ghost domain-check-btn" :disabled="busyActive" @click="checkDomain">Проверить</button>
         <button v-if="isCustomRkn && !renaming" type="button" class="ghost trial-btn" :disabled="busyActive" @click="toggleTrial">Подобрать</button>
-        <button v-if="isCustomRkn && !renaming" type="button" class="ghost rename-btn" :disabled="busyActive"
+        <button v-if="!renaming" type="button" class="ghost rename-btn" :disabled="busyActive"
           aria-label="Переименовать" title="Переименовать" @click="startRename">✎</button>
         <button v-if="!renaming" type="button" class="ghost danger remove-btn" :disabled="busyActive" aria-label="Удалить" @click="removeDomain">×</button>
       </div>

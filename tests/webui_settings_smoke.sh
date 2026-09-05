@@ -405,6 +405,17 @@ rm_rc=0
 custom_rkn_rename_domain "absent.example" "x.example.org" 2>/dev/null || rm_rc=$?
 [ "$rm_rc" = "2" ] || fail "переименование отсутствующего домена должно давать 2, получено: $rm_rc"
 
+# Общий случай: любой список (исключения, подстроки) — без локов, позиция строки
+# сохраняется; код 2 для отсутствующей записи.
+RENAME_LIST="$TMP_DIR/rename_list.txt"
+printf 'first.com\nsecond.com\n' > "$RENAME_LIST"
+domain_list_rename "$RENAME_LIST" "first.com" "renamed.com" || fail "domain_list_rename упал"
+[ "$(cat "$RENAME_LIST")" = "renamed.com
+second.com" ] || fail "domain_list_rename не сохранил позицию строки: $(cat "$RENAME_LIST" | tr '\n' ',')"
+rm_rc=0
+domain_list_rename "$RENAME_LIST" "absent.com" "x.com" 2>/dev/null || rm_rc=$?
+[ "$rm_rc" = "2" ] || fail "domain_list_rename отсутствующей записи должен давать 2, получено: $rm_rc"
+
 # Статика: деплой TCP_Custom в z2r.sh не безусловный, самолечение подключено
 # на старте z2r и в CGI чтения списка, rename присутствует во всех слоях.
 tcp_custom_downloads="$(grep -c 'z2r_download_project_file "\$ZATOR_ROOT/extra_strats/TCP_Custom\.txt"' "$REPO_DIR/z2r.sh")"

@@ -2411,16 +2411,15 @@ class FakeRouterState:
         orch_locked_clear(self.lock_file, domain, "http")
         orch_locked_clear(self.lock_file, domain, "udp")
 
-    def _custom_rkn_rename_domain(self, old, new):
-        """custom_rkn_rename_domain() — _lib.sh: замена строки списка на месте
-        (позиция сохраняется) + перенос первого поля лока."""
-        lines = _read_lines(self.custom_rkn_file)
+    def _domain_list_rename(self, path, old, new):
+        """domain_list_rename() — lib/strategies.sh: замена строки на месте
+        (позиция сохраняется). True если запись найдена."""
+        lines = _read_lines(path)
         if old not in lines:
             return False
-        with open(self.custom_rkn_file, "w", encoding="utf-8") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             for ln in lines:
                 fh.write((new if ln == old else ln) + "\n")
-        orch_locked_rename(self.lock_file, old, new)
         return True
 
     def apply_domains_action(self, name, action, domain, strategy, new_domain=""):
@@ -2459,19 +2458,24 @@ class FakeRouterState:
             return {"ok": True}
 
         if action == "rename":
-            if name != "custom_rkn":
-                raise ValueError("Переименование применяется только к TCP_Custom")
             if not domain:
                 raise ValueError("Не указан домен")
-            norm = z2r_normalize_domain(new_domain or "")
-            if norm is None:
-                raise ValueError("Некорректный домен: {0}".format(new_domain))
+            if kind == "domain":
+                norm = z2r_normalize_domain(new_domain or "")
+                if norm is None:
+                    raise ValueError("Некорректный домен: {0}".format(new_domain))
+            else:
+                norm = (new_domain or "").strip()
+                if not norm:
+                    raise ValueError("Пустая подстрока")
             if norm == domain:
                 return {"ok": True, "domain": norm}
             if norm in set(_read_lines(path)):
-                raise ConflictError("Домен {0} уже есть в списке".format(norm))
-            if not self._custom_rkn_rename_domain(domain, norm):
-                raise ValueError("Домена нет в списке")
+                raise ConflictError("Запись {0} уже есть в списке".format(norm))
+            if not self._domain_list_rename(path, domain, norm):
+                raise ValueError("Записи нет в списке")
+            if name == "custom_rkn":
+                orch_locked_rename(self.lock_file, domain, norm)
             return {"ok": True, "domain": norm}
 
         if action == "import":

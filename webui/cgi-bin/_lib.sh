@@ -1597,22 +1597,33 @@ api_domains_action() {
       send_json "200 OK" "{\"ok\":true}"
       ;;
     rename)
-      [ "$PARAM_LIST" = "custom_rkn" ] || send_error "400 Bad Request" "Переименование применяется только к TCP_Custom"
       domain="${PARAM_DOMAIN:-}"
       [ -n "$domain" ] || send_error "400 Bad Request" "Не указан домен"
-      normalized="$(z2r_normalize_domain "${PARAM_NEW_DOMAIN:-}")" || \
-        send_error "400 Bad Request" "Некорректный домен: ${PARAM_NEW_DOMAIN:-}"
+      if [ "$kind" = "domain" ]; then
+        normalized="$(z2r_normalize_domain "${PARAM_NEW_DOMAIN:-}")" || \
+          send_error "400 Bad Request" "Некорректный домен: ${PARAM_NEW_DOMAIN:-}"
+      else
+        # Подстрока: как при add — только обрезка пробелов, без нормализации.
+        normalized="${PARAM_NEW_DOMAIN:-}"
+        normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+        normalized="${normalized%"${normalized##*[![:space:]]}"}"
+        [ -n "$normalized" ] || send_error "400 Bad Request" "Пустая подстрока"
+      fi
       # Совпадение с самим собой — no-op, ошибки не будет.
       if [ "$normalized" = "$domain" ]; then
         send_json "200 OK" "{\"ok\":true,\"domain\":\"$(json_escape "$normalized")\"}"
         exit 0
       fi
       grep -Fxq -- "$normalized" "$file" 2>/dev/null && \
-        send_error "409 Conflict" "Домен ${normalized} уже есть в списке"
+        send_error "409 Conflict" "Запись ${normalized} уже есть в списке"
       local rename_rc=0
-      custom_rkn_rename_domain "$domain" "$normalized" || rename_rc=$?
-      [ "$rename_rc" = "2" ] && send_error "400 Bad Request" "Домена нет в списке"
-      [ "$rename_rc" = "0" ] || send_error "500 Internal Server Error" "Не удалось переименовать домен"
+      if [ "$PARAM_LIST" = "custom_rkn" ]; then
+        custom_rkn_rename_domain "$domain" "$normalized" || rename_rc=$?
+      else
+        domain_list_rename "$file" "$domain" "$normalized" || rename_rc=$?
+      fi
+      [ "$rename_rc" = "2" ] && send_error "400 Bad Request" "Записи нет в списке"
+      [ "$rename_rc" = "0" ] || send_error "500 Internal Server Error" "Не удалось переименовать запись"
       send_json "200 OK" "{\"ok\":true,\"domain\":\"$(json_escape "$normalized")\"}"
       ;;
     import)

@@ -821,19 +821,24 @@ EOF
     return 0
 }
 
-# Переименование домена в TCP_Custom.txt с сохранением позиции строки и
-# переносом локов во всех client-scope. Используется WebUI: удалять домен и
-# добавлять заново неудобно, позиция в списке терялась.
+# Переименование записи в любом списке доменов/подстрок с сохранением позиции
+# строки. Возвращает: 0 - успех, 2 - записи нет в списке, 1 - ошибка записи.
+domain_list_rename() {
+    local file="$1" old="$2" new="$3" tmp
+    domain_list_prepare "$file"
+    grep -Fxq -- "$old" "$file" 2>/dev/null || return 2
+    tmp="${file}.rename.$$"
+    awk -v old="$old" -v new="$new" '$0 == old {print new; next} {print}' "$file" > "$tmp" \
+        && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+    return 0
+}
+
+# Переименование домена в TCP_Custom.txt с переносом локов во всех
+# client-scope (общий случай без локов — domain_list_rename).
 # Возвращает: 0 - успех, 2 - старого домена нет в списке, 1 - ошибка записи.
 custom_rkn_rename_domain() {
-    local old="$1" new="$2" custom_file tmp
-    custom_file="$(custom_rkn_file)"
-    domain_list_prepare "$custom_file"
-    grep -Fxq -- "$old" "$custom_file" 2>/dev/null || return 2
-    tmp="${custom_file}.rename.$$"
-    awk -v old="$old" -v new="$new" '$0 == old {print new; next} {print}' "$custom_file" > "$tmp" \
-        && mv -f "$tmp" "$custom_file" || { rm -f "$tmp"; return 1; }
-    orch_locked_rename_everywhere "$old" "$new" || return 1
+    domain_list_rename "$(custom_rkn_file)" "$1" "$2" || return $?
+    orch_locked_rename_everywhere "$1" "$2" || return 1
     return 0
 }
 
