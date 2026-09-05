@@ -641,7 +641,7 @@ z2r_normalize_domain() {
 
 # Пути к доменным спискам, общие для CLI и WebUI.
 custom_rkn_file() {
-    echo "/opt/zator/extra_strats/TCP_Custom.txt"
+    printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_Custom.txt"
 }
 
 netrogat_file() {
@@ -792,6 +792,54 @@ custom_rkn_remove_domain() {
     orch_locked_clear_everywhere "$domain" "tls"
     orch_locked_clear_everywhere "$domain" "http"
     orch_locked_clear_everywhere "$domain" "udp"
+}
+
+# Самолечение списка: домены, дожившие в locked.tsv (default scope), но
+# отсутствующие в TCP_Custom.txt, возвращаются в список с сохранением порядка.
+# Старые обновления затирали TCP_Custom.txt пустым Custom.txt из репозитория,
+# при этом лок-файл не деплоился и домены в ней переживали. Печатает число
+# восстановленных доменов (0, если добавлять нечего).
+custom_rkn_restore_from_locks() {
+    local custom_file lock_file domain added=0
+    custom_file="$(custom_rkn_file)"
+    lock_file="${ORCH_LOCK_FILE:-${ORCH_DIR:-/opt/zator/extra_strats/cache/orchestra}/locked.tsv}"
+    [ -f "$lock_file" ] || { printf '0\n'; return 0; }
+    domain_list_prepare "$custom_file"
+    # Доменная строка лока: $1 не число (профили 1..N) и не mark:* (клиентские
+    # скоупы), содержит букву и не является IP-адресом.
+    while IFS= read -r domain; do
+        [ -n "$domain" ] || continue
+        grep -Fixq -- "$domain" "$custom_file" 2>/dev/null && continue
+        printf '%s\n' "$domain" >> "$custom_file"
+        added=$((added+1))
+    done <<EOF
+$(awk -F '\t' '
+    NF >= 2 && $1 !~ /^mark:/ && $1 !~ /^[0-9]+$/ && $1 !~ /^[0-9.]+$/ && $1 ~ /[A-Za-z]/ {print tolower($1)}
+' "$lock_file" | sort -u)
+EOF
+    printf '%s\n' "$added"
+    return 0
+}
+
+# Переименование записи в любом списке доменов/подстрок с сохранением позиции
+# строки. Возвращает: 0 - успех, 2 - записи нет в списке, 1 - ошибка записи.
+domain_list_rename() {
+    local file="$1" old="$2" new="$3" tmp
+    domain_list_prepare "$file"
+    grep -Fxq -- "$old" "$file" 2>/dev/null || return 2
+    tmp="${file}.rename.$$"
+    awk -v old="$old" -v new="$new" '$0 == old {print new; next} {print}' "$file" > "$tmp" \
+        && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+    return 0
+}
+
+# Переименование домена в TCP_Custom.txt с переносом локов во всех
+# client-scope (общий случай без локов — domain_list_rename).
+# Возвращает: 0 - успех, 2 - старого домена нет в списке, 1 - ошибка записи.
+custom_rkn_rename_domain() {
+    domain_list_rename "$(custom_rkn_file)" "$1" "$2" || return $?
+    orch_locked_rename_everywhere "$1" "$2" || return 1
+    return 0
 }
 
 custom_rkn_add_domain() {

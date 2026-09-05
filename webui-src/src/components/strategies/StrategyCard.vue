@@ -17,13 +17,29 @@ const maxStrategy = computed(() => props.profile.max_strategy || 0)
 const saved = computed(() => String(props.profile.current_lock || '0'))
 
 const formValue = ref('0')
+// Пользователь менял поле после последней синхронизации с реальным локом.
+// Без этого после сброса (лок auto) «Сохранить» сразу активна со старым числом.
+const touched = ref(false)
 watch(() => props.profile.current_lock, (lock) => {
-  if (/^[0-9]+$/.test(String(lock || ''))) formValue.value = String(lock)
+  const raw = String(lock ?? '')
+  if (/^[0-9]+$/.test(raw)) {
+    formValue.value = raw
+  } else {
+    // auto (лок снят): выбор начинается с первой стратегии, но сохранить
+    // нельзя, пока пользователь сам не поменяет значение
+    formValue.value = '1'
+  }
+  touched.value = false
 }, { immediate: true })
+
+function onFormInput(value: string) {
+  formValue.value = value
+  touched.value = true
+}
 
 const valueValid = computed(() => /^[0-9]+$/.test(formValue.value.trim()))
 const submitDisabled = computed(() =>
-  gated.value || busyActive.value || !valueValid.value || formValue.value.trim() === saved.value)
+  gated.value || busyActive.value || !valueValid.value || !touched.value || formValue.value.trim() === saved.value)
 const clearDisabled = computed(() => gated.value || busyActive.value || saved.value === 'auto')
 
 const inlinePayload = computed<CheckPayload | null>(() => {
@@ -49,7 +65,9 @@ async function save() {
     return
   }
   try {
-    await withBusy('save', async () => {
+    // Ключ с номером профиля: спиннер крутится только на карточке,
+    // где нажали (busyActive всё равно блокирует остальные кнопки).
+    await withBusy(`save-${props.profile.profile}`, async () => {
       await setLock(props.profile.profile, value, scope.value)
       delete strategyChecks[props.profile.profile]
       await refreshAll()
@@ -75,7 +93,7 @@ async function clearLockAction() {
     return
   }
   try {
-    await withBusy('clear', async () => {
+    await withBusy(`clear-${props.profile.profile}`, async () => {
       await clearLock(props.profile.profile, scope.value)
       delete strategyChecks[props.profile.profile]
       await refreshAll()
@@ -109,8 +127,8 @@ async function clearLockAction() {
     <form class="lock-form" @submit.prevent="save">
       <label>
         <span>Номер стратегии</span>
-        <NumberStepper v-model="formValue" :min="0" :max="maxStrategy" up-label="Увеличить номер стратегии"
-          down-label="Уменьшить номер стратегии" :disabled="gated || busyActive" />
+        <NumberStepper :model-value="formValue" :min="0" :max="maxStrategy" up-label="Увеличить номер стратегии"
+          down-label="Уменьшить номер стратегии" :disabled="gated || busyActive" @update:model-value="onFormInput" />
       </label>
       <CheckResults v-if="!gated && inlinePayload" class="inline-check" :payload="inlinePayload"
         :empty-message="inlineEmpty" :empty-hidden="false" />
@@ -120,8 +138,9 @@ async function clearLockAction() {
         Перейти к настройке, включающей профиль →
       </router-link>
       <div class="card-actions">
-        <button type="submit" class="primary" :class="{ 'is-busy': busyButton === 'save' }" :disabled="submitDisabled">Сохранить</button>
-        <button type="button" class="ghost clear-lock" :class="{ 'is-busy': busyButton === 'clear' }"
+        <button type="submit" class="primary" :class="{ 'is-busy': busyButton === `save-${profile.profile}` }"
+          :disabled="submitDisabled">Сохранить</button>
+        <button type="button" class="ghost clear-lock" :class="{ 'is-busy': busyButton === `clear-${profile.profile}` }"
           :disabled="clearDisabled" @click="clearLockAction">Сбросить</button>
       </div>
     </form>

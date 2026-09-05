@@ -606,12 +606,19 @@ CLI-логики в [`_lib.sh`](../cgi-bin/_lib.sh) (`netrogat_file`, `custom_rk
 }
 ```
 
+> Самолечение (custom_rkn): перед чтением списка домены, дожившие в
+> `locked.tsv`, но отсутствующие в `TCP_Custom.txt` (список мог быть затёрт
+> старым обновлением), возвращаются в список — `custom_rkn_restore_from_locks()`
+> из `lib/strategies.sh`. Доменные строки лока: первое поле не число и не
+> `mark:*`, содержит букву.
+
 ### POST `/cgi-bin/domains.cgi`
 
 | `action` | параметры | что делает | ответ |
 | --- | --- | --- | --- |
 | `add` | `list&domain` | нормализация (для `domain`), дедупликация | `{"ok":true,"duplicate":false\|true}`; для `custom_rkn` дополнительно `"check":{...}` |
 | `remove` | `list&domain` | удаление; для `custom_rkn` — чистка `locked.tsv` tls/http/udp | `{"ok":true}` |
+| `rename` | `list&domain&new_domain` | замена записи на месте (та же строка списка) во всех четырёх списках; для `kind=domain` нормализация `new_domain`, для подстрок — обрезка пробелов; для `custom_rkn` локи (default + per-mark) переименовываются | `{"ok":true,"domain":"<new>"}`; запись равна себе — no-op `{"ok":true,"domain":"<old>"}` |
 | `import` | `list&domain=<многострочник>` | построчно: нормализация+дедуп | `{"ok":true,"added":N,"duplicates":N,"skipped":N}` |
 | `clear` | `list` | `: > file`; для `custom_rkn` — очистка per-domain локов | `{"ok":true,"cleared":N}` |
 | `set_strategy` | `list=custom_rkn&domain&strategy=N` | `orch_locked_set domain tls N` (1..max) + проверка домена | `{"ok":true,"strategy":N,"check":{...}}` |
@@ -636,6 +643,10 @@ CLI-логики в [`_lib.sh`](../cgi-bin/_lib.sh) (`netrogat_file`, `custom_rk
 | `set_strategy` домена нет в списке | `Домена нет в списке` |
 | `set_strategy` вне диапазона | `Стратегия вне диапазона (1..<max>)` |
 | `set_strategy` не число | `Некорректная стратегия` |
+| `rename` без `domain` | `Не указан домен` |
+| `rename` невалидный `new_domain` (`kind=domain`) | `Некорректный домен: <value>` |
+| `rename` пустая подстрока (`kind=substring`) | `Пустая подстрока` |
+| `rename` записи нет в списке | `Записи нет в списке` |
 | `check` на не-custom_rkn | `Проверка применяется только к TCP_Custom` |
 | `check` без `domain` | `Не указан домен` |
 | неизвестный `action` | `Неизвестное действие: <action>` |
@@ -645,6 +656,7 @@ CLI-логики в [`_lib.sh`](../cgi-bin/_lib.sh) (`netrogat_file`, `custom_rk
 | условие | сообщение |
 | --- | --- |
 | `add`/`import` в `custom_rkn` или `substring` при `hostlist=авто` | `Автосбор списков включён: домены RKN zapret2 определяет автоматически. Выключите автосбор в настройках, чтобы пополнять список вручную.` |
+| `rename`, если `new_domain` уже есть в списке | `Запись <new_domain> уже есть в списке` |
 
 Списки исключений (`netrogat`, `netrogat_substring`) ограничению не подлежат;
 `remove`/`clear`/`set_strategy` доступны всегда.

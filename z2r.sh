@@ -414,6 +414,15 @@ source "$LIB_DIR/submenus.sh"
 #          fwtype_apply, menu_action_toggle_udp_range, menu_action_set_tls_blob
 source "$LIB_DIR/actions.sh"
 
+# Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
+# из TCP_Custom.txt (старые обновления затирали список), возвращаются в список.
+if type custom_rkn_restore_from_locks >/dev/null 2>&1; then
+  restored_domains="$(custom_rkn_restore_from_locks || true)"
+  if [ -n "$restored_domains" ] && [ "$restored_domains" -gt 0 ] 2>/dev/null; then
+    echo -e "${yellow}В TCP_Custom восстановлено доменов из locked.tsv: ${restored_domains}.${plain}"
+  fi
+fi
+
 keenetic_policy_ndmc_is_supported() {
   local output
   [ "$hardware" = "keenetic" ] || return 1
@@ -1058,9 +1067,15 @@ get_repo() {
   rst_guard_lua_update_from_repo || true
   circular_runtime_update_from_repo || return 1
   strategy_validator_install_service || return 1
-  for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt netrogat.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
+  # netrogat.txt — пользовательский список исключений: существующий файл не
+  # перезаписываем (иначе обновления затирают добавленные домены). Остальные
+  # списки в цикле — проектные, обновляем их как есть.
+  for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
     z2r_download_project_file "$ZATOR_ROOT/lists/$listfile" "lists/$listfile" || return 1
   done
+  if [ ! -f "$ZATOR_ROOT/lists/netrogat.txt" ]; then
+    z2r_download_project_file "$ZATOR_ROOT/lists/netrogat.txt" "lists/netrogat.txt" || touch "$ZATOR_ROOT/lists/netrogat.txt"
+  fi
   z2r_download_project_file "$fake_archive" "fake_files.tar.gz" || return 1
   tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
     rm -f "$fake_archive"
@@ -1069,7 +1084,12 @@ get_repo() {
   rm -f "$fake_archive"
   z2r_download_project_file "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
   z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || return 1
+  # TCP_Custom.txt — пользовательский список: существующий файл не трогаем.
+  # Старое безусловное скачивание затирало домены пустым Custom.txt из репо
+  # при каждом обновлении, при этом локи в locked.tsv переживали.
+  if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ]; then
+    z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
+  fi
   z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt" || return 1
   z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt" || return 1
   blockcheck2_prepare_z4r_test || return 1

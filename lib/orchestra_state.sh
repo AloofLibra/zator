@@ -380,6 +380,38 @@ orch_locked_clear_everywhere() {
   return 0
 }
 
+# Переименование профиля/домена в lock-файле одного scope с сохранением
+# позиции строки. Меняется только первое поле (2/3-колоночные строки).
+orch_scoped_locked_rename() {
+  local scope="$1" old="$2" new="$3" file tmp
+  _orch_scope_basic_validate "$scope" || return 2
+  if [ "$scope" != default ]; then
+    orch_scoped_locks_migrate
+    file="$(_orch_scope_lock_file "$scope")" || return 2
+    [ -f "$file" ] || return 0
+    tmp="${file}.rename.$$"
+    awk -F '\t' -v OFS='\t' -v old="$old" -v new="$new" '$1==old {$1=new} {print}' "$file" > "$tmp" \
+      && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+    return 0
+  fi
+  [ -f "$ORCH_LOCK_FILE" ] || return 0
+  tmp="${ORCH_LOCK_FILE}.rename.$$"
+  awk -F '\t' -v OFS='\t' -v old="$old" -v new="$new" '$1==old {$1=new} {print}' "$ORCH_LOCK_FILE" > "$tmp" \
+    && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; return 1; }
+}
+
+# Переименование во всех scope сразу (симметрично orch_locked_clear_everywhere).
+orch_locked_rename_everywhere() {
+  local profile="$1" new="$2" scope rc=0
+  orch_scoped_locked_rename default "$profile" "$new" || rc=1
+  orch_scoped_list_scopes | while IFS= read -r scope; do
+    if [ "$scope" != default ] && [ -n "$scope" ]; then
+      orch_scoped_locked_rename "$scope" "$profile" "$new" || true
+    fi
+  done
+  return "$rc"
+}
+
 zapret2_running() {
   pidof nfqws2 >/dev/null 2>&1
 }

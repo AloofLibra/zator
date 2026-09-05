@@ -499,6 +499,12 @@ button.primary.is-busy::after,
   gap: 8px;
 }
 
+/* Центрирование по вертикали: иначе чип рядом с высокой ссылкой-кнопкой
+   растягивается на всю высоту строки и текст уезжает вверх. */
+.panel-header {
+  align-items: center;
+}
+
 .panel-header, .card-top > * {
   min-width: 0;
 }
@@ -948,6 +954,28 @@ button.port-remove:not(:disabled):hover {
   min-width: 0;
   word-break: break-all;
   font-size: 0.95rem;
+}
+
+/* Инлайн-переименование домена: занимает место имени, позиция строки в
+   списке сохраняется */
+.domain-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.domain-rename-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.domain-rename .domain-rename-save,
+.domain-rename .domain-rename-cancel {
+  flex: 0 0 auto;
+  padding-inline: 0.7rem;
 }
 
 .domain-strategy {
