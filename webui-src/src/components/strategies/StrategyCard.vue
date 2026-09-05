@@ -98,13 +98,11 @@ async function clearLockAction() {
     </div>
     <div class="meta">
       <div class="meta-line">
-        <span>Текущий lock</span>
-        <strong :class="['current-lock', { bad: String(profile.current_lock ?? '0') === '0' }]">
-          {{ currentLockText(profile.current_lock) }}
-        </strong>
+        <span>Текущий lock&nbsp;</span>
+        <strong :class="['current-lock', { bad: String(profile.current_lock ?? '0') === '0' }]">{{ currentLockText(profile.current_lock) }}</strong>
       </div>
       <div class="meta-line">
-        <span>Макс. стратегия</span>
+        <span>Макс. стратегия&nbsp;</span>
         <strong class="max-lock">{{ maxStrategy }}</strong>
       </div>
     </div>

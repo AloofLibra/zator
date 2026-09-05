@@ -13,21 +13,36 @@ const router = useRouter()
 const scopeOptions = computed(() => scopes.value.scopes || ['default'])
 const scopeWarning = computed(() => scopes.value.warning || '')
 
-// диплинк /strategies?focus=N: скролл к карточке профиля + подсветка
+// диплинк /strategies?focus=N или списком через запятую (focus=8,9):
+// скролл к самой верхней карточке в DOM + подсветка всех перечисленных профилей
 function focusProfileCard() {
   const focus = route.query.focus
   if (!focus) return
-  const element = document.getElementById(`strategy-card-${focus}`)
-  if (!element) return
-  element.scrollIntoView({ block: 'start' })
-  element.classList.add('is-target')
-  window.setTimeout(() => element.classList.remove('is-target'), 6100)
+  const raw = Array.isArray(focus) ? focus.join(',') : String(focus)
+  const elements = raw.split(',')
+    .map((id) => document.getElementById(`strategy-card-${id.trim()}`))
+    .filter((element): element is HTMLElement => element !== null)
+  if (!elements.length) return
+  const top = elements.reduce((a, b) => (a.getBoundingClientRect().top <= b.getBoundingClientRect().top ? a : b))
+  top.scrollIntoView({ block: 'start' })
+  for (const element of elements) {
+    element.classList.add('is-target')
+    window.setTimeout(() => element.classList.remove('is-target'), 6100)
+  }
 }
 
 watch(() => route.query.focus, async () => {
   await nextTick()
   focusProfileCard()
 }, { immediate: true })
+
+// при F5 по диплинку карточки появляются только после загрузки state,
+// поэтому наводим фокус повторно (как SettingsView для панелей настроек)
+watch(statusLoaded, async (loaded) => {
+  if (!loaded) return
+  await nextTick()
+  focusProfileCard()
+})
 
 onMounted(() => {
   const fromUrl = route.query.scope

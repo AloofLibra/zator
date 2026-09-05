@@ -58,6 +58,7 @@ async function submit() {
   <section class="panel">
     <div class="panel-header">
       <h2>Безразборный режим (Fallback)</h2>
+      <router-link class="ghost" :to="{ path: '/strategies', query: { focus: '8,9' } }">Выбрать стратегии →</router-link>
       <span class="chip" id="fallback-state-chip" :class="{ 'is-ok': savedEnabled }">{{ chipText }}</span>
     </div>
     <p class="panel-desc">
