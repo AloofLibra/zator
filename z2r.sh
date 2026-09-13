@@ -1900,7 +1900,7 @@ webui_print_urls() {
 }
 
 webui_diagnostics() {
-  local pid srv f init_script=""
+  local pid srv f init_script="" http_code
   local pidfile="$WEBUI_ROOT/run/webui.pid"
   local logfile="$WEBUI_ROOT/run/webui.log"
   echo -e "${Fcyan}--- Диагностика Web UI ---${plain}"
@@ -2006,8 +2006,9 @@ webui_diagnostics() {
 
   echo -e "${yellow}Локальный HTTP-запрос:${plain}"
   if command -v curl >/dev/null 2>&1; then
-    if curl -fsS -m 5 -o /dev/null -w "HTTP %{http_code}" "http://127.0.0.1:${WEBUI_PORT}/" 2>/dev/null; then
-      echo -e " ${green}ok${plain}"
+    http_code="$(curl -sS -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEBUI_PORT}/" 2>/dev/null || true)"
+    if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
+      echo -e "  ${green}HTTP ${http_code} — панель отвечает${plain}"
     else
       echo -e "  ${red}нет ответа: http://127.0.0.1:${WEBUI_PORT}/${plain}"
     fi
