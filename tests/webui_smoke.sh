@@ -52,6 +52,7 @@ plain=""; cyan=""; green=""; red=""; yellow=""
 Fcyan=""; Fyellow=""
 OSystem="VPS"
 WEBUI_PORT="17682"
+WEBUI_PATH="$PATH"
 
 TMP_DIR="$(mktemp -d /tmp/zator-webui-smoke.XXXXXX 2>/dev/null || fail "mktemp failed")"
 cleanup() {
@@ -62,6 +63,7 @@ trap cleanup EXIT
 
 WEBUI_ROOT="$TMP_DIR/webui"
 WEBUI_RUNNER="$WEBUI_ROOT/run-webui.sh"
+WEBUI_WWW="$WEBUI_ROOT/www"
 export MOCK_RUNNER_LOG="$TMP_DIR/runner.log"
 export MOCK_RUNNER_COUNT="$TMP_DIR/runner.count"
 export MOCK_RUNNER_STATUS_FAIL="$TMP_DIR/runner.statusfail"
@@ -96,7 +98,7 @@ export PATH="$TMP_DIR/bin:$PATH"
 . "$REPO_DIR/lib/ui.sh"   # submenu_item / pause_enter
 
 # --- Извлечение webui-функций из монолита z2r.sh ---
-WEBUI_FNS="webui_start_service webui_stop_service webui_restart webui_status_text webui_print_urls webui_show_status webui_remove webui_submenu"
+WEBUI_FNS="webui_start_service webui_stop_service webui_restart webui_status_text webui_status_human webui_print_urls webui_show_status webui_diagnostics webui_server_type webui_remove webui_submenu"
 
 extract_fn() {
   sed -n "/^$1() {/,/^}/p" "$REPO_DIR/z2r.sh"
@@ -117,27 +119,32 @@ load_real() {
 load_real
 
 # Фейковый раннер run-webui.sh: пишет аргументы в лог.
-# Режимы: ok (всё успешно), fail (всё падает), failfirst (1-й вызов падает).
+# Режимы: ok (всё успешно), fail (всё падает, включая status), failfirst
+# (1-й вызов команды падает, status всегда отвечает running).
 # Для сбоя status: touch "$MOCK_RUNNER_STATUS_FAIL".
 make_runner() {
   {
     printf '#!/bin/sh\n'
     printf 'echo "$1" >> "$MOCK_RUNNER_LOG"\n'
-    printf 'if [ "$1" = "status" ]; then\n'
-    printf '  [ ! -f "$MOCK_RUNNER_STATUS_FAIL" ] || exit 1\n'
-    printf '  echo "running:uhttpd:17682"\n'
-    printf '  exit 0\n'
-    printf 'fi\n'
     case "$1" in
       fail)
         printf 'exit 1\n'
         ;;
       failfirst)
+        printf 'if [ "$1" = "status" ]; then\n'
+        printf '  echo "running:uhttpd:17682"\n'
+        printf '  exit 0\n'
+        printf 'fi\n'
         printf 'n="$(cat "$MOCK_RUNNER_COUNT" 2>/dev/null || echo 0)"\n'
         printf 'n=$((n + 1)); echo "$n" > "$MOCK_RUNNER_COUNT"\n'
         printf '[ "$n" -ge 2 ] || exit 1\n'
         ;;
     esac
+    printf 'if [ "$1" = "status" ]; then\n'
+    printf '  [ ! -f "$MOCK_RUNNER_STATUS_FAIL" ] || exit 1\n'
+    printf '  echo "running:uhttpd:17682"\n'
+    printf '  exit 0\n'
+    printf 'fi\n'
     printf 'exit 0\n'
   } > "$WEBUI_RUNNER"
   chmod +x "$WEBUI_RUNNER" || fail "chmod +x раннера"
@@ -161,6 +168,12 @@ grep -qF 'submenu_item "4" "Удалить Web UI"' "$REPO_DIR/z2r.sh" \
   || fail "в подменю нет сдвига удаления на 4 при running"
 grep -qF 'webui_restart || echo -e "${red}Перезапуск Web UI не удался.${plain}"' "$REPO_DIR/z2r.sh" \
   || fail "вызов webui_restart в подменю не защищён (|| echo)"
+grep -qF 'submenu_item "5" "Диагностика Web UI"' "$REPO_DIR/z2r.sh" \
+  || fail "при running нет пункта 5 (Диагностика)"
+grep -qF 'submenu_item "4" "Диагностика Web UI"' "$REPO_DIR/z2r.sh" \
+  || fail "при stopped нет пункта 4 (Диагностика)"
+grep -qF 'webui_ensure_server_binary && webui_ensure_runtime_deps && webui_start_service' "$REPO_DIR/z2r.sh" \
+  || fail "ветка 1 не самолечит отсутствующий веб-сервер после deploy_from_tar"
 
 # remove_zapret (переустановка/удаление zapret2) НЕ трогает файлы Web-панели:
 # она живёт в $ZATOR_ROOT. Полное удаление панели — только в zator_remove (п.4).
@@ -297,8 +310,8 @@ mkdir -p "$WEBUI_ROOT"
 # ===========================================================================
 echo "== 5. webui_status_text: fallback =="
 rm -f "$WEBUI_RUNNER" "$MOCK_RUNNER_STATUS_FAIL"
-[ "$(webui_status_text)" = "stopped:none:17682" ] \
-  || fail "без раннера статус должен быть stopped:none:17682 (got: $(webui_status_text))"
+[ "$(webui_status_text)" = "stopped:no-runner:17682" ] \
+  || fail "без раннера статус должен быть stopped:no-runner:17682 (got: $(webui_status_text))"
 make_runner ok
 [ "$(webui_status_text)" = "running:uhttpd:17682" ] \
   || fail "рабочий раннер должен отдавать running:uhttpd:17682 (got: $(webui_status_text))"
@@ -315,16 +328,21 @@ echo "== 6. Подменю: отрисовка по состоянию =="
 webui_status_text() { echo "running:uhttpd:17682"; }
 out="$(printf '0\n' | webui_submenu 2>&1)"
 printf '%s\n' "$out" | grep -q 'Состояние: running:uhttpd:17682' || fail "подменю не показывает статус"
+printf '%s\n' "$out" | grep -q 'Запущена (сервер: uhttpd)' || fail "подменю не расшифровывает статус"
 printf '%s\n' "$out" | grep -q '3. Перезапустить Web UI' || fail "при running нет пункта 3 (Перезапустить)"
 printf '%s\n' "$out" | grep -q '4. Удалить Web UI' || fail "при running нет пункта 4 (Удалить)"
+printf '%s\n' "$out" | grep -q '5. Диагностика Web UI' || fail "при running нет пункта 5 (Диагностика)"
 
-webui_status_text() { echo "stopped:none:17682"; }
+webui_status_text() { echo "stopped:uhttpd_kn:17682"; }
 out="$(printf '0\n' | webui_submenu 2>&1)"
 printf '%s\n' "$out" | grep -q '3. Удалить Web UI' || fail "при stopped нет пункта 3 (Удалить)"
+printf '%s\n' "$out" | grep -q '4. Диагностика Web UI' || fail "при stopped нет пункта 4 (Диагностика)"
 if printf '%s\n' "$out" | grep -q 'Перезапустить'; then
   fail "при stopped не должно быть пункта перезапуска"
 fi
-ok "отрисовка: перезапуск показывается только при running"
+printf '%s\n' "$out" | grep -q 'сервер есть (uhttpd_kn), запуск не удался' \
+  || fail "подменю не подсказывает диагностику при stopped с сервером"
+ok "отрисовка: перезапуск/диагностика по состоянию, расшифровка статуса"
 load_real
 
 # ===========================================================================
@@ -350,13 +368,18 @@ printf '%s\n' "$out" | grep -q 'MOCK_RESTART_FAIL' || fail "перезапуск
 printf '%s\n' "$out" | grep -q 'Перезапуск Web UI не удался' || fail "нет сообщения о сбое перезапуска"
 load_real
 
-# 7c. «4» при stopped — неверный ввод (пункт сдвигается только при running).
+# 7c. «4» при stopped — диагностика (пункт сдвигается только при running),
+#     «5» при stopped — неверный ввод.
 webui_status_text() { echo "stopped:none:17682"; }
-out="$(printf '4\n0\n' | webui_submenu 2>&1)"
-printf '%s\n' "$out" | grep -q 'Неверный ввод' || fail "4 при stopped должен быть неверным вводом"
+out="$(printf '4\n\n0\n' | webui_submenu 2>&1)"
+printf '%s\n' "$out" | grep -q 'Диагностика Web UI' || fail "4 при stopped должен открывать диагностику"
+load_real
+webui_status_text() { echo "stopped:none:17682"; }
+out="$(printf '5\n0\n' | webui_submenu 2>&1)"
+printf '%s\n' "$out" | grep -q 'Неверный ввод' || fail "5 при stopped должен быть неверным вводом"
 load_real
 
-ok "UX: сбой перезапуска виден пользователю, меню живо; 4 при stopped отклонён"
+ok "UX: сбой перезапуска виден пользователю, меню живо; 4 при stopped = диагностика"
 
 # 8. статика: промпт установки панели знает о её наличии (обновить/установить)
 grep -q 'Web-панель управления уже установлена' "$REPO_DIR/z2r.sh" \
@@ -364,6 +387,99 @@ grep -q 'Web-панель управления уже установлена' "$
 grep -q 'Пропуск обновления Web-панели' "$REPO_DIR/z2r.sh" \
   || fail "нет ветки пропуска обновления Web-панели"
 ok "промпт Web-панели зависит от её наличия"
+
+# ===========================================================================
+# 9. webui_status_human: расшифровка всех состояний (T1)
+# ===========================================================================
+echo "== 9. webui_status_human: расшифровки =="
+out="$(webui_status_human 'running:uhttpd:17682')"
+printf '%s\n' "$out" | grep -q 'Запущена (сервер: uhttpd)' || fail "running не расшифрован"
+out="$(webui_status_human 'stopped:none:17682')"
+printf '%s\n' "$out" | grep -q 'не найден веб-сервер (uhttpd)' || fail "stopped:none без подсказки"
+printf '%s\n' "$out" | grep -q 'opkg install uhttpd_kn coreutils-nohup' || fail "stopped:none без лечения"
+out="$(webui_status_human 'stopped:no-runner:17682')"
+printf '%s\n' "$out" | grep -q 'Файлы панели не установлены либо повреждены' || fail "no-runner не расшифрован"
+out="$(webui_status_human 'stopped:uhttpd_kn:17682')"
+printf '%s\n' "$out" | grep -q 'сервер есть (uhttpd_kn), запуск не удался' || fail "stopped с сервером не расшифрован"
+printf '%s\n' "$out" | grep -q 'webui.log' || fail "stopped с сервером без указания на лог"
+webui_status_human 'stopped:none:17682' >/dev/null 2>&1 || fail "webui_status_human должен возвращать 0"
+ok "расшифровка: running/none/no-runner/сервер-есть — все ветки"
+
+# ===========================================================================
+# 10. webui_diagnostics: read-only блок не валится под set -e (T2)
+# ===========================================================================
+echo "== 10. webui_diagnostics =="
+make_runner ok
+mkdir -p "$WEBUI_WWW"
+echo x > "$WEBUI_WWW/index.html"
+printf 'pid\n' > "$WEBUI_ROOT/run/webui.pid" 2>/dev/null || mkdir -p "$WEBUI_ROOT/run" && printf 'pid\n' > "$WEBUI_ROOT/run/webui.pid"
+out="$( ( set -e; webui_diagnostics; echo "SURVIVED" ) 2>&1 )"
+[ $? -eq 0 ] || fail "webui_diagnostics вернул ошибку (rc=$?)"
+printf '%s\n' "$out" | grep -q 'SURVIVED' || fail "set -e: webui_diagnostics уронил вызывающий код"
+printf '%s\n' "$out" | grep -q 'Раннер:' || fail "диагностика без блока раннера"
+printf '%s\n' "$out" | grep -q 'Веб-сервер:' || fail "диагностика без блока веб-сервера"
+printf '%s\n' "$out" | grep -q 'webui_server_type:' || fail "диагностика без webui_server_type"
+printf '%s\n' "$out" | grep -q 'nohup:' || fail "диагностика без блока nohup"
+printf '%s\n' "$out" | grep -q 'Автозапуск:' || fail "диагностика без блока автозапуска"
+printf '%s\n' "$out" | grep -q 'Процесс и порт:' || fail "диагностика без блока процесса"
+printf '%s\n' "$out" | grep -q 'Файлы панели:' || fail "диагностика без блока файлов"
+printf '%s\n' "$out" | grep -q 'index.html: есть' || fail "диагностика не видит существующий index.html"
+ok "диагностика: блоки на месте, сбои локализованы"
+
+# ===========================================================================
+# 11. Ветка «1»: самолечение отсутствующего веб-сервера после deploy (T3)
+# ===========================================================================
+echo "== 11. Самолечение ветки 1 =="
+HEAL_LOG="$TMP_DIR/heal.log"
+mkdir -p "$WEBUI_WWW"
+: > "$HEAL_LOG"
+deploy_from_tar() { echo "DEPLOY_OK"; return 0; }
+webui_ensure_server_binary() { echo ENSURE_SERVER >> "$HEAL_LOG"; return 0; }
+webui_ensure_runtime_deps() { echo ENSURE_DEPS >> "$HEAL_LOG"; return 0; }
+webui_start_service() { echo START_SERVICE >> "$HEAL_LOG"; return 0; }
+webui_status_text() { echo "stopped:none:17682"; }
+out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
+printf '%s\n' "$out" | grep -q 'DEPLOY_OK' || fail "deploy_from_tar не вызывался"
+printf '%s\n' "$out" | grep -q 'устанавливаю недостающие пакеты' || fail "нет сообщения о самолечении"
+grep -q 'ENSURE_SERVER' "$HEAL_LOG" || fail "сервер не устанавливался при stopped:none"
+grep -q 'ENSURE_DEPS' "$HEAL_LOG" || fail "зависимости не проверялись при stopped:none"
+grep -q 'START_SERVICE' "$HEAL_LOG" || fail "сервис не запускался при stopped:none"
+printf '%s\n' "$out" | grep -q 'Панель восстановлена' || fail "нет итога самолечения"
+printf '%s\n' "$out" | grep -q 'Состояние: stopped:none:17682' || fail "статус не показан после самолечения"
+
+: > "$HEAL_LOG"
+webui_status_text() { echo "running:uhttpd:17682"; }
+out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
+[ ! -s "$HEAL_LOG" ] || fail "при running после деплоя самолечение не нужно"
+
+webui_status_text() { echo "stopped:none:17682"; }
+webui_ensure_server_binary() { echo ENSURE_SERVER >> "$HEAL_LOG"; return 1; }
+out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
+printf '%s\n' "$out" | grep -q 'Автовосстановление не удалось' || fail "нет сообщения о неудаче самолечения"
+printf '%s\n' "$out" | grep -q 'Диагностика Web UI' || fail "неудача самолечения без подсказки диагностики"
+
+deploy_from_tar() { return 1; }
+webui_install() { echo "INSTALL_CALLED"; return 0; }
+out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
+printf '%s\n' "$out" | grep -q 'INSTALL_CALLED' || fail "сбой деплоя не откатывается на webui_install"
+unset -f deploy_from_tar webui_install webui_ensure_server_binary webui_ensure_runtime_deps webui_start_service
+load_real
+ok "самолечение: stopped:none лечится, running не трогается, сбои локализованы"
+
+# ===========================================================================
+# 12. webui_start_service: не глотает мёртвый старт (T5)
+# ===========================================================================
+echo "== 12. webui_start_service: проверка фактического старта =="
+make_runner ok
+webui_status_text() { echo "stopped:uhttpd:17682"; }
+out="$(webui_start_service 2>&1)"
+[ $? -eq 1 ] || fail "мёртвый старт должен возвращать 1"
+printf '%s\n' "$out" | grep -q 'не поднялся после запуска' || fail "нет предупреждения о мёртвом старте"
+printf '%s\n' "$out" | grep -q 'Диагностика Web UI' || fail "предупреждение без подсказки диагностики"
+webui_status_text() { echo "running:uhttpd:17682"; }
+webui_start_service >/dev/null 2>&1 || fail "живой старт не должен возвращать ошибку"
+load_real
+ok "старт: мёртвый запуск виден пользователю, rc=1; живой — rc=0"
 
 echo ""
 echo "============================="
