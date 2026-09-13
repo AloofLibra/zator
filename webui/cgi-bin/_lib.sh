@@ -637,6 +637,10 @@ api_state() {
     b="${f##*/}"
     blobs_wg="${blobs_wg}${blobs_wg:+,}\"${b}\""
   done
+  local profile_blobs_json="" _pb
+  while read -r _pb; do
+    profile_blobs_json="${profile_blobs_json}${profile_blobs_json:+,}\"${_pb}\":\"$(json_escape "$(blob_override_get "$_pb" "${ZAPRET2_ROOT:-/opt/zapret2}/config")")\""
+  done < <(blob_override_supported_profiles)
   ports_split "$MENU_PORTS_TCP_FULL" "80"
   local tcp_full="$MENU_PORTS_TCP_FULL" tcp_user="$_PORTS_USER" tcp_base="$_PORTS_BASE"
   ports_split "$MENU_PORTS_UDP_FULL" "443"
@@ -708,7 +712,7 @@ api_state() {
     version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
   fi
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls]},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -879,8 +883,18 @@ api_tls_blob_get() {
   send_json "200 OK" "{
     \"current_mode\":\"$(json_escape "$current_mode")\",
     \"current_blob\":\"$(json_escape "$current_blob")\",
-    \"available_blobs\":[$available_blobs]
+    \"available_blobs\":[$available_blobs],
+    \"profile_blobs\":{$(api_tls_blob_profile_blobs_json)}
   }"
+}
+
+# JSON-объект «профиль -> текущее переопределение» ("" = глобальный) для GET-ответов.
+api_tls_blob_profile_blobs_json() {
+  local out="" p
+  while read -r p; do
+    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(blob_override_get "$p" "$cfg")")\""
+  done < <(blob_override_supported_profiles)
+  printf '%s' "$out"
 }
 
 api_tls_blob_set() {
@@ -919,6 +933,40 @@ api_tls_blob_set() {
 
   _service_apply_restart
   send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
+}
+
+# Per-profile TLS блоб: value = "" (сброс к глобальному) | fake_default_tls | файл слота.
+# Сброс и встроенный блоб применяются без рестарта (TTL-кэш locked.lua ~2с);
+# смена файла слота рестартит автоматически, как глобальная смена.
+api_tls_blob_profile_set() {
+  local profile="${PARAM_PROFILE:-}" value="${PARAM_VALUE:-}"
+  local cfg="/opt/zapret2/config" slot supported=0 p
+
+  while read -r p; do [ "$p" = "$profile" ] && supported=1; done < <(blob_override_supported_profiles)
+  [ "$supported" = 1 ] || send_error "400 Bad Request" "Некорректный профиль: $profile"
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+
+  if [ -z "$value" ] || [ "$value" = "global" ]; then
+    blob_override_clear "$profile" || send_error "500 Internal Server Error" "Не удалось сбросить переопределение"
+    send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+    return
+  fi
+
+  if [ "$value" = "fake_default_tls" ]; then
+    blob_override_set "$profile" fake_default_tls || send_error "500 Internal Server Error" "Не удалось сохранить переопределение"
+    send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+    return
+  fi
+
+  blob_override_file_valid "$value" || send_error "400 Bad Request" "Некорректное значение блоба: $value"
+
+  slot="$(blob_override_slot "$profile")"
+  tls_blob_profile_apply_file "$cfg" "$profile" "$value" \
+    || send_error "500 Internal Server Error" "Декларация --blob=$slot не найдена в конфиге (примените новый config.default)"
+  blob_override_set "$profile" "$slot" || send_error "500 Internal Server Error" "Не удалось сохранить переопределение"
+
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"restart_required\":true}"
 }
 
 api_wg_blob_get() {

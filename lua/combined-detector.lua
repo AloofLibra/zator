@@ -1737,7 +1737,7 @@ function circular_quality(ctx, desync)
         local instance = plan_instance_pop(desync)
         if not instance then break end
         if instance.arg.strategy and tonumber(instance.arg.strategy)==hrec.nstrategy then
-            verdict = plan_instance_execute(desync, verdict, instance)
+            verdict = blob_override_execute(desync, verdict, instance, desync.arg.key)
         end
     end
 

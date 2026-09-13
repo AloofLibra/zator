@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { applySetting } from '../../api/endpoints'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
 import { refreshTlsBlobSettings, tlsBlobSettings } from '../../stores/settings'
@@ -54,6 +54,55 @@ async function submit() {
     showToast((error as Error).message, 'error')
   }
 }
+
+// --- Переопределения по профилям (только стратегии с blob=maxru|fake_default_tls) ---
+const PROFILE_ITEMS = [
+  { id: '1', title: 'Профиль 1 — YouTube TCP' },
+  { id: '2', title: 'Профиль 2 — Googlevideo' },
+  { id: '3', title: 'Профиль 3 — RKN' },
+  { id: '4', title: 'Профиль 4 — Discord (TCP)' },
+  { id: '8', title: 'Профиль 8 — безразборный TLS' },
+]
+
+const profileSelected = reactive<Record<string, string>>({})
+
+function savedProfile(id: string): string {
+  return settings.value?.profile_blobs?.[id] ?? ''
+}
+
+watch(settings, () => {
+  for (const p of PROFILE_ITEMS) profileSelected[p.id] = savedProfile(p.id)
+}, { immediate: true })
+
+function profileOptions(id: string): string[] {
+  const cur = savedProfile(id)
+  if (cur && cur !== 'fake_default_tls' && !blobs.value.includes(cur)) {
+    return [cur, ...blobs.value]
+  }
+  return blobs.value
+}
+
+function profileSubmitDisabled(id: string): boolean {
+  return busyActive.value || (profileSelected[id] ?? '') === savedProfile(id)
+}
+
+async function submitProfile(id: string) {
+  const value = profileSelected[id] ?? ''
+  try {
+    await withBusy(`tls-blob-profile-${id}`, async () => {
+      const payload = await applySetting.tls_blob_profile(id, value)
+      if (payload.restart_required) {
+        announceRestart()
+        showToast('Переопределение профиля сохранено.' + restartSuffix(payload))
+      } else {
+        showToast('Переопределение профиля применено без рестарта (до 2 секунд).')
+      }
+      await refreshTlsBlobSettings()
+    })
+  } catch (error) {
+    showToast((error as Error).message, 'error')
+  }
+}
 </script>
 
 <template>
@@ -89,6 +138,30 @@ async function submit() {
         <button type="submit" class="primary" :class="{ 'is-busy': busyButton === 'tls-blob' }"
           :disabled="submitDisabled">Сохранить</button>
       </div>
+    </form>
+
+    <form id="tls-blob-profile-form" class="settings-form" @submit.prevent>
+      <h3>Блоб по профилям</h3>
+      <p class="panel-desc">
+        Переопределение для отдельного профиля (меняет только blob=maxru|fake_default_tls).
+        Сброс и встроенный блоб применяются без рестарта, смена файла — с перезапуском zapret2.
+      </p>
+      <template v-for="p in PROFILE_ITEMS" :key="p.id">
+        <label>
+          <span>{{ p.title }}</span>
+          <select :id="`tls-blob-profile-${p.id}`" v-model="profileSelected[p.id]" :disabled="busyActive">
+            <option value="">Как глобальный</option>
+            <option value="fake_default_tls">fake_default_tls (встроенный)</option>
+            <option v-for="blob in profileOptions(p.id)" :key="blob" :value="blob">{{ blob }}</option>
+          </select>
+        </label>
+        <div class="card-actions">
+          <button type="button" class="primary"
+            :class="{ 'is-busy': busyButton === `tls-blob-profile-${p.id}` }"
+            :disabled="profileSubmitDisabled(p.id)"
+            @click="submitProfile(p.id)">Применить</button>
+        </div>
+      </template>
     </form>
   </section>
 </template>

@@ -70,6 +70,8 @@ export interface TlsBlobSettings {
   current_mode?: string
   current_blob?: string
   available_blobs?: string[]
+  // «профиль -> значение»: "" = как глобальный, fake_default_tls | файл слота
+  profile_blobs?: Record<string, string>
 }
 
 export interface WgBlobSettings {
@@ -137,6 +139,7 @@ export interface DomainsListPayload {
 
 export interface ApplyResult {
   restarted?: boolean
+  restart_required?: boolean
   added?: number
   skipped?: string
   name?: string

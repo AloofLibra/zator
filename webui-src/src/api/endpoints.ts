@@ -54,6 +54,8 @@ export const fetchSetting = {
 export const applySetting = {
   tls_blob: (value: string) =>
     api<ApplyResult>('/cgi-bin/settings.cgi', formBody({ setting: 'tls_blob', value })),
+  tls_blob_profile: (profile: string, value: string) =>
+    api<ApplyResult>('/cgi-bin/settings.cgi', formBody({ setting: 'tls_blob_profile', profile, value })),
   wg_blob: (value: string, restart: boolean) =>
     api<ApplyResult>('/cgi-bin/settings.cgi',
       formBody(restart ? { setting: 'wg_blob', value } : { setting: 'wg_blob', value, restart: '0' })),

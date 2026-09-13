@@ -1,4 +1,4 @@
-# Last modified: 2026-09-05 12:17:37 UTC
+# Last modified: 2026-09-12 19:30:23 UTC
 # this file is included from init scripts
 # change values here
 
@@ -97,6 +97,12 @@ NFQWS2_OPT="
 --lua-init=@/opt/zator/lua/silent-drop-detector.lua
 --lua-init=@/opt/zator/lua/dns-clone.lua
 --blob=maxru:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
+# per-profile TLS blob slots: Lua (blob_override.tsv) подставляет z2r_prof_N вместо blob=maxru|fake_default_tls
+--blob=z2r_prof_1:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
+--blob=z2r_prof_2:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
+--blob=z2r_prof_3:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
+--blob=z2r_prof_4:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
+--blob=z2r_prof_8:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
 --blob=google_www:@/opt/zator/files/fake/tls_clienthello_www_google_com.bin
 --blob=tls4:@/opt/zator/files/fake/tls_clienthello_4.bin
 --blob=custom:@/opt/zator/files/fake/custom_tls.bin

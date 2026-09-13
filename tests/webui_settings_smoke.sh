@@ -81,6 +81,13 @@ done
 for fn in api_auto_mode_set api_hostlist_set api_rst_guard_set api_reasm_set api_quic443_set api_dns_desync_set api_ports_add api_ports_remove api_provider_set api_provider_redetect; do
   assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" "$fn" "settings.cgi POST не вызывает $fn"
 done
+# per-profile TLS блоб: POST-ветка + общий сеттер из orchestra_state.sh
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" 'tls_blob_profile' "settings.cgi POST не вызывает tls_blob_profile"
+for fn in api_tls_blob_profile_set api_tls_blob_profile_blobs_json; do
+  assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" "$fn" "_lib.sh нет $fn"
+done
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'blob_override_file_valid' "api_tls_blob_profile_set без валидации файла"
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '"profile_blobs"' "GET/state не отдаёт profile_blobs"
 
 [ -f "$REPO_DIR/webui/cgi-bin/backups.cgi" ] || fail "backups.cgi отсутствует"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/backups.cgi")" '405 Method Not Allowed' "backups.cgi не отдаёт 405"
@@ -103,12 +110,12 @@ for key in auto_mode rst_guard reasm quic443 provider; do
 done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'rst-guard\.lua' "rst_guard set без guard на lua-файл"
 
-for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form ports-tcp-form ports-udp-form provider-form backup-create-btn backup-import-btn backup-import-file; do
+for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form ports-tcp-form ports-udp-form provider-form tls-blob-profile-form backup-create-btn backup-import-btn backup-import-file; do
   grep -rq "$id" "$REPO_DIR/webui-src/src" || fail "webui-src не содержит #$id"
 done
 
 app_js="$(find "$REPO_DIR/webui-src/src" -type f \( -name '*.vue' -o -name '*.ts' \) -exec cat {} +)"
-for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'dns_desync_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' '/cgi-bin/backups.cgi' "action: 'create'" "action: 'delete'" 'action=download' 'action=upload' 'download-btn' 'backups-toggle' 'confirmDialog'; do
+for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'dns_desync_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' 'tls_blob_profile' '/cgi-bin/backups.cgi' "action: 'create'" "action: 'delete'" 'action=download' 'action=upload' 'download-btn' 'backups-toggle' 'confirmDialog'; do
   assert_contains "$app_js" "$needle" "webui-src не использует $needle"
 done
 
@@ -154,6 +161,9 @@ fake_py="$(cat "$REPO_DIR/webui/dev/fake_router_server.py")"
 for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'dns_desync_state' 'ports_add' 'provider_set' 'provider_redetect' 'apply_backup_create' 'apply_backup_delete' 'apply_backup_import' 'ConflictError'; do
   assert_contains "$fake_py" "$needle" "fake_router_server.py не реализует $needle"
 done
+assert_contains "$fake_py" 'apply_tls_blob_profile' "fake_router_server.py не реализует apply_tls_blob_profile"
+assert_contains "$fake_py" '"profile_blobs"' "fake_router_server.py не отдаёт profile_blobs"
+assert_contains "$fake_py" 'z2r_prof_' "fake_router_server.py не моделирует слоты z2r_prof_N"
 assert_contains "$fake_py" 'netrogat_substring' "fake_router_server.py не поддерживает список netrogat_substring"
 assert_contains "$fake_py" 'AUTO_MODE_GATED_PROFILES' "fake_router_server.py не гейтит профили 1-4 при авторотации"
 

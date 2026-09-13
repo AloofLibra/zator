@@ -182,6 +182,15 @@ for f in lib/netcheck.sh lib/strategies.sh webui/cgi-bin/_lib.sh z2r.sh lua/stra
   bash -n "$REPO_DIR/$f" || fail "синтаксис $f"
 done
 
+# Голый wait в z2r_tls_check_target на bash 5.3+ сыплет «pid is not a child of
+# this shell» по уже собранным пробам (kill+wait выше или естественный выход) —
+# движок обязан ждать только явные pid'ы.
+if grep -nEq '^[[:space:]]*wait[[:space:]]*$' "$REPO_DIR/lib/netcheck.sh"; then
+  fail "netcheck.sh: голый wait — на bash 5.3+ даёт «pid is not a child of this shell»"
+fi
+grep -q 'wait "$p12" "$p13"' "$REPO_DIR/lib/netcheck.sh" || fail "netcheck.sh: пробы версий ждутся не по явным pid"
+grep -q 'wait "$d1_pid" "$d2_pid"' "$REPO_DIR/lib/netcheck.sh" || fail "netcheck.sh: докачки ждутся не по явным pid"
+
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/netcheck.sh"
 plain="" green="" yellow="" red=""

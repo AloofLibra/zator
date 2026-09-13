@@ -367,6 +367,18 @@ menu_action_set_tls_blob() {
   return 0
 }
 
+# Прописывает файл в декларацию слота z2r_prof_N конфига $1 (зеркало sed'а maxru
+# из menu_action_set_tls_blob, path-agnostic zapret2|zator). Возвращает 1, если
+# декларации нет в конфиге (нужно применить новый config.default: п.5 -> п.7).
+tls_blob_profile_apply_file() {
+  local cfg="$1" profile="$2" file="$3" slot ereg
+  slot="$(blob_override_slot "$profile")"
+  ereg="$(config_sed_ereg)"
+  grep -qE -- "--blob=${slot}:@/opt/(zapret2|zator)/files/fake/" "$cfg" || return 1
+  sed -i $ereg "s#--blob=${slot}:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#--blob=${slot}:@/opt/zator/files/fake/${file}#g" "$cfg"
+  return 0
+}
+
 # Переключатель стратегии WireGuard. По умолчанию блок выключен через --skip.
 menu_action_toggle_wireguard_fake() {
   local cfg
@@ -1008,6 +1020,7 @@ extra_strats/TCP_RKN_domains_by_substring.txt
 extra_strats/cache/orchestra/locked.tsv
 extra_strats/cache/orchestra/locked.manual.tsv
 extra_strats/cache/orchestra/auto_locked.tsv
+extra_strats/cache/orchestra/blob_override.tsv
 EOF
 }
 

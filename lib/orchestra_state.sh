@@ -519,3 +519,79 @@ EOF
   rmdir "$(dirname "$legacy")" 2>/dev/null || true
   return 0
 }
+
+# --- per-profile TLS blob override (blob_override.tsv) ---
+# Единый источник «профиль -> имя блоба» для CLI (подменю п.16) и WebUI.
+# Формат: profile<TAB>имя, нет строки = глобальный блоб. Файл читает locked.lua
+# (TTL-кэш 2с) — вкл/выкл переопределения применяется без рестарта nfqws2.
+ORCH_BLOB_FILE="${ORCH_BLOB_FILE:-$ORCH_DIR/blob_override.tsv}"
+Z2R_BLOB_PROFILES="${Z2R_BLOB_PROFILES:-1 2 3 4 8}"
+Z2R_BLOB_SLOT_PREFIX="${Z2R_BLOB_SLOT_PREFIX:-z2r_prof_}"
+Z2R_BLOB_FAKE_DIR="${Z2R_BLOB_FAKE_DIR:-${ZATOR_ROOT:-/opt/zator}/files/fake}"
+
+blob_override_slot() {
+  printf '%s%s' "$Z2R_BLOB_SLOT_PREFIX" "$1"
+}
+
+blob_override_supported_profiles() {
+  printf '%s\n' $Z2R_BLOB_PROFILES
+}
+
+# Имя блоба из строки TSV (пусто = глобальный).
+blob_override_name() {
+  [ -f "$ORCH_BLOB_FILE" ] || return 0
+  awk -F '\t' -v pr="$1" '$1==pr {print $2; exit}' "$ORCH_BLOB_FILE"
+}
+
+# Отображаемое значение для меню/панели: "" = глобальный, fake_default_tls,
+# файл слота z2r_prof_N из декларации конфига ($2, по умолчанию живой config).
+blob_override_get() {
+  local profile="$1" cfg="${2:-${ZAPRET2_ROOT:-/opt/zapret2}/config}" name file
+  name="$(blob_override_name "$profile")"
+  [ -n "$name" ] || return 0
+  [ "$name" = fake_default_tls ] && { echo fake_default_tls; return 0; }
+  case "$name" in
+    "$Z2R_BLOB_SLOT_PREFIX"*)
+      file="$(sed -n -E "s#.*--blob=$(blob_override_slot "$profile"):@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p" "$cfg" 2>/dev/null | head -n1)"
+      [ -n "$file" ] && echo "$file" || echo "$name"
+      ;;
+    *) echo "$name" ;;
+  esac
+}
+
+# Валидация файла-кандидата: tls_*.bin / custom_tls.bin из каталога фейков.
+blob_override_file_valid() {
+  local file="$1"
+  case "$file" in
+    tls_*.bin|custom_tls.bin) ;;
+    *) return 1 ;;
+  esac
+  [ -f "$Z2R_BLOB_FAKE_DIR/$file" ]
+}
+
+blob_override_set() {
+  local profile="$1" name="$2" tmp
+  printf '%s' "$profile" | grep -Eq '^[0-9]+$' || return 2
+  printf '%s' "$name" | grep -Eq '^[A-Za-z0-9_]+$' || return 2
+  mkdir -p "$ORCH_DIR" || return 1
+  [ -f "$ORCH_BLOB_FILE" ] || : > "$ORCH_BLOB_FILE"
+  tmp="${ORCH_BLOB_FILE}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v pr="$profile" -v nm="$name" '
+    {if ($1==pr) {if (!seen) {print pr, nm; seen=1}; next} print}
+    END {if (!seen) print pr, nm}
+  ' "$ORCH_BLOB_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_BLOB_FILE" || {
+    rm -f "$tmp"
+    echo "Unable to update blob override file" >&2
+    return 1
+  }
+  return 0
+}
+
+blob_override_clear() {
+  local profile="$1" tmp
+  [ -f "$ORCH_BLOB_FILE" ] || return 0
+  tmp="${ORCH_BLOB_FILE}.tmp.$$"
+  awk -F '\t' -v pr="$profile" '{if ($1==pr) next; print}' "$ORCH_BLOB_FILE" > "$tmp" \
+    && mv -f "$tmp" "$ORCH_BLOB_FILE" || { rm -f "$tmp"; return 1; }
+  return 0
+}

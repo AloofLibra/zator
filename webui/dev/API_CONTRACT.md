@@ -384,7 +384,13 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 {
   "current_mode": "maxru",            // maxru | fake_default_tls | mixed | "не определён"
   "current_blob": "tls_clienthello_1.bin",
-  "available_blobs": ["tls_clienthello_1.bin", "..."]
+  "available_blobs": ["tls_clienthello_1.bin", "..."],
+  "profile_blobs": {                  // per-profile переопределения (blob_override.tsv)
+    "1": "",                          // "" = как глобальный
+    "2": "tls_clienthello_5.bin",     // файл слота z2r_prof_2
+    "3": "",
+    "8": "fake_default_tls"           // встроенный блоб
+  }
 }
 ```
 
@@ -471,6 +477,7 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 | `setting` | параметры | Что делает |
 | --- | --- | --- |
 | `tls_blob` | `fake_default_tls` \| `tls_*.bin` \| `custom_tls.bin` | смена TLS-блоба: `fake_default_tls` — вернуться на встроенный (декларация `--blob=maxru:@...` сохраняется для обратного переключения); файл — активировать внешний (`fake_default_tls`→`maxru` в ссылках стратегий + замена пути, path-agnostic `zapret2\|zator`) |
+| `tls_blob_profile` | `profile=1\|2\|3\|4\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена) |
 | `wg_blob` | `value=<wg_initial_fake_*>` | замена `--blob=fakewgblob:@.../<файл>` |
 | `wg_repeats` | `value=<2..99>` | замена `blob=fakewgblob:repeats=N` |
 | `wg_state` | `value=0\|1` | вкл/выкл стратегии WG (`--skip` перед `--filter-l7=wireguard`) |
@@ -498,6 +505,10 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 // hostlist/rst_guard/reasm/quic443/dns_desync также возвращают актуальное "state"
 // wg_blob/wg_repeats/wg_state принимают restart=0 — отложить рестарт (форма WG
 // меняет до трёх настроек одним сабмитом и рестартит один раз, последним запросом)
+// tls_blob_profile: { "ok": true, "restarted": true|false, "restart_required": true|false }
+// — restart_required=false: применено через TTL-кэш locked.lua (~2с), рестарта нет;
+// restart_required=true: сменён файл слота z2r_prof_N, выполнен авто-рестарт
+// (restarted отражает, был ли zapret2 запущен)
 ```
 
 Ошибки режимов и портов:

@@ -17,6 +17,8 @@ local CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
 local LOCKED_TEST_LINES = nil
 local EXCLUDE_HOSTLISTS = {}
 local SUBSTRING_HOSTLISTS = {}
+local BLOB_OVERRIDE_PATH = LOCKED_DIR .. "/blob_override.tsv"
+local BLOB_OVERRIDES = {}
 
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -119,6 +121,29 @@ local function load_scoped_locks()
   f:close()
 end
 
+-- blob_override.tsv: «profile<TAB>имя» — per-profile TLS блоб.
+-- Подменяется только blob=/fake_blob= со значением maxru|fake_default_tls (зеркало sed'ов п.16).
+local function blob_override_parse_line(line)
+  if type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  if line == "" or string.match(line, "^%s*#") then return nil end
+  local fields = {}
+  for field in (line .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = trim(field) end
+  if #fields ~= 2 then return nil end
+  if not string.match(fields[1], "^%d+$") or not string.match(fields[2], "^[%w_]+$") then return nil end
+  return fields[1], fields[2]
+end
+
+local function load_blob_override_file(path)
+  local f = io.open(path, "r")
+  if not f then return end
+  for line in f:lines() do
+    local profile, name = blob_override_parse_line(line)
+    if profile then BLOB_OVERRIDES[profile] = name end
+  end
+  f:close()
+end
+
 local function load_locked_tables()
   local now = os.time()
   if now and (now - last_load) < cache_ttl then return end
@@ -136,6 +161,8 @@ local function load_locked_tables()
     load_locked_file(LOCKED_PATH)
     load_locked_file(LOCKED_MANUAL_PATH)
     load_scoped_locks()
+    BLOB_OVERRIDES = {}
+    load_blob_override_file(BLOB_OVERRIDE_PATH)
   end
 end
 
@@ -179,6 +206,15 @@ function locked_load_scoped_file_for_tests(path, scope)
   LOCKED_CONFLICTS, LOCKED_CONFLICTS_TOTAL = {}, 0
   CLIENT_SCOPE_SCOPED_LOCK_COUNT = 0
   load_scoped_file(path, scope)
+end
+
+-- Тестовый сеттер per-profile блобов (мимо файла, как locked_load_lines_for_tests).
+function locked_load_blob_override_for_tests(lines)
+  BLOB_OVERRIDES = {}
+  for _, line in ipairs(lines or {}) do
+    local profile, name = blob_override_parse_line(line)
+    if profile then BLOB_OVERRIDES[profile] = name end
+  end
 end
 
 local function load_exclude_hostlist(path)
@@ -469,6 +505,39 @@ function desync_hostname(desync)
   return nil
 end
 
+-- Подмена per-profile TLS блоба на исполнении стратегии (blob_override.tsv).
+-- Меняются только args blob/fake_blob со значением maxru|fake_default_tls; исходные
+-- значения восстанавливаются — план может быть переисполнен (replay/desync_copy).
+-- Имя должно быть объявлено в конфиге (--blob=ИМЯ:@...) или быть встроенным, иначе подмены нет.
+function blob_override_execute(desync, verdict, instance, profile_key)
+  local name = profile_key and BLOB_OVERRIDES[tostring(profile_key)]
+  if not name or not instance or not instance.arg then
+    return plan_instance_execute(desync, verdict, instance)
+  end
+  if not blob_exist(desync, name) then
+    DLOG("blob_override: '"..tostring(name).."' not declared, keeping config value profile="..tostring(profile_key))
+    return plan_instance_execute(desync, verdict, instance)
+  end
+  local saved_blob = instance.arg.blob
+  local saved_fake_blob = instance.arg.fake_blob
+  local swapped = false
+  if saved_blob == "maxru" or saved_blob == "fake_default_tls" then
+    instance.arg.blob = name
+    swapped = true
+  end
+  if saved_fake_blob == "maxru" or saved_fake_blob == "fake_default_tls" then
+    instance.arg.fake_blob = name
+    swapped = true
+  end
+  local v = plan_instance_execute(desync, verdict, instance)
+  if swapped then
+    DLOG("blob_override: profile="..tostring(profile_key).." blob -> "..name)
+    instance.arg.blob = saved_blob
+    instance.arg.fake_blob = saved_fake_blob
+  end
+  return v
+end
+
 function circular_locked(ctx, desync)
   orchestrate(ctx, desync)
   local allow_nohost_enabled = desync_allow_nohost(desync)
@@ -595,7 +664,7 @@ function circular_locked(ctx, desync)
     local instance = plan_instance_pop(desync)
     if not instance then break end
     if instance.arg.strategy and tonumber(instance.arg.strategy) == hrec.nstrategy then
-      verdict = plan_instance_execute(desync, verdict, instance)
+      verdict = blob_override_execute(desync, verdict, instance, base_profile)
     end
   end
 

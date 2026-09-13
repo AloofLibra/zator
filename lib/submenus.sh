@@ -1421,6 +1421,145 @@ wireguard_submenu() {
   done
 }
 
+# --- TLS blob: глобальный выбор + переопределения по профилям (пункт 16) ---
+# Переопределение подменяет только blob=/fake_blob= со значением maxru|fake_default_tls
+# (зеркало глобального sed'а п.16). Вкл/выкл/сброс — без рестарта (TTL-кэш locked.lua),
+# смена файла слота z2r_prof_N — с рестартом, как у глобального выбора.
+
+_tls_blob_list_files() {
+  # TLS-кандидаты: тот же фильтр, что у WebUI (tls_*.bin + custom_tls.bin).
+  local f
+  if sort -z </dev/null >/dev/null 2>&1; then
+    while IFS= read -r -d '' f; do basename "$f"; done \
+      < <(find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( -name 'tls_*.bin' -o -name 'custom_tls.bin' \) -print0 | sort -z)
+  else
+    find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( -name 'tls_*.bin' -o -name 'custom_tls.bin' \) | sort \
+      | while IFS= read -r f; do basename "$f"; done
+  fi
+}
+
+tls_blob_profile_pick() {
+  local profile="$1" title="$2" cfg="$3"
+  local slot cur cur_display choice i f file
+  local files=()
+  slot="$(blob_override_slot "$profile")"
+  while IFS= read -r f; do files+=("$f"); done < <(_tls_blob_list_files)
+
+  while true; do
+    clear -x
+    cur="$(blob_override_get "$profile" "$cfg")"
+    echo -e "${cyan}--- Профиль $profile ($title): TLS blob ---${plain}"
+    echo ""
+    if [ -z "$cur" ]; then
+      cur_display="глобальный ($(config_tls_blob_menu_value "$cfg"))"
+    else
+      cur_display="$cur"
+    fi
+    echo -e "${yellow}Сейчас: ${green}${cur_display}${plain}"
+    echo -e "${yellow}Глобальный блоб: ${plain}${green}$(config_tls_blob_menu_value "$cfg")${plain}"
+    echo ""
+    submenu_item "1" "Как глобальный (сброс переопределения)"
+    submenu_item "2" "fake_default_tls (встроенный)"
+    i=3
+    for f in "${files[@]}"; do
+      submenu_item "$i" "$f"
+      i=$((i+1))
+    done
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice
+    if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+      return
+    elif [ "$choice" = "1" ]; then
+      if blob_override_clear "$profile"; then
+        echo -e "${green}Сброшено: профиль $profile вернулся к глобальному блобу.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+      else
+        echo -e "${red}Не удалось сбросить переопределение.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "2" ]; then
+      if blob_override_set "$profile" fake_default_tls; then
+        echo -e "${green}Профиль $profile будет использовать встроенный fake_default_tls.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+      else
+        echo -e "${red}Не удалось сохранить переопределение.${plain}"
+      fi
+      pause_enter
+    elif ui_is_number_in_range "$choice" 3 "$(( ${#files[@]} + 2 ))"; then
+      file="${files[$((choice-3))]}"
+      if ! grep -qE -- "--blob=${slot}:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
+        echo -e "${red}В конфиге нет декларации --blob=${slot} (старый конфиг).${plain}"
+        echo -e "${yellow}Примените новый config.default: п.5 -> п.7, затем повторите.${plain}"
+        pause_enter
+        continue
+      fi
+      if tls_blob_profile_apply_file "$cfg" "$profile" "$file" &&
+         blob_override_set "$profile" "$slot"; then
+        echo -e "${green}Файл слота ${slot} обновлён: ${file}${plain}"
+        echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы загрузить новый блоб.${plain}"
+      else
+        echo -e "${red}Не удалось прописать файл слота в конфиг.${plain}"
+      fi
+      pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+tls_blob_submenu() {
+  local cfg="/opt/zapret2/config"
+  [ ! -f "$cfg" ] && cfg="/opt/zapret2/config.default"
+  local p t ans i idx
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(blob_override_supported_profiles)
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- TLS blob (фейковые ClientHello) ---${plain}"
+    echo ""
+    submenu_status_item "1" "Глобальный блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
+    echo ""
+    echo -e "${yellow}Переопределения по профилям (только стратегии с blob=maxru|fake_default_tls):${plain}"
+    i=2
+    for idx in "${!profiles[@]}"; do
+      p="$(blob_override_get "${profiles[$idx]}" "$cfg")"
+      if [ -n "$p" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "$p" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "глобальный" yellow
+      fi
+      i=$((i+1))
+    done
+    echo ""
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    case "$ans" in
+      "1")
+        menu_action_set_tls_blob
+        ;;
+      "0"|"")
+        return
+        ;;
+      *)
+        if ui_is_number_in_range "$ans" 2 "$(( ${#profiles[@]} + 1 ))"; then
+          idx=$((ans-2))
+          tls_blob_profile_pick "${profiles[$idx]}" "${titles[$idx]}" "$cfg"
+        else
+          ui_invalid_input
+        fi
+        ;;
+    esac
+  done
+}
+
 # --- Watchdog zapret2: включение/выключение (пункт 19-6) ---
 # Файлы докачиваются с репозитория при отсутствии (z2r_download_project_file),
 # поэтому в ветке они живут как исходники, а на роутере появляются по требованию.

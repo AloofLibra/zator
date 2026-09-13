@@ -149,7 +149,7 @@ z2r_tls_poll_sleep() {
 }
 
 z2r_tls_check_target() {
-    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 peek t0
+    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
     z2r_tls_probe_version "$url" 12 >"$tmp/v12" 2>/dev/null </dev/null &
     p12=$!
@@ -182,7 +182,10 @@ z2r_tls_check_target() {
             fi
         fi
     done
-    wait
+    # Явные pid'ы: голый wait в bash 5.3+ сыплет «pid is not a child of this
+    # shell» по уже собранным пробам (kill+wait выше или естественный выход).
+    # Явный wait по завершённому ребёнку молча отдаёт сохранённый статус.
+    wait "$p12" "$p13" 2>/dev/null || true
     v12="$(cat "$tmp/v12" 2>/dev/null)" || v12=""
     v13="$(cat "$tmp/v13" 2>/dev/null)" || v13=""
     # Пустой файл = проба добита досрочно (вторая версия уже ответила)
@@ -192,8 +195,10 @@ z2r_tls_check_target() {
     dl="skip"
     if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
         z2r_tls_probe_download "$url" >"$tmp/d1" 2>/dev/null </dev/null &
+        d1_pid=$!
         z2r_tls_probe_download "$url" >"$tmp/d2" 2>/dev/null </dev/null &
-        wait
+        d2_pid=$!
+        wait "$d1_pid" "$d2_pid" 2>/dev/null || true
         dl1="$(cat "$tmp/d1" 2>/dev/null)" || dl1=""
         dl2="$(cat "$tmp/d2" 2>/dev/null)" || dl2=""
         [ -n "$dl1" ] || dl1="28|000|0|-"

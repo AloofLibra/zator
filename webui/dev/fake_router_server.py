@@ -971,6 +971,25 @@ def config_tls_blob_current(cfg_text):
     return m.group(1) if m else ""
 
 
+BLOB_PROFILE_IDS = ("1", "2", "3", "4", "8")
+
+
+def config_tls_blob_slot_file(cfg_text, profile):
+    """Файл из декларации слота z2r_prof_N (blob_override_get, lib/orchestra_state.sh)."""
+    m = re.search(
+        r"--blob=z2r_prof_{0}:@/opt/(?:zapret2|zator)/files/fake/(\S+)".format(profile),
+        cfg_text)
+    return m.group(1) if m else ""
+
+
+def _apply_tls_blob_slot(cfg_text, profile, blob):
+    """tls_blob_profile_apply_file() — lib/actions.sh: переписывает путь слота."""
+    return re.sub(
+        r"--blob=z2r_prof_{0}:@/opt/(?:zapret2|zator)/files/fake/\S+".format(profile),
+        "--blob=z2r_prof_{0}:@/opt/zator/files/fake/{1}".format(profile, blob),
+        cfg_text)
+
+
 def _apply_tls_blob_default(cfg_text):
     """Переход на встроенный блоб (api_tls_blob_set, value=fake_default_tls):
     в ссылках стратегий blob=maxru -> blob=fake_default_tls (кроме strategy=26).
@@ -1574,6 +1593,9 @@ class FakeRouterState:
         os.makedirs(self.orch_dir, exist_ok=True)
         self.lock_file = os.path.join(self.orch_dir, "locked.tsv")
         self.lock_manual_file = os.path.join(self.orch_dir, "locked.manual.tsv")
+        self.blob_override_file = os.path.join(self.orch_dir, "blob_override.tsv")
+        # per-profile TLS blob: profile -> имя (z2r_prof_N | fake_default_tls)
+        self.blob_overrides = {}
         for f in (self.lock_file, self.lock_manual_file):
             open(f, "w", encoding="utf-8").close()
 
@@ -1924,7 +1946,42 @@ class FakeRouterState:
             "current_mode": current_mode,
             "current_blob": current_blob,
             "available_blobs": available_blobs,
+            "profile_blobs": self.build_tls_blob_profile_blobs(),
         }
+
+    def build_tls_blob_profile_blobs(self):
+        """blob_override_get() — profile_blobs для GET-ответов ("" = глобальный)."""
+        out = {}
+        for p in BLOB_PROFILE_IDS:
+            name = self.blob_overrides.get(p, "")
+            if name.startswith("z2r_prof_"):
+                out[p] = config_tls_blob_slot_file(self.cfg_text, p) or name
+            else:
+                out[p] = name
+        return out
+
+    def apply_tls_blob_profile(self, profile, value):
+        """api_tls_blob_profile_set() — _lib.sh."""
+        if profile not in BLOB_PROFILE_IDS:
+            raise ValueError("Некорректный профиль: {0}".format(profile))
+        if value in ("", "global"):
+            self.blob_overrides.pop(profile, None)
+            return {"ok": True, "restarted": False, "restart_required": False}
+        if value == "fake_default_tls":
+            self.blob_overrides[profile] = value
+            return {"ok": True, "restarted": False, "restart_required": False}
+        if not (value.startswith("tls_") and value.endswith(".bin")) and value != "custom_tls.bin":
+            raise ValueError("Некорректное значение блоба: {0}".format(value))
+        if not os.path.isfile(os.path.join(self.fake_dir, value)):
+            raise ValueError("Файл блоба не существует: {0}".format(value))
+        slot = "z2r_prof_{0}".format(profile)
+        if not re.search(r"--blob={0}:@/opt/(zapret2|zator)/files/fake/".format(slot), self.cfg_text):
+            raise ValueError(
+                "Декларация --blob={0} не найдена в конфиге (примените новый config.default)".format(slot))
+        self.cfg_text = _apply_tls_blob_slot(self.cfg_text, profile, value)
+        self._save_config()
+        self.blob_overrides[profile] = slot
+        return {"ok": True, "restarted": self._apply_restart(), "restart_required": True}
 
     def apply_tls_blob(self, blob):
         """api_tls_blob_set() — _lib.sh."""
@@ -2996,6 +3053,18 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     with self.state.lock:
                         result = self.state.apply_tls_blob(blob)
                         self._log("POST {0} | tls_blob={1}".format(parsed.path, blob))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "tls_blob_profile":
+                profile = params.get("profile", "")
+                blob = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_tls_blob_profile(profile, blob)
+                        self._log("POST {0} | tls_blob_profile={1} value={2}".format(
+                            parsed.path, profile, blob))
                         self._send_json(result)
                 except ValueError as e:
                     self._send_error_json(400, str(e))

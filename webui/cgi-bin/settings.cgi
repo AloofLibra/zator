@@ -55,6 +55,9 @@ case "${REQUEST_METHOD:-GET}" in
       tls_blob)
         api_tls_blob_set
         ;;
+      tls_blob_profile)
+        api_tls_blob_profile_set
+        ;;
       wg_blob)
         api_wg_blob_set
         ;;
