@@ -342,6 +342,7 @@ menu_action_set_tls_blob() {
     fi
     echo -e "${green}В TLS-стратегиях выбран встроенный blob: fake_default_tls${plain}"
     echo -e "${yellow}Строка --blob=maxru:@... сохранена без изменений для обратного переключения.${plain}"
+    telemetry_notify
     pause_enter
     return 0
   fi
@@ -363,6 +364,7 @@ menu_action_set_tls_blob() {
   fi
   echo -e "${green}Обновлено: --blob=maxru -> ${selected_blob}${plain}"
   echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы применить изменения.${plain}"
+  telemetry_notify
   pause_enter
   return 0
 }

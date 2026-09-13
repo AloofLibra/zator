@@ -948,12 +948,14 @@ api_tls_blob_profile_set() {
 
   if [ -z "$value" ] || [ "$value" = "global" ]; then
     blob_override_clear "$profile" || send_error "500 Internal Server Error" "Не удалось сбросить переопределение"
+    telemetry_notify
     send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
     return
   fi
 
   if [ "$value" = "fake_default_tls" ]; then
     blob_override_set "$profile" fake_default_tls || send_error "500 Internal Server Error" "Не удалось сохранить переопределение"
+    telemetry_notify
     send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
     return
   fi
@@ -966,6 +968,7 @@ api_tls_blob_profile_set() {
   blob_override_set "$profile" "$slot" || send_error "500 Internal Server Error" "Не удалось сохранить переопределение"
 
   _service_apply_restart
+  telemetry_notify
   send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"restart_required\":true}"
 }
 

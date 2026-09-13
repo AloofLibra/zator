@@ -1475,6 +1475,7 @@ tls_blob_profile_pick() {
       if blob_override_clear "$profile"; then
         echo -e "${green}Сброшено: профиль $profile вернулся к глобальному блобу.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
       else
         echo -e "${red}Не удалось сбросить переопределение.${plain}"
       fi
@@ -1483,6 +1484,7 @@ tls_blob_profile_pick() {
       if blob_override_set "$profile" fake_default_tls; then
         echo -e "${green}Профиль $profile будет использовать встроенный fake_default_tls.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
       else
         echo -e "${red}Не удалось сохранить переопределение.${plain}"
       fi
@@ -1499,6 +1501,7 @@ tls_blob_profile_pick() {
          blob_override_set "$profile" "$slot"; then
         echo -e "${green}Файл слота ${slot} обновлён: ${file}${plain}"
         echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы загрузить новый блоб.${plain}"
+        telemetry_notify
       else
         echo -e "${red}Не удалось прописать файл слота в конфиг.${plain}"
       fi
