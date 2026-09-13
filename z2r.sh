@@ -777,7 +777,7 @@ _fallback_profile_try() {
 }
 
 fallback_profile_try() {
-  _fallback_profile_try "8" "Профиль 8: fallback (безразборный блок)" "tls" "__RUN_CDN_TEST__"
+  _fallback_profile_try "8" "Профиль 8: fallback (безразборный блок)" "tls" ""
 }
 
 fallback_http_profile_try() {
@@ -987,104 +987,6 @@ blockcheck2_get_uuid() {
     fi
   fi
   echo "$tel_uuid"
-}
-
-run_cdn_test() {
-  BIN_THR_BYTES=$((24*1024))
-  PARALLEL=6
-
-  GREEN='\033[0;32m'
-  RED='\033[0;31m'
-  YELLOW='\033[1;33m'
-  NC='\033[0m'
-
-  TESTS=(
-  "US.CF-01|🇺🇸 Cloudflare|$BIN_THR_BYTES|1|https://img.wzstats.gg/cleaver/gunFullDisplay"
-  "US.CF-02|🇺🇸 Cloudflare|104319|1|https://genshin.jmp.blue/characters/all#"
-  "US.CF-03|🇺🇸 Cloudflare|109863|1|https://api.frankfurter.dev/v1/2000-01-01..2002-12-31"
-  "US.CF-04|🇨🇦 Cloudflare|79655|1|https://www.bigcartel.com/"
-  "US.DO-01|🇺🇸 DigitalOcean|195612|2|https://genderize.io/"
-  "DE.HE-01|🇩🇪 Hetzner|$BIN_THR_BYTES|1|https://j.dejure.org/jcg/doctrine/doctrine_banner.webp"
-  "DE.HE-02|🇩🇪 Hetzner|162646|1|https://accesorioscelular.com/tienda/css/plugins.css"
-  "FI.HE-01|🇫🇮 Hetzner|$BIN_THR_BYTES|1|https://251b5cd9.nip.io/1MB.bin"
-  "FI.HE-02|🇫🇮 Hetzner|$BIN_THR_BYTES|1|https://nioges.com/libs/fontawesome/webfonts/fa-solid-900.woff2"
-  "FI.HE-03|🇫🇮 Hetzner|$BIN_THR_BYTES|1|https://5fd8bdae.nip.io/1MB.bin"
-  "FI.HE-04|🇫🇮 Hetzner|$BIN_THR_BYTES|1|https://5fd8bca5.nip.io/1MB.bin"
-  "FR.OVH-01|🇫🇷 OVH|75872|1|https://eu.api.ovh.com/console/rapidoc-min.js"
-  "FR.OVH-02|🇫🇷 OVH|$BIN_THR_BYTES|1|https://ovh.sfx.ovh/10M.bin"
-  "SE.OR-01|🇸🇪 Oracle|$BIN_THR_BYTES|1|https://oracle.sfx.ovh/10M.bin"
-  "DE.AWS-01|🇩🇪 AWS|$BIN_THR_BYTES|1|https://www.getscope.com/assets/fonts/fa-solid-900.woff2"
-  "US.AWS-01|🇺🇸 AWS|215419|1|https://corp.kaltura.com/wp-content/cache/min/1/wp-content/themes/airfleet/dist/styles/theme.css"
-  "US.GC-01|🇺🇸 Google Cloud|176277|1|https://api.usercentrics.eu/gvl/v3/en.json"
-  "US.FST-01|🇺🇸 Fastly|77597|1|https://www.jetblue.com/footer/footer-element-es2015.js"
-  "CA.FST-01|🇨🇦 Fastly|84086|1|https://ssl.p.jwpcdn.com/player/v/8.40.5/bidding.js"
-  "US.AKM-01|🇺🇸 Akamai|$BIN_THR_BYTES|1|https://www.roxio.com/static/roxio/images/products/creator/nxt9/call-action-footer-bg.jpg"
-  "PL.AKM-01|🇵🇱 Akamai|$BIN_THR_BYTES|1|https://media-assets.stryker.com/is/image/stryker/gateway_1?\$max_width_1410\$"
-  "US.CDN77-01|🇺🇸 CDN77|$BIN_THR_BYTES|1|https://cdn.eso.org/images/banner1920/eso2520a.jpg"
-  "FR.CNTB-01|🇫🇷 Contabo|$BIN_THR_BYTES|1|https://xdmarineshop.gr/index.php?route=index"
-  "NL.SW-01|🇳🇱 Scaleway|$BIN_THR_BYTES|1|https://www.velivole.fr/img/header.jpg"
-  "US.CNST-01|🇺🇸 Constant|$BIN_THR_BYTES|1|https://cdn.xuansiwei.com/common/lib/font-awesome/4.7.0/fontawesome-webfont.woff2?v=4.7.0"
-  )
-
-  check_one() {
-      IFS='|' read -r id provider thr times url <<< "$1"
-
-      total=0
-      code=0
-
-      for ((i=1;i<=times;i++)); do
-          read bytes code <<< $(curl -L -s \
-              -A "$Z2R_CURL_UA" \
-              -H "Range: bytes=0-${thr}" \
-              --connect-timeout 5 \
-              --max-time 5 \
-              -o /dev/null \
-              -w '%{size_download} %{http_code}' \
-              "$url")
-
-          total=$((total+bytes))
-      done
-
-      avg=$((total/times))
-
-      if (( avg >= thr )) && [[ "$code" =~ ^[23] ]]; then
-          echo -e "${GREEN}$id OK${NC} ${avg}b [$provider]"
-          echo OK >> /tmp/cdn_ok
-      else
-          echo -e "${RED}$id FAIL${NC} ${avg}b code=$code [$provider]"
-          echo FAIL >> /tmp/cdn_fail
-      fi
-  }
-
-  export -f check_one
-  export BIN_THR_BYTES PARALLEL GREEN RED YELLOW NC Z2R_CURL_UA
-
-  rm -f /tmp/cdn_ok /tmp/cdn_fail
-
-  pids_parallels=()
-  for test_parallel in "${TESTS[@]}"; do
-    check_one "$test_parallel" &
-    pids_parallels+=($!)
-
-    # ограничение параллельных задач
-    if [ "${#pids_parallels[@]}" -ge "$PARALLEL" ]; then
-      wait "${pids_parallels[0]}"
-      pids_parallels=("${pids_parallels[@]:1}")
-    fi
-  done
-
-  # ждём оставшиеся
-  for pid_parallel in "${pids_parallels[@]}"; do
-    wait "$pid_parallel"
-  done
-
-  [ -f /tmp/cdn_ok ] && OK_COUNT=$(wc -l < /tmp/cdn_ok) || OK_COUNT=0
-  [ -f /tmp/cdn_fail ] && FAIL_COUNT=$(wc -l < /tmp/cdn_fail) || FAIL_COUNT=0
-
-  echo
-  echo -e "${YELLOW}=== SUMMARY ===${NC}"
-  echo -e "${GREEN}OK:${NC} ${OK_COUNT:-0}"
-  echo -e "${RED}FAIL:${NC} ${FAIL_COUNT:-0}"
 }
 
 #Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг
@@ -2155,7 +2057,6 @@ zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
 ${MENU_ZAPRET2_LINE}${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
 ${Fcyan}0.${yellow} Выход
-${Fcyan}001.${yellow} CDN тест (test.sh)
 ${Fcyan}01.${yellow} Проверить доступность сервисов (Тест не точен)
 ${Fcyan}1.${yellow} Фиксация стратегии профиля/безразборного блока. Текущие: ${plain}[ ${strategies_status} ]${yellow} (fallback TLS: ${plain}[$(fallback_strategy_text)]${yellow}, HTTP: ${plain}[$(fallback_http_strategy_text)]${yellow})
 ${Fcyan}2.${yellow} Стоп/старт zapret2, ${Fcyan}22${yellow} - рестарт (сейчас: $(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}"))
@@ -2193,11 +2094,6 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "01")
     check_access_list
-    pause_enter
-    ;;
-
-  "001")
-    run_cdn_test
     pause_enter
     ;;
 

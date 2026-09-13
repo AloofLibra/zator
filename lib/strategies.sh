@@ -99,13 +99,6 @@ orch_profile_try() {
         echo "Стратегия $s применена."
         if [ "$profile" = "10" ]; then
             z2r_dns_check_print
-        elif [ "$test_url" = "__RUN_CDN_TEST__" ]; then
-            echo "Проверка доступа: CDN test (как в пункте 001)"
-            if type run_cdn_test >/dev/null 2>&1; then
-                run_cdn_test
-            else
-                echo "run_cdn_test недоступен, пропускаем проверку."
-            fi
         elif printf "%s" "$test_url" | grep -q '^http://'; then
             echo "Проверка HTTP-доступа: $test_url"
             if curl -L -k -A "$Z2R_CURL_UA" --connect-timeout 4 --max-time 8 -s -o /dev/null "$test_url"; then
