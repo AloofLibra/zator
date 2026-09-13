@@ -413,7 +413,7 @@ source "$LIB_DIR/ui.sh"
 # (внутр.: _detect_api_simple)
 source "$LIB_DIR/provider.sh"
 
-# Телеметрия (вкл/выкл один раз + отправка статистики в Google Forms)
+# Телеметрия (вкл/выкл один раз + отправка анонимной статистики)
 # Функции: init_telemetry, send_stats
 source "$LIB_DIR/telemetry.sh"
 

@@ -118,6 +118,33 @@ send_stats() {
         [ "${!strategy_var}" = "auto" ] && printf -v "$strategy_var" '%s' 0
     done
 
+    # 2a. Текущие TLS blob, выбранные через пункт 16.
+    # Передаём глобальный выбор и эффективный выбор для профилей, где
+    # поддерживается переопределение. Пустое значение означает «неизвестно»;
+    # старые клиенты и старые записи на сервере остаются совместимыми.
+    local blob_cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+    [ -f "$blob_cfg" ] || blob_cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+    local blob_global=""
+    if type config_tls_blob_menu_value >/dev/null 2>&1 && [ -f "$blob_cfg" ]; then
+        blob_global="$(config_tls_blob_menu_value "$blob_cfg")"
+        [ "$blob_global" = "default" ] && blob_global="fake_default_tls"
+        [ "$blob_global" = "неизвестно" ] && blob_global=""
+    fi
+    local blob_p1="$blob_global" blob_p2="$blob_global" blob_p3="$blob_global"
+    local blob_p4="$blob_global" blob_p8="$blob_global" blob_profile blob_value
+    if type blob_override_supported_profiles >/dev/null 2>&1 && [ -f "$blob_cfg" ]; then
+        while read -r blob_profile; do
+            [ -n "$blob_profile" ] || continue
+            blob_value="$(blob_override_get "$blob_profile" "$blob_cfg")"
+            [ -n "$blob_value" ] || blob_value="$blob_global"
+            case "$blob_profile" in
+                1) blob_p1="$blob_value" ;; 2) blob_p2="$blob_value" ;;
+                3) blob_p3="$blob_value" ;; 4) blob_p4="$blob_value" ;;
+                8) blob_p8="$blob_value" ;;
+            esac
+        done < <(blob_override_supported_profiles)
+    fi
+
     # 3. Платформа и наличие установленного WebUI.
     local router_os="unknown"
     if [ -d /jffs ] || uname -a 2>/dev/null | grep -qi merlin; then
@@ -151,6 +178,12 @@ send_stats() {
         -d "games_udp=$s_games" \
         -d "fb_tls=$s_fb_tls" \
         -d "fb_http=$s_fb_http" \
+        -d "blob_global=$blob_global" \
+        -d "blob_1=$blob_p1" \
+        -d "blob_2=$blob_p2" \
+        -d "blob_3=$blob_p3" \
+        -d "blob_4=$blob_p4" \
+        -d "blob_8=$blob_p8" \
         -d "os=$router_os" \
         -d "webui=$webui" \
         "$STATS_ENDPOINT" > /dev/null 2>&1 &
