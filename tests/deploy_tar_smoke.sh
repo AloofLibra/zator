@@ -206,6 +206,46 @@ rm -f "$(deploy_sources_file)"
 case "$(deploy_releases_base)" in https://github.com/*) ;; *) fail "сброс не вернул GitHub-источник" ;; esac
 ok "зеркало релизов: резолв, приоритет env, сброс"
 
+# --- п.4: список номерных релизов через GitHub API ---
+grep -q 'api.github.com' "$REPO_DIR/lib/deploy.sh" || fail "список релизов не использует GitHub API"
+[ "$(deploy_releases_list_url)" = "https://api.github.com/repos/AloofLibra/zator/releases?per_page=20" ] \
+  || fail "deploy_releases_list_url неверный для GitHub-источника"
+rel_json="$WORK/releases_api.json"
+rel_html="$WORK/releases_html.txt"
+cat > "$rel_json" <<'JSON'
+[
+  { "tag_name": "1.0.1", "published_at": "2026-09-13T09:15:16Z" },
+  { "tag_name": "latest", "published_at": "2026-09-13T09:15:12Z" },
+  { "tag_name": "1.0", "published_at": "2026-09-12T08:05:02Z" }
+]
+JSON
+printf '<html>releases page</html>\n' > "$rel_html"
+rel_src="$rel_json"
+z2r_fetch_url_to_file() { cat "$rel_src" > "$1"; }
+rel_out="$(deploy_list_releases)" || fail "deploy_list_releases упал на валидном ответе API"
+printf '%s\n' "$rel_out" | grep -q '1\.0\.1  2026-09-13' || fail "список без 1.0.1 с датой"
+printf '%s\n' "$rel_out" | grep -q '1\.0  2026-09-12' || fail "список без 1.0 с датой"
+[ "$(wc -l < "$DEPLOY_RELEASES_LIST")" -eq 2 ] || fail "rolling-тег latest должен фильтроваться"
+[ "$(sed -n 1p "$DEPLOY_RELEASES_LIST" | awk '{print $2}')" = "1.0.1" ] || fail "номер 1 указывает не на 1.0.1"
+[ "$(sed -n 2p "$DEPLOY_RELEASES_LIST" | awk '{print $2}')" = "1.0" ] || fail "номер 2 указывает не на 1.0"
+rel_src="$rel_html"
+if rel_out="$(deploy_list_releases)"; then
+  fail "HTML вместо JSON API должен давать отказ"
+fi
+printf '%s\n' "$rel_out" | grep -q 'не найдены или ответ источника не распознан' || fail "нет диагностики пустого списка"
+rel_src=/nonexistent
+if rel_out="$(deploy_list_releases)"; then
+  fail "ошибка загрузки должна давать отказ"
+fi
+printf '%s\n' "$rel_out" | grep -q 'Не удалось получить список релизов' || fail "нет диагностики ошибки загрузки"
+printf 'RELEASES_MIRROR="https://mirror.example.com/zator"\n' > "$(deploy_sources_file)"
+if rel_out="$(deploy_list_releases)"; then
+  fail "зеркало должно честно отказывать в списке релизов"
+fi
+printf '%s\n' "$rel_out" | grep -q 'не отдаёт список релизов' || fail "нет подсказки для зеркала"
+rm -f "$(deploy_sources_file)"
+ok "список номерных релизов: API, фильтр latest, диагностика"
+
 # --- п.6: локальный архив zapret2 ---
 [ "$(deploy_parse_zapret2_tarball_name /x/y/zapret2-v1.0.5.1.tar.gz)" = "1.0.5.1" ] || fail "парсер: обычная версия"
 [ "$(deploy_parse_zapret2_tarball_name zapret2-v1.0.5.1-reasm-fix.tar.gz)" = "1.0.5.1-reasm-fix" ] || fail "парсер: суффикс форка"
