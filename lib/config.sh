@@ -960,7 +960,7 @@ menu_config_snapshot() {
 config_profile_max_strategy() {
   local profile="$1"
   local cfg keyed_max
-  cfg="$(config_get_file "$2")" || { echo 0; return 0; }
+  cfg="$(config_get_file "${2:-}")" || { echo 0; return 0; }
 
   # Профиль задаётся логическим key=N, а не позицией блока между --new.
   # Порядок блоков может меняться (в том числе в локальных конфигах и авто-режиме),

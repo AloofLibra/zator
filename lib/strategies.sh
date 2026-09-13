@@ -948,6 +948,10 @@ manage_custom_rkn_domain() {
         echo "Стратегия закрепляется за клиентом (Client scopes включены)."
         if client_scopes_ask_scope_for_strategies; then
             ORCH_ACTIVE_SCOPE="$CLIENT_SCOPE_ASK_RESULT"
+        else
+            echo -e "${yellow}Подбор отменён. Домен $user_domain остался в TCP_Custom (удалить можно в п.4).${plain}"
+            pause_enter
+            return 0
         fi
         if [ "$ORCH_ACTIVE_SCOPE" != default ]; then
             echo -e "${yellow}Подбор и сохранение стратегии — для клиента ${ORCH_ACTIVE_SCOPE}.${plain}"
