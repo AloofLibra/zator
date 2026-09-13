@@ -403,4 +403,26 @@ if printf 'n\n' | toggle_client_scope_mode >/dev/null 2>&1; then
 fi
 [ "$(config_get_var "$ZAPRET2_ROOT/config" CLIENT_SCOPE_ENABLE)" = 0 ] || fail 'declined onboarding keeps mode off'
 
+# --- Фаза O: 6-3 отмена 0 в выборе клиента не запускает подбор ---
+source "$REPO_DIR/lib/strategies.sh"
+pause_enter() { :; }
+CHECK_ACCESS_EVENTS="$TMP_DIR/check_access.events"
+check_access() { printf '%s\n' "$1" >> "$CHECK_ACCESS_EVENTS"; return 0; }
+telemetry_notify() { :; }
+client_scope_ip_set 192.0.2.95 mark:2 || fail 'set mark:2 for rkn cancel test'
+client_scope_mode_set 1 || fail 'enable scopes for rkn cancel test'
+: > "$CHECK_ACCESS_EVENTS"
+rkn_out="$(printf 'cancel.example\n2\n0\n' | manage_custom_rkn_domain 2>&1)" || fail 'rkn add cancel should exit 0'
+grep -qx 'cancel.example' "$(custom_rkn_file)" || fail 'cancelled domain must stay in TCP_Custom'
+[ ! -s "$CHECK_ACCESS_EVENTS" ] || fail 'cancel must not start strategy probing'
+printf '%s\n' "$rkn_out" | grep -q 'Подбор отменён' || fail 'cancel message missing'
+if printf '%s\n' "$rkn_out" | grep -q 'Введите номер стратегии'; then
+  fail 'strategy prompt must not appear after client cancel'
+fi
+: > "$CHECK_ACCESS_EVENTS"
+printf 'probe.example\n2\n1\n\n0\n' | manage_custom_rkn_domain >/dev/null 2>&1 || fail 'rkn add control flow'
+[ -s "$CHECK_ACCESS_EVENTS" ] || fail 'probing must still run when a client is chosen (control)'
+client_scope_mode_set 0 || fail 'disable scopes after rkn test'
+client_scope_ip_remove 192.0.2.95 || fail 'clear rkn test client'
+
 printf 'client scope menu smoke ok\n'
