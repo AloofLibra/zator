@@ -1625,6 +1625,22 @@ webui_server_type() {
   echo "none"
 }
 
+webui_heal_hint() {
+  if command -v apk >/dev/null 2>&1; then
+    echo "apk update && apk add uhttpd coreutils-nohup"
+  elif command -v opkg >/dev/null 2>&1; then
+    if [ "$OSystem" = "entware" ]; then
+      echo "opkg update && opkg install uhttpd_kn coreutils-nohup"
+    else
+      echo "opkg update && opkg install uhttpd coreutils-nohup"
+    fi
+  elif command -v apt-get >/dev/null 2>&1; then
+    echo "apt update && apt install -y busybox"
+  else
+    echo "установите uhttpd (или busybox httpd) и nohup пакетным менеджером системы"
+  fi
+}
+
 webui_ensure_server_binary() {
   if [ "$(webui_server_type)" != "none" ]; then
     return 0
@@ -1877,7 +1893,7 @@ webui_status_human() {
     stopped)
       case "$server" in
         none)
-          echo -e "${red}Остановлена: не найден веб-сервер (uhttpd). Лечение: opkg update && opkg install uhttpd_kn coreutils-nohup, затем п.1${plain}"
+          echo -e "${red}Остановлена: не найден веб-сервер (uhttpd). Лечение: $(webui_heal_hint), затем п.1${plain}"
           ;;
         no-runner)
           echo -e "${red}Файлы панели не установлены либо повреждены (нет run-webui.sh) — установите панель (п.1).${plain}"
@@ -1939,7 +1955,7 @@ webui_diagnostics() {
   if PATH="$WEBUI_PATH" command -v nohup >/dev/null 2>&1; then
     echo -e "  ${green}$(PATH="$WEBUI_PATH" command -v nohup)${plain}"
   else
-    echo -e "  ${red}нет — нужен coreutils-nohup (opkg install coreutils-nohup)${plain}"
+    echo -e "  ${red}нет — $(webui_heal_hint)${plain}"
   fi
 
   echo -e "${yellow}Автозапуск:${plain}"

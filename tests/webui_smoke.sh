@@ -98,7 +98,7 @@ export PATH="$TMP_DIR/bin:$PATH"
 . "$REPO_DIR/lib/ui.sh"   # submenu_item / pause_enter
 
 # --- Извлечение webui-функций из монолита z2r.sh ---
-WEBUI_FNS="webui_start_service webui_stop_service webui_restart webui_status_text webui_status_human webui_print_urls webui_show_status webui_diagnostics webui_server_type webui_remove webui_submenu"
+WEBUI_FNS="webui_start_service webui_stop_service webui_restart webui_status_text webui_status_human webui_heal_hint webui_print_urls webui_show_status webui_diagnostics webui_server_type webui_remove webui_submenu"
 
 extract_fn() {
   sed -n "/^$1() {/,/^}/p" "$REPO_DIR/z2r.sh"
@@ -394,16 +394,35 @@ ok "промпт Web-панели зависит от её наличия"
 echo "== 9. webui_status_human: расшифровки =="
 out="$(webui_status_human 'running:uhttpd:17682')"
 printf '%s\n' "$out" | grep -q 'Запущена (сервер: uhttpd)' || fail "running не расшифрован"
+printf '#!/bin/sh\nexit 0\n' > "$TMP_DIR/bin/opkg"
+chmod +x "$TMP_DIR/bin/opkg"
+OSystem="entware"
 out="$(webui_status_human 'stopped:none:17682')"
 printf '%s\n' "$out" | grep -q 'не найден веб-сервер (uhttpd)' || fail "stopped:none без подсказки"
-printf '%s\n' "$out" | grep -q 'opkg install uhttpd_kn coreutils-nohup' || fail "stopped:none без лечения"
+printf '%s\n' "$out" | grep -q 'opkg update && opkg install uhttpd_kn coreutils-nohup' \
+  || fail "лечение для Entware/opkg должно ставить uhttpd_kn"
+OSystem="WRT"
+out="$(webui_status_human 'stopped:none:17682')"
+printf '%s\n' "$out" | grep -q 'opkg install uhttpd coreutils-nohup' \
+  || fail "лечение для opkg вне Entware должно ставить uhttpd"
+rm -f "$TMP_DIR/bin/opkg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP_DIR/bin/apk"
+chmod +x "$TMP_DIR/bin/apk"
+out="$(webui_status_human 'stopped:none:17682')"
+printf '%s\n' "$out" | grep -q 'apk update && apk add uhttpd coreutils-nohup' \
+  || fail "лечение для apk (OpenWrt 24.10+) должно использовать apk add"
+rm -f "$TMP_DIR/bin/apk"
+OSystem="VPS"
+out="$(webui_status_human 'stopped:none:17682')"
+printf '%s\n' "$out" | grep -q 'пакетным менеджером системы' \
+  || fail "нет нейтрального лечения при неизвестном менеджере"
 out="$(webui_status_human 'stopped:no-runner:17682')"
 printf '%s\n' "$out" | grep -q 'Файлы панели не установлены либо повреждены' || fail "no-runner не расшифрован"
 out="$(webui_status_human 'stopped:uhttpd_kn:17682')"
 printf '%s\n' "$out" | grep -q 'сервер есть (uhttpd_kn), запуск не удался' || fail "stopped с сервером не расшифрован"
 printf '%s\n' "$out" | grep -q 'webui.log' || fail "stopped с сервером без указания на лог"
 webui_status_human 'stopped:none:17682' >/dev/null 2>&1 || fail "webui_status_human должен возвращать 0"
-ok "расшифровка: running/none/no-runner/сервер-есть — все ветки"
+ok "расшифровка: running/none/no-runner/сервер-есть — лечение по пакетному менеджеру"
 
 # ===========================================================================
 # 10. webui_diagnostics: read-only блок не валится под set -e (T2)
