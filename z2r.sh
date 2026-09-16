@@ -1900,7 +1900,11 @@ webui_status_human() {
           echo -e "${red}Файлы панели не установлены либо повреждены (нет run-webui.sh) — установите панель (п.1).${plain}"
           ;;
         *)
-          echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (лог ${WEBUI_ROOT}/run/webui.log).${plain}"
+          if [ "$OSystem" = "WRT" ] && command -v logread >/dev/null 2>&1; then
+            echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (ошибки procd в «logread | grep -i uhttpd»).${plain}"
+          else
+            echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (лог ${WEBUI_ROOT}/run/webui.log).${plain}"
+          fi
           ;;
       esac
       ;;
@@ -2003,6 +2007,12 @@ webui_diagnostics() {
     tail -n 20 "$logfile" 2>/dev/null || echo "  (лог не читается)"
   else
     echo "  лога нет"
+  fi
+  # На OpenWrt панель стартует через procd: stdout/stderr демона идут в
+  # syslog, webui.log не создаётся — показываем syslog-хвост сразу.
+  if [ "$OSystem" = "WRT" ] && command -v logread >/dev/null 2>&1; then
+    echo -e "${yellow}Syslog (uhttpd/webui, OpenWrt/procd):${plain}"
+    logread 2>/dev/null | grep -iE "uhttpd|webui|run-webui" | tail -n 15 || echo "  (совпадений нет)"
   fi
 
   echo -e "${yellow}Файлы панели:${plain}"
