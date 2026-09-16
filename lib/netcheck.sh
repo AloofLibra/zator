@@ -16,8 +16,8 @@ get_yt_cluster_domain() {
     cluster_codename=$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
     
     [ -z "$cluster_codename" ] && {
-        echo "Не удалось получить cluster_codename. Используем тогда rr1---sn-5goeenes.googlevideo.com" >&2
-        echo "rr1---sn-5goeenes.googlevideo.com"
+        echo "Не удалось получить cluster_codename. Используем тогда rr2---sn-4g5ednly.googlevideo.com" >&2
+        echo "rr2---sn-4g5ednly.googlevideo.com"
         return
     }
     
