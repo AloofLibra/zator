@@ -101,7 +101,7 @@ def profile_proto(profile):
 VOICE_PORTS = "50000-50099,1400,3478-3481,5349,19294-19344"
 
 # get_yt_cluster_domain() fallback — _lib.sh:154
-YT_CLUSTER_FALLBACK = "rr1---sn-5goeenes.googlevideo.com"
+YT_CLUSTER_FALLBACK = "rr2---sn-4g5ednly.googlevideo.com"
 
 # api_check() — _lib.sh:254: (label, target|None)  None → подставить YT-кластер
 CHECK_TARGETS = [
