@@ -126,7 +126,14 @@ start_detached() {
     busybox nohup bash "$0" run >>"$LOG_FILE" 2>&1 &
     return
   fi
-  bash "$0" run >>"$LOG_FILE" 2>&1 &
+  # nohup нет (фиды opkg легли, busybox без applet): отделяемся от терминала
+  # как умеем — своя сессия через setsid, иначе игнор HUP + фоновый запуск
+  # с редиректом (тот же приём, что z2r_service_action для инит-скриптов).
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash "$0" run >>"$LOG_FILE" 2>&1 &
+    return
+  fi
+  ( trap '' INT QUIT HUP; exec bash "$0" run >>"$LOG_FILE" 2>&1 ) &
 }
 
 start_server() {

@@ -1694,10 +1694,11 @@ webui_ensure_runtime_deps() {
     if PATH="$WEBUI_PATH" command -v busybox >/dev/null 2>&1 && PATH="$WEBUI_PATH" busybox --list 2>/dev/null | grep -qx 'nohup'; then
       return 0
     fi
-    echo -e "${red}Не удалось найти или установить nohup для web UI.${plain}"
-    [ "$OSystem" = "entware" ] && echo -e "${yellow}Для Keenetic/Entware нужен пакет coreutils-nohup.${plain}"
-    [ "$OSystem" = "WRT" ] && echo -e "${yellow}Для OpenWrt нужен пакет coreutils-nohup или BusyBox с applet nohup.${plain}"
-    return 1
+    # nohup недоступен и не установился (например, фиды opkg легли) — это
+    # НЕ приговор: run-webui.sh умеет стартовать без nohup (setsid или
+    # trap-игнор + фоновый запуск с редиректом). Предупреждаем и продолжаем.
+    echo -e "${yellow}nohup не найден и не установился (пакетные фиды недоступны?).${plain}"
+    echo -e "${yellow}Панель запустится без него (setsid/фон с редиректом) — на работу не влияет.${plain}"
   fi
 
   return 0
