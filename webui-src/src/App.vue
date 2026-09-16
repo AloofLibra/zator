@@ -8,6 +8,7 @@ import { showToast } from './stores/toast'
 import { theme, type ThemeMode } from './stores/theme'
 import ToastHost from './components/ui/ToastHost.vue'
 import ConfirmDialog from './components/ui/ConfirmDialog.vue'
+import SupportModal from './components/ui/SupportModal.vue'
 
 const route = useRoute()
 
@@ -81,6 +82,8 @@ onBeforeUnmount(() => {
             <option value="dark">Тёмная</option>
           </select>
         </label>
+
+        <SupportModal />
       </div>
     </header>
 

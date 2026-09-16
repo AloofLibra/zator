@@ -2,6 +2,74 @@
 
 a.tab, a.subtab { color: inherit; text-decoration: none; }
 
+.support-button {
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--line));
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface));
+  color: var(--text);
+  font-weight: 650;
+}
+
+.support-button:hover,
+.support-button:focus-visible {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
+}
+
+.support-modal-card { width: min(560px, 100%); }
+
+.support-modal-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.support-emoji { font-size: 2rem; line-height: 1; }
+
+.support-jokes {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--warning) 45%, var(--line));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface-muted));
+}
+
+.support-jokes p { line-height: 1.4; }
+
+.support-links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.support-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  color: #fff;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  transition: filter 120ms ease, transform 120ms ease;
+}
+
+.support-link:hover,
+.support-link:focus-visible { filter: brightness(1.08); }
+
+.telegram-link { background: linear-gradient(135deg, #31a8e0, #147ab4); }
+.github-link { background: linear-gradient(135deg, #59636e, #24292f); }
+
+@media (max-width: 640px) {
+  .support-links { grid-template-columns: 1fr; }
+}
+
 .tab.is-locked, .subtab.is-locked { cursor: not-allowed; opacity: 0.5; }
 .tab.is-active.is-locked, .subtab.is-active.is-locked { opacity: 1; }
 
