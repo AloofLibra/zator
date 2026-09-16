@@ -31,7 +31,7 @@ deploy_dest_for() {
 
 # цвета и сеть определены в z2r.sh; при standalone-вызове даём минимум
 if [ -z "${yellow:-}" ]; then
-  plain='' red='' green='' yellow='' Fyellow='' Fcyan=''
+  plain='' red='' green='' yellow='' Fyellow='' Fcyan='' Bred='' Fplain=''
 fi
 if ! command -v z2r_fetch_url_to_file >/dev/null 2>&1; then
   z2r_fetch_url_to_file() {
@@ -833,9 +833,28 @@ $i. ${tar_file##*/}"
   return 0
 }
 
+deploy_releases_list_url() {
+  local path
+  path="$(deploy_releases_base)"
+  case "$path" in
+    https://github.com/*/releases/download)
+      path="${path#https://github.com/}"
+      path="${path%/releases/download}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  printf 'https://api.github.com/repos/%s/releases?per_page=20' "$path"
+}
+
 deploy_list_releases() {
-  local tmp="/tmp/z2r_deploy_releases_$$.json" i=1 tag date
-  if ! z2r_fetch_url_to_file "$tmp" "$(deploy_releases_base | sed 's#/download$##')?per_page=20"; then
+  local tmp="/tmp/z2r_deploy_releases_$$.json" i=1 tag date url
+  if ! url="$(deploy_releases_list_url)"; then
+    echo -e "${yellow}Источник-зеркало не отдаёт список релизов: смените источник (п.10) или обновляйтесь с latest (п.2).${plain}"
+    return 1
+  fi
+  if ! z2r_fetch_url_to_file "$tmp" "$url"; then
     echo -e "${red}Не удалось получить список релизов.${plain}"
     return 1
   fi
@@ -848,12 +867,16 @@ deploy_list_releases() {
   done <<EOF
 $(awk '
   /"tag_name"/ { tag = $0; sub(/.*"tag_name": *"/, "", tag); sub(/".*/, "", tag) }
-  /"published_at"/ { date = $0; sub(/.*"published_at": *"/, "", date); sub(/T.*/, "", date); printf "%s\t%s\n", tag, date; tag = "" }
+  /"published_at"/ { date = $0; sub(/.*"published_at": *"/, "", date); sub(/T.*/, "", date); if (tag != "" && tag != "latest") printf "%s\t%s\n", tag, date; tag = "" }
 ' "$tmp")
 EOF
   rm -f "$tmp"
   cat "$DEPLOY_RELEASES_LIST"
-  [ -s "$DEPLOY_RELEASES_LIST" ]
+  if [ ! -s "$DEPLOY_RELEASES_LIST" ]; then
+    echo -e "${red}Релизы не найдены или ответ источника не распознан.${plain}"
+    return 1
+  fi
+  return 0
 }
 
 # Выборочный сброс пользовательских файлов к эталону текущей версии
@@ -1002,7 +1025,7 @@ deploy_menu_header() {
     local cfg_date
     cfg_date="$(config_default_last_modified)"
     cfg_date="${cfg_date%% *}"
-    MENU_DEPLOY_NOTICE="${MENU_DEPLOY_NOTICE}${red}⬆ Есть новый конфиг от ${cfg_date}. Для применения: п.5 -> п.7${yellow}
+    MENU_DEPLOY_NOTICE="${MENU_DEPLOY_NOTICE}${Bred}${Fplain}⬆ Есть новый конфиг от ${cfg_date}. Для применения: п.5 -> п.7${plain}
 "
   fi
   return 0

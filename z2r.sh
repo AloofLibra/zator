@@ -1625,6 +1625,22 @@ webui_server_type() {
   echo "none"
 }
 
+webui_heal_hint() {
+  if command -v apk >/dev/null 2>&1; then
+    echo "apk update && apk add uhttpd coreutils-nohup"
+  elif command -v opkg >/dev/null 2>&1; then
+    if [ "$OSystem" = "entware" ]; then
+      echo "opkg update && opkg install uhttpd_kn coreutils-nohup"
+    else
+      echo "opkg update && opkg install uhttpd coreutils-nohup"
+    fi
+  elif command -v apt-get >/dev/null 2>&1; then
+    echo "apt update && apt install -y busybox"
+  else
+    echo "установите uhttpd (или busybox httpd) и nohup пакетным менеджером системы"
+  fi
+}
+
 webui_ensure_server_binary() {
   if [ "$(webui_server_type)" != "none" ]; then
     return 0
@@ -1820,6 +1836,15 @@ webui_start_service() {
       fi
       ;;
   esac
+  case "$(webui_status_text)" in
+    running:*) return 0 ;;
+  esac
+  sleep 1
+  case "$(webui_status_text)" in
+    running:*) return 0 ;;
+  esac
+  echo -e "${yellow}Web UI не поднялся после запуска (статус: $(webui_status_text)) — запустите «Диагностика Web UI» в этом подменю.${plain}"
+  return 1
 }
 
 webui_stop_service() {
@@ -1852,8 +1877,34 @@ webui_status_text() {
   if [ -x "$WEBUI_RUNNER" ]; then
     "$WEBUI_RUNNER" status 2>/dev/null || echo "stopped:none:${WEBUI_PORT}"
   else
-    echo "stopped:none:${WEBUI_PORT}"
+    echo "stopped:no-runner:${WEBUI_PORT}"
   fi
+}
+
+webui_status_human() {
+  local status="${1:-}" state server
+  [ -n "$status" ] || status="$(webui_status_text)"
+  state="${status%%:*}"
+  server="$(printf '%s' "$status" | cut -d: -f2)"
+  case "$state" in
+    running)
+      echo -e "${green}Запущена (сервер: ${server}).${plain}"
+      ;;
+    stopped)
+      case "$server" in
+        none)
+          echo -e "${red}Остановлена: не найден веб-сервер (uhttpd). Лечение: $(webui_heal_hint), затем п.1${plain}"
+          ;;
+        no-runner)
+          echo -e "${red}Файлы панели не установлены либо повреждены (нет run-webui.sh) — установите панель (п.1).${plain}"
+          ;;
+        *)
+          echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (лог ${WEBUI_ROOT}/run/webui.log).${plain}"
+          ;;
+      esac
+      ;;
+  esac
+  return 0
 }
 
 webui_print_urls() {
@@ -1864,10 +1915,141 @@ webui_print_urls() {
   fi
 }
 
+webui_diagnostics() {
+  local pid srv f init_script="" http_code
+  local pidfile="$WEBUI_ROOT/run/webui.pid"
+  local logfile="$WEBUI_ROOT/run/webui.log"
+  echo -e "${Fcyan}--- Диагностика Web UI ---${plain}"
+
+  echo -e "${yellow}Раннер:${plain}"
+  if [ -f "$WEBUI_RUNNER" ]; then
+    if [ -x "$WEBUI_RUNNER" ]; then
+      echo -e "  ${green}есть, исполняемый: $WEBUI_RUNNER${plain}"
+    else
+      echo -e "  ${red}есть, НЕ исполняемый (нужен chmod +x): $WEBUI_RUNNER${plain}"
+    fi
+    printf '  shebang: '
+    head -n 1 "$WEBUI_RUNNER" 2>/dev/null || echo "(не читается)"
+  else
+    echo -e "  ${red}отсутствует: $WEBUI_RUNNER${plain}"
+  fi
+
+  echo -e "${yellow}Веб-сервер:${plain}"
+  echo "  webui_server_type: $(webui_server_type 2>/dev/null || echo '?')"
+  for srv in uhttpd uhttpd_kn httpd; do
+    if PATH="$WEBUI_PATH" command -v "$srv" >/dev/null 2>&1; then
+      echo -e "  ${srv}: ${green}$(PATH="$WEBUI_PATH" command -v "$srv")${plain}"
+    else
+      echo "  ${srv}: нет"
+    fi
+  done
+  if PATH="$WEBUI_PATH" command -v busybox >/dev/null 2>&1; then
+    if PATH="$WEBUI_PATH" busybox --list 2>/dev/null | grep -qx httpd; then
+      echo "  busybox httpd applet: есть"
+    else
+      echo "  busybox httpd applet: нет (норма для Entware)"
+    fi
+  fi
+
+  echo -e "${yellow}nohup:${plain}"
+  if PATH="$WEBUI_PATH" command -v nohup >/dev/null 2>&1; then
+    echo -e "  ${green}$(PATH="$WEBUI_PATH" command -v nohup)${plain}"
+  else
+    echo -e "  ${red}нет — $(webui_heal_hint)${plain}"
+  fi
+
+  echo -e "${yellow}Автозапуск:${plain}"
+  case "$OSystem" in
+    WRT) init_script="/etc/init.d/z2r-webui" ;;
+    entware) init_script="/opt/etc/init.d/S92z2r-webui" ;;
+    *) init_script="/etc/systemd/system/z2r-webui.service" ;;
+  esac
+  if [ -f "$init_script" ]; then
+    echo -e "  ${green}$init_script${plain}"
+  else
+    echo -e "  ${red}$init_script отсутствует${plain}"
+  fi
+
+  echo -e "${yellow}Процесс и порт:${plain}"
+  if [ -f "$pidfile" ]; then
+    pid="$(cat "$pidfile" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo -e "  ${green}pid $pid жив${plain}"
+    else
+      echo -e "  ${red}pid-файл есть, процесс не отвечает: $pidfile${plain}"
+    fi
+  else
+    echo "  pid-файла нет: $pidfile"
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn 2>/dev/null | grep -q "[\:\.]${WEBUI_PORT}[[:space:]]"; then
+      echo -e "  порт ${WEBUI_PORT}: ${green}слушается${plain}"
+    else
+      echo -e "  порт ${WEBUI_PORT}: ${red}никто не слушает${plain}"
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -ltn 2>/dev/null | grep -q "[\:\.]${WEBUI_PORT}[[:space:]]"; then
+      echo -e "  порт ${WEBUI_PORT}: ${green}слушается (netstat)${plain}"
+    else
+      echo -e "  порт ${WEBUI_PORT}: ${red}никто не слушает (netstat)${plain}"
+    fi
+  else
+    echo "  ss/netstat недоступны"
+  fi
+
+  echo -e "${yellow}Лог (последние строки ${logfile}):${plain}"
+  if [ -f "$logfile" ]; then
+    tail -n 20 "$logfile" 2>/dev/null || echo "  (лог не читается)"
+  else
+    echo "  лога нет"
+  fi
+
+  echo -e "${yellow}Файлы панели:${plain}"
+  for f in index.html app.js styles.css; do
+    if [ -f "$WEBUI_WWW/$f" ]; then
+      echo -e "  www/$f: ${green}есть${plain}"
+    else
+      echo -e "  www/$f: ${red}нет${plain}"
+    fi
+  done
+  if [ -L "$WEBUI_WWW/cgi-bin" ]; then
+    echo -e "  www/cgi-bin: ${green}symlink -> $(readlink "$WEBUI_WWW/cgi-bin" 2>/dev/null)${plain}"
+  elif [ -d "$WEBUI_WWW/cgi-bin" ]; then
+    echo "  www/cgi-bin: каталог (не symlink)"
+  else
+    echo -e "  www/cgi-bin: ${red}нет${plain}"
+  fi
+
+  echo -e "${yellow}Локальный HTTP-запрос:${plain}"
+  if command -v curl >/dev/null 2>&1; then
+    http_code="$(curl -sS -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEBUI_PORT}/" 2>/dev/null || true)"
+    if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
+      echo -e "  ${green}HTTP ${http_code} — панель отвечает${plain}"
+    else
+      echo -e "  ${red}нет ответа: http://127.0.0.1:${WEBUI_PORT}/${plain}"
+    fi
+  else
+    echo "  curl недоступен"
+  fi
+
+  echo -e "${yellow}Место:${plain}"
+  df -h "$(dirname "$WEBUI_ROOT")" 2>/dev/null || true
+
+  if command -v opkg >/dev/null 2>&1; then
+    echo -e "${yellow}Пакеты (opkg):${plain}"
+    opkg list-installed 2>/dev/null | grep -Ei 'uhttpd|nohup|busybox' || echo "  (совпадений нет)"
+  fi
+
+  echo ""
+  webui_show_status
+  return 0
+}
+
 webui_show_status() {
   local status_line
   status_line="$(webui_status_text)"
   echo -e "${yellow}Web UI: ${plain}${status_line}"
+  webui_status_human "$status_line"
   echo -e "${yellow}URL примеры:${plain}"
   webui_print_urls
 }
@@ -1914,14 +2096,17 @@ webui_submenu() {
     esac
     echo -e "${cyan}--- Web UI ---${plain}"
     echo -e "${yellow}Состояние: ${plain}${status_line}"
+    webui_status_human "$status_line"
     echo ""
     submenu_item "1" "Установить/переустановить Web UI"
     submenu_item "2" "Показать статус и URL"
     if [ "$webui_running" = "1" ]; then
       submenu_item "3" "Перезапустить Web UI"
       submenu_item "4" "Удалить Web UI"
+      submenu_item "5" "Диагностика Web UI"
     else
       submenu_item "3" "Удалить Web UI"
+      submenu_item "4" "Диагностика Web UI"
     fi
     submenu_item "0" "Назад"
     echo ""
@@ -1930,11 +2115,24 @@ webui_submenu() {
       "1")
         # Обновление существующей панели — из релизного архива webui (сверка
         # sha, рестарт); установка с нуля — webui_install (зависимости и
-        # службу archive не ставит).
+        # службу archive не ставит, поэтому ниже — автовосстановление сервера).
         if [ -d "$WEBUI_WWW" ] && type deploy_from_tar >/dev/null 2>&1; then
-          deploy_from_tar "$(deploy_releases_base)/latest/zator-webui.tar.gz" webui latest \
-            || webui_install \
-            || echo -e "${red}Обновление Web UI не удалось.${plain}"
+          if deploy_from_tar "$(deploy_releases_base)/latest/zator-webui.tar.gz" webui latest; then
+            case "$(webui_status_text)" in
+              stopped:none:*)
+                echo -e "${yellow}Веб-сервер не найден — устанавливаю недостающие пакеты и запускаю панель.${plain}"
+                if webui_ensure_server_binary && webui_ensure_runtime_deps && webui_start_service; then
+                  echo -e "${green}Панель восстановлена.${plain}"
+                else
+                  echo -e "${red}Автовосстановление не удалось — запустите «Диагностика Web UI».${plain}"
+                fi
+                webui_show_status
+                ;;
+            esac
+          else
+            webui_install \
+              || echo -e "${red}Обновление Web UI не удалось.${plain}"
+          fi
         else
           webui_install || echo -e "${red}Установка/запуск Web UI не удался.${plain}"
         fi
@@ -1956,6 +2154,15 @@ webui_submenu() {
       "4")
         if [ "$webui_running" = "1" ]; then
           webui_remove || true
+        else
+          webui_diagnostics
+        fi
+        pause_enter
+        ;;
+      "5")
+        if [ "$webui_running" = "1" ]; then
+          webui_diagnostics
+          pause_enter
         else
           echo -e "${yellow}Неверный ввод.${plain}"
           sleep 1
