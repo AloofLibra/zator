@@ -45,7 +45,7 @@ Client scope: `scope` необязателен и по умолчанию рав
 | `set-lock` | валидация по `config_profile_max_strategy`/`config_profile_proto_list`; запись `profile.lock` + `locked.tsv` (`profile_state_set_and_apply`); для профиля 6 — правка `NFQWS2_PORTS_UDP` в конфиге + `service_zapret2 restart`; `curl` к проверочным целям (`profile_check_json`); `send_stats` (telemetry, если есть) |
 | `clear-lock` | запись `profile.lock` + `locked.tsv` в режим `auto`; для профиля 6 — правка портов + restart; telemetry |
 | `service` | вызов init-скрипта `/opt/zapret2/init.d/{openwrt,sysv}/zapret2 {start,stop,restart}` |
-| `check` | движок `z2r_tls_*` из `lib/netcheck.sh`: последовательная проверка 4 целей (внутри цели TLS 1.2/1.3 параллельно), HEAD-пробы `-L -k` + докачка до 64КБ при 2xx/3xx; `get_yt_cluster_domain` делает `curl` к `redirector.xn--ngstr-lra8j.com` (двойной запрос, fallback `rr1---sn-5goeenes.googlevideo.com`) |
+| `check` | движок `z2r_tls_*` из `lib/netcheck.sh`: последовательная проверка 4 целей (внутри цели TLS 1.2/1.3 параллельно), HEAD-пробы `-L -k` + докачка до 64КБ при 2xx/3xx; `get_yt_cluster_domain` делает `curl` к `redirector.xn--ngstr-lra8j.com` (двойной запрос, fallback `rr2---sn-4g5ednly.googlevideo.com`) |
 | `domains` | списки/локи через `lib/strategies.sh`; для `custom_rkn` действия `add`/`set_strategy`/`check` дополнительно прогоняют домен через тот же движок `z2r_tls_*` и возвращают `"check"` |
 
 ---
@@ -314,7 +314,7 @@ TLS 1.2 (`--tlsv1.2 --tls-max 1.2`) и TLS 1.3 (`--tlsv1.3`) — HEAD-запро
 пути отдаёт 404 — это норма). 4 цели проверяются **последовательно**, по одной
 (внутри цели версии TLS 1.2/1.3 — два параллельных curl); `get_yt_cluster_domain`
 запрашивает реальный кластер googlevideo с `-4 -k --max-time 4` (двойной запрос,
-fallback `rr1---sn-5goeenes.googlevideo.com`).
+fallback `rr2---sn-4g5ednly.googlevideo.com`).
 
 Успех (`200 OK`):
 
@@ -347,7 +347,7 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 
 `get_yt_cluster_domain` делает `curl` к
 `redirector.xn--ngstr-lra8j.com` (двойной запрос, fallback
-`rr1---sn-5goeenes.googlevideo.com`) — теперь тоже из `lib/netcheck.sh`.
+`rr2---sn-4g5ednly.googlevideo.com`) — теперь тоже из `lib/netcheck.sh`.
 
 Ошибок через `send_error` нет.
 
