@@ -1606,12 +1606,15 @@ webui_has_busybox_httpd() {
 }
 
 webui_server_type() {
-  if PATH="$WEBUI_PATH" command -v uhttpd >/dev/null 2>&1; then
-    echo "uhttpd"
+  # На Keenetic при наличии обоих серверов предпочтителен родной uhttpd_kn
+  # (Entware-uhttpd рядом с компонентами прошивки конфликтует — кейс из
+  # телеграма: панель ломилась в uhttpd, лечилось только выносом DDNS).
+  if PATH="$WEBUI_PATH" command -v uhttpd_kn >/dev/null 2>&1 || [ -x /opt/sbin/uhttpd_kn ]; then
+    echo "uhttpd_kn"
     return
   fi
-  if PATH="$WEBUI_PATH" command -v uhttpd_kn >/dev/null 2>&1; then
-    echo "uhttpd_kn"
+  if PATH="$WEBUI_PATH" command -v uhttpd >/dev/null 2>&1; then
+    echo "uhttpd"
     return
   fi
   if PATH="$WEBUI_PATH" command -v httpd >/dev/null 2>&1; then
@@ -1942,8 +1945,12 @@ webui_diagnostics() {
   echo -e "${yellow}Веб-сервер:${plain}"
   echo "  webui_server_type: $(webui_server_type 2>/dev/null || echo '?')"
   for srv in uhttpd uhttpd_kn httpd; do
+    # uhttpd_kn дополнительно ищем файлом: встречается установленный пакет
+    # с бинарём вне PATH (кейс: диагностике «нет», а opkg показывает пакет).
     if PATH="$WEBUI_PATH" command -v "$srv" >/dev/null 2>&1; then
       echo -e "  ${srv}: ${green}$(PATH="$WEBUI_PATH" command -v "$srv")${plain}"
+    elif [ "$srv" = "uhttpd_kn" ] && [ -x /opt/sbin/uhttpd_kn ]; then
+      echo -e "  ${srv}: ${green}/opt/sbin/uhttpd_kn (вне PATH)${plain}"
     else
       echo "  ${srv}: нет"
     fi
