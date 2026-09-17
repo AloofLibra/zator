@@ -372,7 +372,7 @@ load_real
 #     «5» при stopped — неверный ввод.
 webui_status_text() { echo "stopped:none:17682"; }
 out="$(printf '4\n\n0\n' | webui_submenu 2>&1)"
-printf '%s\n' "$out" | grep -q 'Диагностика Web UI' || fail "4 при stopped должен открывать диагностику"
+printf '%s\n' "$out" | grep -q 'Диагностик' || fail "4 при stopped должен открывать диагностику"
 load_real
 webui_status_text() { echo "stopped:none:17682"; }
 out="$(printf '5\n0\n' | webui_submenu 2>&1)"
@@ -475,7 +475,7 @@ webui_status_text() { echo "stopped:none:17682"; }
 webui_ensure_server_binary() { echo ENSURE_SERVER >> "$HEAL_LOG"; return 1; }
 out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
 printf '%s\n' "$out" | grep -q 'Автовосстановление не удалось' || fail "нет сообщения о неудаче самолечения"
-printf '%s\n' "$out" | grep -q 'Диагностика Web UI' || fail "неудача самолечения без подсказки диагностики"
+printf '%s\n' "$out" | grep -q 'Диагностик' || fail "неудача самолечения без подсказки диагностики"
 
 deploy_from_tar() { return 1; }
 webui_install() { echo "INSTALL_CALLED"; return 0; }
@@ -494,7 +494,7 @@ webui_status_text() { echo "stopped:uhttpd:17682"; }
 out="$(webui_start_service 2>&1)"
 [ $? -eq 1 ] || fail "мёртвый старт должен возвращать 1"
 printf '%s\n' "$out" | grep -q 'не поднялся после запуска' || fail "нет предупреждения о мёртвом старте"
-printf '%s\n' "$out" | grep -q 'Диагностика Web UI' || fail "предупреждение без подсказки диагностики"
+printf '%s\n' "$out" | grep -q 'Диагностик' || fail "предупреждение без подсказки диагностики"
 webui_status_text() { echo "running:uhttpd:17682"; }
 webui_start_service >/dev/null 2>&1 || fail "живой старт не должен возвращать ошибку"
 load_real

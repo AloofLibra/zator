@@ -1825,29 +1825,37 @@ EOF
 }
 
 webui_start_service() {
-  case "$OSystem" in
-    "WRT")
-      /etc/init.d/z2r-webui start
-      ;;
-    "entware")
-      /opt/etc/init.d/S92z2r-webui start
-      ;;
-    *)
-      if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/z2r-webui.service ]; then
-        systemctl restart z2r-webui.service
-      else
-        bash "$WEBUI_RUNNER" restart >/dev/null 2>&1 || bash "$WEBUI_RUNNER" start >/dev/null 2>&1
-      fi
-      ;;
-  esac
-  case "$(webui_status_text)" in
-    running:*) return 0 ;;
-  esac
-  sleep 1
-  case "$(webui_status_text)" in
-    running:*) return 0 ;;
-  esac
-  echo -e "${yellow}Web UI не поднялся после запуска (статус: $(webui_status_text)) — запустите «Диагностика Web UI» в этом подменю.${plain}"
+  local attempt
+  for attempt in 1 2; do
+    case "$OSystem" in
+      "WRT")
+        /etc/init.d/z2r-webui start
+        ;;
+      "entware")
+        /opt/etc/init.d/S92z2r-webui start
+        ;;
+      *)
+        if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/z2r-webui.service ]; then
+          systemctl restart z2r-webui.service
+        else
+          bash "$WEBUI_RUNNER" restart >/dev/null 2>&1 || bash "$WEBUI_RUNNER" start >/dev/null 2>&1
+        fi
+        ;;
+    esac
+    case "$(webui_status_text)" in
+      running:*) return 0 ;;
+    esac
+    sleep 1
+    case "$(webui_status_text)" in
+      running:*) return 0 ;;
+    esac
+    # Первая попытка не удалась: порт мог ещё держать умирающий uhttpd —
+    # короткая пауза и второй заход перед тем, как признавать неудачу.
+    if [ "$attempt" = "1" ]; then
+      sleep 2
+    fi
+  done
+  echo -e "${yellow}Web UI не поднялся после запуска (статус: $(webui_status_text)) — запустите «Диагностику Web UI» в этом подменю.${plain}"
   return 1
 }
 
@@ -1866,6 +1874,16 @@ webui_stop_service() {
       [ -x "$WEBUI_RUNNER" ] && "$WEBUI_RUNNER" stop >/dev/null 2>&1 || true
       ;;
   esac
+  # Даём порту освободиться: старт сразу после стопа ловит ещё умирающий
+  # uhttpd (кейс с Keenetic: панель поднималась только со второго запуска).
+  local i
+  if command -v netstat >/dev/null 2>&1; then
+    for i in 1 2 3 4; do
+      netstat -ltn 2>/dev/null | grep -q "[:.]${WEBUI_PORT:-17682}[[:space:]]" || return 0
+      sleep 1
+    done
+  fi
+  return 0
 }
 
 webui_restart() {
