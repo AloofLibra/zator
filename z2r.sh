@@ -1000,6 +1000,18 @@ z2r_install_runtime_libs_from_archive() {
   done
 }
 
+# Обёртка загрузки для get_repo: при повторной установке zapret2 (меню 2/5->6,
+# Z2R_GET_REPO_SKIP_EXISTING=1) существующий непустой zator-контент не
+# перекачиваем — он не зависит от версии запрета. Файлы в свежесозданный
+# $ZAPRET2_ROOT (config.default, иниты запрета) под заграждение не попадают:
+# их там просто нет. Обновление контента — отдельный путь (меню 5 -> 7 / 5 -> 2).
+z2r_repo_get() {
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$1" ]; then
+    return 0
+  fi
+  z2r_download_project_file "$1" "$2"
+}
+
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
 
@@ -1009,35 +1021,62 @@ get_repo() {
   z2r_install_runtime_libs_from_archive || return 1
   client_scope_lua_config_install_default || return 1
   chmod 777 "$ORCH_DIR" 2>/dev/null || true
-  locked_lua_update_from_repo || true
-  rst_guard_lua_update_from_repo || true
-  circular_runtime_update_from_repo || return 1
-  strategy_validator_install_service || return 1
+  # При повторной установке lua-модули и сервисы валидаторов уже на месте:
+  # не качаем и не переустанавливаем (полный прогон — только если что-то
+  # отсутствует или это первая установка).
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$ORCH_LUA_LOCKED" ]; then
+    :
+  else
+    locked_lua_update_from_repo || true
+  fi
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$RST_GUARD_LUA" ]; then
+    :
+  else
+    rst_guard_lua_update_from_repo || true
+  fi
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
+    :
+  else
+    circular_runtime_update_from_repo || return 1
+  fi
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
+    :
+  else
+    strategy_validator_install_service || return 1
+  fi
   # netrogat.txt — пользовательский список исключений: существующий файл не
   # перезаписываем (иначе обновления затирают добавленные домены). Остальные
   # списки в цикле — проектные, обновляем их как есть.
   for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
-    z2r_download_project_file "$ZATOR_ROOT/lists/$listfile" "lists/$listfile" || return 1
+    z2r_repo_get "$ZATOR_ROOT/lists/$listfile" "lists/$listfile" || return 1
   done
   if [ ! -f "$ZATOR_ROOT/lists/netrogat.txt" ]; then
     z2r_download_project_file "$ZATOR_ROOT/lists/netrogat.txt" "lists/netrogat.txt" || touch "$ZATOR_ROOT/lists/netrogat.txt"
   fi
-  z2r_download_project_file "$fake_archive" "fake_files.tar.gz" || return 1
-  tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
+  # fake-архив нужен только когда блобы ещё не распакованы (при повторной
+  # установке files/fake уже на месте: tar качать и распаковывать незачем)
+  local need_fake=1
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$ZATOR_ROOT/files/fake/stun.bin" ]; then
+    need_fake=0
+  fi
+  if [ "$need_fake" = 1 ]; then
+    z2r_repo_get "$fake_archive" "fake_files.tar.gz" || return 1
+    tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
+      rm -f "$fake_archive"
+      return 1
+    }
     rm -f "$fake_archive"
-    return 1
-  }
-  rm -f "$fake_archive"
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
+  fi
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
   # TCP_Custom.txt — пользовательский список: существующий файл не трогаем.
   # Старое безусловное скачивание затирало домены пустым Custom.txt из репо
   # при каждом обновлении, при этом локи в locked.tsv переживали.
   if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ]; then
     z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
   fi
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt" || return 1
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt" || return 1
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt" || return 1
   blockcheck2_prepare_z4r_test || return 1
   if [ ! -f "$ZATOR_ROOT/files/fake/custom_tls.bin" ]; then
     mkdir -p "$ZATOR_ROOT/files/fake"
@@ -1063,7 +1102,7 @@ get_repo() {
     z2r_download_project_file "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt" || touch "$ZATOR_ROOT/lists/netrogat_substrings.txt"
   fi
   mkdir -p "$ZATOR_ROOT/data/providers"
-  if z2r_download_project_file "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"; then
+  if z2r_repo_get "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"; then
     grep -qE '^[0-9]+:' "$ZATOR_ROOT/data/providers/asn.txt" 2>/dev/null || rm -f "$ZATOR_ROOT/data/providers/asn.txt"
   fi
   if [ -f "/opt/netrogat.txt" ]; then
@@ -1071,15 +1110,15 @@ get_repo() {
     echo "Востановление листа исключений выполнено."
   fi
   # config.default и keenetic-policy.sh — zapret2-native, остаются в $ZAPRET2_ROOT.
- z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default" || return 1
+ z2r_repo_get "$ZAPRET2_ROOT/config.default" "config.default" || return 1
   # Add new optional settings without breaking an older deployed template.
   config_client_scope_ensure "$ZAPRET2_ROOT/config.default" || return 1
   mkdir -p "$ZATOR_ROOT/firewall"
-  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
+  z2r_repo_get "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh" || return 1
+  z2r_repo_get "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
   chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
   if [ "$hardware" = "keenetic" ]; then
-    z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
+    z2r_repo_get "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
   fi
   if fwtype_nft_available; then
@@ -2655,7 +2694,17 @@ while true; do
  zapret_get
  
  # Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
+  # Повторная установка (смена версии zapret2): zator-контент уже развёрнут и
+  # от версии запрета не зависит — существующие файлы не перекачиваем
+  # (добирается только отсутствующее, напр. config.default в свежем
+  # $ZAPRET2_ROOT). Обновление контента — отдельный путь: меню 5 -> 7.
+  if [ -d "$ZATOR_ROOT/lua" ] && [ -d "$ZATOR_ROOT/extra_strats" ]; then
+    Z2R_GET_REPO_SKIP_EXISTING=1
+  else
+    Z2R_GET_REPO_SKIP_EXISTING=0
+  fi
   get_repo
+  unset Z2R_GET_REPO_SKIP_EXISTING
   client_scope_config_restore
   if [ ! -s "$ORCH_LUA_LOCKED" ]; then
    echo "Повторная попытка загрузки locked.lua..."
