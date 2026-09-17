@@ -1006,9 +1006,17 @@ z2r_install_runtime_libs_from_archive() {
 # $ZAPRET2_ROOT (config.default, иниты запрета) под заграждение не попадают:
 # их там просто нет. Обновление контента — отдельный путь (меню 5 -> 7 / 5 -> 2).
 z2r_repo_get() {
-  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$1" ]; then
-    return 0
-  fi
+  # Пропуск действует ТОЛЬКО на zator-контент ($ZATOR_ROOT): файлы в
+  # $ZAPRET2_ROOT обязаны обновляться всегда — архив zapret2 распаковывает
+  # туда СВОИ config.default/иниты, которые затор должен перезаписать
+  # (иначе остаются апстримовские настройки и парсер стратегий даёт 0).
+  case "$1" in
+    "$ZATOR_ROOT"/*)
+      if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$1" ]; then
+        return 0
+      fi
+      ;;
+  esac
   z2r_download_project_file "$1" "$2"
 }
 
@@ -1110,7 +1118,7 @@ get_repo() {
     echo "Востановление листа исключений выполнено."
   fi
   # config.default и keenetic-policy.sh — zapret2-native, остаются в $ZAPRET2_ROOT.
- z2r_repo_get "$ZAPRET2_ROOT/config.default" "config.default" || return 1
+ z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default" || return 1
   # Add new optional settings without breaking an older deployed template.
   config_client_scope_ensure "$ZAPRET2_ROOT/config.default" || return 1
   mkdir -p "$ZATOR_ROOT/firewall"
@@ -1118,7 +1126,7 @@ get_repo() {
   z2r_repo_get "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
   chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
   if [ "$hardware" = "keenetic" ]; then
-    z2r_repo_get "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
+    z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
   fi
   if fwtype_nft_available; then

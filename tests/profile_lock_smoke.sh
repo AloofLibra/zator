@@ -570,4 +570,12 @@ menu_config_snapshot "$TMP_DIR/missing-$$.cfg"
 grep -qF 'Версия config файла от: ${plain}${MENU_CONFIG_DATE}' "$REPO_DIR/z2r.sh" \
   || fail "main menu does not show config file date"
 
+# Регрессия reinstall-skip: Z2R_GET_REPO_SKIP_EXISTING не должен глотать
+# замену zapret2-native файлов — архив zapret2 распаковывает свои
+# config.default/иниты, затор обязан их перезаписывать (кейс: после
+# переустановки на роутере оставался апстримовский config.default,
+# парсер стратегий возвращал 0 и все локи «вне диапазона»).
+grep -q 'z2r_repo_get "$ZAPRET2_ROOT/config.default"' "$REPO_DIR/z2r.sh"   && fail "config.default не должен идти через skip-обёртку"
+awk '/^z2r_repo_get\(\) \{/,/^\}/' "$REPO_DIR/z2r.sh" | grep -q 'ZATOR_ROOT"/\*'   || fail "z2r_repo_get: пропуск не ограничен \$ZATOR_ROOT"
+
 echo "profile_lock smoke ok"
