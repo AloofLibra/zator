@@ -390,6 +390,25 @@ grep -q '^restart$' "$RESTART_MARK" || fail "нет restart после прим�
 ok "payload config.default применяется к живому конфигу (stop -> apply -> restart)"
 unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
 
+# --- 4b-2. webui-only деплой не трогает живой конфиг ---
+# регресс: безусловный deploy_apply_config_default в конце deploy_apply_staging
+# применял к живому конфигу устаревший payload config.default от прошлого
+# полного релиза (бэкап-промпт + рестарт zapret2 при обновлении панели)
+APPLY_W_MARK="$WORK/apply-webui.mark" RESTART_W_MARK="$WORK/restart-webui.mark"
+config_apply_from_default() { echo applied >> "$APPLY_W_MARK"; }
+z2r_service_action() { echo "$1" >> "$RESTART_W_MARK"; }
+backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
+printf 'LIVE-CONFIG-WEBUI\n' > "$ZAPRET2_ROOT/config"
+cfgdef_sum_before="$(cksum "$ZAPRET2_ROOT/config.default" 2>/dev/null)"
+deploy_from_tar "$DIST/zator-webui.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (webui) упал"
+[ -s "$APPLY_W_MARK" ] && fail "webui-деплой вызвал config_apply_from_default"
+[ -s "$RESTART_W_MARK" ] && fail "webui-деплой дёрнул zapret2 (stop/restart)"
+grep -q '^LIVE-CONFIG-WEBUI$' "$ZAPRET2_ROOT/config" || fail "webui-деплой изменил живой config"
+[ "$(cksum "$ZAPRET2_ROOT/config.default" 2>/dev/null)" = "$cfgdef_sum_before" ] \
+  || fail "webui-деплой тронул эталон config.default"
+unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
+ok "webui-only деплой не трогает живой конфиг и эталон"
+
 # --- 4c. лёгкий путь п.7: применить установленный config.default без сети ---
 APPLY2_MARK="$WORK/apply2.mark"
 config_apply_from_default() { echo applied >> "$APPLY2_MARK"; }

@@ -496,7 +496,13 @@ deploy_apply_staging() {
     fi
   fi
   deploy_post_apply "$staging" "$tracking" "$z2r_updated" "$webui_updated"
-  deploy_apply_config_default || true
+  # config.default применяется только из core/full-архива: webui-only деплой
+  # не должен трогать живой конфиг и эталон. Без проверки deploy_apply_config_default
+  # срабатывает на устаревший payload от прошлого полного релиза (бэкап-промпт,
+  # рестарт zapret2 при обычном обновлении панели).
+  if [ -e "$staging/_root/z2r.sh" ] || [ -d "$staging/z2r_lib" ]; then
+    deploy_apply_config_default || true
+  fi
 }
 
 # Режим C: наполнение нового дерева из старого. Перенос делается hardlink'ами
@@ -531,6 +537,11 @@ deploy_carry_over_old() {
 deploy_apply_newdir() {
   local newdir="$1" tracking="$2" fresh="$3"
   local z2r_updated=0 webui_updated=0 olddir="${ZATOR_ROOT}.old.$$"
+  # ядро ли принёс этот архив — считаем ДО переноса: после mv дерево смешано
+  # с перенесёнными файлами старой установки, z2r_lib есть даже при webui-only
+  # (см. guard в deploy_apply_staging)
+  local has_core=0
+  if [ -e "$newdir/_root/z2r.sh" ] || [ -d "$newdir/z2r_lib" ]; then has_core=1; fi
   if [ -f "$newdir/_root/z2r.sh" ]; then
     deploy_install_file "$newdir/_root/z2r.sh" "$Z2R_SCRIPT_DEST" 1 || return 1
     rm -rf "$newdir/_root"
@@ -562,7 +573,9 @@ deploy_apply_newdir() {
     ln -sfn ../cgi-bin "$ZATOR_ROOT/webui/www/cgi-bin" 2>/dev/null || true
   fi
   deploy_post_apply "$ZATOR_ROOT" "$tracking" "$z2r_updated" "$webui_updated"
-  deploy_apply_config_default || true
+  if [ "$has_core" = 1 ]; then
+    deploy_apply_config_default || true
+  fi
 }
 
 # Основной вход: deploy_from_tar <файл|url> [variant] [tag]
