@@ -1000,6 +1000,26 @@ z2r_install_runtime_libs_from_archive() {
   done
 }
 
+# Обёртка загрузки для get_repo: при повторной установке zapret2 (меню 2/5->6,
+# Z2R_GET_REPO_SKIP_EXISTING=1) существующий непустой zator-контент не
+# перекачиваем — он не зависит от версии запрета. Файлы в свежесозданный
+# $ZAPRET2_ROOT (config.default, иниты запрета) под заграждение не попадают:
+# их там просто нет. Обновление контента — отдельный путь (меню 5 -> 7 / 5 -> 2).
+z2r_repo_get() {
+  # Пропуск действует ТОЛЬКО на zator-контент ($ZATOR_ROOT): файлы в
+  # $ZAPRET2_ROOT обязаны обновляться всегда — архив zapret2 распаковывает
+  # туда СВОИ config.default/иниты, которые затор должен перезаписать
+  # (иначе остаются апстримовские настройки и парсер стратегий даёт 0).
+  case "$1" in
+    "$ZATOR_ROOT"/*)
+      if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$1" ]; then
+        return 0
+      fi
+      ;;
+  esac
+  z2r_download_project_file "$1" "$2"
+}
+
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
 
@@ -1009,35 +1029,62 @@ get_repo() {
   z2r_install_runtime_libs_from_archive || return 1
   client_scope_lua_config_install_default || return 1
   chmod 777 "$ORCH_DIR" 2>/dev/null || true
-  locked_lua_update_from_repo || true
-  rst_guard_lua_update_from_repo || true
-  circular_runtime_update_from_repo || return 1
-  strategy_validator_install_service || return 1
+  # При повторной установке lua-модули и сервисы валидаторов уже на месте:
+  # не качаем и не переустанавливаем (полный прогон — только если что-то
+  # отсутствует или это первая установка).
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$ORCH_LUA_LOCKED" ]; then
+    :
+  else
+    locked_lua_update_from_repo || true
+  fi
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$RST_GUARD_LUA" ]; then
+    :
+  else
+    rst_guard_lua_update_from_repo || true
+  fi
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
+    :
+  else
+    circular_runtime_update_from_repo || return 1
+  fi
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
+    :
+  else
+    strategy_validator_install_service || return 1
+  fi
   # netrogat.txt — пользовательский список исключений: существующий файл не
   # перезаписываем (иначе обновления затирают добавленные домены). Остальные
   # списки в цикле — проектные, обновляем их как есть.
   for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
-    z2r_download_project_file "$ZATOR_ROOT/lists/$listfile" "lists/$listfile" || return 1
+    z2r_repo_get "$ZATOR_ROOT/lists/$listfile" "lists/$listfile" || return 1
   done
   if [ ! -f "$ZATOR_ROOT/lists/netrogat.txt" ]; then
     z2r_download_project_file "$ZATOR_ROOT/lists/netrogat.txt" "lists/netrogat.txt" || touch "$ZATOR_ROOT/lists/netrogat.txt"
   fi
-  z2r_download_project_file "$fake_archive" "fake_files.tar.gz" || return 1
-  tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
+  # fake-архив нужен только когда блобы ещё не распакованы (при повторной
+  # установке files/fake уже на месте: tar качать и распаковывать незачем)
+  local need_fake=1
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$ZATOR_ROOT/files/fake/stun.bin" ]; then
+    need_fake=0
+  fi
+  if [ "$need_fake" = 1 ]; then
+    z2r_repo_get "$fake_archive" "fake_files.tar.gz" || return 1
+    tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
+      rm -f "$fake_archive"
+      return 1
+    }
     rm -f "$fake_archive"
-    return 1
-  }
-  rm -f "$fake_archive"
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
+  fi
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
   # TCP_Custom.txt — пользовательский список: существующий файл не трогаем.
   # Старое безусловное скачивание затирало домены пустым Custom.txt из репо
   # при каждом обновлении, при этом локи в locked.tsv переживали.
   if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ]; then
     z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
   fi
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt" || return 1
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt" || return 1
+  z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt" || return 1
   blockcheck2_prepare_z4r_test || return 1
   if [ ! -f "$ZATOR_ROOT/files/fake/custom_tls.bin" ]; then
     mkdir -p "$ZATOR_ROOT/files/fake"
@@ -1063,7 +1110,7 @@ get_repo() {
     z2r_download_project_file "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt" || touch "$ZATOR_ROOT/lists/netrogat_substrings.txt"
   fi
   mkdir -p "$ZATOR_ROOT/data/providers"
-  if z2r_download_project_file "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"; then
+  if z2r_repo_get "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"; then
     grep -qE '^[0-9]+:' "$ZATOR_ROOT/data/providers/asn.txt" 2>/dev/null || rm -f "$ZATOR_ROOT/data/providers/asn.txt"
   fi
   if [ -f "/opt/netrogat.txt" ]; then
@@ -1075,8 +1122,8 @@ get_repo() {
   # Add new optional settings without breaking an older deployed template.
   config_client_scope_ensure "$ZAPRET2_ROOT/config.default" || return 1
   mkdir -p "$ZATOR_ROOT/firewall"
-  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
+  z2r_repo_get "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh" || return 1
+  z2r_repo_get "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
   chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
   if [ "$hardware" = "keenetic" ]; then
     z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
@@ -1606,12 +1653,15 @@ webui_has_busybox_httpd() {
 }
 
 webui_server_type() {
-  if PATH="$WEBUI_PATH" command -v uhttpd >/dev/null 2>&1; then
-    echo "uhttpd"
+  # На Keenetic при наличии обоих серверов предпочтителен родной uhttpd_kn
+  # (Entware-uhttpd рядом с компонентами прошивки конфликтует — кейс из
+  # телеграма: панель ломилась в uhttpd, лечилось только выносом DDNS).
+  if PATH="$WEBUI_PATH" command -v uhttpd_kn >/dev/null 2>&1 || [ -x /opt/sbin/uhttpd_kn ]; then
+    echo "uhttpd_kn"
     return
   fi
-  if PATH="$WEBUI_PATH" command -v uhttpd_kn >/dev/null 2>&1; then
-    echo "uhttpd_kn"
+  if PATH="$WEBUI_PATH" command -v uhttpd >/dev/null 2>&1; then
+    echo "uhttpd"
     return
   fi
   if PATH="$WEBUI_PATH" command -v httpd >/dev/null 2>&1; then
@@ -1694,10 +1744,11 @@ webui_ensure_runtime_deps() {
     if PATH="$WEBUI_PATH" command -v busybox >/dev/null 2>&1 && PATH="$WEBUI_PATH" busybox --list 2>/dev/null | grep -qx 'nohup'; then
       return 0
     fi
-    echo -e "${red}Не удалось найти или установить nohup для web UI.${plain}"
-    [ "$OSystem" = "entware" ] && echo -e "${yellow}Для Keenetic/Entware нужен пакет coreutils-nohup.${plain}"
-    [ "$OSystem" = "WRT" ] && echo -e "${yellow}Для OpenWrt нужен пакет coreutils-nohup или BusyBox с applet nohup.${plain}"
-    return 1
+    # nohup недоступен и не установился (например, фиды opkg легли) — это
+    # НЕ приговор: run-webui.sh умеет стартовать без nohup (setsid или
+    # trap-игнор + фоновый запуск с редиректом). Предупреждаем и продолжаем.
+    echo -e "${yellow}nohup не найден и не установился (пакетные фиды недоступны?).${plain}"
+    echo -e "${yellow}Панель запустится без него (setsid/фон с редиректом) — на работу не влияет.${plain}"
   fi
 
   return 0
@@ -1821,29 +1872,37 @@ EOF
 }
 
 webui_start_service() {
-  case "$OSystem" in
-    "WRT")
-      /etc/init.d/z2r-webui start
-      ;;
-    "entware")
-      /opt/etc/init.d/S92z2r-webui start
-      ;;
-    *)
-      if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/z2r-webui.service ]; then
-        systemctl restart z2r-webui.service
-      else
-        bash "$WEBUI_RUNNER" restart >/dev/null 2>&1 || bash "$WEBUI_RUNNER" start >/dev/null 2>&1
-      fi
-      ;;
-  esac
-  case "$(webui_status_text)" in
-    running:*) return 0 ;;
-  esac
-  sleep 1
-  case "$(webui_status_text)" in
-    running:*) return 0 ;;
-  esac
-  echo -e "${yellow}Web UI не поднялся после запуска (статус: $(webui_status_text)) — запустите «Диагностика Web UI» в этом подменю.${plain}"
+  local attempt
+  for attempt in 1 2; do
+    case "$OSystem" in
+      "WRT")
+        /etc/init.d/z2r-webui start
+        ;;
+      "entware")
+        /opt/etc/init.d/S92z2r-webui start
+        ;;
+      *)
+        if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/z2r-webui.service ]; then
+          systemctl restart z2r-webui.service
+        else
+          bash "$WEBUI_RUNNER" restart >/dev/null 2>&1 || bash "$WEBUI_RUNNER" start >/dev/null 2>&1
+        fi
+        ;;
+    esac
+    case "$(webui_status_text)" in
+      running:*) return 0 ;;
+    esac
+    sleep 1
+    case "$(webui_status_text)" in
+      running:*) return 0 ;;
+    esac
+    # Первая попытка не удалась: порт мог ещё держать умирающий uhttpd —
+    # короткая пауза и второй заход перед тем, как признавать неудачу.
+    if [ "$attempt" = "1" ]; then
+      sleep 2
+    fi
+  done
+  echo -e "${yellow}Web UI не поднялся после запуска (статус: $(webui_status_text)) — запустите «Диагностику Web UI» в этом подменю.${plain}"
   return 1
 }
 
@@ -1862,6 +1921,16 @@ webui_stop_service() {
       [ -x "$WEBUI_RUNNER" ] && "$WEBUI_RUNNER" stop >/dev/null 2>&1 || true
       ;;
   esac
+  # Даём порту освободиться: старт сразу после стопа ловит ещё умирающий
+  # uhttpd (кейс с Keenetic: панель поднималась только со второго запуска).
+  local i
+  if command -v netstat >/dev/null 2>&1; then
+    for i in 1 2 3 4; do
+      netstat -ltn 2>/dev/null | grep -q "[:.]${WEBUI_PORT:-17682}[[:space:]]" || return 0
+      sleep 1
+    done
+  fi
+  return 0
 }
 
 webui_restart() {
@@ -1899,7 +1968,11 @@ webui_status_human() {
           echo -e "${red}Файлы панели не установлены либо повреждены (нет run-webui.sh) — установите панель (п.1).${plain}"
           ;;
         *)
-          echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (лог ${WEBUI_ROOT}/run/webui.log).${plain}"
+          if [ "$OSystem" = "WRT" ] && command -v logread >/dev/null 2>&1; then
+            echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (ошибки procd в «logread | grep -i uhttpd»).${plain}"
+          else
+            echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (лог ${WEBUI_ROOT}/run/webui.log).${plain}"
+          fi
           ;;
       esac
       ;;
@@ -1937,8 +2010,12 @@ webui_diagnostics() {
   echo -e "${yellow}Веб-сервер:${plain}"
   echo "  webui_server_type: $(webui_server_type 2>/dev/null || echo '?')"
   for srv in uhttpd uhttpd_kn httpd; do
+    # uhttpd_kn дополнительно ищем файлом: встречается установленный пакет
+    # с бинарём вне PATH (кейс: диагностике «нет», а opkg показывает пакет).
     if PATH="$WEBUI_PATH" command -v "$srv" >/dev/null 2>&1; then
       echo -e "  ${srv}: ${green}$(PATH="$WEBUI_PATH" command -v "$srv")${plain}"
+    elif [ "$srv" = "uhttpd_kn" ] && [ -x /opt/sbin/uhttpd_kn ]; then
+      echo -e "  ${srv}: ${green}/opt/sbin/uhttpd_kn (вне PATH)${plain}"
     else
       echo "  ${srv}: нет"
     fi
@@ -2002,6 +2079,12 @@ webui_diagnostics() {
     tail -n 20 "$logfile" 2>/dev/null || echo "  (лог не читается)"
   else
     echo "  лога нет"
+  fi
+  # На OpenWrt панель стартует через procd: stdout/stderr демона идут в
+  # syslog, webui.log не создаётся — показываем syslog-хвост сразу.
+  if [ "$OSystem" = "WRT" ] && command -v logread >/dev/null 2>&1; then
+    echo -e "${yellow}Syslog (uhttpd/webui, OpenWrt/procd):${plain}"
+    logread 2>/dev/null | grep -iE "uhttpd|webui|run-webui" | tail -n 15 || echo "  (совпадений нет)"
   fi
 
   echo -e "${yellow}Файлы панели:${plain}"
@@ -2619,7 +2702,17 @@ while true; do
  zapret_get
  
  # Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
+  # Повторная установка (смена версии zapret2): zator-контент уже развёрнут и
+  # от версии запрета не зависит — существующие файлы не перекачиваем
+  # (добирается только отсутствующее, напр. config.default в свежем
+  # $ZAPRET2_ROOT). Обновление контента — отдельный путь: меню 5 -> 7.
+  if [ -d "$ZATOR_ROOT/lua" ] && [ -d "$ZATOR_ROOT/extra_strats" ]; then
+    Z2R_GET_REPO_SKIP_EXISTING=1
+  else
+    Z2R_GET_REPO_SKIP_EXISTING=0
+  fi
   get_repo
+  unset Z2R_GET_REPO_SKIP_EXISTING
   client_scope_config_restore
   if [ ! -s "$ORCH_LUA_LOCKED" ]; then
    echo "Повторная попытка загрузки locked.lua..."

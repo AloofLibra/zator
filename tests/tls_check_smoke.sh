@@ -663,6 +663,15 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: нет set -m ветки (собственная pgid демона без setsid)"
   grep -q 'set +m 2>/dev/null' "$REPO_DIR/Entware/zapret" \
     || fail "сценарий 14e: set -m не гасится сразу после спавна (риск tcsetpgrp-побочек)"
+  # set -m требует ЖИВОГО управляющего терминала: под uhttpd/CGI с мёртвым
+  # pty (панель поднята nohup'ом из закрытой SSH-сессии, Entware без setsid)
+  # busybox ash уходит в вечный спин — кнопки старт/стоп панели висят
+  grep -q 'elif \[ -t 0 \]' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: set -m-ветка без проверки живого tty (вечный спин под CGI)"
+  grep -q '</dev/null >/dev/null 2>>"\$ERRLOG" &' "$REPO_DIR/Entware/zapret" \
+    || fail "сценарий 14e: демон наследует stdin вызывающего (в CGI — сокет uhttpd)"
+  grep -q 'setsid "\$ZAPRET2_INIT" "\$action" </dev/null' "$REPO_DIR/lib/config.sh" \
+    || fail "сценарий 14e: z2r_service_action не отсекает stdin (в CGI — сокет uhttpd)"
   grep -q '>/dev/null 2>&1 &' "$REPO_DIR/Entware/zapret" \
     && fail "сценарий 14e: stderr демона глушится — ошибки конфига теряются"
   grep -q 'ERRLOG="/tmp/\${DAEMONBASE}_\$1.err"' "$REPO_DIR/Entware/zapret" \

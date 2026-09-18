@@ -116,7 +116,12 @@ get_config_file() {
 }
 
 set_zapret2_init() {
-  if [ -f "$ZAPRET_ROOT/init.d/openwrt/zapret2" ]; then
+  # CLI z2r.sh выбирает openwrt-инит только при OSystem=WRT; CGI не знает
+  # OSystem, поэтому пробим признак настоящего OpenWRT — procd. Tarball
+  # zapret2 кладёт оба инита на все платформы: без пробы Keenetic/Merlin/VPS
+  # получают procd-скрипт с шебангом /etc/rc.common и кнопки старт/стоп
+  # падают «Не удалось выполнить команду zapret2».
+  if [ -f "$ZAPRET_ROOT/init.d/openwrt/zapret2" ] && [ -x /sbin/procd ]; then
     ZAPRET2_INIT="$ZAPRET_ROOT/init.d/openwrt/zapret2"
   else
     ZAPRET2_INIT="$ZAPRET_ROOT/init.d/sysv/zapret2"

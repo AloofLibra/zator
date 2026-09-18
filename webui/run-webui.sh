@@ -24,8 +24,10 @@ has_busybox_httpd() {
 }
 
 available_servers() {
+  # uhttpd_kn первичным: на Keenetic при обоих серверах родной uhttpd_kn
+  # работает стабильнее Entware-uhttpd (конфликт лечился выносом DDNS).
+  if command -v uhttpd_kn >/dev/null 2>&1 || [ -x /opt/sbin/uhttpd_kn ]; then echo "uhttpd_kn"; fi
   command -v uhttpd >/dev/null 2>&1 && echo "uhttpd"
-  command -v uhttpd_kn >/dev/null 2>&1 && echo "uhttpd_kn"
   command -v httpd >/dev/null 2>&1 && echo "httpd"
   has_busybox_httpd && echo "busybox"
 }
@@ -126,7 +128,14 @@ start_detached() {
     busybox nohup bash "$0" run >>"$LOG_FILE" 2>&1 &
     return
   fi
-  bash "$0" run >>"$LOG_FILE" 2>&1 &
+  # nohup нет (фиды opkg легли, busybox без applet): отделяемся от терминала
+  # как умеем — своя сессия через setsid, иначе игнор HUP + фоновый запуск
+  # с редиректом (тот же приём, что z2r_service_action для инит-скриптов).
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash "$0" run >>"$LOG_FILE" 2>&1 &
+    return
+  fi
+  ( trap '' INT QUIT HUP; exec bash "$0" run >>"$LOG_FILE" 2>&1 ) &
 }
 
 start_server() {
