@@ -1511,9 +1511,12 @@ profile_apply_all() {
 z2r_service_action() {
   local action="$1"
   [ -n "${ZAPRET2_INIT:-}" ] || return 1
+  # </dev/null: инит и порождённые им фоновые демоны не должны наследовать
+  # stdin вызывающего (в CGI это сокет/пайп uhttpd — его удержание висит
+  # ответом панели)
   if command -v setsid >/dev/null 2>&1; then
-    setsid "$ZAPRET2_INIT" "$action"
+    setsid "$ZAPRET2_INIT" "$action" </dev/null
   else
-    ( trap '' INT QUIT HUP; exec "$ZAPRET2_INIT" "$action" )
+    ( trap '' INT QUIT HUP; exec "$ZAPRET2_INIT" "$action" </dev/null )
   fi
 }
