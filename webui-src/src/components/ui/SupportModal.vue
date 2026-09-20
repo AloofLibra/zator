@@ -38,8 +38,10 @@ function pickJokes() {
 }
 
 // Гимн Zator: стримится прямо в браузере, на роутер ничего не скачивается.
-// Зеркала перебираются по порядку, пока одно не ответит.
+// Зеркала перебираются по порядку, пока одно не ответит:
+// основное — сервер автора, резервное — зеркало контрибьютора.
 const anthemMirrors = [
+  'https://alooflibra.fun/Zator.mp3',
   'https://darkmaz-site.ru/Zator.mp3',
 ]
 const anthemVisible = ref(false)
