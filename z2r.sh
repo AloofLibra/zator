@@ -1502,6 +1502,21 @@ z2r_prune_staged_sources() {
  rm -f "$base/Makefile"
 }
 
+#skip патчи вопросов и валидации конфига
+patch_installer_zapret() {
+	echo "Патчим installer_easy.sh для skip вопросов и валидации конфига. И installer.sh для пропуска press enter"
+	sed -i -E '/^[[:space:]]*(select_fwtype|select_ipv6|ask_config|ask_config_tmpdir|ask_config_offload)[[:space:]]*$/ s/^([[:space:]]*)/\1# /' "$ZAPRET2_ROOT/install_easy.sh"
+	sed -i -E '/^[[:space:]]*exitp[[:space:]]+30[[:space:]]*$/ s/^([[:space:]]*)/\1# /' "$ZAPRET2_ROOT/common/installer.sh"
+	echo "Пропатчено"
+}
+
+unpatch_installer_zapret() {
+	echo "Всё хорошо. Откатываем патч installer_easy.sh и installer.sh"
+	sed -i -E 's/^([[:space:]]*)#[[:space:]]*(select_fwtype|select_ipv6|ask_config|ask_config_tmpdir|ask_config_offload)[[:space:]]*$/\1\2/' "$ZAPRET2_ROOT/install_easy.sh"
+	sed -i -E 's/^([[:space:]]*)#[[:space:]]*exitp[[:space:]]+30[[:space:]]*$/\1exitp 30/' "$ZAPRET2_ROOT/common/installer.sh"
+	echo "Откат патча выполнен"
+}
+
 #Запуск установочных скриптов и перезагрузка
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh"
@@ -2772,7 +2787,9 @@ while true; do
  if [ "$hardware" = "keenetic" ]; then
  	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
  fi
+ patch_installer_zapret
  install_zapret_reboot
+ unpatch_installer_zapret
  # Обновление = переустановка: watchdog пережил её (см. remove_zapret выше);
  # если демон самоостановился в паузу без init-скрипта — поднимаем.
  watchdog_ensure_running || true
