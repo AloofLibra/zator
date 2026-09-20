@@ -250,3 +250,31 @@ a.fallback-hint.is-link:hover { text-decoration: underline; }
 }
 #to-top:hover { filter: brightness(1.08); }
 #to-top:active { transform: translateY(1px); }
+
+.support-anthem {
+  display: grid;
+  gap: 8px;
+}
+
+.anthem-link {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  width: 100%;
+  background: linear-gradient(135deg, #8a5cf6, #5b3fd4);
+}
+
+.anthem-audio { width: 100%; height: 40px; }
+
+.anthem-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--text-muted, #98a2b3);
+}
+
+.anthem-failed {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--danger, #e07b7b);
+}

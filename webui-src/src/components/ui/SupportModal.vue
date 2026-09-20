@@ -19,12 +19,63 @@ const jokes = [
   '🧘 Поддержать проект можно мысленно. Но ещё лучше — написать «спасибо» в Telegram.',
   '🧹 Расскажите друзьям — это бесплатный способ добавить проекту пропускной способности.',
   '🐛 Если обход заработал, просто улыбнитесь. Для авторов это уже отличный гонорар.',
+  '💸 Переводы денег блокируются надёжнее, чем YouTube. Мы даже немного завидуем.',
+  '🧩 Донат-форма не прошла проверку стратегий: слишком много нулей в нужных местах.',
+  '🐢 Деньги до нас шли бы дольше, чем TLS-хендшейк через плохой маршрут.',
+  '🛰️ Ваша стратегия держится третью неделю подряд? Считайте это нашим совместным достижением.',
+  '📮 Напишите в Telegram, что у вас всё грузится. Такие сообщения мы храним бережнее бэкапов.',
+  '🎁 Лучший подарок — pull request с фиксом. Второй по ценности — issue с логом внутри.',
+  '🔊 Поставьте гимн на репит: каждый прослушанный байт уже считается вкладом.',
+  '🌍 Расскажите провайдеру, что у вас всё открывается. Ему будет очень интересно.',
+  '🚦 Локи бесплатно, RST-защита бесплатно, чувство контролируемого интернета — бесценно.',
+  '🧠 Разобрались, что такое безразборный режим? Поздравляем, вы теперь часть команды.',
 ]
 
 function pickJokes() {
   selectedJokes.value = [...jokes]
     .sort(() => Math.random() - 0.5)
     .slice(0, 3)
+}
+
+// Гимн Zator: стримится прямо в браузере, на роутер ничего не скачивается.
+// Зеркала перебираются по порядку, пока одно не ответит.
+const anthemMirrors = [
+  'https://darkmaz-site.ru/Zator.mp3',
+]
+const anthemVisible = ref(false)
+const anthemFailed = ref(false)
+const anthemIndex = ref(0)
+const anthemAudio = ref<HTMLAudioElement | null>(null)
+
+function anthemStart() {
+  const el = anthemAudio.value
+  if (!el) return
+  if (anthemIndex.value >= anthemMirrors.length) {
+    anthemFailed.value = true
+    el.removeAttribute('src')
+    el.load()
+    return
+  }
+  el.src = anthemMirrors[anthemIndex.value]
+  el.load()
+  void el.play().catch(() => { /* автозапуск не разрешён — есть кнопка play */ })
+}
+
+function onAnthemError() {
+  if (anthemFailed.value) return
+  anthemIndex.value += 1
+  anthemStart()
+}
+
+function toggleAnthem() {
+  anthemVisible.value = !anthemVisible.value
+  if (anthemVisible.value) {
+    anthemFailed.value = false
+    anthemIndex.value = 0
+    nextTick(anthemStart)
+  } else {
+    anthemAudio.value?.pause()
+  }
 }
 
 function openModal() {
@@ -37,6 +88,7 @@ function openModal() {
 }
 
 function closeModal() {
+  anthemAudio.value?.pause()
   visible.value = false
   window.setTimeout(() => { open.value = false }, 180)
 }
@@ -81,6 +133,17 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))
         <a class="support-link github-link" href="https://github.com/AloofLibra/zator" target="_blank" rel="noopener noreferrer">
           <span aria-hidden="true">⭐</span> Поставить звезду на GitHub
         </a>
+      </div>
+
+      <div class="support-anthem">
+        <button type="button" class="support-link anthem-link" @click="toggleAnthem">
+          <span aria-hidden="true">🎵</span> {{ anthemVisible ? 'Остановить гимн' : "Гимн Zator'a" }}
+        </button>
+        <template v-if="anthemVisible">
+          <p class="anthem-hint">Играет прямо в браузере — на роутер ничего не скачивается. Если зеркало недоступно, попробуется следующее. Скачать — через меню плеера (⋮ три вертикальные точки).</p>
+          <audio v-if="!anthemFailed" ref="anthemAudio" controls preload="none" class="anthem-audio" @error="onAnthemError"></audio>
+          <p v-else class="anthem-failed">Все зеркала гимна недоступны — попробуйте позже.</p>
+        </template>
       </div>
 
       <div class="modal-actions">
