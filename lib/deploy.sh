@@ -1065,7 +1065,7 @@ deploy_menu_header() {
     local cfg_date
     cfg_date="$(config_default_last_modified)"
     cfg_date="${cfg_date%% *}"
-    MENU_DEPLOY_NOTICE="${MENU_DEPLOY_NOTICE}${Bred}${Fplain}⬆ Есть новый конфиг от ${cfg_date}. Для применения: п.5 -> п.7${plain}
+    MENU_DEPLOY_NOTICE="${MENU_DEPLOY_NOTICE}${Bgreen}${Fplain}⬆ Есть новый конфиг от ${cfg_date}. Для применения: п.5 -> п.7${plain}
 "
   fi
   return 0
