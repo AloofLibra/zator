@@ -148,6 +148,10 @@ assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'управляетс
 _lib_sh="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
 assert_contains "$_lib_sh" '_service_apply_restart\(\)' "_lib.sh: нет общего хелпера автоперезапуска"
 assert_not_contains "$_lib_sh" 'reboot_required' "_lib.sh: остался старый флаг reboot_required"
+# init-скрипт: CGI выбирает openwrt-инит только на настоящем OpenWRT (procd);
+# tarball кладёт оба инита на все платформы, без пробы Keenetic/Merlin/VPS
+# получают procd-скрипт и кнопки старт/стоп падают «Не удалось выполнить команду zapret2»
+assert_contains "$_lib_sh" '/sbin/procd' "set_zapret2_init берёт openwrt-инит без проверки procd (падение кнопок старт/стоп на не-OpenWRT)"
 assert_contains "$app_js" 'announceRestart' "webui-src: нет тоста о перезапуске"
 assert_contains "$app_js" 'restartSuffix' "webui-src: нет суффикса про перезапуск"
 assert_not_contains "$app_js" 'Перезапустите zapret2' "webui-src: остался ручной призыв перезапустить"

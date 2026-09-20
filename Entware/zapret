@@ -42,13 +42,20 @@ run_daemon()
 		ERRLOG="/tmp/${DAEMONBASE}_$1.err"
 		: > "$ERRLOG"
 		if command -v setsid >/dev/null 2>&1; then
-			setsid "$2" $3 >/dev/null 2>>"$ERRLOG" &
+			setsid "$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
-		else
+		elif [ -t 0 ]; then
+			# job control даёт фону свою группу процессов (защита от Ctrl+C в
+			# интерактивном меню), но требует ЖИВОЙ управляющий терминал:
+			# под uhttpd/CGI с мёртвым pty (панель поднята nohup'ом из уже
+			# закрытой SSH-сессии) busybox ash уходит в вечный спин на set -m
 			set -m 2>/dev/null
-			"$2" $3 >/dev/null 2>>"$ERRLOG" &
+			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 			set +m 2>/dev/null
+		else
+			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
+			PID=$!
 		fi
 		if [ -n "$PID" ]; then
 			echo $PID >$PIDFILE
