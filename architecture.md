@@ -1456,14 +1456,24 @@ comparative evidence in its global and ASN priors; analyzer output preserves
 the controls and the bracketed evidence separately. Restarted state does not
 restore in-flight brackets.
 
+The operator comparison requires an exact `CONTROL_SUCCESS` journal row for
+its probe id before launching candidates. If C observes a new network epoch
+during the run, the runner first sends another no-desync control and resumes
+candidates only after that control gets an HTTP response. Candidate probes have
+one total run budget across all epochs, so epoch changes cannot reset the shell
+runner into an unbounded loop. Epoch revalidation controls are bounded by the
+same budget, with one final control for the comparison bracket. A failed or
+missing control stops the comparison and restores the last candidate. This is
+a bounded retry after C-observed network-context change with target-level
+revalidation; it does not classify arbitrary block pages.
+
 `python tools/adaptive_replay.py --controller-output
 /tmp/zator-adaptive/shadow.tsv` reports attempts, confirmed successes,
 unknowns, controls, comparative evidence, and host/strategy probeability by
 network epoch; it also reads earlier probe row versions. Unknown outcomes do
 not become failures, and the analyzer reports zero general failure votes
 because this probe has no trusted explicit-block classifier. Explicit block
-classification and retry after independently verified infrastructure recovery
-remain open Phase 6 work.
+classification remains open Phase 6 work.
 
 ---
 

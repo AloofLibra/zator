@@ -132,8 +132,8 @@ rc=$?
 finished_at="$(date +%s 2>/dev/null || echo "$started_at")"
 case "$started_at:$finished_at" in *[!0-9:]*) elapsed_ms=0 ;; *) elapsed_ms=$(( (finished_at - started_at) * 1000 )) ;; esac
 [ "$elapsed_ms" -ge 0 ] || elapsed_ms=0
-printf 'host=%s http_status=%s curl_rc=%s source_port=%s strategy=%s generation=%s elapsed_ms=%s\n' \
-	"$host" "${code:-000}" "$rc" "$SOURCE_PORT" "$strategy" "$candidate_generation" "$elapsed_ms"
+printf 'probe_id=%s host=%s http_status=%s curl_rc=%s source_port=%s strategy=%s generation=%s elapsed_ms=%s\n' \
+	"$probe_id" "$host" "${code:-000}" "$rc" "$SOURCE_PORT" "$strategy" "$candidate_generation" "$elapsed_ms"
 case "${code:-000}" in ''|*[!0-9]*) code=0 ;; esac
 if ! "$controller" --probe-result /tmp/zator-adaptive/events.sock \
 	"$probe_id" "$rc" "$code" "$elapsed_ms"; then

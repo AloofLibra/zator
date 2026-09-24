@@ -920,6 +920,9 @@ static void probe_emit_outcome(const char *outcome, const char *reason)
 		p->clienthello_count, p->clienthello_retransmissions,
 		p->termination_reason[0] ? p->termination_reason : "unknown",
 		p->provider_key[0] ? p->provider_key : "unknown");
+	/* The operator runner consumes this result by probe id before it can
+	 * launch another lease, so make the completed C-owned record visible now. */
+	(void)fflush(controller_output ? controller_output : stdout);
 }
 
 static bool provider_key_valid(const char *key)

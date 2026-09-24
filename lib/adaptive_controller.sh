@@ -251,12 +251,39 @@ adaptive_learning_wait_probe_settled() {
   done
 }
 
+# Run a no-desync control and require the exact C-owned outcome before using
+# candidate results as a comparison or retry baseline. The active runner owns
+# the experiment lock, so this probe id cannot be interleaved by another run.
+adaptive_learning_run_control_probe() {
+  local host="$1" controller="$2" budget="$3" provider_key="$4" allowlist="$5"
+  local probe_output probe_id next record outcome epoch
+  adaptive_learning_set_candidate 4294967295 || return 1
+  probe_output="$("${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result)" || return 1
+  printf '%s\n' "$probe_output" >&2
+  probe_id="$(printf '%s\n' "$probe_output" | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^probe_id=[0-9]+$/) { sub(/^probe_id=/, "", $i); print $i; exit } }')"
+  case "$probe_id" in ''|*[!0-9]*) echo "No-strategy probe вернул некорректный id." >&2; return 1 ;; esac
+  adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist" >/dev/null || return 1
+  record="$(awk -F '\t' -v wanted="$probe_id" \
+    '$1 == "PROBE_OUTCOME" && $3 == wanted { outcome=$4; epoch=$15 } \
+     END { if (outcome != "") print outcome "\t" epoch }' \
+    /tmp/zator-adaptive/shadow.tsv 2>/dev/null)"
+  outcome="${record%%$(printf '\t')*}"
+  epoch="${record#*$(printf '\t')}"
+  [ "$outcome" = CONTROL_SUCCESS ] || {
+    echo "No-strategy контроль не подтвердил доступность target; candidate probes приостановлены." >&2
+    return 1
+  }
+  case "$epoch" in ''|*[!0-9]*) echo "В журнале отсутствует network epoch контрольной пробы." >&2; return 1 ;; esac
+  printf '%s\n' "$epoch"
+}
+
 # Run a bounded, operator-started comparison over the strategies actually
 # present in the extracted TLS plan. Candidate ranking and attempt accounting
 # stay in C; this function only applies the acknowledged choice and runs probes.
 adaptive_learning_compare() {
   local host="$1" budget="$2" controller allowlist next status strategy provider_key prior_support
   local completed=0 strategy_file original_strategy last_strategy control_strategy=4294967295
+  local verified_epoch next_epoch controls_used=0 max_recovery_controls
   controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
   case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
   [ "${#host}" -le 253 ] || return 2
@@ -290,53 +317,81 @@ adaptive_learning_compare() {
   IFS= read -r original_strategy <"$strategy_file" || original_strategy=
   case "$original_strategy" in ''|*[!0-9]*) echo "Не задана исходная learning strategy." >&2; return 1 ;; esac
   echo "Контроль без desync для $host..."
-  adaptive_learning_set_candidate "$control_strategy" || return 1
-  "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
+  controls_used=1
+  verified_epoch="$(adaptive_learning_run_control_probe "$host" "$controller" "$budget" "$provider_key" "$allowlist")" || {
     adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
-    echo "No-strategy контроль не принят controller." >&2
     return 1
   }
-  if ! next="$(adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist")"; then
+  max_recovery_controls=$((budget + 1))
+  next="$(adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist")" || {
     adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
-    echo "Не удалось дождаться no-strategy контроля." >&2
+    echo "Не удалось получить candidate после no-strategy контроля." >&2
     return 1
-  fi
+  }
   while :; do
     case "$next" in
       candidate_exhausted*) echo "Лимит candidate probe-попыток исчерпан."; break ;;
     esac
+    [ "$completed" -lt "$budget" ] || { echo "Общий лимит $budget candidate probes исчерпан."; break; }
+    next_epoch="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $5 ~ /^epoch=[0-9]+$/ { sub(/^epoch=/,"",$5); print $5 }')"
+    case "$next_epoch" in ''|*[!0-9]*)
+      [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      [ -n "$last_strategy" ] || adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+      echo "C controller вернул некорректный network epoch." >&2
+      return 1
+    ;; esac
+    if [ "$next_epoch" != "$verified_epoch" ]; then
+      [ "$controls_used" -lt "$max_recovery_controls" ] || {
+        echo "Слишком много смен network epoch; останавливаю bounded comparison." >&2
+        break
+      }
+      echo "Network epoch сменился ($verified_epoch → $next_epoch); проверяю восстановление без desync..."
+      controls_used=$((controls_used + 1))
+      verified_epoch="$(adaptive_learning_run_control_probe "$host" "$controller" "$budget" "$provider_key" "$allowlist")" || {
+        [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+        return 1
+      }
+      next="$(adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist")" || {
+        [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+        echo "Не удалось продолжить после проверки нового network epoch." >&2
+        return 1
+      }
+      continue
+    fi
     strategy="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $2 ~ /^strategy=[0-9]+$/ { sub(/^strategy=/,"",$2); print $2 }')"
     prior_support="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $6 ~ /^prior_support=[0-9]+$/ { sub(/^prior_support=/,"",$6); print $6 }')"
-    case "$strategy" in ''|*[!0-9]*) echo "C controller вернул некорректный candidate." >&2; return 1 ;; esac
+    case "$strategy" in ''|*[!0-9]*)
+      [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      [ -n "$last_strategy" ] || adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+      echo "C controller вернул некорректный candidate." >&2
+      return 1
+    ;; esac
     case "$prior_support" in ''|*[!0-9]*) prior_support=0 ;; esac
     echo "Проба $((completed + 1)): strategy $strategy для $host (prior support: $prior_support)"
-    adaptive_learning_set_candidate "$strategy" || return 1
+    adaptive_learning_set_candidate "$strategy" || {
+      [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      [ -n "$last_strategy" ] || adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+      return 1
+    }
     last_strategy="$strategy"
     "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
       echo "Проба не была принята controller; сравнение остановлено." >&2
+      adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
       return 1
     }
     completed=$((completed + 1))
 
     next="$(adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist")" || {
       echo "Ожидание probe завершилось ошибкой." >&2
+      adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
       return 1
     }
   done
 
   echo "Повторный контроль без desync для $host..."
-  adaptive_learning_set_candidate "$control_strategy" || {
+  controls_used=$((controls_used + 1))
+  if ! adaptive_learning_run_control_probe "$host" "$controller" "$budget" "$provider_key" "$allowlist" >/dev/null; then
     [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
-    return 1
-  }
-  "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
-    [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
-    echo "Повторный no-strategy контроль не принят controller." >&2
-    return 1
-  }
-  if ! adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist" >/dev/null; then
-    [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
-    echo "Не удалось дождаться повторного no-strategy контроля." >&2
     return 1
   fi
   [ -n "$last_strategy" ] || last_strategy="$original_strategy"
