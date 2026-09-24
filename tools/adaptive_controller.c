@@ -103,6 +103,7 @@ struct probe_state {
 	uint8_t health_state, health_reason;
 	bool network_context_usable;
 	char host[HOST_CAP], termination_reason[32];
+	char redirect_host[HOST_CAP];
 	char provider_key[65];
 	char transport[8], family[8];
 };
@@ -902,13 +903,13 @@ static bool probe_flow_id_completed(uint64_t flow_id)
 static void probe_emit_outcome(const char *outcome, const char *reason)
 {
 	struct probe_state *p = &active_probe;
-	printf("PROBE_OUTCOME\tv3\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
+	printf("PROBE_OUTCOME\tv4\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
 		"\t%s\t%u\t%u\t%u\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%s\t%s\t%s\t%u\t%u\t%u"
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
-		"\t%s\t%s\n",
+		"\t%s\t%s\t%s\n",
 		p->id, outcome, reason, p->profile, p->strategy, p->generation, p->host,
 		p->source_port, p->curl_rc, p->http_status, p->elapsed_ms, p->flow_id,
 		p->network_epoch, p->transport[0] ? p->transport : "tcp",
@@ -919,7 +920,8 @@ static void probe_emit_outcome(const char *outcome, const char *reason)
 		p->flow_metrics[6], p->flow_metrics[7], p->flow_metrics[8], p->flow_metrics[9],
 		p->clienthello_count, p->clienthello_retransmissions,
 		p->termination_reason[0] ? p->termination_reason : "unknown",
-		p->provider_key[0] ? p->provider_key : "unknown");
+		p->provider_key[0] ? p->provider_key : "unknown",
+		p->redirect_host[0] ? p->redirect_host : "none");
 	/* The operator runner consumes this result by probe id before it can
 	 * launch another lease, so make the completed C-owned record visible now. */
 	(void)fflush(controller_output ? controller_output : stdout);
@@ -2059,9 +2061,12 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 			active_probe.profile, active_probe.strategy, active_probe.generation);
 		return true;
 	}
-	if (n == 6 && !strcmp(f[0], "PROBE_RESULT") && !strcmp(f[1], "v1")) {
+	if (((n == 6 && !strcmp(f[0], "PROBE_RESULT") && !strcmp(f[1], "v1")) ||
+		(n == 7 && !strcmp(f[0], "PROBE_RESULT") && !strcmp(f[1], "v2")))) {
+		bool has_redirect = n == 7;
 		if (!parse_u64(f[2], &a) || !a || !parse_u64(f[3], &b) || b > 255 ||
-			!parse_u64(f[4], &c) || c > 599 || !parse_u64(f[5], &d)) {
+			!parse_u64(f[4], &c) || c > 599 || !parse_u64(f[5], &d) ||
+			(has_redirect && strcmp(f[6], "none") && !probe_host_valid(f[6]))) {
 			controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tERR\tinvalid\n");
 			return true;
 		}
@@ -2070,7 +2075,10 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 			return true;
 		}
 		if (active_probe.result_seen) {
-			if (active_probe.curl_rc != b || active_probe.http_status != c || active_probe.elapsed_ms != d)
+			if (active_probe.curl_rc != b || active_probe.http_status != c ||
+				active_probe.elapsed_ms != d ||
+				(has_redirect && strcmp(active_probe.redirect_host,
+					!strcmp(f[6], "none") ? "" : f[6])))
 				controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tERR\tconflict\n");
 			else controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tOK\tduplicate\n");
 			return true;
@@ -2079,6 +2087,11 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 		active_probe.curl_rc = (uint32_t)b;
 		active_probe.http_status = (uint32_t)c;
 		active_probe.elapsed_ms = d;
+		if (has_redirect && strcmp(f[6], "none") &&
+			!copy_field(active_probe.redirect_host, sizeof(active_probe.redirect_host), f[6])) {
+			controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tERR\tinvalid\n");
+			return true;
+		}
 		controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tOK\n");
 		probe_maybe_finalize(now, false);
 		return true;
@@ -2222,16 +2235,23 @@ static int probe_begin_client(int argc, char **argv)
 
 static int probe_result_client(int argc, char **argv)
 {
-	char request[256], reply[160], *end;
+	char request[512], reply[160], *end;
 	unsigned long long id, elapsed;
 	unsigned long curl_rc, http_status;
+	const char *redirect_host = "none";
+	bool v2 = argc == 8;
 	int n;
-	if (argc != 7) return 2;
+	if (argc != 7 && !v2) return 2;
 	id = strtoull(argv[3], &end, 10); if (!argv[3][0] || *end || !id) return 2;
 	curl_rc = strtoul(argv[4], &end, 10); if (!argv[4][0] || *end || curl_rc > 255) return 2;
 	http_status = strtoul(argv[5], &end, 10); if (!argv[5][0] || *end || http_status > 599) return 2;
 	elapsed = strtoull(argv[6], &end, 10); if (!argv[6][0] || *end) return 2;
-	n = snprintf(request, sizeof(request), "PROBE_RESULT\tv1\t%llu\t%lu\t%lu\t%llu\n",
+	if (v2) {
+		if (strcmp(argv[7], "none") && !probe_host_valid(argv[7])) return 2;
+		redirect_host = argv[7];
+		n = snprintf(request, sizeof(request), "PROBE_RESULT\tv2\t%llu\t%lu\t%lu\t%llu\t%s\n",
+			id, curl_rc, http_status, elapsed, redirect_host);
+	} else n = snprintf(request, sizeof(request), "PROBE_RESULT\tv1\t%llu\t%lu\t%lu\t%llu\n",
 		id, curl_rc, http_status, elapsed);
 	if (n < 0 || (size_t)n >= sizeof(request) ||
 		controller_probe_request(argv[2], request, reply, sizeof(reply)) != 0) {
@@ -2252,7 +2272,7 @@ static int run_stdin(void)
 	uint64_t last_checkpoint = monotonic_ms();
 	if (controller_state_path && !restore_state(controller_state_path))
 		fprintf(stderr, "adaptive_controller: state checkpoint discarded\n");
-	puts("# ADAPTIVE_CONTROLLER_OUTPUT v3: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port");
+	puts("# ADAPTIVE_CONTROLLER_OUTPUT v4: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host");
 	while (fgets(line, sizeof(line), stdin)) {
 		line_no++;
 		if (!strchr(line, '\n') && !feof(stdin)) {
@@ -2367,7 +2387,7 @@ static int run_socket(const char *path)
 	if (!next_probe_id) next_probe_id = 1;
 	if (controller_state_path && !restore_state(controller_state_path))
 		fprintf(stderr, "adaptive_controller: state checkpoint discarded\n");
-	puts("# ADAPTIVE_CONTROLLER_OUTPUT v3: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port");
+	puts("# ADAPTIVE_CONTROLLER_OUTPUT v4: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host");
 	while (!controller_stopping) {
 		ssize_t n;
 		recv_timeout.tv_sec = 30;
@@ -2446,7 +2466,7 @@ int main(int argc, char **argv)
 	if ((argc == 7 || argc == 8) && !strcmp(argv[1], "--next-candidate"))
 		return next_candidate_client(argc, argv);
 	if ((argc == 8 || argc == 9) && !strcmp(argv[1], "--probe-begin")) return probe_begin_client(argc, argv);
-	if (argc == 7 && !strcmp(argv[1], "--probe-result")) return probe_result_client(argc, argv);
+	if ((argc == 7 || argc == 8) && !strcmp(argv[1], "--probe-result")) return probe_result_client(argc, argv);
 	if (argc == 3 && !strcmp(argv[1], "--get-candidate"))
 		return get_worker_candidate(argv[2]);
 	if (argc == 5 && !strcmp(argv[1], "--set-candidate")) {
@@ -2467,7 +2487,7 @@ int main(int argc, char **argv)
 		puts("       adaptive-controller --set-candidate /worker.sock profile strategy");
 		puts("       adaptive-controller --get-candidate /worker.sock");
 		puts("       adaptive-controller --probe-begin /controller.sock host source_port profile strategy generation [provider_key]");
-		puts("       adaptive-controller --probe-result /controller.sock probe_id curl_rc http_status elapsed_ms");
+		puts("       adaptive-controller --probe-result /controller.sock probe_id curl_rc http_status elapsed_ms [redirect_host]");
 		puts("       adaptive-controller --next-candidate /controller.sock host profile budget [provider_key] id[,id...]");
 		puts("candidate selection is learning-only, max 64 candidates and 1024 settled probe attempts");
 		puts("limits: 256 open flows, 128 contexts, 384 candidates, 128 provider priors, 512 host observations; 7-day TTL");

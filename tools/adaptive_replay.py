@@ -5,6 +5,8 @@ The current C telemetry can confirm server payload, but silence is not a
 reliable strategy failure. This phase therefore emits UNKNOWN for flows with
 no server payload and does not rotate or promote on negative evidence. Use
 --controller-output to summarize settled active-probe records from shadow.tsv.
+Correlated redirect divergence is diagnostic evidence only; it is never a
+failure vote without a trusted explicit block signature.
 """
 
 import argparse
@@ -65,7 +67,9 @@ def replay_controller_output(stream):
         if not header_seen:
             raise ValueError(f"line {line_no}: unsupported PROBE_OUTCOME record")
         try:
-            if len(cols) == 35 and cols[1] == "v3":
+            if ((len(cols) == 36 and cols[1] == "v4") or
+                    (len(cols) == 35 and cols[1] == "v3")):
+                has_redirect_host = cols[1] == "v4"
                 probe = {
                     "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
                     "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
@@ -87,6 +91,7 @@ def replay_controller_output(stream):
                         "clienthello_retransmissions": int(cols[32]),
                     },
                     "termination_reason": cols[33], "provider_key": cols[34],
+                    "redirect_host": cols[35] if has_redirect_host else "none",
                 }
                 if not (probe["provider_key"] == "unknown" or
                         (probe["provider_key"].startswith("asn:") and
@@ -174,6 +179,14 @@ def replay_controller_output(stream):
                 probe["network_epoch"] < 0 or context_flag not in {"0", "1"}):
             raise ValueError(f"line {line_no}: PROBE_OUTCOME value outside allowed bounds")
         metrics = probe["flow_metrics"]
+        redirect_host = probe.get("redirect_host", "none")
+        if redirect_host != "none" and not (
+                0 < len(redirect_host) <= 253 and
+                all(ch in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"
+                    for ch in redirect_host) and
+                not redirect_host.startswith(".") and not redirect_host.endswith(".") and
+                ".." not in redirect_host):
+            raise ValueError(f"line {line_no}: invalid redirect host")
         if metrics is not None and any(value < 0 for name, value in metrics.items()
                                        if name.endswith("packets") or name.endswith("bytes") or
                                        name in {"clienthello_count", "clienthello_retransmissions"}):
@@ -235,6 +248,43 @@ def replay_controller_output(stream):
             "evidence": "BRACKETED_NO_STRATEGY_CONTROLS",
             **failure, "failure_votes": 1,
         }, separators=(",", ":")))
+    redirect_controls = {}
+    redirect_candidates = defaultdict(list)
+    for probe in probes:
+        context = (probe["profile_id"], probe["hostname"], probe["provider_key"],
+                   probe["transport"], probe["ip_family"], probe["network_epoch"])
+        if probe["outcome"] == "CONTROL_UNKNOWN":
+            redirect_controls.pop(context, None)
+            redirect_candidates.pop(context, None)
+        elif probe["outcome"] == "CONTROL_SUCCESS":
+            before = redirect_controls.get(context)
+            if before:
+                if before.get("redirect_host", "none") == probe.get("redirect_host", "none"):
+                    for candidate in redirect_candidates.pop(context, []):
+                        redirect_host = candidate.get("redirect_host", "none")
+                        if (candidate["flow_id"] > 0 and redirect_host != "none" and
+                                redirect_host != before.get("redirect_host", "none")):
+                            print(json.dumps({
+                                "event": "PROBE_REDIRECT_DIVERGENCE",
+                                "evidence": "C_FLOW_CORRELATED_CONTROL_BRACKET",
+                                "candidate_probe_id": candidate["probe_id"],
+                                "control_before_probe_id": before["probe_id"],
+                                "control_after_probe_id": probe["probe_id"],
+                                "flow_id": candidate["flow_id"],
+                                "hostname": candidate["hostname"],
+                                "provider_key": candidate["provider_key"],
+                                "network_epoch": candidate["network_epoch"],
+                                "strategy_id": candidate["strategy_id"],
+                                "control_redirect_host": before.get("redirect_host", "none"),
+                                "candidate_redirect_host": redirect_host,
+                                "failure_votes": 0,
+                            }, separators=(",", ":")))
+                else:
+                    redirect_candidates.pop(context, None)
+            redirect_controls[context] = probe
+        elif probe["outcome"] == "STRONG_SUCCESS":
+            if context in redirect_controls:
+                redirect_candidates[context].append(probe)
     first_provider_probe = set()
     for probe in probes:
         if probe["outcome"].startswith("CONTROL_"):

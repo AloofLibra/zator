@@ -1435,14 +1435,20 @@ There are two additional mechanics to account for in that integration:
 
 The first active comparison runner uses one HTTPS HEAD request per candidate,
 correlated to exactly one C learning flow. Settled `PROBE_OUTCOME` rows are
-written into the bounded controller journal as versioned v3 records with the
+written into the bounded controller journal as versioned v4 records with the
 probe id, outcome, reason, assigned strategy/generation, host, source port,
 HTTP result, correlated flow id, network epoch/health and context usability.
 When C flow correlation succeeds, the record also carries raw packet/byte
 counters, server/RST/FIN flags, ClientHello retransmissions and termination
 reason. The PC analyzer emits these as observed facts; they are diagnostic and
 does not turn them or curl error classes (DNS, connect, timeout, TLS, receive)
-into strategy failure votes.
+into strategy failure votes. For HTTP redirects, curl supplies the normalized
+`Location` hostname to C with the result; C stores it on the matching probe
+lease and includes it in the same correlated outcome row. Replay reports a
+redirect divergence only when both successful no-strategy controls agree and a
+C-correlated candidate flow redirects to a different hostname. This remains
+diagnostic evidence with zero failure votes until an operator-curated signature
+can identify a known block endpoint.
 The bounded journal also records synthetic no-strategy control outcomes. The
 controller leases the reserved strategy id `4294967295`; Lua finds no plan entry
 for it and therefore applies no desync while C still records an attributable
@@ -1469,7 +1475,8 @@ revalidation; it does not classify arbitrary block pages.
 
 `python tools/adaptive_replay.py --controller-output
 /tmp/zator-adaptive/shadow.tsv` reports attempts, confirmed successes,
-unknowns, controls, comparative evidence, and host/strategy probeability by
+unknowns, controls, comparative evidence, redirect divergences, and
+host/strategy probeability by
 network epoch; it also reads earlier probe row versions. Unknown outcomes do
 not become failures, and the analyzer reports zero general failure votes
 because this probe has no trusted explicit-block classifier. Explicit block

@@ -124,19 +124,37 @@ probe_id="$(printf '%s\n' "$probe_lease" | awk -F= '$1 == "probe_id" && $2 ~ /^[
 case "$probe_id" in ''|*[!0-9]*) echo "Controller returned an invalid probe lease." >&2; exit 1 ;; esac
 started_at="$(date +%s 2>/dev/null || echo 0)"
 
-code="$(curl --local-port "$SOURCE_PORT" --http1.1 --head \
+response="$(curl --local-port "$SOURCE_PORT" --http1.1 --head \
 	--connect-timeout "$CONNECT_SECONDS" --max-time "$MAX_SECONDS" \
-	--silent --show-error --output /dev/null --write-out '%{http_code}' \
+	--silent --show-error --output /dev/null --write-out '%{http_code}\n%{redirect_url}' \
 	"https://$host/")"
 rc=$?
+code="$(printf '%s\n' "$response" | sed -n '1p')"
+redirect_url="$(printf '%s\n' "$response" | sed -n '2p')"
+redirect_host="$(printf '%s\n' "$redirect_url" | awk '
+  {
+    url=tolower($0)
+    sub(/^[^:]+:\/\//, "", url)
+    split(url, parts, "/")
+    authority=parts[1]
+    sub(/[?#].*/, "", authority)
+    sub(/^.*@/, "", authority)
+    if (substr(authority,1,1)=="[") next
+    sub(/:[0-9]+$/, "", authority)
+    if (length(authority)<=253 && authority ~ /^[a-z0-9.-]+$/ &&
+        authority !~ /^\./ && authority !~ /\.$/ && authority !~ /\.\./)
+      print authority
+  }
+')"
+[ -n "$redirect_host" ] || redirect_host=none
 finished_at="$(date +%s 2>/dev/null || echo "$started_at")"
 case "$started_at:$finished_at" in *[!0-9:]*) elapsed_ms=0 ;; *) elapsed_ms=$(( (finished_at - started_at) * 1000 )) ;; esac
 [ "$elapsed_ms" -ge 0 ] || elapsed_ms=0
-printf 'probe_id=%s host=%s http_status=%s curl_rc=%s source_port=%s strategy=%s generation=%s elapsed_ms=%s\n' \
-	"$probe_id" "$host" "${code:-000}" "$rc" "$SOURCE_PORT" "$strategy" "$candidate_generation" "$elapsed_ms"
+printf 'probe_id=%s host=%s http_status=%s curl_rc=%s redirect_host=%s source_port=%s strategy=%s generation=%s elapsed_ms=%s\n' \
+	"$probe_id" "$host" "${code:-000}" "$rc" "$redirect_host" "$SOURCE_PORT" "$strategy" "$candidate_generation" "$elapsed_ms"
 case "${code:-000}" in ''|*[!0-9]*) code=0 ;; esac
 if ! "$controller" --probe-result /tmp/zator-adaptive/events.sock \
-	"$probe_id" "$rc" "$code" "$elapsed_ms"; then
+	"$probe_id" "$rc" "$code" "$elapsed_ms" "$redirect_host"; then
 	echo "Controller did not accept the probe result; it will expire as unknown." >&2
 	exit 1
 fi
