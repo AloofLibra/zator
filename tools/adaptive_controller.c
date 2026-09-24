@@ -2772,6 +2772,53 @@ static int next_background_client(int argc, char **argv)
 	return 1;
 }
 
+static int production_host_strategy_client(int argc, char **argv, const char *operation)
+{
+	char request[384], reply[192];
+	uint64_t profile, strategy = 0, reply_profile, reply_strategy, generation;
+	unsigned long long reply_profile_ull, reply_strategy_ull, generation_ull;
+	int n, consumed = 0;
+	bool setting = !strcmp(operation, "SET_HOST_STRATEGY");
+	bool clearing = !strcmp(operation, "CLEAR_HOST_STRATEGY");
+	if (argc != (setting ? 6 : 5) || !parse_u64(argv[3], &profile) || !profile ||
+		!probe_host_valid(argv[4]) || (setting && (!parse_u64(argv[5], &strategy) || !strategy || strategy > UINT32_MAX)) ||
+		profile > UINT32_MAX) return 2;
+	if (setting)
+		n = snprintf(request, sizeof(request), "SET_HOST_STRATEGY\t1\t%llu\t%s\t%llu\n",
+			(unsigned long long)profile, argv[4], (unsigned long long)strategy);
+	else
+		n = snprintf(request, sizeof(request), "%s\t1\t%llu\t%s\n",
+			clearing ? "CLEAR_HOST_STRATEGY" : "GET_HOST_STRATEGY",
+			(unsigned long long)profile, argv[4]);
+	if (n < 0 || (size_t)n >= sizeof(request) ||
+		controller_probe_request(argv[2], request, reply, sizeof(reply)) != 0) {
+		fputs("adaptive_controller: production host strategy request failed\n", stderr);
+		return 1;
+	}
+	if (sscanf(reply, "ACK\t1\tOK\t%llu\t%llu\t%llu%n",
+		&reply_profile_ull, &reply_strategy_ull, &generation_ull, &consumed) == 3 &&
+		consumed > 0 && !strcmp(reply + consumed, "\n")) {
+		reply_profile = (uint64_t)reply_profile_ull;
+		reply_strategy = (uint64_t)reply_strategy_ull;
+		generation = (uint64_t)generation_ull;
+		if (reply_profile == profile && (clearing || reply_strategy) &&
+			(!setting || reply_strategy == strategy)) {
+			if (clearing) printf("host_strategy_cleared\tprofile=%llu\thost=%s\n",
+				(unsigned long long)profile, argv[4]);
+			else printf("host_strategy\tprofile=%llu\thost=%s\tstrategy=%llu\tgeneration=%llu\n",
+				(unsigned long long)profile, argv[4], (unsigned long long)reply_strategy,
+				(unsigned long long)generation);
+			return 0;
+		}
+	}
+	if (!strncmp(reply, "ACK\t1\tERR\t", sizeof("ACK\t1\tERR\t") - 1)) {
+		fprintf(stderr, "adaptive_controller: %s", reply);
+		return 1;
+	}
+	fprintf(stderr, "adaptive_controller: invalid production host strategy reply: %s", reply);
+	return 1;
+}
+
 static int probe_begin_client(int argc, char **argv)
 {
 	char request[512], reply[160], *end;
@@ -3056,6 +3103,12 @@ int main(int argc, char **argv)
 		return next_scheduled_client(argc, argv);
 	if (argc == 5 && !strcmp(argv[1], "--next-background"))
 		return next_background_client(argc, argv);
+	if ((argc == 6 && !strcmp(argv[1], "--production-set-host")) ||
+		(argc == 5 && !strcmp(argv[1], "--production-get-host")))
+		return production_host_strategy_client(argc, argv,
+			!strcmp(argv[1], "--production-set-host") ? "SET_HOST_STRATEGY" : "GET_HOST_STRATEGY");
+	if (argc == 5 && !strcmp(argv[1], "--production-clear-host"))
+		return production_host_strategy_client(argc, argv, "CLEAR_HOST_STRATEGY");
 	if ((argc == 8 || argc == 9) && !strcmp(argv[1], "--probe-begin")) return probe_begin_client(argc, argv);
 	if ((argc >= 7 && argc <= 9) && !strcmp(argv[1], "--probe-result")) return probe_result_client(argc, argv);
 	if (argc == 3 && !strcmp(argv[1], "--get-candidate"))
@@ -3082,6 +3135,9 @@ int main(int argc, char **argv)
 		puts("       adaptive-controller --next-candidate /controller.sock host profile budget [provider_key] id[,id...]");
 		puts("       adaptive-controller --next-scheduled /controller.sock host profile provider_key id[,id...]");
 		puts("       adaptive-controller --next-background /controller.sock provider_key id[,id...]");
+		puts("       adaptive-controller --production-set-host /nfqws.sock profile host strategy");
+		puts("       adaptive-controller --production-get-host /nfqws.sock profile host");
+		puts("       adaptive-controller --production-clear-host /nfqws.sock profile host");
 		puts("candidate selection is learning-only, max 64 candidates and 1024 settled probe attempts");
 		puts("limits: 256 open flows, 128 contexts, 384 candidates, 128 provider priors, 512 host observations; 7-day TTL");
 		puts("socket mode consumes nonblocking-sender Unix datagrams; gaps invalidate open flows");

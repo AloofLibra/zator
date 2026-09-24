@@ -1,27 +1,123 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index e8e5d2d..32878ea 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -495,0 +496,72 @@ jobs:
++  package-adaptive-artifacts:
++    if: github.event_name == 'workflow_dispatch'
++    needs: [ build-linux ]
++    runs-on: ubuntu-latest
++    permissions:
++      contents: read
++    env:
++      repo_dir: zapret2-v1.0.5.2-adaptive.${{ github.run_number }}
++    steps:
++      - name: Checkout patched source
++        uses: actions/checkout@v4
++        with:
++          path: ${{ env.repo_dir }}
++
++      - name: Download Linux binaries
++        uses: actions/download-artifact@v4
++        with:
++          path: ${{ env.repo_dir }}/binaries
++          pattern: zapret2-linux-*
++
++      - name: Assemble standard and OpenWrt archives
++        shell: bash
++        run: |
++          set -euo pipefail
++          cd "${{ env.repo_dir }}/binaries"
++          for dir in zapret2-linux-*; do
++            [ -d "$dir" ] || continue
++            archive=("$dir"/*.tar.xz)
++            [ -f "${archive[0]}" ] || { echo "missing Linux binary archive in $dir" >&2; exit 1; }
++            tar -C "$dir" -xJf "${archive[0]}"
++            rm -f "${archive[0]}"
++            case "$dir" in
++              zapret2-linux-arm) target=linux-arm ;;
++              zapret2-linux-arm64) target=linux-arm64 ;;
++              zapret2-linux-mips64) target=linux-mips64 ;;
++              zapret2-linux-mipselsf) target=linux-mipsel ;;
++              zapret2-linux-mipssf) target=linux-mips ;;
++              zapret2-linux-ppc) target=linux-ppc ;;
++              zapret2-linux-x86) target=linux-x86 ;;
++              zapret2-linux-x86_64) target=linux-x86_64 ;;
++              zapret2-linux-riscv64) target=linux-riscv64 ;;
++              zapret2-linux-lexra) target=linux-lexra ;;
++              *) echo "unexpected Linux artifact: $dir" >&2; exit 1 ;;
++            esac
++            mv "$dir" "$target"
++          done
++          for target in linux-arm linux-arm64 linux-mips64 linux-mipsel linux-mips \
++            linux-ppc linux-x86 linux-x86_64 linux-riscv64 linux-lexra; do
++            [ -d "$target" ] || { echo "missing mapped binaries/$target" >&2; exit 1; }
++            [ -x "$target/nfqws2" ] || { echo "missing binaries/$target/nfqws2" >&2; exit 1; }
++          done
++          cd ../..
++          root="${{ env.repo_dir }}"
++          tar --owner=0 --group=0 -c "$root" | pigz -11 >"$root.tar.gz"
++          (
++            cd "$root"
++            rm -rf binaries/{android*,freebsd*,win*} \
++              init.d/{openrc,pfsense,runit,s6,systemd,windivert.filter.examples} \
++              nfq2 ip2net mdig docs Makefile
++            pigz -11 lua/*.lua
++          )
++          tar --owner=0 --group=0 -c "$root" | pigz -11 >"$root-openwrt-embedded.tar.gz"
++
++      - name: Upload installable archives
++        uses: actions/upload-artifact@v4
++        with:
++          name: zapret2-adaptive-${{ github.run_number }}
++          path: |
++            ${{ env.repo_dir }}.tar.gz
++            ${{ env.repo_dir }}-openwrt-embedded.tar.gz
++          if-no-files-found: error
++
+@@ -604,0 +677 @@ jobs:
++        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+@@ -608 +681 @@ jobs:
+-          prerelease: false
++          prerelease: ${{ contains(github.ref_name, '-adaptive-beta.') }}
+@@ -609,0 +683 @@ jobs:
++          name: ${{ contains(github.ref_name, '-adaptive-beta.') && format('Adaptive Beta {0}', github.ref_name) || github.ref_name }}
+@@ -611,0 +686,2 @@ jobs:
++
++            ${{ contains(github.ref_name, '-adaptive-beta.') && 'Adaptive Strategy Selection beta: opt-in C flow telemetry, immutable per-flow strategy attribution, and acknowledged candidate control for controlled router testing. Learning remains disabled by default.' || 'zapret2 release build.' }}
 diff --git a/lua/zapret-auto.lua b/lua/zapret-auto.lua
-index c6999e2..6628cfc 100644
+index c6999e2..c234278 100644
 --- a/lua/zapret-auto.lua
 +++ b/lua/zapret-auto.lua
-@@ -373,6 +373,11 @@ function circular(ctx, desync)
- 	end
- 
- 	DLOG("circular: current strategy "..hrec.nstrategy)
+@@ -346,0 +347,17 @@ function circular(ctx, desync)
++	-- A controller-managed canary flow bypasses legacy nstrategy rotation.
++	if flow_strategy_canary_get then
++		local canary = flow_strategy_canary_get(desync)
++		if canary then
++			local selected = flow_strategy_assign(desync, canary, "production_canary")
++			if selected ~= canary then return VERDICT_PASS end
++			local verdict = VERDICT_PASS
++			while true do
++				local instance = plan_instance_pop(desync)
++				if not instance then break end
++				if instance.arg.strategy and tonumber(instance.arg.strategy)==selected then
++					verdict = plan_instance_execute(desync, verdict, instance)
++				end
++			end
++			return verdict
++		end
++	end
+@@ -375,0 +393,5 @@ function circular(ctx, desync)
 +	-- Optional C-side flow attribution only; legacy selection remains unchanged.
 +	if flow_strategy_assign then
 +		local selected = flow_strategy_assign(desync, hrec.nstrategy, "default")
 +		if selected then hrec.nstrategy = selected end
 +	end
- 	while true do
- 		local instance = plan_instance_pop(desync)
- 		if not instance then break end
 diff --git a/nfq2/conntrack.c b/nfq2/conntrack.c
-index 1eaad17..6cde058 100644
+index 1eaad17..11ace6b 100644
 --- a/nfq2/conntrack.c
 +++ b/nfq2/conntrack.c
-@@ -7,6 +7,142 @@
- #include "params.h"
- #include "lua.h"
- 
+@@ -9,0 +10,144 @@
 +#include <inttypes.h>
 +#include <fcntl.h>
 +#include <unistd.h>
@@ -35,6 +131,14 @@ index 1eaad17..6cde058 100644
 +static uint64_t adaptive_flow_seq = 1;
 +static uint64_t adaptive_strategy_seq = 1;
 +static uint64_t adaptive_candidate_generation = 1;
++static uint64_t adaptive_host_strategy_generation = 1;
++struct adaptive_host_strategy {
++	bool used;
++	uint32_t profile_id, strategy_id;
++	uint64_t generation;
++	char host[256];
++};
++static struct adaptive_host_strategy adaptive_host_strategies[ADAPTIVE_HOST_STRATEGIES_MAX];
 +#define ADAPTIVE_EVENTS_MAX_BYTES (4U * 1024U * 1024U)
 +static bool adaptive_trace_limited;
 +static const char adaptive_trace_limit_marker[] = "# TRACE_LIMIT\tmax_bytes=4194304\n";
@@ -158,38 +262,20 @@ index 1eaad17..6cde058 100644
 +}
 +
 +
- #undef uthash_nonfatal_oom
- #define uthash_nonfatal_oom(elt) ut_oom_recover(elt)
- 
-@@ -53,7 +189,11 @@ static void ConntrackFreeElem(t_conntrack_pool *elem)
- static void ConntrackPoolDestroyPool(t_conntrack_pool **pp)
- {
- 	t_conntrack_pool *elem, *tmp;
+@@ -56 +200,5 @@ static void ConntrackPoolDestroyPool(t_conntrack_pool **pp)
 -	HASH_ITER(hh, *pp, elem, tmp) { HASH_DEL(*pp, elem); ConntrackFreeElem(elem); }
 +	HASH_ITER(hh, *pp, elem, tmp) {
 +		adaptive_emit(&elem->track, "FLOW_END", "process_exit");
 +		HASH_DEL(*pp, elem);
 +		ConntrackFreeElem(elem);
 +	}
- }
- void ConntrackPoolDestroy(t_conntrack *p)
- {
-@@ -103,6 +243,11 @@ static t_conntrack_pool *ConntrackPoolSearch(t_conntrack_pool *p, const t_conn *
- static void ConntrackInitTrack(t_ctrack *t)
- {
- 	memset(t, 0, sizeof(*t));
+@@ -105,0 +254,5 @@ static void ConntrackInitTrack(t_ctrack *t)
 +	if (params.adaptive_strategy_profile && params.adaptive_strategy_id) {
 +		t->candidate_profile_id = params.adaptive_strategy_profile;
 +		t->candidate_strategy_id = params.adaptive_strategy_id;
 +		t->candidate_generation = adaptive_candidate_generation;
 +	}
- 	t->l7proto = L7_UNKNOWN;
- 	t->reasm_client_payload = L7P_UNKNOWN;
- 	t->pos.client.scale = t->pos.server.scale = 0;
-@@ -173,33 +318,38 @@ static void ConntrackApplyPos(t_ctrack *t, bool bReverse, const struct dissect *
- 
- static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect *dis)
- {
+@@ -176,8 +329,2 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
 -	if (bReverse)
 -	{
 -		t->pos.server.pcounter++;
@@ -200,7 +286,7 @@ index 1eaad17..6cde058 100644
 -	else
 +	if (!bReverse && dis->tcp && dis->len_payload &&
 +		IsTLSClientHelloPartial(dis->data_payload, dis->len_payload))
- 	{
+@@ -185,3 +332,9 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
 -		t->pos.client.pcounter++;
 -		t->pos.client.pdcounter += !!dis->len_payload;
 -		t->pos.client.pbcounter += dis->len_payload;
@@ -213,35 +299,19 @@ index 1eaad17..6cde058 100644
 +			t->clienthello_seq_seen = true;
 +			t->clienthello_first_seq = seq;
 +		}
- 	}
- 
- 	if (dis->tcp)
- 	{
- 		if (tcp_syn_segment(dis->tcp))
- 		{
+@@ -194 +347,4 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
 -			if (t->pos.state != SYN) ConntrackReInitTrack(t); // erase current entry
 +			if (t->pos.state != SYN) {
 +				adaptive_emit(t, "FLOW_END", "tuple_reuse");
 +				ConntrackReInitTrack(t); // erase current entry
 +			}
- 			t->pos.client.seq0 = ntohl(dis->tcp->th_seq);
- 		}
- 		else if (tcp_synack_segment(dis->tcp))
- 		{
- 			// ignore SA dups
- 			uint32_t seq0 = ntohl(dis->tcp->th_ack) - 1;
+@@ -201 +357,2 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
 -			if (t->pos.state != SYN && t->pos.client.seq0 != seq0)
 +			if (t->pos.state != SYN && t->pos.client.seq0 != seq0) {
 +				adaptive_emit(t, "FLOW_END", "tuple_reuse");
- 				ConntrackReInitTrack(t); // erase current entry
+@@ -202,0 +360 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
 +			}
- 			if (!t->pos.client.seq0) t->pos.client.seq0 = seq0;
- 			t->pos.server.seq0 = ntohl(dis->tcp->th_seq);
- 		}
-@@ -218,6 +368,26 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
- 
- 		ConntrackApplyPos(t, bReverse, dis);
- 	}
+@@ -220,0 +379,20 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
 +	if (bReverse)
 +	{
 +		t->pos.server.pcounter++;
@@ -262,53 +332,40 @@ index 1eaad17..6cde058 100644
 +			t->client_fin |= !!(dis->tcp->th_flags & TH_FIN);
 +		}
 +	}
- 
- 	clock_gettime(CLOCK_BOOT_OR_UPTIME, &t->pos.t_last);
- 	// make sure t_start gets exactly the same value as first t_last
-@@ -287,6 +457,12 @@ static bool ConntrackPoolFeedPool(t_conntrack_pool **pp, const struct dissect *d
- 	return false;
- ok:
- 	ctr->track.pos.ipproto = proto;
+@@ -289,0 +468,6 @@ ok:
 +	if (!ctr->track.flow_id) {
 +		ctr->track.flow_id = ((uint64_t)(uint32_t)getpid() << 32) |
 +			(adaptive_flow_seq++ & UINT32_MAX);
 +		ctr->track.tuple = ctr->conn;
 +		adaptive_emit(&ctr->track, "FLOW_START", "");
 +	}
- 	if (ctrack) *ctrack = &ctr->track;
- 	if (bReverse) *bReverse = b_rev;
- 	return true;
-@@ -307,6 +483,7 @@ static bool ConntrackPoolDropPool(t_conntrack_pool **pp, const struct dissect *d
- 		t = ConntrackPoolSearch(*pp, &connswp);
- 	}
- 	if (!t) return false;
+@@ -309,0 +494 @@ static bool ConntrackPoolDropPool(t_conntrack_pool **pp, const struct dissect *d
 +	adaptive_emit(&t->track, "FLOW_END", "drop");
- 	HASH_DEL(*pp, t); ConntrackFreeElem(t);
- 	return true;
- }
-@@ -334,6 +511,12 @@ void ConntrackPoolPurge(t_conntrack *p)
- 					) || (t->conn.l4proto == IPPROTO_UDP && tidle >= p->timeout_udp)
- 				)
- 			{
+@@ -336,0 +522,6 @@ void ConntrackPoolPurge(t_conntrack *p)
 +				const char *reason = t->track.b_cutoff ? "cutoff" :
 +					(t->track.client_rst || t->track.server_rst ? "rst_timeout" :
 +					(t->conn.l4proto == IPPROTO_UDP ? "timeout_udp" :
 +					(t->track.pos.state == SYN ? "timeout_syn" :
 +					(t->track.pos.state == FIN ? "timeout_fin" : "timeout_established"))));
 +				adaptive_emit(&t->track, "FLOW_END", reason);
- 				HASH_DEL(p->pool, t); ConntrackFreeElem(t);
- 			}
- 		}
-@@ -425,3 +608,41 @@ bool ReasmHasSpace(t_reassemble *reasm, size_t len)
- {
- 	return (reasm->size_present + len) <= reasm->size;
- }
+@@ -427,0 +619,124 @@ bool ReasmHasSpace(t_reassemble *reasm, size_t len)
 +
 +bool ConntrackSetStrategy(t_ctrack *track, uint32_t profile_id, uint32_t strategy_id,
 +	const char *scope, uint32_t *selected_strategy)
 +{
 +	bool pinned;
 +	if (!track || !track->flow_id || !profile_id || !strategy_id) return false;
++	if (!track->strategy_assigned && scope && !strcmp(scope, "production_canary") &&
++		profile_id == params.adaptive_canary_profile && track->hostname) {
++		uint32_t canary_strategy;
++		uint64_t canary_generation;
++		if (ConntrackAdaptiveGetHostStrategy(profile_id, track->hostname,
++			&canary_strategy, &canary_generation)) {
++			track->candidate_profile_id = profile_id;
++			track->candidate_strategy_id = canary_strategy;
++			track->candidate_generation = canary_generation;
++		}
++	}
 +	pinned = track->candidate_profile_id == profile_id && track->candidate_strategy_id;
 +	if (track->strategy_assigned) {
 +		if ((track->profile_id != profile_id || (!pinned && track->strategy_id != strategy_id) ||
@@ -341,14 +398,88 @@ index 1eaad17..6cde058 100644
 +{
 +	return adaptive_candidate_generation;
 +}
++
++static struct adaptive_host_strategy *adaptive_host_strategy_find(uint32_t profile_id, const char *host)
++{
++	unsigned i;
++	const char *left, *right;
++	if (!profile_id || !host || !*host || strlen(host) >= sizeof(adaptive_host_strategies[0].host)) return NULL;
++	for (i = 0; i < ADAPTIVE_HOST_STRATEGIES_MAX; i++) {
++		if (!adaptive_host_strategies[i].used || adaptive_host_strategies[i].profile_id != profile_id) continue;
++		left = adaptive_host_strategies[i].host; right = host;
++		while (*left && *right && tolower((unsigned char)*left) == tolower((unsigned char)*right)) {
++			left++; right++;
++		}
++		if (!*left && !*right) return &adaptive_host_strategies[i];
++	}
++	return NULL;
++}
++
++bool ConntrackAdaptiveGetHostStrategy(uint32_t profile_id, const char *host,
++	uint32_t *strategy_id, uint64_t *generation)
++{
++	struct adaptive_host_strategy *entry = adaptive_host_strategy_find(profile_id, host);
++	if (!entry) return false;
++	if (strategy_id) *strategy_id = entry->strategy_id;
++	if (generation) *generation = entry->generation;
++	return true;
++}
++
++bool ConntrackAdaptiveLookupCanaryStrategy(const t_ctrack *track, uint32_t profile_id,
++	const char *host, uint32_t *strategy_id)
++{
++	if (!profile_id || profile_id != params.adaptive_canary_profile) return false;
++	if (track && track->strategy_assigned) {
++		if (track->profile_id == profile_id && !strcmp(track->adaptive_scope, "production_canary")) {
++			if (strategy_id) *strategy_id = track->strategy_id;
++			return true;
++		}
++		return false;
++	}
++	return ConntrackAdaptiveGetHostStrategy(profile_id, host, strategy_id, NULL);
++}
++
++bool ConntrackAdaptiveSetHostStrategy(uint32_t profile_id, const char *host,
++	uint32_t strategy_id, uint64_t *generation)
++{
++	struct adaptive_host_strategy *entry = adaptive_host_strategy_find(profile_id, host), *free_entry = NULL;
++	unsigned i;
++	if (!profile_id || profile_id != params.adaptive_canary_profile || !strategy_id || !host || !*host ||
++		strlen(host) >= sizeof(adaptive_host_strategies[0].host) ||
++		adaptive_host_strategy_generation == UINT64_MAX) return false;
++	if (!entry) {
++		for (i = 0; i < ADAPTIVE_HOST_STRATEGIES_MAX; i++)
++			if (!adaptive_host_strategies[i].used) { free_entry = &adaptive_host_strategies[i]; break; }
++		if (!free_entry) return false;
++		entry = free_entry;
++		memset(entry, 0, sizeof(*entry));
++		if (snprintf(entry->host, sizeof(entry->host), "%s", host) >= (int)sizeof(entry->host)) return false;
++		entry->profile_id = profile_id;
++		entry->used = true;
++	}
++	entry->strategy_id = strategy_id;
++	adaptive_host_strategy_generation++;
++	entry->generation = adaptive_host_strategy_generation;
++	if (generation) *generation = entry->generation;
++	return true;
++}
++
++bool ConntrackAdaptiveClearHostStrategy(uint32_t profile_id, const char *host)
++{
++	struct adaptive_host_strategy *entry;
++	if (!profile_id || profile_id != params.adaptive_canary_profile) return false;
++	entry = adaptive_host_strategy_find(profile_id, host);
++	if (!entry) return false;
++	memset(entry, 0, sizeof(*entry));
++	return true;
++}
 diff --git a/nfq2/conntrack.h b/nfq2/conntrack.h
-index 42caf8b..4ebb0d5 100644
+index 42caf8b..0c33037 100644
 --- a/nfq2/conntrack.h
 +++ b/nfq2/conntrack.h
-@@ -57,6 +57,17 @@ typedef struct
- 	bool bCheckDone, bCheckResult, bCheckExcluded; // hostlist check result cache
- 
- 	struct timespec t_start;
+@@ -32,0 +33 @@
++#define ADAPTIVE_HOST_STRATEGIES_MAX 64
+@@ -59,0 +61,11 @@ typedef struct
 +	/* Z2R C-owned flow identity and assignment snapshot. */
 +	uint64_t flow_id, strategy_generation, candidate_generation;
 +	uint32_t profile_id, strategy_id;
@@ -360,29 +491,24 @@ index 42caf8b..4ebb0d5 100644
 +	uint32_t clienthello_first_seq;
 +	uint32_t clienthello_count, clienthello_retransmissions;
 +	t_conn tuple; // client-oriented tuple copied at flow creation
- 
- 	// this block of data can change between delayed (queued) packets. need to remeber this data for each packet for further replay
- 	t_ctrack_positions pos;
-@@ -111,6 +122,11 @@ bool ConntrackExtractConn(t_conn *c, bool bReverse, const struct dissect *dis);
- void ConntrackPoolDump(const t_conntrack *p);
- void ConntrackPoolPurge(t_conntrack *p);
- void ConntrackClearHostname(t_ctrack *track);
+@@ -113,0 +126,12 @@ void ConntrackClearHostname(t_ctrack *track);
 +void ConntrackAdaptiveTelemetryInit(void);
 +bool ConntrackSetStrategy(t_ctrack *track, uint32_t profile_id, uint32_t strategy_id,
 +	const char *scope, uint32_t *selected_strategy);
 +void ConntrackAdaptiveSetCandidate(uint32_t profile_id, uint32_t strategy_id);
 +uint64_t ConntrackAdaptiveCandidateGeneration(void);
- 
- bool ReasmInit(t_reassemble *reasm, size_t size_requested, uint32_t seq_start);
- bool ReasmResize(t_reassemble *reasm, size_t new_size);
++bool ConntrackAdaptiveSetHostStrategy(uint32_t profile_id, const char *host,
++	uint32_t strategy_id, uint64_t *generation);
++bool ConntrackAdaptiveClearHostStrategy(uint32_t profile_id, const char *host);
++bool ConntrackAdaptiveGetHostStrategy(uint32_t profile_id, const char *host,
++	uint32_t *strategy_id, uint64_t *generation);
++bool ConntrackAdaptiveLookupCanaryStrategy(const t_ctrack *track, uint32_t profile_id,
++	const char *host, uint32_t *strategy_id);
 diff --git a/nfq2/lua.c b/nfq2/lua.c
-index 61e4027..f4c6908 100644
+index 61e4027..03a5d2d 100644
 --- a/nfq2/lua.c
 +++ b/nfq2/lua.c
-@@ -1080,6 +1080,22 @@ static int luacall_execution_plan(lua_State *L)
- 
- 	LUA_STACK_GUARD_RETURN(L,1)
- }
+@@ -1082,0 +1083,29 @@ static int luacall_execution_plan(lua_State *L)
 +static int luacall_flow_strategy_assign(lua_State *L)
 +{
 +	lua_check_argc(L,"flow_strategy_assign",3);
@@ -398,37 +524,34 @@ index 61e4027..f4c6908 100644
 +		lua_pushnil(L);
 +	return 1;
 +}
++static int luacall_flow_strategy_canary_get(lua_State *L)
++{
++	lua_check_argc(L,"flow_strategy_canary_get",1);
++	t_lua_desync_context *ctx = lua_desync_ctx(L);
++	uint32_t strategy = 0;
++	if (ctx->ctrack && ctx->dp &&
++		ConntrackAdaptiveLookupCanaryStrategy(ctx->ctrack, ctx->dp->n,
++			ctx->ctrack->hostname, &strategy))
++		lua_pushinteger(L, strategy);
++	else
++		lua_pushnil(L);
++	return 1;
++}
 +
- static int luacall_execution_plan_cancel(lua_State *L)
- {
- 	lua_check_argc(L,"execution_plan_cancel",1);
-@@ -4563,6 +4579,8 @@ static void lua_init_functions(void)
- 		{"execution_plan",luacall_execution_plan},
- 		// cancel execution of upcoming desync instances and their arguments
- 		{"execution_plan_cancel",luacall_execution_plan_cancel},
+@@ -4565,0 +4595,3 @@ static void lua_init_functions(void)
 +		// C-owned immutable first strategy attribution for this conntrack flow
 +		{"flow_strategy_assign",luacall_flow_strategy_assign},
- 		// get raw packet data
- 		{"raw_packet",luacall_raw_packet},
- 
++		{"flow_strategy_canary_get",luacall_flow_strategy_canary_get},
 diff --git a/nfq2/nfqws.c b/nfq2/nfqws.c
-index ae4bef9..e465d40 100644
+index ae4bef9..027b413 100644
 --- a/nfq2/nfqws.c
 +++ b/nfq2/nfqws.c
-@@ -45,6 +45,7 @@
- 
- #ifdef __linux__
- #include <sys/ioctl.h>
+@@ -47,0 +48 @@
 +#include <sys/un.h>
- #include <libnetfilter_queue/libnetfilter_queue.h>
- #define NF_DROP 0
- #define NF_ACCEPT 1
-@@ -439,6 +440,136 @@ static void notify_ready(void)
- #endif
- }
- 
+@@ -441,0 +443,190 @@ static void notify_ready(void)
 +#ifdef __linux__
-+#define ADAPTIVE_CONTROL_MAX 256
++/* The control datagram is bounded, while host names use their DNS wire limit. */
++#define ADAPTIVE_CONTROL_MAX 384
 +static int adaptive_control_open(void)
 +{
 +	struct sockaddr_un addr;
@@ -486,6 +609,38 @@ index ae4bef9..e465d40 100644
 +	return false;
 +}
 +
++static bool adaptive_host_valid(char *host)
++{
++	size_t len, label = 0, i;
++	if (!host || !(len = strlen(host)) || len > 253 || host[0] == '.' || host[len - 1] == '.') return false;
++	for (i = 0; i < len; i++) {
++		unsigned char c = (unsigned char)host[i];
++		if (c == '.') {
++			if (!label || label > 63 || host[i - 1] == '-') return false;
++			label = 0;
++		} else if (isalnum(c) || c == '-') {
++			if (!label && c == '-') return false;
++			label++;
++		} else return false;
++		host[i] = (char)tolower(c);
++	}
++	return label > 0 && label <= 63 && host[len - 1] != '-';
++}
++
++static bool adaptive_parse_host(const char **cursor, char delimiter, char host[256])
++{
++	const char *end = strchr(*cursor, delimiter);
++	size_t len;
++	if (!end || end == *cursor) return false;
++	len = (size_t)(end - *cursor);
++	if (len >= 256) return false;
++	memcpy(host, *cursor, len);
++	host[len] = 0;
++	if (!adaptive_host_valid(host)) return false;
++	*cursor = end + 1;
++	return true;
++}
++
 +static bool adaptive_parse_uint32(const char **cursor, char delimiter, uint32_t *value)
 +{
 +	const char *p = *cursor;
@@ -505,12 +660,13 @@ index ae4bef9..e465d40 100644
 +
 +static void adaptive_control_handle(int fd)
 +{
-+	char request[ADAPTIVE_CONTROL_MAX], reply[192];
++	char request[ADAPTIVE_CONTROL_MAX], reply[192], host[256];
 +	struct sockaddr_un peer;
 +	const char *cursor;
 +	socklen_t peer_len = sizeof(peer);
 +	ssize_t n;
 +	uint32_t profile = 0, strategy = 0;
++	uint64_t generation = 0;
 +	int nr;
 +	const char *status = "invalid_request";
 +	bool peer_can_reply = false;
@@ -531,6 +687,32 @@ index ae4bef9..e465d40 100644
 +			strategy = params.adaptive_strategy_id;
 +			if (profile && strategy && adaptive_profile_exists(profile)) status = "ok";
 +			else status = "no_candidate";
++		} else if (params.adaptive_canary_profile &&
++			!strncmp(request, "SET_HOST_STRATEGY\t1\t", sizeof("SET_HOST_STRATEGY\t1\t") - 1)) {
++			cursor = request + sizeof("SET_HOST_STRATEGY\t1\t") - 1;
++			if (adaptive_parse_uint32(&cursor, '\t', &profile) &&
++				adaptive_parse_host(&cursor, '\t', host) &&
++				adaptive_parse_uint32(&cursor, '\n', &strategy) && cursor == request + n &&
++				profile == params.adaptive_canary_profile && strategy && adaptive_profile_exists(profile)) {
++				if (ConntrackAdaptiveSetHostStrategy(profile, host, strategy, &generation)) status = "ok";
++				else status = "host_table_full";
++			}
++		} else if (params.adaptive_canary_profile &&
++			!strncmp(request, "GET_HOST_STRATEGY\t1\t", sizeof("GET_HOST_STRATEGY\t1\t") - 1)) {
++			cursor = request + sizeof("GET_HOST_STRATEGY\t1\t") - 1;
++			if (adaptive_parse_uint32(&cursor, '\t', &profile) &&
++				adaptive_parse_host(&cursor, '\n', host) && cursor == request + n &&
++				profile == params.adaptive_canary_profile &&
++				ConntrackAdaptiveGetHostStrategy(profile, host, &strategy, &generation)) status = "ok";
++			else if (profile == params.adaptive_canary_profile) status = "no_host_strategy";
++		} else if (params.adaptive_canary_profile &&
++			!strncmp(request, "CLEAR_HOST_STRATEGY\t1\t", sizeof("CLEAR_HOST_STRATEGY\t1\t") - 1)) {
++			cursor = request + sizeof("CLEAR_HOST_STRATEGY\t1\t") - 1;
++			if (adaptive_parse_uint32(&cursor, '\t', &profile) &&
++				adaptive_parse_host(&cursor, '\n', host) && cursor == request + n &&
++				profile == params.adaptive_canary_profile &&
++				ConntrackAdaptiveClearHostStrategy(profile, host)) status = "ok";
++			else if (profile == params.adaptive_canary_profile) status = "no_host_strategy";
 +		} else {
 +			cursor = request;
 +			if (!strncmp(cursor, "SET_CANDIDATE\t1\t", sizeof("SET_CANDIDATE\t1\t") - 1)) {
@@ -547,7 +729,7 @@ index ae4bef9..e465d40 100644
 +	}
 +	if (!strcmp(status, "ok"))
 +		nr = snprintf(reply, sizeof(reply), "ACK\t1\tOK\t%u\t%u\t%llu\n", profile, strategy,
-+			(unsigned long long)ConntrackAdaptiveCandidateGeneration());
++			(unsigned long long)(generation ? generation : ConntrackAdaptiveCandidateGeneration()));
 +	else
 +		nr = snprintf(reply, sizeof(reply), "ACK\t1\tERR\t%s\n", status);
 +	if (peer_can_reply && nr > 0 && (size_t)nr < sizeof(reply))
@@ -557,35 +739,23 @@ index ae4bef9..e465d40 100644
 +}
 +#endif
 +
- // extra space for netlink headers
- #define NFQ_MAX_RECV_SIZE (RECONSTRUCT_MAX_SIZE+4096)
- static int nfq_main(void)
-@@ -446,6 +577,7 @@ static int nfq_main(void)
- 	struct nfq_handle *h = NULL;
- 	struct nfq_q_handle *qh = NULL;
- 	int res, fd, e;
+@@ -448,0 +640 @@ static int nfq_main(void)
 +	int control_fd = -1;
- 	ssize_t rd;
- 	FILE *Fpid = NULL;
- 	uint8_t *buf=NULL, *mod=NULL;
-@@ -459,6 +591,10 @@ static int nfq_main(void)
- 		DLOG_PERROR("create pidfile");
- 		return 1;
- 	}
+@@ -461,0 +654,10 @@ static int nfq_main(void)
++	if (params.adaptive_canary_profile &&
++		(!*params.adaptive_control_socket || !adaptive_profile_exists(params.adaptive_canary_profile) ||
++		 params.adaptive_strategy_profile == params.adaptive_canary_profile)) {
++		DLOG_ERR("adaptive canary profile requires --adaptive-control, an existing profile, and no global strategy pin on that profile\n");
++		return 1;
++	}
 +	/* Connect while privileged: the controller socket is deliberately private. */
 +	ConntrackAdaptiveTelemetryInit();
 +	control_fd = adaptive_control_open();
 +	if (*params.adaptive_control_socket && control_fd < 0) goto err;
- 
- 	if (params.droproot && !droproot(params.uid, params.user, params.gid, params.gid_count) || !dropcaps())
- 		goto err;
-@@ -534,17 +670,21 @@ static int nfq_main(void)
- 		if (bQuit) goto quit;
- 		for(;;)
- 		{
+@@ -537 +739 @@ static int nfq_main(void)
 -			if (params.timers)
 +			if (params.timers || control_fd >= 0)
- 			{
+@@ -539,5 +741,7 @@ static int nfq_main(void)
 -				if (!bt_next) bt_next = TimerPoolNext(params.timers, &params.timers_dirty);
 -				bt = boottime_ms();
 -				dbt = bt_next>bt ? bt_next-bt : 0;
@@ -598,78 +768,43 @@ index ae4bef9..e465d40 100644
 +					tv.tv_sec = (time_t)(dbt/1000);
 +					tv.tv_usec = (suseconds_t)(dbt%1000*1000);
 +				}
- 
- 				FD_ZERO(&fdset);
- 				FD_SET(fd, &fdset);
+@@ -547 +751,3 @@ static int nfq_main(void)
 -				res = select(fd+1, &fdset, NULL, NULL, &tv);
 +				if (control_fd >= 0) FD_SET(control_fd, &fdset);
 +				res = select((fd > control_fd ? fd : control_fd)+1, &fdset, NULL, NULL,
 +					params.timers ? &tv : NULL);
- 				if (bQuit) goto quit;
- 				if (res == -1)
- 				{
-@@ -561,7 +701,9 @@ static int nfq_main(void)
- 			}
- 			lua_do_gc();
- 			ReloadCheck();
+@@ -564 +770,3 @@ static int nfq_main(void)
 -			if (res)
 +			if (control_fd >= 0 && res > 0 && FD_ISSET(control_fd, &fdset))
 +				adaptive_control_handle(control_fd);
 +			if (res && (control_fd < 0 || FD_ISSET(fd, &fdset)))
- 			{
- 				rd = recv(fd, buf, NFQ_MAX_RECV_SIZE, 0);
- 				if (rd<0) break;
-@@ -610,6 +752,10 @@ ex:
- 	free(buf);
- 	nfq_deinit(&h, &qh);
- 	if (cbdata.sock>=0) close(cbdata.sock);
+@@ -612,0 +821,4 @@ ex:
 +	if (control_fd >= 0) {
 +		close(control_fd);
 +		unlink(params.adaptive_control_socket);
 +	}
- 	lua_shutdown();
- #ifdef HAS_FILTER_SSID
- 	wlan_info_deinit();
-@@ -1837,6 +1983,11 @@ static void exithelp(void)
- #endif
- 		" --ctrack-timeouts=S:E:F[:U]\t\t\t\t; internal conntrack timeouts for TCP SYN, ESTABLISHED, FIN stages, UDP timeout. default %u:%u:%u:%u\n"
- 		" --ctrack-disable=[0|1]\t\t\t\t\t; 1 or no argument disables conntrack\n"
+@@ -1839,0 +2052,6 @@ static void exithelp(void)
 +		" --adaptive-events=<file|unix:path>\t\t; append TSV or send nonblocking Unix datagrams (optional)\n"
 +		" --adaptive-strategy=<profile>:<strategy>\t; pin only that profile to one controller-selected learning strategy\n"
 +#ifdef __linux__
-+		" --adaptive-control=<unix_path>\t\t; private Unix datagram SET/GET_CANDIDATE v1 endpoint (optional)\n"
++		" --adaptive-control=<unix_path>\t\t; private Unix datagram candidate/host strategy endpoint (optional)\n"
++		" --adaptive-canary-profile=<profile>\t; allow up to 64 host-scoped assignments for this profile\n"
 +#endif
- 		" --payload-disable=[type[,type]]\t\t\t; do not discover these payload types. for available payload types see '--payload'. disable all if no argument.\n"
- 		" --server=[0|1]\t\t\t\t\t\t; change multiple aspects of src/dst ip/port handling for incoming connections\n"
- 		" --ipcache-lifetime=<int>\t\t\t\t; time in seconds to keep cached hop count and domain name (default %u). 0 = no expiration\n"
-@@ -2000,6 +2151,11 @@ enum opt_indices {
- #endif
- 	IDX_CTRACK_TIMEOUTS,
- 	IDX_CTRACK_DISABLE,
+@@ -2002,0 +2221,6 @@ enum opt_indices {
 +	IDX_ADAPTIVE_EVENTS,
 +	IDX_ADAPTIVE_STRATEGY,
 +#ifdef __linux__
 +	IDX_ADAPTIVE_CONTROL,
++	IDX_ADAPTIVE_CANARY_PROFILE,
 +#endif
- 	IDX_PAYLOAD_DISABLE,
- 	IDX_SERVER,
- 	IDX_IPCACHE_LIFETIME,
-@@ -2111,6 +2267,11 @@ static const struct option long_options[] = {
- #endif
- 	[IDX_CTRACK_TIMEOUTS] = {"ctrack-timeouts", required_argument, 0, 0},
- 	[IDX_CTRACK_DISABLE] = {"ctrack-disable", optional_argument, 0, 0},
+@@ -2113,0 +2338,6 @@ static const struct option long_options[] = {
 +	[IDX_ADAPTIVE_EVENTS] = {"adaptive-events", required_argument, 0, 0},
 +	[IDX_ADAPTIVE_STRATEGY] = {"adaptive-strategy", required_argument, 0, 0},
 +#ifdef __linux__
 +	[IDX_ADAPTIVE_CONTROL] = {"adaptive-control", required_argument, 0, 0},
++	[IDX_ADAPTIVE_CANARY_PROFILE] = {"adaptive-canary-profile", required_argument, 0, 0},
 +#endif
- 	[IDX_PAYLOAD_DISABLE] = {"payload-disable", optional_argument, 0, 0},
- 	[IDX_SERVER] = {"server", optional_argument, 0, 0},
- 	[IDX_IPCACHE_LIFETIME] = {"ipcache-lifetime", required_argument, 0, 0},
-@@ -2487,6 +2648,51 @@ int main(int argc, char **argv)
- 		case IDX_CTRACK_DISABLE:
- 			params.ctrack_disable = !optarg || atoi(optarg);
- 			break;
+@@ -2489,0 +2720,57 @@ int main(int argc, char **argv)
 +		case IDX_ADAPTIVE_EVENTS:
 +			if (!optarg || !*optarg || strlen(optarg) >= sizeof(params.adaptive_events_file))
 +			{
@@ -714,22 +849,93 @@ index ae4bef9..e465d40 100644
 +			}
 +			strcpy(params.adaptive_control_socket, optarg);
 +			break;
++		case IDX_ADAPTIVE_CANARY_PROFILE:
++		{
++			unsigned long profile;
++			char trailing;
++			if (!optarg || sscanf(optarg, "%lu%c", &profile, &trailing) != 1 ||
++				!profile || profile > UINT32_MAX) {
++				DLOG_ERR("--adaptive-canary-profile must be a positive profile integer\n");
++				exit_clean(1);
++			}
++			params.adaptive_canary_profile = (uint32_t)profile;
++			break;
++		}
 +#endif
- 		case IDX_SERVER:
- 			params.server = !optarg || atoi(optarg);
- 			break;
 diff --git a/nfq2/params.h b/nfq2/params.h
-index 309fb75..83ba3f0 100644
+index 309fb75..0863dc7 100644
 --- a/nfq2/params.h
 +++ b/nfq2/params.h
-@@ -179,6 +179,10 @@ struct params_s
- 	// LUA var blobs
- 	struct blob_collection_head blobs;
- 
+@@ -181,0 +182,5 @@ struct params_s
 +	char adaptive_events_file[PATH_MAX]; // optional C-side TSV event sink
 +	char adaptive_control_socket[PATH_MAX]; // optional local Unix datagram controller endpoint
 +	uint32_t adaptive_strategy_profile; // optional controller-pinned learning profile
 +	uint32_t adaptive_strategy_id; // optional controller-pinned learning strategy
- 	unsigned int ctrack_t_syn, ctrack_t_est, ctrack_t_fin, ctrack_t_udp;
- 	t_conntrack conntrack;
- 	bool ctrack_disable, server;
++	uint32_t adaptive_canary_profile; // optional profile accepting host-scoped strategy assignments
+diff --git a/tools/adaptive-controller b/tools/adaptive-controller
+new file mode 100755
+index 0000000..1cf4af0
+--- /dev/null
++++ b/tools/adaptive-controller
+@@ -0,0 +1,61 @@
++#!/usr/bin/env python3
++"""Small Unix-datagram client for the nfqws2 adaptive control endpoint."""
++
++import argparse
++import os
++import re
++import socket
++import sys
++import tempfile
++
++
++ACK_RE = re.compile(rb"ACK\t1\tOK\t([0-9]+)\t([0-9]+)\t([0-9]+)\n\Z")
++
++
++def get_candidate(server_path: str) -> int:
++    if not os.path.isabs(server_path):
++        print("adaptive-controller: worker socket path must be absolute", file=sys.stderr)
++        return 2
++
++    local_dir = tempfile.mkdtemp(prefix="z2r-adaptive-")
++    os.chmod(local_dir, 0o700)
++    local_path = os.path.join(local_dir, "worker.sock")
++    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
++    try:
++        client.bind(local_path)
++        os.chmod(local_path, 0o600)
++        client.settimeout(3.0)
++        client.sendto(b"GET_CANDIDATE\t1\n", server_path)
++        reply = client.recv(256)
++    except OSError as exc:
++        print(f"adaptive-controller: {exc}", file=sys.stderr)
++        return 1
++    finally:
++        client.close()
++        try:
++            os.unlink(local_path)
++        except FileNotFoundError:
++            pass
++        os.rmdir(local_dir)
++
++    if reply == b"ACK\t1\tERR\tno_candidate\n":
++        print("adaptive-controller: worker has no candidate", file=sys.stderr)
++        return 1
++    match = ACK_RE.fullmatch(reply)
++    if not match:
++        print("adaptive-controller: invalid worker response", file=sys.stderr)
++        return 1
++    profile, strategy, generation = (int(value) for value in match.groups())
++    print(f"candidate_current\tprofile={profile}\tstrategy={strategy}\tgeneration={generation}")
++    return 0
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(prog="adaptive-controller")
++    parser.add_argument("--get-candidate", metavar="WORKER_SOCKET", required=True)
++    args = parser.parse_args()
++    return get_candidate(args.get_candidate)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

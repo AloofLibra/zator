@@ -1536,6 +1536,30 @@ function circular_quality(ctx, desync)
     hostkey = slm_normalize_hostkey(hostkey) or hostkey
     local scope = type(desync_client_scope) == "function" and desync_client_scope(desync) or "default"
 
+    -- Controller-managed canary hosts skip legacy detector state and strategy
+    -- rotation. Existing manual or legacy locks keep precedence and use the
+    -- normal path; C only applies mappings for the explicit canary scope.
+    if not slm_get_locked(desync.arg.key, hostkey, scope) and flow_strategy_canary_get then
+        local canary = flow_strategy_canary_get(desync)
+        if canary then
+            local selected = flow_strategy_assign(desync, canary, "production_canary")
+            if selected ~= canary then
+                DLOG("circular_quality: canary assignment unavailable; passing without tampering")
+                return VERDICT_PASS
+            end
+            DLOG("circular_quality: C-owned canary strategy " .. selected .. " for " .. tostring(hostkey))
+            local verdict = VERDICT_PASS
+            while true do
+                local instance = plan_instance_pop(desync)
+                if not instance then break end
+                if instance.arg.strategy and tonumber(instance.arg.strategy) == selected then
+                    verdict = blob_override_execute(desync, verdict, instance, desync.arg.key)
+                end
+            end
+            return verdict
+        end
+    end
+
     -- Count strategies from desync.plan (already populated by orchestrate() at function start)
     count_strategies(hrec, desync.plan)
     if hrec.ctstrategy==0 then

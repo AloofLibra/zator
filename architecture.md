@@ -896,22 +896,31 @@ the id returned by C. They do not decide or rotate strategies. With no
 explicit `--adaptive-strategy=<profile>:<strategy>` pins only that profile in
 that `nfqws2` process to the controller-supplied id; C stores the immutable
 per-flow assignment and the Lua adapter only executes the matching plan
-entries. This is a learning-instance primitive, not a production selector;
-the option must not be added to the production daemon before a later canary
-phase. Replay requires the `FLOW_END` attribution snapshot to match the
-assignment event and rejects changes to the C-owned tuple context. A controller
-must not act on missing or conflicting attribution.
+entries. This remains a learning-instance primitive and must not be used as the
+production selector. The separate opt-in
+`--adaptive-canary-profile=<profile>` plus `--adaptive-control=<unix_path>`
+enables a C-owned map of at most 64 exact host/profile strategy assignments.
+`SET_HOST_STRATEGY`, `GET_HOST_STRATEGY`, and `CLEAR_HOST_STRATEGY` datagrams
+change only future flow assignments; conntrack snapshots the selected strategy
+and generation, while unlisted hosts retain the legacy strategy path. The
+zator Lua adapter checks C's canary mapping before entering legacy detector or
+rotation state, and honors existing profile/host locks. This is an application
+primitive only: controller-side canary eligibility, evidence thresholds,
+rollback policy, and map restoration after daemon restart remain Phase 9 work.
+Replay requires the `FLOW_END` attribution snapshot to match the assignment
+event and rejects changes to the C-owned tuple context. A controller must not
+act on missing or conflicting attribution.
 
-The patch applies to `AloofLibra/zapret2` HEAD
-`00f5aaa36de500971faf6db440dd7d8b25672281`. Current branch
-`codex/adaptive-flow-telemetry` is pushed through `b44cf55`. Commit `2aca66d` adds the
-acknowledged candidate control endpoint, v3 source-port telemetry, and aligns
-pinned flow strategy generations with the acknowledged candidate generation.
-It now also supports `GET_CANDIDATE v1`, so the probe reads the active
-strategy/generation from C after worker restarts; commit `b44cf55` contains that
-query and its clean Linux build passed.
-The Linux `nfq2` build succeeds and `nfqws2 --help` exposes
-`--adaptive-events`, `--adaptive-strategy`, and `--adaptive-control`.
+The patch applies to `AloofLibra/zapret2` base
+`00f5aaa36de500971faf6db440dd7d8b25672281`. The current
+`codex/adaptive-flow-telemetry` branch is pushed through `ac1b177` and includes
+C-owned host-scoped canary assignment, bounded to 64 exact hosts per process.
+This endpoint is separate from the learning worker's global candidate pin.
+`adaptive-controller --production-set-host/--production-get-host/--production-clear-host`
+are transport clients for that private endpoint; they do not choose a strategy.
+The Linux `nfq2` build and host Adaptive Controller build pass with these
+changes. No controller-side canary promotion policy or automatic rollback is
+implemented yet.
 The fork's active `build.yml` workflow covers its Linux cross-build matrix,
 Android, Windows, and FreeBSD. Manual run
 [`36010286865`](https://github.com/AloofLibra/zapret2/actions/runs/36010286865)
@@ -1574,7 +1583,19 @@ HTTPS controls and probes.
 
 ## Phase 9 — Canary Production
 
-Включить новый controller для ограниченного числа profiles/hosts.
+Включить новый controller для ограниченного числа profiles/hosts. The fork now
+has a disabled-by-default C application primitive: one explicitly configured
+profile, an exact-host map capped at 64 rows, immutable per-flow strategy and
+generation snapshots, and legacy fallback for unmapped flows. The zator Lua
+adapter bypasses legacy rotation only for a mapped canary flow and retains
+existing locks.
+
+Still required before canary rollout: deploy the production `--adaptive-control`
+and `--adaptive-canary-profile` options; add a root-owned canary host allowlist;
+have the controller promote only a well-supported learning champion; persist
+and restore assignments across daemon restarts; and clear or roll back a host
+assignment on degraded evidence or network epoch change. No production config
+currently enables the canary flags.
 
 Legacy fallback оставить.
 
