@@ -256,17 +256,25 @@ adaptive_learning_wait_probe_settled() {
 # the experiment lock, so this probe id cannot be interleaved by another run.
 adaptive_learning_run_control_probe() {
   local host="$1" controller="$2" budget="$3" provider_key="$4" allowlist="$5"
-  local probe_output probe_id next record outcome epoch
+  local probe_output probe_id journal journal_offset record outcome epoch
+  journal=/tmp/zator-adaptive/shadow.tsv
+  [ -f "$journal" ] && [ ! -L "$journal" ] || {
+    echo "Журнал Adaptive Controller недоступен." >&2
+    return 1
+  }
+  journal_offset="$(wc -c <"$journal" | awk '{print $1}')"
+  case "$journal_offset" in ''|*[!0-9]*) echo "Не удалось определить позицию журнала." >&2; return 1 ;; esac
   adaptive_learning_set_candidate 4294967295 || return 1
   probe_output="$("${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result)" || return 1
   printf '%s\n' "$probe_output" >&2
   probe_id="$(printf '%s\n' "$probe_output" | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^probe_id=[0-9]+$/) { sub(/^probe_id=/, "", $i); print $i; exit } }')"
   case "$probe_id" in ''|*[!0-9]*) echo "No-strategy probe вернул некорректный id." >&2; return 1 ;; esac
   adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist" >/dev/null || return 1
-  record="$(awk -F '\t' -v wanted="$probe_id" \
-    '$1 == "PROBE_OUTCOME" && $3 == wanted { outcome=$4; epoch=$15 } \
+  record="$(awk -F '\t' -v skip="$journal_offset" -v wanted="$probe_id" \
+    '{ if (position >= skip && $1 == "PROBE_OUTCOME" && $3 == wanted) { outcome=$4; epoch=$15 } \
+       position += length($0) + 1 } \
      END { if (outcome != "") print outcome "\t" epoch }' \
-    /tmp/zator-adaptive/shadow.tsv 2>/dev/null)"
+    "$journal" 2>/dev/null)"
   outcome="${record%%$(printf '\t')*}"
   epoch="${record#*$(printf '\t')}"
   [ "$outcome" = CONTROL_SUCCESS ] || {
@@ -282,7 +290,7 @@ adaptive_learning_run_control_probe() {
 # stay in C; this function only applies the acknowledged choice and runs probes.
 adaptive_learning_compare() {
   local host="$1" budget="$2" controller allowlist next status strategy provider_key prior_support
-  local completed=0 strategy_file original_strategy last_strategy control_strategy=4294967295
+  local completed=0 strategy_file original_strategy last_strategy
   local verified_epoch next_epoch controls_used=0 max_recovery_controls
   controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
   case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
@@ -389,7 +397,6 @@ adaptive_learning_compare() {
   done
 
   echo "Повторный контроль без desync для $host..."
-  controls_used=$((controls_used + 1))
   if ! adaptive_learning_run_control_probe "$host" "$controller" "$budget" "$provider_key" "$allowlist" >/dev/null; then
     [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
     return 1
