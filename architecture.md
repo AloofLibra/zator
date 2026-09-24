@@ -1361,7 +1361,7 @@ production shadow switch and does not change production strategy.
 
 **Deployment gate:** patched `nfqws2` binaries are available in the
 `AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.1`; zator prerelease
-`adaptive-beta.5` ships controller executables for ten Linux targets. Zator's normal zapret2
+`adaptive-beta.6` ships controller executables for ten Linux targets. Zator's normal zapret2
 installer and carried-forward offline archive still use the MarkinAlexander
 build, so they do not automatically install the patched C binary. Install the
 matching fork archive separately before enabling shadow telemetry or learning.
@@ -1430,13 +1430,18 @@ There are two additional mechanics to account for in that integration:
 
 The first active comparison runner uses one HTTPS HEAD request per candidate,
 correlated to exactly one C learning flow. Settled `PROBE_OUTCOME` rows are
-written into the bounded controller journal as versioned v1 records with the
+written into the bounded controller journal as versioned v2 records with the
 probe id, outcome, reason, assigned strategy/generation, host, source port,
 HTTP result, correlated flow id, network epoch/health and context usability.
+When C flow correlation succeeds, the record also carries raw packet/byte
+counters, server/RST/FIN flags, ClientHello retransmissions and termination
+reason. The PC analyzer emits these as observed facts; they are diagnostic and
+does not turn them or curl error classes (DNS, connect, timeout, TLS, receive)
+into strategy failure votes.
 `python tools/adaptive_replay.py --controller-output
 /tmp/zator-adaptive/shadow.tsv` reports attempts,
 confirmed successes, unknowns, and host/strategy probeability by network epoch;
-it also reads unversioned probe rows left by adaptive-beta.3 upgrades.
+it also reads v1 and unversioned probe rows left by earlier beta upgrades.
 Unknown outcomes do not become failures, and the analyzer reports zero failure
 votes because this probe has no trusted explicit-block classifier. Synthetic
 no-strategy controls, explicit block classification, and retry after

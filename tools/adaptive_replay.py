@@ -35,7 +35,34 @@ def replay_controller_output(stream):
         if not header_seen:
             raise ValueError(f"line {line_no}: unsupported PROBE_OUTCOME record")
         try:
-            if len(cols) == 20 and cols[1] == "v1":
+            if len(cols) == 34 and cols[1] == "v2":
+                probe = {
+                    "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
+                    "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
+                    "strategy_generation": int(cols[7]), "hostname": cols[8].lower(),
+                    "source_port": int(cols[9]), "curl_rc": int(cols[10]),
+                    "http_status": int(cols[11]), "elapsed_ms": int(cols[12]),
+                    "flow_id": int(cols[13]), "network_epoch": int(cols[14]),
+                    "transport": cols[15], "ip_family": cols[16],
+                    "network_health": cols[17], "network_health_reason": int(cols[18]),
+                    "network_context_usable": cols[19] == "1",
+                    "flow_metrics_seen": cols[20] == "1",
+                    "flow_metrics": {
+                        "client_packets": int(cols[21]), "server_packets": int(cols[22]),
+                        "client_bytes": int(cols[23]), "server_bytes": int(cols[24]),
+                        "server_seen": cols[25] == "1", "server_payload_seen": cols[26] == "1",
+                        "client_rst": cols[27] == "1", "server_rst": cols[28] == "1",
+                        "client_fin": cols[29] == "1", "server_fin": cols[30] == "1",
+                        "clienthello_count": int(cols[31]),
+                        "clienthello_retransmissions": int(cols[32]),
+                    },
+                    "termination_reason": cols[33],
+                }
+                flag_cols = cols[19:21] + cols[25:27] + cols[27:31]
+                if any(flag not in {"0", "1"} for flag in flag_cols):
+                    raise ValueError("invalid boolean field")
+                context_flag = cols[19]
+            elif len(cols) == 20 and cols[1] == "v1":
                 probe = {
                     "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
                     "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
@@ -47,6 +74,9 @@ def replay_controller_output(stream):
                     "network_health": cols[17], "network_health_reason": int(cols[18]),
                     "network_context_usable": cols[19] == "1",
                 }
+                probe["flow_metrics_seen"] = False
+                probe["flow_metrics"] = None
+                probe["termination_reason"] = "unknown"
                 context_flag = cols[19]
             elif len(cols) == 13:
                 # beta.3 journal rows predate the versioned network context.
@@ -61,6 +91,9 @@ def replay_controller_output(stream):
                     "network_health": "UNKNOWN", "network_health_reason": 0,
                     "network_context_usable": False,
                 }
+                probe["flow_metrics_seen"] = False
+                probe["flow_metrics"] = None
+                probe["termination_reason"] = "unknown"
                 context_flag = "0"
             else:
                 raise ValueError("unsupported record version")
@@ -74,6 +107,44 @@ def replay_controller_output(stream):
                 probe["elapsed_ms"] < 0 or probe["flow_id"] < 0 or
                 probe["network_epoch"] < 0 or context_flag not in {"0", "1"}):
             raise ValueError(f"line {line_no}: PROBE_OUTCOME value outside allowed bounds")
+        metrics = probe["flow_metrics"]
+        if metrics is not None and any(value < 0 for name, value in metrics.items()
+                                       if name.endswith("packets") or name.endswith("bytes") or
+                                       name in {"clienthello_count", "clienthello_retransmissions"}):
+            raise ValueError(f"line {line_no}: negative flow metric")
+        if metrics is not None and probe["flow_metrics_seen"]:
+            facts = []
+            if metrics["client_packets"]:
+                facts.append("CLIENT_PACKETS_SEEN")
+            if metrics["server_seen"] or metrics["server_packets"]:
+                facts.append("SERVER_RESPONSE_SEEN")
+            if metrics["server_payload_seen"] or metrics["server_bytes"]:
+                facts.append("SERVER_PAYLOAD_SEEN")
+            if metrics["client_rst"]:
+                facts.append("CLIENT_RST_SEEN")
+            if metrics["server_rst"]:
+                facts.append("SERVER_RST_SEEN")
+            if metrics["client_fin"]:
+                facts.append("CLIENT_FIN_SEEN")
+            if metrics["server_fin"]:
+                facts.append("SERVER_FIN_SEEN")
+            if metrics["clienthello_retransmissions"]:
+                facts.append("CLIENTHELLO_RETRANSMISSION_SEEN")
+            if metrics["client_packets"] and not metrics["server_packets"]:
+                facts.append("CLIENT_ACTIVITY_WITHOUT_SERVER_PACKETS")
+            probe["packet_evidence"] = facts
+        else:
+            probe["packet_evidence"] = ["C_FLOW_METRICS_UNAVAILABLE"]
+        curl_diagnostics = {
+            6: "DNS_RESOLUTION_ERROR", 7: "CONNECT_ERROR", 28: "CURL_TIMEOUT",
+            35: "TLS_HANDSHAKE_ERROR", 52: "EMPTY_SERVER_REPLY",
+            56: "RECEIVE_ERROR", 60: "TLS_CERTIFICATE_ERROR",
+        }
+        if probe["curl_rc"] == 0:
+            probe["curl_diagnostic"] = ("HTTP_RESPONSE" if 100 <= probe["http_status"] <= 599
+                                        else "HTTP_STATUS_MISSING")
+        else:
+            probe["curl_diagnostic"] = curl_diagnostics.get(probe["curl_rc"], "CURL_ERROR")
         probes.append(probe)
 
     groups = defaultdict(lambda: {"attempts": 0, "strong_success": 0,

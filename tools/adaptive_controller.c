@@ -64,13 +64,15 @@ struct candidate_state {
  * HTTP result; it does not schedule candidates or promote policy. */
 struct probe_state {
 	bool active, result_seen, flow_seen, flow_ambiguous;
+	bool flow_metrics_seen;
 	uint64_t id, started_ms, deadline_ms, join_ready_ms, flow_id, candidate_flow_id;
 	uint64_t network_epoch;
 	uint32_t source_port, profile, strategy, curl_rc, http_status;
 	uint64_t generation, elapsed_ms;
+	uint64_t flow_metrics[10], clienthello_count, clienthello_retransmissions;
 	uint8_t health_state, health_reason;
 	bool network_context_usable;
-	char host[HOST_CAP];
+	char host[HOST_CAP], termination_reason[32];
 	char transport[8], family[8];
 };
 
@@ -763,14 +765,23 @@ static bool probe_flow_id_completed(uint64_t flow_id)
 static void probe_emit_outcome(const char *outcome, const char *reason)
 {
 	struct probe_state *p = &active_probe;
-	printf("PROBE_OUTCOME\tv1\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
+	printf("PROBE_OUTCOME\tv2\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
 		"\t%s\t%u\t%u\t%u\t%" PRIu64 "\t%" PRIu64
-		"\t%" PRIu64 "\t%s\t%s\t%s\t%u\t%u\n",
+		"\t%" PRIu64 "\t%s\t%s\t%s\t%u\t%u\t%u"
+		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
+		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
+		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
+		"\t%s\n",
 		p->id, outcome, reason, p->profile, p->strategy, p->generation, p->host,
 		p->source_port, p->curl_rc, p->http_status, p->elapsed_ms, p->flow_id,
 		p->network_epoch, p->transport[0] ? p->transport : "tcp",
 		p->family[0] ? p->family : "unknown", network_health_name(p->health_state),
-		p->health_reason, p->network_context_usable ? 1U : 0U);
+		p->health_reason, p->network_context_usable ? 1U : 0U,
+		p->flow_metrics_seen ? 1U : 0U, p->flow_metrics[0], p->flow_metrics[1],
+		p->flow_metrics[2], p->flow_metrics[3], p->flow_metrics[4], p->flow_metrics[5],
+		p->flow_metrics[6], p->flow_metrics[7], p->flow_metrics[8], p->flow_metrics[9],
+		p->clienthello_count, p->clienthello_retransmissions,
+		p->termination_reason[0] ? p->termination_reason : "unknown");
 }
 
 static void probe_remember_port(uint64_t now, uint32_t source_port)
@@ -1094,6 +1105,14 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 			active_probe.health_state = flow->health_state;
 			active_probe.health_reason = flow->health_reason;
 			active_probe.network_context_usable = flow->network_context_usable;
+			active_probe.flow_metrics_seen = true;
+			memcpy(active_probe.flow_metrics, telemetry, sizeof(active_probe.flow_metrics));
+			active_probe.clienthello_count = telemetry[12];
+			active_probe.clienthello_retransmissions = telemetry[13];
+			if (!copy_field(active_probe.termination_reason,
+				sizeof(active_probe.termination_reason), c[27]))
+				copy_field(active_probe.termination_reason,
+					sizeof(active_probe.termination_reason), "unknown");
 			copy_field(active_probe.transport, sizeof(active_probe.transport), flow->transport);
 			copy_field(active_probe.family, sizeof(active_probe.family), flow->family);
 		}
