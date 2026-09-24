@@ -1537,6 +1537,23 @@ ranking applies only to the opt-in learning comparison, not production flows.
 * runner-up maintenance;
 * strategy de-escalation.
 
+The first scheduler primitive is now in the resident C controller. The
+`--next-scheduled` query returns one due strategy task or its next due time for
+an explicit host and strategy allowlist; the C learning state supplies the
+host-local champion, runner-up, probe history, and comparative quarantine.
+Priority is champion revalidation (6h), promising follow-up (10m), unknown
+exploration (immediate), unknown retry (30m), runner-up revalidation (24h),
+then quarantine retry with capped 1m/5m/30m/2h backoff. A confirmed successful
+probe clears that host's comparative quarantine. It observes the same network
+health gate and single active-probe limit as candidate selection. Deadlines
+and quarantine counters are persisted in `ADAPTIVE_STATE v7`, whose checkpoint
+remains capped tmpfs data and valid only for the current boot.
+
+`adaptive_learning_schedule_next` is the shell query wrapper. It does not
+generate network traffic: a bounded runner still needs to consume this task,
+bracket the probe with no-strategy controls, and enforce its per-run request
+budget. Automatic wake-up and runner integration remain Phase 8 work.
+
 ---
 
 ## Phase 9 — Canary Production

@@ -233,6 +233,17 @@ adaptive_learning_provider_key() {
   esac
 }
 
+# Ask the resident C controller whether this host has a due learning task.
+# The caller owns traffic generation and must enforce its request budget.
+adaptive_learning_schedule_next() {
+  local host="$1" allowlist="$2" provider_key controller
+  controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
+  [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
+  provider_key="$(adaptive_learning_provider_key)" || provider_key=unknown
+  "$controller" --next-scheduled /tmp/zator-adaptive/events.sock \
+    "$host" 1 "$provider_key" "$allowlist"
+}
+
 adaptive_learning_wait_probe_settled() {
   local controller="$1" host="$2" budget="$3" provider_key="$4" allowlist="$5"
   local next status waited=0
