@@ -1406,10 +1406,11 @@ driver now exist; rule order and teardown still require validation on
 representative OpenWrt nftables and Keenetic iptables routers. The controller
 joins each probe's HTTP result to a unique learning flow using the reserved
 source-port range and C-owned strategy generation; ambiguous or missing joins
-remain unknown. The workflow supports manual candidate changes and bounded
-operator-started comparative probes. Automatic background exploration and
-production decisions remain future phases, so this is an operator-driven
-learning PoC.
+remain unknown. The workflow supports manual candidate changes, bounded
+operator-started comparative probes, and an opt-in hourly scheduler wake-up
+with a strict rolling daily traffic budget. The scheduler selects learning
+tasks and runs isolated learning probes; it does not change production
+strategy. Production canary decisions remain a later phase.
 
 There are two additional mechanics to account for in that integration:
 
