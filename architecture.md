@@ -1255,9 +1255,9 @@ against the extracted TLS plan before updating the live worker. Lua reads the
 C-pinned id only to execute configured plan entries; production gets no
 control endpoint. The C telemetry is v3 and includes the client source port,
 so learning probe flows can be separated from other flows to the same host.
-Automatic candidate selection and comparative probes are still needed. A
-learning instance must not use the legacy `circular_quality` state-writing
-path.
+The bounded candidate selector and operator-started comparison runner are now
+implemented; a learning instance must not use the legacy `circular_quality`
+state-writing path.
 
 An execution-only Lua adapter now exists at `lua/adaptive-executor.lua`. It
 asks `flow_strategy_assign` for the C/conntrack-pinned strategy and executes
@@ -1272,9 +1272,9 @@ a single-profile TLS learning config from only the shared
 pin and telemetry socket and deliberately excludes the production Lua init
 entries. The deployed `custom.d` hook calls this writer when learning is
 explicitly enabled and a candidate strategy is supplied. The acknowledged C
-control path can update that candidate without restarting the worker; the
-automatic policy that selects the next candidate and comparative probe
-scheduler remain Phase 5 work.
+control path can update that candidate without restarting the worker. The
+bounded selector and operator-started comparative probe runner are implemented
+in Phase 5; live firewall and flow-correlation validation remains outstanding.
 
 The generated executor uses the reserved scope `learning` and sends C telemetry
 to the existing controller socket. Scope is part of the controller's
@@ -1332,8 +1332,8 @@ success update; invalid, failed, incomplete, ambiguous, or missing joins add no
 negative vote. The lease expires after 90 seconds, and short-lived source-port
 tombstones prevent late terminal events from being re-counted as passive
 observations. Manual candidate updates and probes share an exclusive runtime
-lock. Candidate selection remains manual through
-`adaptive-learning.strategy`; a bounded C selector is now available through
+lock. `adaptive-learning.strategy` persists the worker's current id; a bounded
+C selector is available through
 `adaptive-controller --next-candidate`. The caller must provide the explicit
 TLS-plan allowlist, host, profile, and total settled-attempt budget. C picks the
 least-tried allowed candidate (numeric id breaks ties), consumes budget only
@@ -1344,7 +1344,8 @@ item 25 offers an operator-started comparison runner bounded to 64 attempts
 per invocation: it extracts the
 allowlist from the live TLS template, asks C for each next candidate, applies
 the acknowledged worker update, and starts one probe at a time. It stops on
-the total attempt budget or any setup/correlation error. Probe correlation has not yet been validated
+the total attempt budget or any setup error. Failed or uncorrelated leases
+remain `UNKNOWN`. Probe correlation has not yet been validated
 on a live router and depends on the deployed nfqws2 emitting the v3 client
 source-port field.
 
@@ -1359,8 +1360,8 @@ made learning-only mode impossible. Menu item 24 remains the separate passive
 production shadow switch and does not change production strategy.
 
 **Deployment gate:** patched `nfqws2` binaries are available in the
-`AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.1`; the zator beta also
-ships controller executables for ten Linux targets. Zator's normal zapret2
+`AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.1`; zator prerelease
+`adaptive-beta.4` ships controller executables for ten Linux targets. Zator's normal zapret2
 installer and carried-forward offline archive still use the MarkinAlexander
 build, so they do not automatically install the patched C binary. Install the
 matching fork archive separately before enabling shadow telemetry or learning.
@@ -1397,9 +1398,10 @@ driver now exist; rule order and teardown still require validation on
 representative OpenWrt nftables and Keenetic iptables routers. The controller
 joins each probe's HTTP result to a unique learning flow using the reserved
 source-port range and C-owned strategy generation; ambiguous or missing joins
-remain unknown. The workflow supports manual candidate changes and one-off
-probes only. Automatic candidate selection and repeated comparative probes
-remain future Phase 5–6 work, so this is an operator-driven learning PoC.
+remain unknown. The workflow supports manual candidate changes and bounded
+operator-started comparative probes. Automatic background exploration and
+production decisions remain future phases, so this is an operator-driven
+learning PoC.
 
 There are two additional mechanics to account for in that integration:
 
@@ -1425,6 +1427,19 @@ There are two additional mechanics to account for in that integration:
 * comparative validation;
 * probeability;
 * adaptive retry.
+
+The first active comparison runner uses one HTTPS HEAD request per candidate,
+correlated to exactly one C learning flow. Settled `PROBE_OUTCOME` rows are
+written into the bounded controller journal as versioned v1 records with the
+probe id, outcome, reason, assigned strategy/generation, host, source port,
+HTTP result, correlated flow id, network epoch/health and context usability.
+`python tools/adaptive_replay.py --controller-output
+/tmp/zator-adaptive/shadow.tsv` reports attempts,
+confirmed successes, unknowns, and host/strategy probeability by network epoch.
+Unknown outcomes do not become failures, and the analyzer reports zero failure
+votes because this probe has no trusted explicit-block classifier. Synthetic
+no-strategy controls, explicit block classification, and retry after
+independently verified infrastructure recovery remain open Phase 6 work.
 
 ---
 

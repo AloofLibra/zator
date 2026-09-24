@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Replay C-owned nfqws2 flow events offline; never contacts live targets.
+"""Replay C-owned nfqws2/controller events offline; never contacts live targets.
 
 The current C telemetry can confirm server payload, but silence is not a
 reliable strategy failure. This phase therefore emits UNKNOWN for flows with
-no server payload and does not rotate or promote on negative evidence.
+no server payload and does not rotate or promote on negative evidence. Use
+--controller-output to summarize settled active-probe records from shadow.tsv.
 """
 
 import argparse
@@ -15,6 +16,99 @@ from collections import defaultdict
 
 FIELDS_BY_VERSION = {"v1": 27, "v2": 28, "v3": 29}
 COHORT_WINDOW_MS = 10_000
+
+
+def replay_controller_output(stream):
+    """Summarize resident-controller output, especially settled active probes."""
+    probes = []
+    header_seen = False
+    for line_no, raw in enumerate(stream, 1):
+        line = raw.rstrip("\r\n")
+        if line.startswith("# ADAPTIVE_CONTROLLER_OUTPUT "):
+            header_seen = True
+            continue
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if cols[0] != "PROBE_OUTCOME":
+            continue
+        if not header_seen or len(cols) != 20 or cols[1] != "v1":
+            raise ValueError(f"line {line_no}: unsupported PROBE_OUTCOME record")
+        try:
+            probe = {
+                "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
+                "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
+                "strategy_generation": int(cols[7]), "hostname": cols[8].lower(),
+                "source_port": int(cols[9]), "curl_rc": int(cols[10]),
+                "http_status": int(cols[11]), "elapsed_ms": int(cols[12]),
+                "flow_id": int(cols[13]), "network_epoch": int(cols[14]),
+                "transport": cols[15], "ip_family": cols[16],
+                "network_health": cols[17], "network_health_reason": int(cols[18]),
+                "network_context_usable": cols[19] == "1",
+            }
+        except (ValueError, IndexError) as exc:
+            raise ValueError(f"line {line_no}: invalid PROBE_OUTCOME value") from exc
+        if (probe["outcome"] not in {"STRONG_SUCCESS", "UNKNOWN"} or
+                probe["probe_id"] <= 0 or probe["profile_id"] <= 0 or
+                probe["strategy_id"] <= 0 or probe["strategy_generation"] <= 0 or
+                not probe["hostname"] or not 62000 <= probe["source_port"] <= 62015 or
+                probe["curl_rc"] < 0 or not 0 <= probe["http_status"] <= 599 or
+                probe["elapsed_ms"] < 0 or probe["flow_id"] < 0 or
+                probe["network_epoch"] < 0 or cols[19] not in {"0", "1"}):
+            raise ValueError(f"line {line_no}: PROBE_OUTCOME value outside allowed bounds")
+        probes.append(probe)
+
+    groups = defaultdict(lambda: {"attempts": 0, "strong_success": 0,
+                                  "unknown": 0, "elapsed_ms": []})
+    host_groups = defaultdict(lambda: {"attempts": 0, "strong_success": 0,
+                                       "unknown": 0, "strategies": set()})
+    for probe in probes:
+        key = (probe["profile_id"], probe["hostname"], probe["transport"],
+               probe["ip_family"], probe["network_epoch"], probe["strategy_id"])
+        host_key = key[:-1]
+        stats = groups[key]
+        host_stats = host_groups[host_key]
+        stats["attempts"] += 1
+        host_stats["attempts"] += 1
+        host_stats["strategies"].add(probe["strategy_id"])
+        if probe["outcome"] == "STRONG_SUCCESS":
+            stats["strong_success"] += 1
+            stats["elapsed_ms"].append(probe["elapsed_ms"])
+            host_stats["strong_success"] += 1
+        else:
+            stats["unknown"] += 1
+            host_stats["unknown"] += 1
+        print(json.dumps({"event": "PROBE_OUTCOME", **probe}, separators=(",", ":")))
+
+    for key, stats in sorted(groups.items()):
+        profile, host, transport, family, epoch, strategy = key
+        elapsed = sorted(stats["elapsed_ms"])
+        mid = len(elapsed) // 2
+        median = (elapsed[mid] if len(elapsed) % 2 else
+                  (elapsed[mid - 1] + elapsed[mid]) // 2) if elapsed else None
+        print(json.dumps({
+            "event": "PROBE_COMPARISON_SUMMARY", "profile_id": profile,
+            "hostname": host, "transport": transport, "ip_family": family,
+            "network_epoch": epoch, "strategy_id": strategy,
+            "attempts": stats["attempts"], "strong_success": stats["strong_success"],
+            "unknown": stats["unknown"],
+            "probeability": "PROBEABLE" if stats["strong_success"] else "UNKNOWN",
+            "median_success_elapsed_ms": median,
+            "failure_votes": 0,
+        }, separators=(",", ":")))
+
+    for key, stats in sorted(host_groups.items()):
+        profile, host, transport, family, epoch = key
+        probeability = ("UNKNOWN" if not stats["strong_success"] else
+                        "PARTIAL" if stats["unknown"] else "PROBEABLE")
+        print(json.dumps({
+            "event": "HOST_PROBEABILITY", "profile_id": profile,
+            "hostname": host, "transport": transport, "ip_family": family,
+            "network_epoch": epoch, "strategies_attempted": sorted(stats["strategies"]),
+            "attempts": stats["attempts"], "confirmed_successes": stats["strong_success"],
+            "unknown": stats["unknown"], "probeability": probeability,
+            "failure_votes": 0,
+        }, separators=(",", ":")))
 
 
 def replay(stream):
@@ -257,9 +351,12 @@ def read_events(paths):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("events", nargs="*", help="TSV event files in chronological order (default: stdin)")
+    parser.add_argument("--controller-output", action="store_true",
+                        help="summarize resident controller output including active probe evidence")
     args = parser.parse_args()
     try:
-        replay(read_events(args.events or ["-"]))
+        stream = read_events(args.events or ["-"])
+        (replay_controller_output if args.controller_output else replay)(stream)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
