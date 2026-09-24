@@ -1169,13 +1169,15 @@ entries. The controller writes a 256 KiB maximum decision log under tmpfs,
 keeps evidence only in bounded memory, and never modifies production
 strategy. It still requires the telemetry patch in the deployed nfqws2 fork;
 the release installer refuses to turn on shadow mode without that support.
-The service checkpoints only aggregate candidate/context data to a 128 KiB
+The service checkpoints bounded aggregate candidate/context and provider data to a 128 KiB
 bounded file in `/tmp`, every five minutes and on graceful stop. A checkpoint
 is restored only during the same system uptime; after reboot or a bad/partial
 checkpoint the controller starts with empty aggregates. Open flows are never
 restored, and an interrupted flow cannot become negative evidence. No
-checkpoint is written to flash. The v2 checkpoint also carries the current
-network fingerprint and epoch; on same-uptime restart an unchanged fingerprint
+checkpoint is written to flash. The v2 checkpoint carried the network context;
+the v5 checkpoint additionally carries provider priors and distinct-host
+evidence while retaining compatibility with earlier checkpoint versions. The
+current checkpoint carries the network fingerprint and epoch; on same-uptime restart an unchanged fingerprint
 continues the epoch, while a changed fingerprint starts a fresh context. The
 route/DNS sampling estimate has at most 30 seconds of detection lag.
 Production-calibrated confidence,
@@ -1335,8 +1337,11 @@ observations. Manual candidate updates and probes share an exclusive runtime
 lock. `adaptive-learning.strategy` persists the worker's current id; a bounded
 C selector is available through
 `adaptive-controller --next-candidate`. The caller must provide the explicit
-TLS-plan allowlist, host, profile, and total settled-attempt budget. C picks the
-least-tried allowed candidate (numeric id breaks ties), consumes budget only
+TLS-plan allowlist, host, profile, provider key when known, and total
+settled-attempt budget. C picks the least-tried allowed candidate; equal-attempt
+candidates are ordered by distinct successful-host evidence from the matching
+provider prior, falling back to global evidence and then numeric id. The chosen
+prior support is included in the `candidate_next` output. C consumes budget only
 when a probe lease settles, and counts `UNKNOWN` only as a scheduling attempt,
 never as negative evidence. It refuses unknown/degraded network state or an
 active probe, with limits of 64 candidates and 1024 settled attempts. Menu
@@ -1461,14 +1466,21 @@ independently verified infrastructure recovery remain open Phase 6 work.
 Implementation prerequisite: a provider label from the existing cache is not a
 stable network identity. The detector therefore persists a separate adaptive
 provider key only when it has a validated ASN (`asn:<number>`); a manual display
-label clears a previously detected ASN key, and missing identity is `unknown`.
+label clears a previously detected ASN key. The key expires after 24 hours;
+missing or stale identity is `unknown`, avoiding indefinite reuse after a WAN
+change without adding periodic network lookups.
 The key is context metadata supplied to the controller's active probe lease,
 then written in `PROBE_OUTCOME v3`; flow identity and transport observations
-remain C-owned. The PC replay analyzer reports provider coverage, confirmed
-success and first-probe success separately, without treating unknown as failure.
-These records establish observability only: provider priors in the resident C
-controller and provider-ranked candidate selection are still pending, so the
-first-probe rate is not called a model prediction hit rate yet.
+remain C-owned. The resident C controller keeps bounded global and ASN-scoped
+counters for real attempts, confirmed successes, unknown outcomes, distinct
+hosts tested, and distinct hosts with confirmed success. Provider state is
+capped at 128 provider/strategy entries and 512 recent host/strategy
+observations, expires after seven days, and is included in the 128 KiB tmpfs
+checkpoint. The PC replay analyzer reports provider coverage and confirmed
+success separately, without treating unknown as failure. Reliability and
+provider prediction hit rate remain unknown until trustworthy strategy-specific
+negative evidence exists. Unknown results never reduce candidate support. The
+ranking applies only to the opt-in learning comparison, not production flows.
 
 ---
 

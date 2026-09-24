@@ -86,11 +86,17 @@ controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
 provider_key=unknown
 provider_key_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/provider_learning_key.txt"
 if [ -f "$provider_key_file" ] && [ ! -L "$provider_key_file" ]; then
-	IFS= read -r saved_provider_key <"$provider_key_file" || saved_provider_key=
+	IFS="$(printf '\t')" read -r saved_provider_key saved_provider_at <"$provider_key_file" || saved_provider_key=
 	case "$saved_provider_key" in
 		asn:[1-9][0-9]*)
-			case "${saved_provider_key#asn:}" in *[!0-9]*|'') ;; *)
-				[ "${#saved_provider_key}" -le 14 ] && provider_key="$saved_provider_key"
+			case "${saved_provider_key#asn:}:$saved_provider_at" in *[!0-9:]*|'') ;; *)
+				now="$(date +%s 2>/dev/null)"
+				case "$now" in ''|*[!0-9]*) ;; *)
+					if [ "${#saved_provider_key}" -le 14 ] && [ "$now" -ge "$saved_provider_at" ] &&
+						[ $((now - saved_provider_at)) -le 86400 ]; then
+						provider_key="$saved_provider_key"
+					fi
+				;; esac
 			;; esac
 		;;
 	esac

@@ -4,6 +4,7 @@
 # Каскад: ipwho.is (HTTPS, без ключа) -> ipinfo.io -> ip-api.com (HTTP, последний).
 PROVIDER_CACHE="/opt/zator/extra_strats/cache/provider.txt"
 PROVIDER_LEARNING_KEY_FILE="/opt/zator/extra_strats/cache/provider_learning_key.txt"
+PROVIDER_LEARNING_KEY_TTL=86400
 PROVIDER_MENU="Не определён"
 PROVIDER_INIT_DONE=0
 PROVIDER_ASN=""
@@ -11,12 +12,17 @@ PROVIDER_ASN=""
 # Stable provider scope for adaptive learning. Only ASN identity is inferred;
 # display names and cities are deliberately not promoted into network identity.
 provider_learning_key() {
-  local key
+  local key detected_at now
   [ -f "$PROVIDER_LEARNING_KEY_FILE" ] && [ ! -L "$PROVIDER_LEARNING_KEY_FILE" ] || return 1
-  IFS= read -r key <"$PROVIDER_LEARNING_KEY_FILE" || return 1
+  IFS="$(printf '\t')" read -r key detected_at <"$PROVIDER_LEARNING_KEY_FILE" || return 1
   case "$key" in asn:[1-9][0-9]*)
     case "${key#asn:}" in *[!0-9]*|'') return 1 ;; esac
     [ "${#key}" -le 14 ] || return 1
+    case "$detected_at" in ''|*[!0-9]*) return 1 ;; esac
+    now="$(date +%s 2>/dev/null)"
+    case "$now" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$now" -ge "$detected_at" ] &&
+      [ $((now - detected_at)) -le "$PROVIDER_LEARNING_KEY_TTL" ] || return 1
     printf '%s\n' "$key"
     ;;
     *) return 1 ;;
@@ -24,12 +30,14 @@ provider_learning_key() {
 }
 
 provider_learning_key_write_asn() {
-  local asn="$1" tmp
-  case "$asn" in ''|*[!0-9]*) rm -f "$PROVIDER_LEARNING_KEY_FILE"; return 0 ;; esac
-  [ "${#asn}" -le 10 ] || return 1
+  local asn="$1" tmp now
+  case "$asn" in ''|0|*[!0-9]*) rm -f "$PROVIDER_LEARNING_KEY_FILE"; return 0 ;; esac
+  [ "${#asn}" -le 10 ] || { rm -f "$PROVIDER_LEARNING_KEY_FILE"; return 0; }
+  now="$(date +%s 2>/dev/null)"
+  case "$now" in ''|*[!0-9]*) rm -f "$PROVIDER_LEARNING_KEY_FILE"; return 0 ;; esac
   mkdir -p "$(dirname "$PROVIDER_LEARNING_KEY_FILE")" || return 1
   tmp="$PROVIDER_LEARNING_KEY_FILE.tmp.$$"
-  printf 'asn:%s\n' "$asn" >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$PROVIDER_LEARNING_KEY_FILE" || {
+  printf 'asn:%s\t%s\n' "$asn" "$now" >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$PROVIDER_LEARNING_KEY_FILE" || {
     rm -f "$tmp"
     return 1
   }

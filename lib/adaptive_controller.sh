@@ -203,11 +203,36 @@ adaptive_learning_set_candidate() {
   rmdir "$lock" 2>/dev/null || :
 }
 
+# Provider identity is optional context. Never infer it from display text.
+adaptive_learning_provider_key() {
+  local file key detected_at now
+  file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/provider_learning_key.txt"
+  [ -f "$file" ] && [ ! -L "$file" ] || { printf '%s\n' unknown; return 0; }
+  IFS="$(printf '\t')" read -r key detected_at <"$file" || key=
+  case "$key" in
+    asn:[1-9][0-9]*)
+      case "${key#asn:}:$detected_at" in *[!0-9:]*|'') printf '%s\n' unknown ;;
+        *)
+          now="$(date +%s 2>/dev/null)"
+          case "$now" in ''|*[!0-9]*) printf '%s\n' unknown ;;
+            *)
+              if [ "${#key}" -le 14 ] && [ "$now" -ge "$detected_at" ] &&
+                [ $((now - detected_at)) -le 86400 ]; then
+                printf '%s\n' "$key"
+              else printf '%s\n' unknown; fi
+              ;;
+          esac
+      esac
+      ;;
+    *) printf '%s\n' unknown ;;
+  esac
+}
+
 # Run a bounded, operator-started comparison over the strategies actually
 # present in the extracted TLS plan. Candidate ranking and attempt accounting
 # stay in C; this function only applies the acknowledged choice and runs probes.
 adaptive_learning_compare() {
-  local host="$1" budget="$2" controller allowlist next status strategy
+  local host="$1" budget="$2" controller allowlist next status strategy provider_key prior_support
   local completed=0 wait_count
   controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
   case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
@@ -215,6 +240,7 @@ adaptive_learning_compare() {
   case "$budget" in ''|*[!0-9]*) return 2 ;; esac
   [ "$budget" -ge 1 ] && [ "$budget" -le 64 ] || return 2
   [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
+  provider_key="$(adaptive_learning_provider_key)" || provider_key=unknown
   allowlist="$(printf '%s\n' "${NFQWS2_OPT:-}" | awk '
     /^--template=z2r_tcp_tls_common([[:space:]]|$)/ { inside=1; found=1; next }
     inside && /^--new([[:space:]]|$)/ { exit }
@@ -237,7 +263,7 @@ adaptive_learning_compare() {
     return 1
   }
 
-  if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$allowlist")"; then
+  if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$provider_key" "$allowlist")"; then
     :
   else
     status=$?
@@ -249,8 +275,10 @@ adaptive_learning_compare() {
       candidate_exhausted*) echo "Лимит probe-попыток исчерпан; новых проб не запускаю."; return 0 ;;
     esac
     strategy="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $2 ~ /^strategy=[0-9]+$/ { sub(/^strategy=/,"",$2); print $2 }')"
+    prior_support="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $6 ~ /^prior_success_hosts=[0-9]+$/ { sub(/^prior_success_hosts=/,"",$6); print $6 }')"
     case "$strategy" in ''|*[!0-9]*) echo "C controller вернул некорректный candidate." >&2; return 1 ;; esac
-    echo "Проба $((completed + 1)): strategy $strategy для $host"
+    case "$prior_support" in ''|*[!0-9]*) prior_support=0 ;; esac
+    echo "Проба $((completed + 1)): strategy $strategy для $host (prior: $prior_support успешных hosts)"
     adaptive_learning_set_candidate "$strategy" || return 1
     "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
       echo "Проба не была принята controller; сравнение остановлено." >&2
@@ -260,7 +288,7 @@ adaptive_learning_compare() {
 
     wait_count=0
     while :; do
-      if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$allowlist")"; then
+      if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$provider_key" "$allowlist")"; then
         break
       else
         status=$?

@@ -190,7 +190,7 @@ def replay_controller_output(stream):
     provider_groups = defaultdict(lambda: {
         "hosts_tested": set(), "hosts_success": set(), "attempts": 0,
         "strong_success": 0, "unknown": 0, "first_probe_success": 0,
-        "first_probe_hosts": 0,
+        "first_probe_hosts": 0, "first_probe_unknown": 0, "strategies": {},
     })
     first_provider_probe = set()
     for probe in probes:
@@ -205,19 +205,31 @@ def replay_controller_output(stream):
         provider_key = probe["provider_key"]
         if provider_key != "unknown":
             provider_stats = provider_groups[provider_key]
+            candidate_stats = provider_stats["strategies"].setdefault(
+                probe["strategy_id"], {
+                    "hosts_tested": set(), "hosts_success": set(),
+                    "attempts": 0, "success": 0, "unknown": 0,
+                })
             provider_host = (provider_key, probe["hostname"])
             provider_stats["hosts_tested"].add(probe["hostname"])
             provider_stats["attempts"] += 1
+            candidate_stats["hosts_tested"].add(probe["hostname"])
+            candidate_stats["attempts"] += 1
             if probe["outcome"] == "STRONG_SUCCESS":
                 provider_stats["hosts_success"].add(probe["hostname"])
                 provider_stats["strong_success"] += 1
+                candidate_stats["hosts_success"].add(probe["hostname"])
+                candidate_stats["success"] += 1
             else:
                 provider_stats["unknown"] += 1
+                candidate_stats["unknown"] += 1
             if provider_host not in first_provider_probe:
                 first_provider_probe.add(provider_host)
                 provider_stats["first_probe_hosts"] += 1
                 provider_stats["first_probe_success"] += int(
                     probe["outcome"] == "STRONG_SUCCESS")
+                provider_stats["first_probe_unknown"] += int(
+                    probe["outcome"] == "UNKNOWN")
         if probe["outcome"] == "STRONG_SUCCESS":
             stats["strong_success"] += 1
             stats["elapsed_ms"].append(probe["elapsed_ms"])
@@ -266,15 +278,30 @@ def replay_controller_output(stream):
             "real_attempts": stats["attempts"],
             "real_success": stats["strong_success"],
             "unknown": stats["unknown"],
-            "coverage": ("OBSERVED" if stats["hosts_tested"] else "UNKNOWN"),
-            "reliability": ("OBSERVED" if stats["hosts_success"] else "UNKNOWN"),
+            "coverage_success_hosts": len(stats["hosts_success"]),
+            "coverage_tested_hosts": len(stats["hosts_tested"]),
+            "reliability": "UNKNOWN",
+            "reliability_reason": "NO_TRUSTED_NEGATIVE_EVIDENCE",
             "first_probe_hosts": denominator,
-            "first_probe_success_rate": (
-                stats["first_probe_success"] / denominator if denominator else None),
+            "first_probe_confirmed_successes": stats["first_probe_success"],
+            "first_probe_unknown": stats["first_probe_unknown"],
             "provider_prediction_hit_rate": None,
-            "provider_prediction_status": "NOT_AVAILABLE",
+            "provider_prediction_status": "NOT_AVAILABLE_NO_FAILURE_CLASSIFIER",
             "failure_votes": 0,
         }, separators=(",", ":")))
+        for strategy, candidate in sorted(stats["strategies"].items()):
+            print(json.dumps({
+                "event": "PROVIDER_STRATEGY_PRIOR_SUMMARY",
+                "provider_key": provider_key, "strategy_id": strategy,
+                "unique_hosts_tested": len(candidate["hosts_tested"]),
+                "unique_hosts_success": len(candidate["hosts_success"]),
+                "real_attempts": candidate["attempts"],
+                "real_success": candidate["success"],
+                "unknown": candidate["unknown"],
+                "reliability": "UNKNOWN",
+                "reliability_reason": "NO_TRUSTED_NEGATIVE_EVIDENCE",
+                "failure_votes": 0,
+            }, separators=(",", ":")))
 
 
 def replay(stream):
