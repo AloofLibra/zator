@@ -1333,9 +1333,17 @@ negative vote. The lease expires after 90 seconds, and short-lived source-port
 tombstones prevent late terminal events from being re-counted as passive
 observations. Manual candidate updates and probes share an exclusive runtime
 lock. Candidate selection remains manual through
-`adaptive-learning.strategy`; no automatic comparison loop is implemented
-yet. Probe correlation has not yet been validated on a live router and depends
-on the deployed nfqws2 emitting the v3 client source-port field.
+`adaptive-learning.strategy`; a bounded C selector is now available through
+`adaptive-controller --next-candidate`. The caller must provide the explicit
+TLS-plan allowlist, host, profile, and total settled-attempt budget. C picks the
+least-tried allowed candidate (numeric id breaks ties), consumes budget only
+when a probe lease settles, and counts `UNKNOWN` only as a scheduling attempt,
+never as negative evidence. It refuses unknown/degraded network state or an
+active probe, with limits of 32 candidates and 1024 settled attempts. The
+selector does not apply the returned candidate or run probes; the operator
+still drives one probe at a time. Probe correlation has not yet been validated
+on a live router and depends on the deployed nfqws2 emitting the v3 client
+source-port field.
 
 Menu item 25 enables/disables this learning-only worker and asks for the TLS
 strategy id. While enabled it can also set a new candidate; it validates that
