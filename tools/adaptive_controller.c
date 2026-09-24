@@ -73,6 +73,7 @@ struct probe_state {
 	uint8_t health_state, health_reason;
 	bool network_context_usable;
 	char host[HOST_CAP], termination_reason[32];
+	char provider_key[65];
 	char transport[8], family[8];
 };
 
@@ -765,13 +766,13 @@ static bool probe_flow_id_completed(uint64_t flow_id)
 static void probe_emit_outcome(const char *outcome, const char *reason)
 {
 	struct probe_state *p = &active_probe;
-	printf("PROBE_OUTCOME\tv2\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
+	printf("PROBE_OUTCOME\tv3\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
 		"\t%s\t%u\t%u\t%u\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%s\t%s\t%s\t%u\t%u\t%u"
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
-		"\t%s\n",
+		"\t%s\t%s\n",
 		p->id, outcome, reason, p->profile, p->strategy, p->generation, p->host,
 		p->source_port, p->curl_rc, p->http_status, p->elapsed_ms, p->flow_id,
 		p->network_epoch, p->transport[0] ? p->transport : "tcp",
@@ -781,7 +782,19 @@ static void probe_emit_outcome(const char *outcome, const char *reason)
 		p->flow_metrics[2], p->flow_metrics[3], p->flow_metrics[4], p->flow_metrics[5],
 		p->flow_metrics[6], p->flow_metrics[7], p->flow_metrics[8], p->flow_metrics[9],
 		p->clienthello_count, p->clienthello_retransmissions,
-		p->termination_reason[0] ? p->termination_reason : "unknown");
+		p->termination_reason[0] ? p->termination_reason : "unknown",
+		p->provider_key[0] ? p->provider_key : "unknown");
+}
+
+static bool provider_key_valid(const char *key)
+{
+	size_t i, n = strlen(key);
+	if (!n || n > 64) return false;
+	if (!strcmp(key, "unknown")) return true;
+	if (strncmp(key, "asn:", 4) || n < 5 || n > 14 || key[4] < '1' || key[4] > '9')
+		return false;
+	for (i = 4; i < n; i++) if (key[i] < '0' || key[i] > '9') return false;
+	return true;
 }
 
 static void probe_remember_port(uint64_t now, uint32_t source_port)
@@ -1534,10 +1547,13 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 		handle_probe_next(f, n, fd, peer, peer_len, now);
 		return true;
 	}
-	if (n == 7 && !strcmp(f[0], "PROBE_BEGIN") && !strcmp(f[1], "v1")) {
+	if ((n == 7 && !strcmp(f[0], "PROBE_BEGIN") && !strcmp(f[1], "v1")) ||
+		(n == 8 && !strcmp(f[0], "PROBE_BEGIN") && !strcmp(f[1], "v2"))) {
+		bool has_provider = n == 8;
 		if (!probe_host_valid(f[2]) || !parse_u64(f[3], &a) || a < 62000 || a > 62015 ||
 			!parse_u64(f[4], &b) || b != 1 || !parse_u64(f[5], &c) || !c || c > UINT32_MAX ||
-			!parse_u64(f[6], &d) || !d) {
+			!parse_u64(f[6], &d) || !d ||
+			(has_provider && !provider_key_valid(f[7]))) {
 			controller_reply(fd, peer, peer_len, "ACK\tPROBE_BEGIN\tERR\tinvalid\n");
 			return true;
 		}
@@ -1555,6 +1571,12 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 		active_probe.deadline_ms = now + PROBE_GRACE_MS;
 		active_probe.network_epoch = network_context_known ? network_epoch : 0;
 		if (!copy_field(active_probe.host, sizeof(active_probe.host), f[2])) {
+			memset(&active_probe, 0, sizeof(active_probe));
+			controller_reply(fd, peer, peer_len, "ACK\tPROBE_BEGIN\tERR\tinvalid\n");
+			return true;
+		}
+		if (!copy_field(active_probe.provider_key, sizeof(active_probe.provider_key),
+			has_provider ? f[7] : "unknown")) {
 			memset(&active_probe, 0, sizeof(active_probe));
 			controller_reply(fd, peer, peer_len, "ACK\tPROBE_BEGIN\tERR\tinvalid\n");
 			return true;
@@ -1671,16 +1693,25 @@ static int next_candidate_client(int argc, char **argv)
 static int probe_begin_client(int argc, char **argv)
 {
 	char request[512], reply[160], *end;
+	const char *provider_key = "unknown";
 	unsigned long port, profile, strategy;
 	unsigned long long generation, probe_id;
 	int n, attempt;
-	if (argc != 8 || !probe_host_valid(argv[3])) return 2;
+	if ((argc != 8 && argc != 9) || !probe_host_valid(argv[3])) return 2;
+	if (argc == 9) {
+		if (!provider_key_valid(argv[8])) return 2;
+		provider_key = argv[8];
+	}
 	port = strtoul(argv[4], &end, 10); if (!argv[4][0] || *end || port < 62000 || port > 62015) return 2;
 	profile = strtoul(argv[5], &end, 10); if (!argv[5][0] || *end || profile != 1) return 2;
 	strategy = strtoul(argv[6], &end, 10); if (!argv[6][0] || *end || !strategy || strategy > UINT32_MAX) return 2;
 	generation = strtoull(argv[7], &end, 10); if (!argv[7][0] || *end || !generation) return 2;
-	n = snprintf(request, sizeof(request), "PROBE_BEGIN\tv1\t%s\t%lu\t%lu\t%lu\t%llu\n",
-		argv[3], port, profile, strategy, generation);
+	if (argc == 9)
+		n = snprintf(request, sizeof(request), "PROBE_BEGIN\tv2\t%s\t%lu\t%lu\t%lu\t%llu\t%s\n",
+			argv[3], port, profile, strategy, generation, provider_key);
+	else
+		n = snprintf(request, sizeof(request), "PROBE_BEGIN\tv1\t%s\t%lu\t%lu\t%lu\t%llu\n",
+			argv[3], port, profile, strategy, generation);
 	if (n < 0 || (size_t)n >= sizeof(request)) return 2;
 	for (attempt = 0; attempt < 4; attempt++) {
 		if (controller_probe_request(argv[2], request, reply, sizeof(reply)) != 0) {
@@ -1924,7 +1955,7 @@ int main(int argc, char **argv)
 	int i, result;
 	if (argc == 7 && !strcmp(argv[1], "--next-candidate"))
 		return next_candidate_client(argc, argv);
-	if (argc == 8 && !strcmp(argv[1], "--probe-begin")) return probe_begin_client(argc, argv);
+	if ((argc == 8 || argc == 9) && !strcmp(argv[1], "--probe-begin")) return probe_begin_client(argc, argv);
 	if (argc == 7 && !strcmp(argv[1], "--probe-result")) return probe_result_client(argc, argv);
 	if (argc == 3 && !strcmp(argv[1], "--get-candidate"))
 		return get_worker_candidate(argv[2]);

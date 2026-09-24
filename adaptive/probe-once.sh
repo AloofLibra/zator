@@ -83,6 +83,18 @@ IFS= read -r strategy <"$strategy_file" || {
 case "$strategy" in ''|*[!0-9]*) echo "Invalid learning strategy." >&2; exit 1 ;; esac
 controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
 [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; exit 1; }
+provider_key=unknown
+provider_key_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/provider_learning_key.txt"
+if [ -f "$provider_key_file" ] && [ ! -L "$provider_key_file" ]; then
+	IFS= read -r saved_provider_key <"$provider_key_file" || saved_provider_key=
+	case "$saved_provider_key" in
+		asn:[1-9][0-9]*)
+			case "${saved_provider_key#asn:}" in *[!0-9]*|'') ;; *)
+				[ "${#saved_provider_key}" -le 14 ] && provider_key="$saved_provider_key"
+			;; esac
+		;;
+	esac
+fi
 candidate="$($controller --get-candidate /tmp/zator-adaptive-learning/control.sock)" || exit 1
 candidate_fields="$(printf '%s\n' "$candidate" | awk -F '\t' '
   $1 == "candidate_current" && $2 ~ /^profile=[0-9]+$/ && $3 ~ /^strategy=[0-9]+$/ && $4 ~ /^generation=[0-9]+$/ { print $2, $3, $4 }
@@ -98,7 +110,7 @@ candidate_generation="${3#generation=}"
 }
 case "$candidate_generation" in ''|*[!0-9]*) echo "Invalid candidate generation." >&2; exit 1 ;; esac
 probe_lease="$($controller --probe-begin /tmp/zator-adaptive/events.sock \
-	"$host" "$SOURCE_PORT" "$profile" "$current_strategy" "$candidate_generation")" || {
+	"$host" "$SOURCE_PORT" "$profile" "$current_strategy" "$candidate_generation" "$provider_key")" || {
 	echo "Controller refused to start the probe." >&2
 	exit 1
 }

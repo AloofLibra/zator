@@ -35,7 +35,40 @@ def replay_controller_output(stream):
         if not header_seen:
             raise ValueError(f"line {line_no}: unsupported PROBE_OUTCOME record")
         try:
-            if len(cols) == 34 and cols[1] == "v2":
+            if len(cols) == 35 and cols[1] == "v3":
+                probe = {
+                    "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
+                    "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
+                    "strategy_generation": int(cols[7]), "hostname": cols[8].lower(),
+                    "source_port": int(cols[9]), "curl_rc": int(cols[10]),
+                    "http_status": int(cols[11]), "elapsed_ms": int(cols[12]),
+                    "flow_id": int(cols[13]), "network_epoch": int(cols[14]),
+                    "transport": cols[15], "ip_family": cols[16],
+                    "network_health": cols[17], "network_health_reason": int(cols[18]),
+                    "network_context_usable": cols[19] == "1",
+                    "flow_metrics_seen": cols[20] == "1",
+                    "flow_metrics": {
+                        "client_packets": int(cols[21]), "server_packets": int(cols[22]),
+                        "client_bytes": int(cols[23]), "server_bytes": int(cols[24]),
+                        "server_seen": cols[25] == "1", "server_payload_seen": cols[26] == "1",
+                        "client_rst": cols[27] == "1", "server_rst": cols[28] == "1",
+                        "client_fin": cols[29] == "1", "server_fin": cols[30] == "1",
+                        "clienthello_count": int(cols[31]),
+                        "clienthello_retransmissions": int(cols[32]),
+                    },
+                    "termination_reason": cols[33], "provider_key": cols[34],
+                }
+                if not (probe["provider_key"] == "unknown" or
+                        (probe["provider_key"].startswith("asn:") and
+                         probe["provider_key"][4:].isdigit() and
+                         1 <= len(probe["provider_key"][4:]) <= 10 and
+                         probe["provider_key"][4] != "0")):
+                    raise ValueError("invalid provider key")
+                flag_cols = cols[19:21] + cols[25:27] + cols[27:31]
+                if any(flag not in {"0", "1"} for flag in flag_cols):
+                    raise ValueError("invalid boolean field")
+                context_flag = cols[19]
+            elif len(cols) == 34 and cols[1] == "v2":
                 probe = {
                     "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
                     "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
@@ -58,6 +91,7 @@ def replay_controller_output(stream):
                     },
                     "termination_reason": cols[33],
                 }
+                probe["provider_key"] = "unknown"
                 flag_cols = cols[19:21] + cols[25:27] + cols[27:31]
                 if any(flag not in {"0", "1"} for flag in flag_cols):
                     raise ValueError("invalid boolean field")
@@ -77,6 +111,7 @@ def replay_controller_output(stream):
                 probe["flow_metrics_seen"] = False
                 probe["flow_metrics"] = None
                 probe["termination_reason"] = "unknown"
+                probe["provider_key"] = "unknown"
                 context_flag = cols[19]
             elif len(cols) == 13:
                 # beta.3 journal rows predate the versioned network context.
@@ -94,6 +129,7 @@ def replay_controller_output(stream):
                 probe["flow_metrics_seen"] = False
                 probe["flow_metrics"] = None
                 probe["termination_reason"] = "unknown"
+                probe["provider_key"] = "unknown"
                 context_flag = "0"
             else:
                 raise ValueError("unsupported record version")
@@ -151,6 +187,12 @@ def replay_controller_output(stream):
                                   "unknown": 0, "elapsed_ms": []})
     host_groups = defaultdict(lambda: {"attempts": 0, "strong_success": 0,
                                        "unknown": 0, "strategies": set()})
+    provider_groups = defaultdict(lambda: {
+        "hosts_tested": set(), "hosts_success": set(), "attempts": 0,
+        "strong_success": 0, "unknown": 0, "first_probe_success": 0,
+        "first_probe_hosts": 0,
+    })
+    first_provider_probe = set()
     for probe in probes:
         key = (probe["profile_id"], probe["hostname"], probe["transport"],
                probe["ip_family"], probe["network_epoch"], probe["strategy_id"])
@@ -160,6 +202,22 @@ def replay_controller_output(stream):
         stats["attempts"] += 1
         host_stats["attempts"] += 1
         host_stats["strategies"].add(probe["strategy_id"])
+        provider_key = probe["provider_key"]
+        if provider_key != "unknown":
+            provider_stats = provider_groups[provider_key]
+            provider_host = (provider_key, probe["hostname"])
+            provider_stats["hosts_tested"].add(probe["hostname"])
+            provider_stats["attempts"] += 1
+            if probe["outcome"] == "STRONG_SUCCESS":
+                provider_stats["hosts_success"].add(probe["hostname"])
+                provider_stats["strong_success"] += 1
+            else:
+                provider_stats["unknown"] += 1
+            if provider_host not in first_provider_probe:
+                first_provider_probe.add(provider_host)
+                provider_stats["first_probe_hosts"] += 1
+                provider_stats["first_probe_success"] += int(
+                    probe["outcome"] == "STRONG_SUCCESS")
         if probe["outcome"] == "STRONG_SUCCESS":
             stats["strong_success"] += 1
             stats["elapsed_ms"].append(probe["elapsed_ms"])
@@ -196,6 +254,25 @@ def replay_controller_output(stream):
             "network_epoch": epoch, "strategies_attempted": sorted(stats["strategies"]),
             "attempts": stats["attempts"], "confirmed_successes": stats["strong_success"],
             "unknown": stats["unknown"], "probeability": probeability,
+            "failure_votes": 0,
+        }, separators=(",", ":")))
+
+    for provider_key, stats in sorted(provider_groups.items()):
+        denominator = stats["first_probe_hosts"]
+        print(json.dumps({
+            "event": "PROVIDER_PRIOR_SUMMARY", "provider_key": provider_key,
+            "unique_hosts_tested": len(stats["hosts_tested"]),
+            "unique_hosts_success": len(stats["hosts_success"]),
+            "real_attempts": stats["attempts"],
+            "real_success": stats["strong_success"],
+            "unknown": stats["unknown"],
+            "coverage": ("OBSERVED" if stats["hosts_tested"] else "UNKNOWN"),
+            "reliability": ("OBSERVED" if stats["hosts_success"] else "UNKNOWN"),
+            "first_probe_hosts": denominator,
+            "first_probe_success_rate": (
+                stats["first_probe_success"] / denominator if denominator else None),
+            "provider_prediction_hit_rate": None,
+            "provider_prediction_status": "NOT_AVAILABLE",
             "failure_votes": 0,
         }, separators=(",", ":")))
 

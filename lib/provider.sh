@@ -3,9 +3,37 @@
 # у всех гео-сервисов, в отличие от поля isp (юридические лица и локальные бренды).
 # Каскад: ipwho.is (HTTPS, без ключа) -> ipinfo.io -> ip-api.com (HTTP, последний).
 PROVIDER_CACHE="/opt/zator/extra_strats/cache/provider.txt"
+PROVIDER_LEARNING_KEY_FILE="/opt/zator/extra_strats/cache/provider_learning_key.txt"
 PROVIDER_MENU="Не определён"
 PROVIDER_INIT_DONE=0
 PROVIDER_ASN=""
+
+# Stable provider scope for adaptive learning. Only ASN identity is inferred;
+# display names and cities are deliberately not promoted into network identity.
+provider_learning_key() {
+  local key
+  [ -f "$PROVIDER_LEARNING_KEY_FILE" ] && [ ! -L "$PROVIDER_LEARNING_KEY_FILE" ] || return 1
+  IFS= read -r key <"$PROVIDER_LEARNING_KEY_FILE" || return 1
+  case "$key" in asn:[1-9][0-9]*)
+    case "${key#asn:}" in *[!0-9]*|'') return 1 ;; esac
+    [ "${#key}" -le 14 ] || return 1
+    printf '%s\n' "$key"
+    ;;
+    *) return 1 ;;
+  esac
+}
+
+provider_learning_key_write_asn() {
+  local asn="$1" tmp
+  case "$asn" in ''|*[!0-9]*) rm -f "$PROVIDER_LEARNING_KEY_FILE"; return 0 ;; esac
+  [ "${#asn}" -le 10 ] || return 1
+  mkdir -p "$(dirname "$PROVIDER_LEARNING_KEY_FILE")" || return 1
+  tmp="$PROVIDER_LEARNING_KEY_FILE.tmp.$$"
+  printf 'asn:%s\n' "$asn" >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$PROVIDER_LEARNING_KEY_FILE" || {
+    rm -f "$tmp"
+    return 1
+  }
+}
 
 PROVIDER_ASN_DB_FILE="/opt/zator/data/providers/asn.txt"
 PROVIDER_ASN_CACHE="/opt/zator/extra_strats/cache/provider_asn.txt"
@@ -159,6 +187,7 @@ _detect_api_simple() {
   fi
 
   PROVIDER_ASN="$asn"
+  provider_learning_key_write_asn "$asn" || return 1
   if provider_asn_lookup "$asn"; then
     brand="$PROVIDER_BRAND"
   elif [ -n "$isp" ]; then
@@ -216,6 +245,9 @@ provider_force_redetect() {
 provider_set_manual() {
   local p="$1" c="${2:-}" res="$1"
   [ -n "$p" ] || return 1
+  # Manual display labels do not prove an ASN. Clear any old detected identity
+  # so a changed network cannot inherit another provider's learning bucket.
+  rm -f "$PROVIDER_LEARNING_KEY_FILE"
   [ -n "$c" ] && res="$p - $c"
   mkdir -p "$(dirname "$PROVIDER_CACHE")"
   echo "$res" > "$PROVIDER_CACHE"

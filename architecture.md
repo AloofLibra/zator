@@ -1458,6 +1458,18 @@ independently verified infrastructure recovery remain open Phase 6 work.
 * coverage/reliability;
 * cold-start ranking.
 
+Implementation prerequisite: a provider label from the existing cache is not a
+stable network identity. The detector therefore persists a separate adaptive
+provider key only when it has a validated ASN (`asn:<number>`); a manual display
+label clears a previously detected ASN key, and missing identity is `unknown`.
+The key is context metadata supplied to the controller's active probe lease,
+then written in `PROBE_OUTCOME v3`; flow identity and transport observations
+remain C-owned. The PC replay analyzer reports provider coverage, confirmed
+success and first-probe success separately, without treating unknown as failure.
+These records establish observability only: provider priors in the resident C
+controller and provider-ranked candidate selection are still pending, so the
+first-probe rate is not called a model prediction hit rate yet.
+
 ---
 
 ## Phase 8 — Background Exploration
