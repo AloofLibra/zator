@@ -37,7 +37,7 @@ build_one() {
   fi
   # CFLAGS/LDFLAGS intentionally accept conventional whitespace-separated flags.
   # shellcheck disable=SC2086
-  $compiler $flags ${CFLAGS:-} -std=c99 -Os -s -Wall -Wextra -Werror \
+  $compiler $flags ${CFLAGS:-} -std=c99 -Os -flto -s -Wall -Wextra -Werror \
     -fno-unwind-tables -fno-asynchronous-unwind-tables \
     -ffunction-sections -fdata-sections "$SOURCE" \
     ${LDFLAGS:-} -Wl,--gc-sections -static -o "$OUT_DIR/adaptive-controller-$target"
