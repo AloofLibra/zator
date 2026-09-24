@@ -927,6 +927,20 @@ static void probe_emit_outcome(const char *outcome, const char *reason)
 	(void)fflush(controller_output ? controller_output : stdout);
 }
 
+/* Exact redirect destinations inherited from the maintained ISP page markers.
+ * Match the authority host only; generic body phrases and substring matches
+ * are deliberately not sufficient to classify a block response. */
+static bool known_block_redirect_host(const char *host)
+{
+	static const char *const hosts[] = {
+		"blocked.mgts.ru", "warning.rt.ru", "block.mts.ru", "zapret.mts.ru"
+	};
+	size_t i;
+	for (i = 0; host && *host && i < sizeof(hosts) / sizeof(hosts[0]); i++)
+		if (!strcmp(host, hosts[i])) return true;
+	return false;
+}
+
 static bool provider_key_valid(const char *key)
 {
 	size_t i, n = strlen(key);
@@ -1326,19 +1340,22 @@ static void probe_record_comparison_candidate(const struct probe_state *p,
 static void probe_maybe_finalize(uint64_t now, bool expired)
 {
 	struct probe_state *p = &active_probe;
-	bool valid, success;
+	bool valid, success, explicit_block;
 	int candidate_index = -1;
 	if (!p->active) return;
 	if (!expired && !(p->result_seen && p->flow_seen && now >= p->join_ready_ms)) return;
 	valid = p->result_seen && p->flow_seen && !p->flow_ambiguous;
-	success = valid && p->curl_rc == 0 && p->http_status >= 100 && p->http_status <= 599;
+	explicit_block = valid && p->curl_rc == 0 && p->http_status >= 300 &&
+		p->http_status < 400 && known_block_redirect_host(p->redirect_host);
+	success = valid && p->curl_rc == 0 && p->http_status >= 100 && p->http_status <= 599 &&
+		!explicit_block;
 	if (p->strategy != CONTROL_STRATEGY_ID) candidate_index = probe_record_attempt(now);
 	if (p->network_context_usable && p->health_state != NETWORK_HEALTH_DEGRADED)
 		provider_record_probe(p, success, now);
 	if (p->strategy == CONTROL_STRATEGY_ID) {
 		probe_record_control_result(p, success, now);
 		probe_emit_outcome(success ? "CONTROL_SUCCESS" : "CONTROL_UNKNOWN",
-			success ? "NO_STRATEGY_HTTP_RESPONSE" :
+		success ? "NO_STRATEGY_HTTP_RESPONSE" : explicit_block ? "KNOWN_BLOCK_REDIRECT" :
 			(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
 			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE")));
 	} else if (success) {
@@ -1346,8 +1363,9 @@ static void probe_maybe_finalize(uint64_t now, bool expired)
 		probe_emit_outcome("STRONG_SUCCESS", "HTTP_RESPONSE_AND_C_FLOW");
 	} else {
 		probe_record_comparison_candidate(p, candidate_index, now);
-		probe_emit_outcome("UNKNOWN", p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
-			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE"));
+		probe_emit_outcome("UNKNOWN", explicit_block ? "KNOWN_BLOCK_REDIRECT" :
+			(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
+			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE")));
 	}
 	if (p->flow_seen && p->flow_id)
 		completed_probe_flows[completed_probe_flow_next++ %

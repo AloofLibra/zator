@@ -1446,9 +1446,14 @@ into strategy failure votes. For HTTP redirects, curl supplies the normalized
 `Location` hostname to C with the result; C stores it on the matching probe
 lease and includes it in the same correlated outcome row. Replay reports a
 redirect divergence only when both successful no-strategy controls agree and a
-C-correlated candidate flow redirects to a different hostname. This remains
-diagnostic evidence with zero failure votes until an operator-curated signature
-can identify a known block endpoint.
+C-correlated candidate flow redirects to a different hostname. The controller
+also recognizes exact redirect destinations `blocked.mgts.ru`, `warning.rt.ru`,
+`block.mts.ru`, and `zapret.mts.ru`, migrated from the legacy detector's
+provider marker set. It treats a matching flow as `KNOWN_BLOCK_REDIRECT`, not
+success. It contributes negative strategy evidence only when successful
+no-strategy controls bracket that candidate flow; the replay emits the
+signature match separately from the single comparative vote. Generic text,
+substring matches, and unlisted redirects remain unclassified.
 The bounded journal also records synthetic no-strategy control outcomes. The
 controller leases the reserved strategy id `4294967295`; Lua finds no plan entry
 for it and therefore applies no desync while C still records an attributable
@@ -1480,7 +1485,7 @@ host/strategy probeability by
 network epoch; it also reads earlier probe row versions. Unknown outcomes do
 not become failures, and the analyzer reports zero general failure votes
 because this probe has no trusted explicit-block classifier. Explicit block
-classification remains open Phase 6 work.
+body signatures and other ISP block endpoints remain open Phase 6 work.
 
 ---
 

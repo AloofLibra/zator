@@ -248,6 +248,20 @@ def replay_controller_output(stream):
             "evidence": "BRACKETED_NO_STRATEGY_CONTROLS",
             **failure, "failure_votes": 1,
         }, separators=(",", ":")))
+    bracketed_probe_ids = {failure["candidate_probe_id"] for failure in comparative_failures}
+    for probe in probes:
+        if probe["reason"] == "KNOWN_BLOCK_REDIRECT":
+            print(json.dumps({
+                "event": "EXPLICIT_BLOCK_REDIRECT",
+                "evidence": "EXACT_KNOWN_ISP_REDIRECT_HOST",
+                "probe_id": probe["probe_id"], "flow_id": probe["flow_id"],
+                "hostname": probe["hostname"], "provider_key": probe["provider_key"],
+                "network_epoch": probe["network_epoch"],
+                "strategy_id": probe["strategy_id"],
+                "redirect_host": probe.get("redirect_host", "none"),
+                "bracketed_strategy_failure": probe["probe_id"] in bracketed_probe_ids,
+                "failure_votes": 0,
+            }, separators=(",", ":")))
     redirect_controls = {}
     redirect_candidates = defaultdict(list)
     for probe in probes:
