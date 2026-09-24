@@ -282,6 +282,42 @@ adaptive_learning_wait_probe_id() {
   return 1
 }
 
+# Persistent rolling budget: reserve one scheduler step per 24 hours before
+# any control/candidate request. A failed step still consumes its reservation.
+adaptive_learning_scheduler_budget_reserve() (
+  local root file lock_dir now last tmp
+  root="${ZATOR_ROOT:-/opt/zator}"
+  file="$root/extra_strats/cache/adaptive-learning-scheduler.last"
+  lock_dir=/tmp/zator-adaptive-learning/scheduler-budget.lock
+  [ -d /tmp/zator-adaptive-learning ] && [ ! -L /tmp/zator-adaptive-learning ] || exit 1
+  mkdir "$lock_dir" 2>/dev/null || {
+    echo "Уже выполняется scheduler-запуск или обновление его budget state." >&2
+    exit 3
+  }
+  trap 'rmdir "$lock_dir" 2>/dev/null || :' 0
+  trap 'exit 1' HUP INT TERM
+  [ -d "${file%/*}" ] && [ ! -L "${file%/*}" ] || exit 1
+  [ ! -L "$file" ] || exit 1
+  now="$(date -u +%s 2>/dev/null)"
+  case "$now" in ''|*[!0-9]*) echo "Системное время не подтверждено; scheduler probe пропущена." >&2; exit 1 ;; esac
+  if [ -f "$file" ]; then
+    IFS= read -r last <"$file" || last=
+    case "$last" in ''|*[!0-9]*) echo "Некорректный scheduler budget state." >&2; exit 1 ;; esac
+    [ "$now" -ge "$last" ] || { echo "Системное время откатилось; scheduler probe остановлена." >&2; exit 1; }
+    [ $((now - last)) -ge 86400 ] || {
+      echo "Суточный лимит scheduler-проб уже использован." >&2
+      exit 3
+    }
+  fi
+  umask 077
+  tmp="$file.tmp.$$"
+  printf '%s\n' "$now" >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$file" || {
+    rm -f "$tmp"
+    exit 1
+  }
+  exit 0
+)
+
 adaptive_learning_wait_probe_settled() {
   local controller="$1" host="$2" budget="$3" provider_key="$4" allowlist="$5"
   local next status waited=0
@@ -464,6 +500,13 @@ adaptive_learning_scheduled_step() {
     echo "Журнал Adaptive Controller недоступен." >&2
     return 1
   }
+  if adaptive_learning_scheduler_budget_reserve; then
+    :
+  else
+    status=$?
+    [ "$status" -eq 3 ] && return 3
+    return "$status"
+  fi
   echo "Проверка baseline без desync для $host..."
   if ! adaptive_learning_run_control_probe "$host" "$controller" 64 "$provider_key" "$allowlist" >/dev/null; then
     adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 ||
@@ -628,7 +671,7 @@ adaptive_learning_toggle() {
   strategy_file="$root/extra_strats/cache/adaptive-learning.strategy"
 
   if adaptive_learning_enabled; then
-    read -r -p "Learning активен: 1 — сменить strategy, 2 — сравнить candidates, 3 — выполнить одну due-пробу, 0 — выключить: " action
+    read -r -p "Learning активен: 1 — сменить strategy, 2 — сравнить candidates, 3 — одна due-проба (не чаще раза в 24 ч), 0 — выключить: " action
     case "$action" in
       1)
         read -r -p "Номер TCP/TLS strategy: " strategy

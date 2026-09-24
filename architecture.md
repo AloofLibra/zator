@@ -1555,9 +1555,13 @@ task, brackets its candidate probe with successful no-strategy controls, waits
 for the exact C-settled probe id, then restores the learning worker's prior
 strategy. One invocation is capped at three HTTPS requests (two controls and
 one candidate), and it stops when either control cannot confirm the target.
+The runner reserves one scheduler step per rolling 24 hours in a compact
+timestamp under the zator cache before making any request. Reservation is
+atomic across callers and remains consumed if the step fails. Missing,
+malformed, or backwards system time makes the scheduler step fail closed.
 Automatic wake-up over recently observed hosts and an aggregate per-day request
-budget remain Phase 8 work; there is no periodic polling or background traffic
-generator yet.
+budget across hosts remain Phase 8 work; there is no periodic polling or
+background traffic generator yet.
 
 ---
 
