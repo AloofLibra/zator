@@ -127,7 +127,8 @@ adaptive_learning_config_write() {
   local tmp
   case "$strategy" in ''|*[!0-9]*) return 2 ;; esac
   case "$qnum" in ''|*[!0-9]*) return 2 ;; esac
-  [ "${#strategy}" -le 5 ] && [ "${#qnum}" -le 5 ] || return 2
+  [ "${#qnum}" -le 5 ] || return 2
+  [ "$strategy" = 4294967295 ] || [ "${#strategy}" -le 5 ] || return 2
   [ "$event_socket" = /tmp/zator-adaptive/events.sock ] || return 2
   [ "$strategy" -gt 0 ] && [ "${#strategy}" -le 10 ] || return 2
   [ "$qnum" -ge 1 ] && [ "$qnum" -le 65535 ] || return 2
@@ -156,7 +157,7 @@ adaptive_learning_config_write() {
         print
         if ($0 ~ ("strategy=" wanted "([[:space:]]|$)")) seen_strategy=1
       }
-      END { if (!seen_template || !seen_strategy) exit 1 }
+      END { if (!seen_template || (wanted != "4294967295" && !seen_strategy)) exit 1 }
     ' || return 1
     cat <<'EOF'
 --new
@@ -187,7 +188,11 @@ adaptive_learning_set_candidate() {
   mkdir "$lock" 2>/dev/null || { echo "A learning probe or candidate update is already running." >&2; return 1; }
   if ! adaptive_learning_config_write "$strategy" 65535 /tmp/zator-adaptive/events.sock; then
     rmdir "$lock" 2>/dev/null || :
-    echo "Strategy $strategy is not present in the TLS learning plan." >&2
+    if [ "$strategy" = 4294967295 ]; then
+      echo "Не удалось подготовить no-strategy контрольный план." >&2
+    else
+      echo "Strategy $strategy is not present in the TLS learning plan." >&2
+    fi
     return 1
   fi
   if ! "$controller" --set-candidate /tmp/zator-adaptive-learning/control.sock 1 "$strategy"; then
@@ -228,12 +233,30 @@ adaptive_learning_provider_key() {
   esac
 }
 
+adaptive_learning_wait_probe_settled() {
+  local controller="$1" host="$2" budget="$3" provider_key="$4" allowlist="$5"
+  local next status waited=0
+  while :; do
+    if next="$("$controller" --next-candidate /tmp/zator-adaptive/events.sock \
+      "$host" 1 "$budget" "$provider_key" "$allowlist")"; then
+      printf '%s\n' "$next"
+      return 0
+    else
+      status=$?
+    fi
+    [ "$status" -eq 3 ] || return "$status"
+    [ "$waited" -lt 95 ] || { echo "Истёк лимит ожидания завершения probe." >&2; return 1; }
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
 # Run a bounded, operator-started comparison over the strategies actually
 # present in the extracted TLS plan. Candidate ranking and attempt accounting
 # stay in C; this function only applies the acknowledged choice and runs probes.
 adaptive_learning_compare() {
   local host="$1" budget="$2" controller allowlist next status strategy provider_key prior_support
-  local completed=0 wait_count
+  local completed=0 strategy_file original_strategy last_strategy control_strategy=4294967295
   controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
   case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
   [ "${#host}" -le 253 ] || return 2
@@ -263,42 +286,61 @@ adaptive_learning_compare() {
     return 1
   }
 
-  if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$provider_key" "$allowlist")"; then
-    :
-  else
-    status=$?
-    echo "C controller отказал в выборе кандидата (код $status)." >&2
+  strategy_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-learning.strategy"
+  IFS= read -r original_strategy <"$strategy_file" || original_strategy=
+  case "$original_strategy" in ''|*[!0-9]*) echo "Не задана исходная learning strategy." >&2; return 1 ;; esac
+  echo "Контроль без desync для $host..."
+  adaptive_learning_set_candidate "$control_strategy" || return 1
+  "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+    echo "No-strategy контроль не принят controller." >&2
+    return 1
+  }
+  if ! next="$(adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist")"; then
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+    echo "Не удалось дождаться no-strategy контроля." >&2
     return 1
   fi
   while :; do
     case "$next" in
-      candidate_exhausted*) echo "Лимит probe-попыток исчерпан; новых проб не запускаю."; return 0 ;;
+      candidate_exhausted*) echo "Лимит candidate probe-попыток исчерпан."; break ;;
     esac
     strategy="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $2 ~ /^strategy=[0-9]+$/ { sub(/^strategy=/,"",$2); print $2 }')"
-    prior_support="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $6 ~ /^prior_success_hosts=[0-9]+$/ { sub(/^prior_success_hosts=/,"",$6); print $6 }')"
+    prior_support="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $6 ~ /^prior_support=[0-9]+$/ { sub(/^prior_support=/,"",$6); print $6 }')"
     case "$strategy" in ''|*[!0-9]*) echo "C controller вернул некорректный candidate." >&2; return 1 ;; esac
     case "$prior_support" in ''|*[!0-9]*) prior_support=0 ;; esac
-    echo "Проба $((completed + 1)): strategy $strategy для $host (prior: $prior_support успешных hosts)"
+    echo "Проба $((completed + 1)): strategy $strategy для $host (prior support: $prior_support)"
     adaptive_learning_set_candidate "$strategy" || return 1
+    last_strategy="$strategy"
     "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
       echo "Проба не была принята controller; сравнение остановлено." >&2
       return 1
     }
     completed=$((completed + 1))
 
-    wait_count=0
-    while :; do
-      if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$provider_key" "$allowlist")"; then
-        break
-      else
-        status=$?
-      fi
-      [ "$status" -eq 3 ] || { echo "Ожидание probe завершилось ошибкой (код $status)." >&2; return 1; }
-      [ "$wait_count" -lt 95 ] || { echo "Истёк лимит ожидания завершения probe." >&2; return 1; }
-      sleep 1
-      wait_count=$((wait_count + 1))
-    done
+    next="$(adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist")" || {
+      echo "Ожидание probe завершилось ошибкой." >&2
+      return 1
+    }
   done
+
+  echo "Повторный контроль без desync для $host..."
+  adaptive_learning_set_candidate "$control_strategy" || {
+    [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+    return 1
+  }
+  "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
+    [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+    echo "Повторный no-strategy контроль не принят controller." >&2
+    return 1
+  }
+  if ! adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist" >/dev/null; then
+    [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+    echo "Не удалось дождаться повторного no-strategy контроля." >&2
+    return 1
+  fi
+  [ -n "$last_strategy" ] || last_strategy="$original_strategy"
+  adaptive_learning_set_candidate "$last_strategy" || return 1
 }
 
 # zapret2's nfqws2 accepts @config only as argv[1]. The shared do_nfqws hook

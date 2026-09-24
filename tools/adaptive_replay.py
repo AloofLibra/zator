@@ -21,6 +21,7 @@ COHORT_WINDOW_MS = 10_000
 def replay_controller_output(stream):
     """Summarize resident-controller output, especially settled active probes."""
     probes = []
+    comparative_failures = []
     header_seen = False
     for line_no, raw in enumerate(stream, 1):
         line = raw.rstrip("\r\n")
@@ -30,6 +31,35 @@ def replay_controller_output(stream):
         if not line or line.startswith("#"):
             continue
         cols = line.split("\t")
+        if cols[0] == "PROBE_COMPARATIVE_FAILURE":
+            if not header_seen:
+                raise ValueError(f"line {line_no}: unsupported comparative failure record")
+            if len(cols) != 10 or cols[1] != "v1":
+                raise ValueError(f"line {line_no}: unsupported comparative failure record")
+            try:
+                comparison = {
+                    "candidate_probe_id": int(cols[2]),
+                    "control_before_probe_id": int(cols[3]),
+                    "control_after_probe_id": int(cols[4]),
+                    "flow_id": int(cols[5]), "hostname": cols[6].lower(),
+                    "provider_key": cols[7], "strategy_id": int(cols[8]),
+                    "network_epoch": int(cols[9]),
+                }
+            except ValueError as exc:
+                raise ValueError(f"line {line_no}: invalid comparative failure value") from exc
+            if (min(comparison["candidate_probe_id"], comparison["control_before_probe_id"],
+                    comparison["control_after_probe_id"], comparison["flow_id"],
+                    comparison["strategy_id"]) <= 0 or
+                    comparison["control_before_probe_id"] >= comparison["control_after_probe_id"] or
+                    not comparison["hostname"] or comparison["network_epoch"] < 0 or
+                    not (comparison["provider_key"] in {"unknown", "global"} or
+                         (comparison["provider_key"].startswith("asn:") and
+                          comparison["provider_key"][4:].isdigit() and
+                          1 <= len(comparison["provider_key"][4:]) <= 10 and
+                          comparison["provider_key"][4] != "0"))):
+                raise ValueError(f"line {line_no}: comparative failure outside allowed bounds")
+            comparative_failures.append(comparison)
+            continue
         if cols[0] != "PROBE_OUTCOME":
             continue
         if not header_seen:
@@ -135,7 +165,7 @@ def replay_controller_output(stream):
                 raise ValueError("unsupported record version")
         except (ValueError, IndexError) as exc:
             raise ValueError(f"line {line_no}: invalid PROBE_OUTCOME value") from exc
-        if (probe["outcome"] not in {"STRONG_SUCCESS", "UNKNOWN"} or
+        if (probe["outcome"] not in {"STRONG_SUCCESS", "UNKNOWN", "CONTROL_SUCCESS", "CONTROL_UNKNOWN"} or
                 probe["probe_id"] <= 0 or probe["profile_id"] <= 0 or
                 probe["strategy_id"] <= 0 or probe["strategy_generation"] <= 0 or
                 not probe["hostname"] or not 62000 <= probe["source_port"] <= 62015 or
@@ -192,8 +222,35 @@ def replay_controller_output(stream):
         "strong_success": 0, "unknown": 0, "first_probe_success": 0,
         "first_probe_hosts": 0, "first_probe_unknown": 0, "strategies": {},
     })
+    control_groups = defaultdict(lambda: {"attempts": 0, "success": 0, "unknown": 0})
+    comparative_by_provider_strategy = defaultdict(set)
+    for failure in comparative_failures:
+        key = (failure["provider_key"], failure["strategy_id"])
+        comparative_by_provider_strategy[key].add((
+            failure["hostname"], failure["flow_id"],
+            failure["control_before_probe_id"], failure["control_after_probe_id"]))
+    for failure in comparative_failures:
+        print(json.dumps({
+            "event": "PROBE_COMPARATIVE_FAILURE",
+            "evidence": "BRACKETED_NO_STRATEGY_CONTROLS",
+            **failure, "failure_votes": 1,
+        }, separators=(",", ":")))
     first_provider_probe = set()
     for probe in probes:
+        if probe["outcome"].startswith("CONTROL_"):
+            provider_key = probe["provider_key"]
+            control_stats = control_groups[provider_key]
+            control_stats["attempts"] += 1
+            if probe["outcome"] == "CONTROL_SUCCESS":
+                control_stats["success"] += 1
+            else:
+                control_stats["unknown"] += 1
+            print(json.dumps({
+                "event": "CONTROL_PROBE_OUTCOME", **probe,
+                "strategy_semantics": "NO_DESYNC",
+                "failure_votes": 0,
+            }, separators=(",", ":")))
+            continue
         key = (probe["profile_id"], probe["hostname"], probe["transport"],
                probe["ip_family"], probe["network_epoch"], probe["strategy_id"])
         host_key = key[:-1]
@@ -278,6 +335,9 @@ def replay_controller_output(stream):
             "real_attempts": stats["attempts"],
             "real_success": stats["strong_success"],
             "unknown": stats["unknown"],
+            "comparative_failure_votes": sum(
+                len(votes) for (key, _), votes in comparative_by_provider_strategy.items()
+                if key == provider_key),
             "coverage_success_hosts": len(stats["hosts_success"]),
             "coverage_tested_hosts": len(stats["hosts_tested"]),
             "reliability": "UNKNOWN",
@@ -298,10 +358,21 @@ def replay_controller_output(stream):
                 "real_attempts": candidate["attempts"],
                 "real_success": candidate["success"],
                 "unknown": candidate["unknown"],
-                "reliability": "UNKNOWN",
-                "reliability_reason": "NO_TRUSTED_NEGATIVE_EVIDENCE",
-                "failure_votes": 0,
+                "comparative_failure_votes": len(comparative_by_provider_strategy[
+                    (provider_key, strategy)]),
+                "reliability": ("COMPARATIVE_EVIDENCE_ONLY" if comparative_by_provider_strategy[
+                    (provider_key, strategy)] else "UNKNOWN"),
+                "reliability_reason": ("NO_GENERAL_FAILURE_RATE" if comparative_by_provider_strategy[
+                    (provider_key, strategy)] else "NO_TRUSTED_NEGATIVE_EVIDENCE"),
+                "failure_votes": len(comparative_by_provider_strategy[(provider_key, strategy)]),
             }, separators=(",", ":")))
+    for provider_key, stats in sorted(control_groups.items()):
+        print(json.dumps({
+            "event": "CONTROL_PROBE_SUMMARY", "provider_key": provider_key,
+            "synthetic_attempts": stats["attempts"],
+            "synthetic_success": stats["success"],
+            "unknown": stats["unknown"], "failure_votes": 0,
+        }, separators=(",", ":")))
 
 
 def replay(stream):

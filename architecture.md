@@ -1435,7 +1435,7 @@ There are two additional mechanics to account for in that integration:
 
 The first active comparison runner uses one HTTPS HEAD request per candidate,
 correlated to exactly one C learning flow. Settled `PROBE_OUTCOME` rows are
-written into the bounded controller journal as versioned v2 records with the
+written into the bounded controller journal as versioned v3 records with the
 probe id, outcome, reason, assigned strategy/generation, host, source port,
 HTTP result, correlated flow id, network epoch/health and context usability.
 When C flow correlation succeeds, the record also carries raw packet/byte
@@ -1443,14 +1443,27 @@ counters, server/RST/FIN flags, ClientHello retransmissions and termination
 reason. The PC analyzer emits these as observed facts; they are diagnostic and
 does not turn them or curl error classes (DNS, connect, timeout, TLS, receive)
 into strategy failure votes.
+The bounded journal also records synthetic no-strategy control outcomes. The
+controller leases the reserved strategy id `4294967295`; Lua finds no plan entry
+for it and therefore applies no desync while C still records an attributable
+strategy assignment and generation. A candidate unknown can become one
+`PROBE_COMPARATIVE_FAILURE` only when it is bracketed by successful control
+probes for the same host, provider key, network epoch, and IP family, within two
+minutes, with a correlated client-active C flow and no later success for that
+candidate before the second control. This is comparative evidence for ranking,
+not a general failure verdict. The controller keeps bounded distinct-host
+comparative evidence in its global and ASN priors; analyzer output preserves
+the controls and the bracketed evidence separately. Restarted state does not
+restore in-flight brackets.
+
 `python tools/adaptive_replay.py --controller-output
-/tmp/zator-adaptive/shadow.tsv` reports attempts,
-confirmed successes, unknowns, and host/strategy probeability by network epoch;
-it also reads v1 and unversioned probe rows left by earlier beta upgrades.
-Unknown outcomes do not become failures, and the analyzer reports zero failure
-votes because this probe has no trusted explicit-block classifier. Synthetic
-no-strategy controls, explicit block classification, and retry after
-independently verified infrastructure recovery remain open Phase 6 work.
+/tmp/zator-adaptive/shadow.tsv` reports attempts, confirmed successes,
+unknowns, controls, comparative evidence, and host/strategy probeability by
+network epoch; it also reads earlier probe row versions. Unknown outcomes do
+not become failures, and the analyzer reports zero general failure votes
+because this probe has no trusted explicit-block classifier. Explicit block
+classification and retry after independently verified infrastructure recovery
+remain open Phase 6 work.
 
 ---
 

@@ -29,6 +29,7 @@
 #define MAX_CANDIDATES 384
 #define MAX_PROVIDER_PRIORS 128
 #define MAX_PROVIDER_HOSTS 512
+#define MAX_CONTROL_CONTEXTS 128
 #define MAX_PROBE_CANDIDATES 64
 #define MAX_PROBE_BUDGET 1024
 #define PROBE_GRACE_MS 90000ULL
@@ -36,6 +37,8 @@
 #define SCOPE_CAP 64
 #define COHORT_WINDOW_MS 10000ULL
 #define STATE_TTL_MS (7ULL * 24ULL * 60ULL * 60ULL * 1000ULL)
+#define CONTROL_BRACKET_MAX_MS 120000ULL
+#define CONTROL_STRATEGY_ID UINT32_MAX
 
 struct flow_state {
 	bool used, started, assigned, strategy_conflict, identity_conflict;
@@ -60,21 +63,31 @@ struct candidate_state {
 	uint64_t successes, active_successes, unknown, probe_attempts;
 	uint64_t last_success_ms, last_seen_ms;
 	bool has_last_success;
+	uint64_t probe_unknown_ms, probe_unknown_id, probe_unknown_flow_id, probe_unknown_control_id;
+	uint64_t last_probe_success_ms, comparative_failures, last_comparative_ms;
+	bool probe_unknown_eligible;
+	char probe_unknown_provider[16], probe_unknown_family[8];
 };
 
 struct provider_prior_state {
 	bool used;
 	char key[16];
 	uint32_t strategy;
-	uint64_t unique_hosts_tested, unique_hosts_success;
+	uint64_t unique_hosts_tested, unique_hosts_success, unique_hosts_compared_failure;
 	uint64_t real_attempts, real_success, unknown, last_seen_ms;
 };
 
 struct provider_host_state {
-	bool used, tested, success;
+	bool used, tested, success, comparative_failure;
 	char key[16];
 	uint32_t strategy;
 	uint64_t host_hash, last_seen_ms;
+};
+
+struct control_context_state {
+	bool used;
+	char host[HOST_CAP], provider_key[16], family[8];
+	uint64_t host_hash, network_epoch, last_success_ms, last_probe_id;
 };
 
 /* One bounded active probe lease. It only joins C telemetry and the caller's
@@ -105,6 +118,7 @@ static struct context_state contexts[MAX_CONTEXTS];
 static struct candidate_state candidates[MAX_CANDIDATES];
 static struct provider_prior_state provider_priors[MAX_PROVIDER_PRIORS];
 static struct provider_host_state provider_hosts[MAX_PROVIDER_HOSTS];
+static struct control_context_state control_contexts[MAX_CONTROL_CONTEXTS];
 static struct probe_state active_probe;
 static uint64_t next_probe_id;
 static uint64_t completed_probe_flows[16];
@@ -237,6 +251,7 @@ static void clear_aggregate_state(void)
 	memset(candidates, 0, sizeof(candidates));
 	memset(provider_priors, 0, sizeof(provider_priors));
 	memset(provider_hosts, 0, sizeof(provider_hosts));
+	memset(control_contexts, 0, sizeof(control_contexts));
 }
 
 static bool checkpoint_state(uint64_t now)
@@ -259,7 +274,7 @@ static bool checkpoint_state(uint64_t now)
 	if (fd < 0) return false;
 	fp = fdopen(fd, "w");
 	if (!fp) { close(fd); unlink(tmp); return false; }
-	if (fprintf(fp, "ADAPTIVE_STATE\t5\t%" PRIu64 "\t%" PRIu64
+	if (fprintf(fp, "ADAPTIVE_STATE\t6\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%u\n", now, network_epoch,
 		network_fingerprint, network_context_known ? 1U : 0U) < 0) ok = false;
 	for (i = 0; ok && i < MAX_CONTEXTS; i++) {
@@ -282,18 +297,20 @@ static bool checkpoint_state(uint64_t now)
 	for (i = 0; ok && i < MAX_PROVIDER_PRIORS; i++) {
 		const struct provider_prior_state *prior = &provider_priors[i];
 		if (!prior->used) continue;
-		if (fprintf(fp, "P\t%s\t%u\t%" PRIu64 "\t%" PRIu64
+		if (fprintf(fp, "P\t%s\t%u\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 			"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\n",
 			prior->key, prior->strategy, prior->unique_hosts_tested,
-			prior->unique_hosts_success, prior->real_attempts, prior->real_success,
-			prior->unknown, prior->last_seen_ms) < 0) ok = false;
+			prior->unique_hosts_success, prior->unique_hosts_compared_failure,
+			prior->real_attempts, prior->real_success, prior->unknown,
+			prior->last_seen_ms) < 0) ok = false;
 	}
 	for (i = 0; ok && i < MAX_PROVIDER_HOSTS; i++) {
 		const struct provider_host_state *host = &provider_hosts[i];
 		if (!host->used) continue;
-		if (fprintf(fp, "H\t%s\t%u\t%" PRIu64 "\t%u\t%u\t%" PRIu64 "\n", host->key,
+		if (fprintf(fp, "H\t%s\t%u\t%" PRIu64 "\t%u\t%u\t%u\t%" PRIu64 "\n", host->key,
 			host->strategy, host->host_hash, host->tested ? 1U : 0U,
-			host->success ? 1U : 0U, host->last_seen_ms) < 0) ok = false;
+			host->success ? 1U : 0U, host->comparative_failure ? 1U : 0U,
+			host->last_seen_ms) < 0) ok = false;
 	}
 	if (fflush(fp) != 0 || fsync(fileno(fp)) != 0 || fstat(fileno(fp), &st) != 0 ||
 		st.st_size < 0 || (uint64_t)st.st_size > MAX_STATE_BYTES) ok = false;
@@ -344,7 +361,7 @@ static bool restore_state(const char *path)
 		count = split_tsv(line, c, MAX_FIELDS);
 		if (!header_seen) {
 			if (count != 6 || strcmp(c[0], "ADAPTIVE_STATE") ||
-				!state_number(c[1], &saved_version) || (saved_version < 2 || saved_version > 5) ||
+				!state_number(c[1], &saved_version) || (saved_version < 2 || saved_version > 6) ||
 				!state_number(c[2], &saved_at) ||
 				!state_number(c[3], &saved_epoch) ||
 				!state_number(c[4], &saved_fingerprint) ||
@@ -434,15 +451,18 @@ static bool restore_state(const char *path)
 			if (cand->active_successes > cand->successes ||
 				(!cand->has_last_success && cand->last_success_ms != 0) ||
 				(cand->has_last_success && cand->successes == 0)) valid = false;
-		} else if (count == 9 && !strcmp(c[0], "P") && saved_version >= 5) {
+		} else if (((count == 9 && saved_version == 5) ||
+			(count == 10 && saved_version >= 6)) && !strcmp(c[0], "P")) {
 			struct provider_prior_state *prior = NULL;
 			size_t i;
 			if (!provider_key_valid(c[1]) || !state_number(c[2], &v[0]) ||
 				!v[0] || v[0] > UINT32_MAX || !state_number(c[3], &v[1]) ||
 				!state_number(c[4], &v[2]) || v[2] > v[1] ||
-				!state_number(c[5], &v[3]) || !state_number(c[6], &v[4]) ||
-				v[4] > v[3] || !state_number(c[7], &v[5]) || v[5] > v[3] ||
-				!state_number(c[8], &v[6]) || v[6] > now) { valid = false; continue; }
+				(saved_version >= 6 && (!state_number(c[5], &v[3]) || v[3] > v[1])) ||
+				!state_number(c[saved_version >= 6 ? 6 : 5], &v[4]) ||
+				!state_number(c[saved_version >= 6 ? 7 : 6], &v[5]) || v[5] > v[4] ||
+				!state_number(c[saved_version >= 6 ? 8 : 7], &v[6]) || v[6] > v[4] ||
+				!state_number(c[saved_version >= 6 ? 9 : 8], &v[7]) || v[7] > now) { valid = false; continue; }
 			for (i = 0; i < MAX_PROVIDER_PRIORS; i++) {
 				if (provider_priors[i].used && provider_priors[i].strategy == (uint32_t)v[0] &&
 					!strcmp(provider_priors[i].key, c[1])) { valid = false; break; }
@@ -454,16 +474,19 @@ static bool restore_state(const char *path)
 			}
 			prior->used = true; prior->strategy = (uint32_t)v[0];
 			prior->unique_hosts_tested = v[1]; prior->unique_hosts_success = v[2];
-			prior->real_attempts = v[3]; prior->real_success = v[4];
-			prior->unknown = v[5]; prior->last_seen_ms = v[6];
-		} else if (count == 7 && !strcmp(c[0], "H") && saved_version >= 5) {
+			prior->unique_hosts_compared_failure = saved_version >= 6 ? v[3] : 0;
+			prior->real_attempts = v[4]; prior->real_success = v[5];
+			prior->unknown = v[6]; prior->last_seen_ms = v[7];
+		} else if (((count == 7 && saved_version == 5) ||
+			(count == 8 && saved_version >= 6)) && !strcmp(c[0], "H")) {
 			struct provider_host_state *host = NULL;
 			size_t i;
 			if (!provider_key_valid(c[1]) || !state_number(c[2], &v[0]) ||
 				!v[0] || v[0] > UINT32_MAX || !state_number(c[3], &v[1]) ||
 				!state_number(c[4], &v[2]) || v[2] > 1 ||
 				!state_number(c[5], &v[3]) || v[3] > v[2] ||
-				!state_number(c[6], &v[4]) || v[4] > now) { valid = false; continue; }
+				(saved_version >= 6 && (!state_number(c[6], &v[4]) || v[4] > v[2])) ||
+				!state_number(c[saved_version >= 6 ? 7 : 6], &v[5]) || v[5] > now) { valid = false; continue; }
 			for (i = 0; i < MAX_PROVIDER_HOSTS; i++) {
 				if (provider_hosts[i].used && provider_hosts[i].strategy == (uint32_t)v[0] &&
 					provider_hosts[i].host_hash == v[1] &&
@@ -476,7 +499,9 @@ static bool restore_state(const char *path)
 			}
 			host->used = true; host->strategy = (uint32_t)v[0];
 			host->host_hash = v[1]; host->tested = v[2] != 0;
-			host->success = v[3] != 0; host->last_seen_ms = v[4];
+			host->success = v[3] != 0;
+			host->comparative_failure = saved_version >= 6 && v[4] != 0;
+			host->last_seen_ms = v[5];
 		} else valid = false;
 	}
 	if (ferror(fp) || !header_seen) valid = false;
@@ -484,7 +509,7 @@ static bool restore_state(const char *path)
 	if (valid && saved_version >= 5) {
 		size_t i, j;
 		for (i = 0; valid && i < MAX_PROVIDER_PRIORS; i++) {
-			uint64_t tested = 0, successful = 0;
+			uint64_t tested = 0, successful = 0, comparative_failures = 0;
 			const struct provider_prior_state *prior = &provider_priors[i];
 			if (!prior->used) continue;
 			for (j = 0; j < MAX_PROVIDER_HOSTS; j++) {
@@ -493,9 +518,12 @@ static bool restore_state(const char *path)
 					continue;
 				if (host->tested) tested++;
 				if (host->success) successful++;
+				if (host->comparative_failure) comparative_failures++;
 			}
 			if (tested != prior->unique_hosts_tested ||
-				successful != prior->unique_hosts_success) valid = false;
+				successful != prior->unique_hosts_success ||
+				(saved_version >= 6 && comparative_failures != prior->unique_hosts_compared_failure))
+				valid = false;
 		}
 		for (i = 0; valid && i < MAX_PROVIDER_HOSTS; i++) {
 			const struct provider_host_state *host = &provider_hosts[i];
@@ -928,6 +956,8 @@ static void provider_prune(uint64_t now)
 				strcmp(prior->key, host->key)) continue;
 			if (host->tested && prior->unique_hosts_tested) prior->unique_hosts_tested--;
 			if (host->success && prior->unique_hosts_success) prior->unique_hosts_success--;
+			if (host->comparative_failure && prior->unique_hosts_compared_failure)
+				prior->unique_hosts_compared_failure--;
 			break;
 		}
 		memset(host, 0, sizeof(*host));
@@ -974,6 +1004,8 @@ static struct provider_host_state *provider_host_find(const char *key,
 		if (prior) {
 			if (oldest->tested && prior->unique_hosts_tested) prior->unique_hosts_tested--;
 			if (oldest->success && prior->unique_hosts_success) prior->unique_hosts_success--;
+			if (oldest->comparative_failure && prior->unique_hosts_compared_failure)
+				prior->unique_hosts_compared_failure--;
 		}
 		free_slot = oldest;
 	}
@@ -1017,16 +1049,54 @@ static void provider_record_for_key(const char *key, const struct probe_state *p
 
 static void provider_record_probe(const struct probe_state *p, bool success, uint64_t now)
 {
+	if (p->strategy == CONTROL_STRATEGY_ID) return;
 	provider_record_for_key("global", p, success, now);
 	if (p->provider_key[0] && strcmp(p->provider_key, "unknown") &&
 		strcmp(p->provider_key, "global"))
 		provider_record_for_key(p->provider_key, p, success, now);
 }
 
-static uint64_t provider_unique_successes(const char *key, uint32_t strategy, uint64_t now)
+static void provider_record_comparative_failure_for_key(const char *key,
+		const struct probe_state *p, uint64_t now)
+{
+	struct provider_prior_state *prior = provider_prior_find(key, p->strategy, now, true);
+	const char *host_fields[1] = { p->host };
+	struct provider_host_state *host;
+	uint64_t host_hash = hash_fields(host_fields, 1);
+	if (!prior) return;
+	prior->last_seen_ms = now;
+	host = provider_host_find(key, p->strategy, host_hash, now, true);
+	if (!host) return;
+	if (!host->tested) {
+		host->tested = true;
+		if (prior->unique_hosts_tested < UINT64_MAX) prior->unique_hosts_tested++;
+	}
+	if (!host->comparative_failure) {
+		host->comparative_failure = true;
+		if (prior->unique_hosts_compared_failure < UINT64_MAX)
+			prior->unique_hosts_compared_failure++;
+	}
+	host->last_seen_ms = now;
+}
+
+static void provider_record_comparative_failure(const struct probe_state *p, uint64_t now)
+{
+	provider_record_comparative_failure_for_key("global", p, now);
+	if (p->provider_key[0] && strcmp(p->provider_key, "unknown") &&
+		strcmp(p->provider_key, "global"))
+		provider_record_comparative_failure_for_key(p->provider_key, p, now);
+}
+
+static uint64_t provider_candidate_support(const char *key, uint32_t strategy,
+		uint64_t now, bool *has_compared_failure)
 {
 	struct provider_prior_state *prior = provider_prior_find(key, strategy, now, false);
-	return prior ? prior->unique_hosts_success : 0;
+	uint64_t successes, failures;
+	if (has_compared_failure) *has_compared_failure = prior && prior->unique_hosts_compared_failure;
+	if (!prior) return 0;
+	successes = prior->unique_hosts_success;
+	failures = prior->unique_hosts_compared_failure;
+	return successes > failures ? successes - failures : 0;
 }
 
 static void probe_remember_port(uint64_t now, uint32_t source_port)
@@ -1058,7 +1128,8 @@ static void probe_record_active_success(uint64_t now)
 	uint64_t key;
 	int ci, candidate_index;
 	struct candidate_state *cand;
-	if (p->health_state == NETWORK_HEALTH_DEGRADED || !p->network_context_usable) return;
+	if (p->strategy == CONTROL_STRATEGY_ID || p->health_state == NETWORK_HEALTH_DEGRADED ||
+		!p->network_context_usable) return;
 	snprintf(profile_text, sizeof(profile_text), "%u", p->profile);
 	snprintf(epoch_text, sizeof(epoch_text), "%" PRIu64, p->network_epoch);
 	key_fields[0] = profile_text; key_fields[1] = p->host;
@@ -1072,6 +1143,26 @@ static void probe_record_active_success(uint64_t now)
 	if (candidate_index < 0) return;
 	cand = &candidates[candidate_index];
 	cand->last_seen_ms = now;
+	cand->last_probe_success_ms = now;
+	cand->probe_unknown_eligible = false;
+	/* Scheduler attempts are grouped under family=any. Clear a pending unknown
+	 * there too when this same strategy later succeeds on the same host/epoch. */
+	{
+		size_t i;
+		for (i = 0; i < MAX_CANDIDATES; i++) {
+			struct candidate_state *pending = &candidates[i];
+			struct context_state *ctx;
+			if (!pending->used || pending->strategy != p->strategy ||
+				pending->context_index >= MAX_CONTEXTS) continue;
+			ctx = &contexts[pending->context_index];
+			if (ctx->used && ctx->profile == p->profile &&
+				ctx->network_epoch == p->network_epoch && !strcmp(ctx->host, p->host) &&
+				!strcmp(ctx->family, "any") &&
+				!strcmp(pending->probe_unknown_provider,
+					p->provider_key[0] ? p->provider_key : "unknown"))
+				pending->probe_unknown_eligible = false;
+		}
+	}
 	if (!cand->has_last_success ||
 		(now >= cand->last_success_ms && now - cand->last_success_ms >= COHORT_WINDOW_MS)) {
 		cand->successes++;
@@ -1083,7 +1174,7 @@ static void probe_record_active_success(uint64_t now)
 
 /* Attempts are scheduler bookkeeping, separate from success/failure evidence.
  * Every settled lease consumes one bounded trial regardless of its verdict. */
-static void probe_record_attempt(uint64_t now)
+static int probe_record_attempt(uint64_t now)
 {
 	struct probe_state *p = &active_probe;
 	char profile_text[16], epoch_text[32];
@@ -1091,7 +1182,7 @@ static void probe_record_attempt(uint64_t now)
 	uint64_t key;
 	int ci, candidate_index;
 	struct candidate_state *cand;
-	if (!p->profile || !p->strategy) return;
+	if (!p->profile || !p->strategy || p->strategy == CONTROL_STRATEGY_ID) return -1;
 	snprintf(profile_text, sizeof(profile_text), "%u", p->profile);
 	snprintf(epoch_text, sizeof(epoch_text), "%" PRIu64, p->network_epoch);
 	key_fields[0] = profile_text; key_fields[1] = p->host;
@@ -1100,29 +1191,156 @@ static void probe_record_attempt(uint64_t now)
 	key = hash_fields((const char *const *)key_fields, 6);
 	ci = find_context(p->profile, p->host, "learning", "tcp", "any",
 		p->network_epoch, key);
-	if (ci < 0) return;
+	if (ci < 0) return -1;
 	candidate_index = find_or_create_candidate((unsigned)ci, p->strategy, now);
-	if (candidate_index < 0) return;
+	if (candidate_index < 0) return -1;
 	cand = &candidates[candidate_index];
 	if (cand->probe_attempts < UINT64_MAX) cand->probe_attempts++;
 	cand->last_seen_ms = now;
+	return candidate_index;
+}
+
+static struct control_context_state *control_context_find(const struct probe_state *p,
+		uint64_t now, bool create)
+{
+	const char *host_fields[1] = { p->host };
+	uint64_t host_hash = hash_fields(host_fields, 1);
+	struct control_context_state *free_slot = NULL, *oldest = NULL;
+	size_t i;
+	for (i = 0; i < MAX_CONTROL_CONTEXTS; i++) {
+		struct control_context_state *ctx = &control_contexts[i];
+		if (ctx->used && (now < ctx->last_success_ms ||
+			now - ctx->last_success_ms > CONTROL_BRACKET_MAX_MS))
+			memset(ctx, 0, sizeof(*ctx));
+		if (ctx->used && ctx->host_hash == host_hash && ctx->network_epoch == p->network_epoch &&
+			!strcmp(ctx->host, p->host) &&
+			!strcmp(ctx->family, p->family) &&
+			!strcmp(ctx->provider_key, p->provider_key[0] ? p->provider_key : "unknown"))
+			return ctx;
+		if (!ctx->used && !free_slot) free_slot = ctx;
+		if (ctx->used && (!oldest || ctx->last_success_ms < oldest->last_success_ms)) oldest = ctx;
+	}
+	if (!create) return NULL;
+	if (!free_slot) free_slot = oldest;
+	if (!free_slot) return NULL;
+	memset(free_slot, 0, sizeof(*free_slot));
+	if (!copy_field(free_slot->host, sizeof(free_slot->host), p->host) ||
+		!copy_field(free_slot->provider_key, sizeof(free_slot->provider_key),
+			p->provider_key[0] ? p->provider_key : "unknown") ||
+		!copy_field(free_slot->family, sizeof(free_slot->family), p->family)) return NULL;
+	free_slot->used = true;
+	free_slot->host_hash = host_hash;
+	free_slot->network_epoch = p->network_epoch;
+	return free_slot;
+}
+
+static void probe_record_comparative_failure(struct candidate_state *cand,
+		const struct probe_state *control, uint64_t control_before_id, uint64_t now)
+{
+	const struct context_state *ctx = &contexts[cand->context_index];
+	struct probe_state candidate_probe;
+	char provider_key[16];
+	if (cand->last_comparative_ms && now >= cand->last_comparative_ms &&
+		now - cand->last_comparative_ms < COHORT_WINDOW_MS) return;
+	memset(&candidate_probe, 0, sizeof(candidate_probe));
+	if (!copy_field(candidate_probe.host, sizeof(candidate_probe.host), ctx->host) ||
+		!copy_field(candidate_probe.provider_key, sizeof(candidate_probe.provider_key),
+			cand->probe_unknown_provider) || !ctx->host[0]) return;
+	candidate_probe.strategy = cand->strategy;
+	provider_record_comparative_failure(&candidate_probe, now);
+	cand->comparative_failures++;
+	cand->last_comparative_ms = now;
+	if (!copy_field(provider_key, sizeof(provider_key), cand->probe_unknown_provider))
+		copy_field(provider_key, sizeof(provider_key), "unknown");
+	printf("PROBE_COMPARATIVE_FAILURE\tv1\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
+		"\t%" PRIu64 "\t%s\t%s\t%u\t%" PRIu64 "\n",
+		cand->probe_unknown_id, control_before_id, control->id,
+		cand->probe_unknown_flow_id, ctx->host, provider_key, cand->strategy,
+		ctx->network_epoch);
+	cand->probe_unknown_eligible = false;
+}
+
+static void probe_record_control_result(const struct probe_state *p,
+		bool success, uint64_t now)
+{
+	struct control_context_state *control;
+	size_t i;
+	if (!success || p->strategy != CONTROL_STRATEGY_ID || !p->flow_seen ||
+		p->flow_ambiguous || !p->network_context_usable ||
+		p->health_state == NETWORK_HEALTH_DEGRADED) return;
+	control = control_context_find(p, now, true);
+	if (!control) return;
+	if (control->last_probe_id && now > control->last_success_ms &&
+		now - control->last_success_ms <= CONTROL_BRACKET_MAX_MS) {
+		for (i = 0; i < MAX_CANDIDATES; i++) {
+			struct candidate_state *cand = &candidates[i];
+			const struct context_state *ctx;
+			if (!cand->used || cand->strategy == CONTROL_STRATEGY_ID ||
+				!cand->probe_unknown_eligible || cand->context_index >= MAX_CONTEXTS) continue;
+			ctx = &contexts[cand->context_index];
+			if (!ctx->used || ctx->profile != p->profile ||
+				ctx->network_epoch != p->network_epoch || strcmp(ctx->host, p->host) ||
+				strcmp(ctx->scope, "learning") || strcmp(ctx->transport, "tcp") ||
+				strcmp(ctx->family, "any") || strcmp(cand->probe_unknown_family, control->family) ||
+				strcmp(cand->probe_unknown_provider, control->provider_key) ||
+				cand->probe_unknown_control_id != control->last_probe_id ||
+				cand->probe_unknown_ms <= control->last_success_ms ||
+				cand->probe_unknown_ms >= now ||
+				cand->last_probe_success_ms >= cand->probe_unknown_ms) continue;
+			probe_record_comparative_failure(cand, p, control->last_probe_id, now);
+		}
+	}
+	control->last_success_ms = now;
+	control->last_probe_id = p->id;
+}
+
+static void probe_record_comparison_candidate(const struct probe_state *p,
+		int candidate_index, uint64_t now)
+{
+	struct control_context_state *control;
+	struct candidate_state *cand;
+	if (candidate_index < 0 || p->strategy == CONTROL_STRATEGY_ID ||
+		!p->flow_seen || p->flow_ambiguous || !p->flow_metrics_seen ||
+		!p->flow_metrics[0] || !p->network_context_usable ||
+		p->health_state == NETWORK_HEALTH_DEGRADED) return;
+	control = control_context_find(p, now, false);
+	if (!control || !control->last_probe_id || now <= control->last_success_ms ||
+		now - control->last_success_ms > CONTROL_BRACKET_MAX_MS) return;
+	cand = &candidates[candidate_index];
+	cand->probe_unknown_ms = now;
+	cand->probe_unknown_id = p->id;
+	cand->probe_unknown_flow_id = p->flow_id;
+	cand->probe_unknown_control_id = control->last_probe_id;
+	cand->last_seen_ms = now;
+	cand->probe_unknown_eligible = true;
+	copy_field(cand->probe_unknown_provider, sizeof(cand->probe_unknown_provider),
+		p->provider_key[0] ? p->provider_key : "unknown");
+	copy_field(cand->probe_unknown_family, sizeof(cand->probe_unknown_family), p->family);
 }
 
 static void probe_maybe_finalize(uint64_t now, bool expired)
 {
 	struct probe_state *p = &active_probe;
 	bool valid, success;
+	int candidate_index = -1;
 	if (!p->active) return;
 	if (!expired && !(p->result_seen && p->flow_seen && now >= p->join_ready_ms)) return;
 	valid = p->result_seen && p->flow_seen && !p->flow_ambiguous;
 	success = valid && p->curl_rc == 0 && p->http_status >= 100 && p->http_status <= 599;
-	probe_record_attempt(now);
+	if (p->strategy != CONTROL_STRATEGY_ID) candidate_index = probe_record_attempt(now);
 	if (p->network_context_usable && p->health_state != NETWORK_HEALTH_DEGRADED)
 		provider_record_probe(p, success, now);
-	if (success) {
+	if (p->strategy == CONTROL_STRATEGY_ID) {
+		probe_record_control_result(p, success, now);
+		probe_emit_outcome(success ? "CONTROL_SUCCESS" : "CONTROL_UNKNOWN",
+			success ? "NO_STRATEGY_HTTP_RESPONSE" :
+			(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
+			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE")));
+	} else if (success) {
 		probe_record_active_success(now);
 		probe_emit_outcome("STRONG_SUCCESS", "HTTP_RESPONSE_AND_C_FLOW");
 	} else {
+		probe_record_comparison_candidate(p, candidate_index, now);
 		probe_emit_outcome("UNKNOWN", p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
 			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE"));
 	}
@@ -1746,15 +1964,17 @@ static void handle_probe_next(char **f, size_t n, int fd,
 	}
 	for (i = 0; i < count; i++) {
 		int index = find_or_create_candidate((unsigned)ci, ids[i], now);
-	uint64_t attempts, prior_successes;
+		uint64_t attempts, prior_successes;
+		bool provider_has_failure = false;
 		if (index < 0) {
 			controller_reply(fd, peer, peer_len, "ACK\tPROBE_NEXT\tERR\tcapacity\n");
 			return;
 		}
 		attempts = candidates[index].probe_attempts;
-		prior_successes = provider_unique_successes(provider_key, ids[i], now);
-		if (!prior_successes && strcmp(provider_key, "global"))
-			prior_successes = provider_unique_successes("global", ids[i], now);
+		prior_successes = provider_candidate_support(provider_key, ids[i], now,
+			&provider_has_failure);
+		if (!prior_successes && !provider_has_failure && strcmp(provider_key, "global"))
+			prior_successes = provider_candidate_support("global", ids[i], now, NULL);
 		if (UINT64_MAX - total < attempts) total = UINT64_MAX;
 		else total += attempts;
 		if (!selected || attempts < least ||
@@ -1952,7 +2172,7 @@ static int next_candidate_client(int argc, char **argv)
 		return 1;
 	}
 	}
-	printf("candidate_next\tstrategy=%lu\tcompleted=%llu\tbudget=%llu\tepoch=%llu\tprior_success_hosts=%llu\n",
+	printf("candidate_next\tstrategy=%lu\tcompleted=%llu\tbudget=%llu\tepoch=%llu\tprior_support=%llu\n",
 		strategy, completed, total_budget, network_epoch_value, prior_success_hosts);
 	return 0;
 }
