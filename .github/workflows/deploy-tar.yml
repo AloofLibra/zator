@@ -205,7 +205,15 @@ jobs:
             echo "Релиз $TAG уже существует — пропускаю (номерные релизы неизменяемы)." >&2
             exit 1
           fi
-          gh release create "$TAG" webui-src/dist/* \
-            --target "$GITHUB_SHA" \
-            --title "$TAG" \
-            --notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG."
+          if [[ "$TAG" == *adaptive-beta* ]]; then
+            gh release create "$TAG" webui-src/dist/* \
+              --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "Adaptive Beta $TAG" \
+              --notes "Adaptive Strategy Selection beta. Shadow telemetry is opt-in; strategy learning remains experimental. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG."
+          else
+            gh release create "$TAG" webui-src/dist/* \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG."
+          fi
