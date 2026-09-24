@@ -32,20 +32,38 @@ def replay_controller_output(stream):
         cols = line.split("\t")
         if cols[0] != "PROBE_OUTCOME":
             continue
-        if not header_seen or len(cols) != 20 or cols[1] != "v1":
+        if not header_seen:
             raise ValueError(f"line {line_no}: unsupported PROBE_OUTCOME record")
         try:
-            probe = {
-                "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
-                "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
-                "strategy_generation": int(cols[7]), "hostname": cols[8].lower(),
-                "source_port": int(cols[9]), "curl_rc": int(cols[10]),
-                "http_status": int(cols[11]), "elapsed_ms": int(cols[12]),
-                "flow_id": int(cols[13]), "network_epoch": int(cols[14]),
-                "transport": cols[15], "ip_family": cols[16],
-                "network_health": cols[17], "network_health_reason": int(cols[18]),
-                "network_context_usable": cols[19] == "1",
-            }
+            if len(cols) == 20 and cols[1] == "v1":
+                probe = {
+                    "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
+                    "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
+                    "strategy_generation": int(cols[7]), "hostname": cols[8].lower(),
+                    "source_port": int(cols[9]), "curl_rc": int(cols[10]),
+                    "http_status": int(cols[11]), "elapsed_ms": int(cols[12]),
+                    "flow_id": int(cols[13]), "network_epoch": int(cols[14]),
+                    "transport": cols[15], "ip_family": cols[16],
+                    "network_health": cols[17], "network_health_reason": int(cols[18]),
+                    "network_context_usable": cols[19] == "1",
+                }
+                context_flag = cols[19]
+            elif len(cols) == 13:
+                # beta.3 journal rows predate the versioned network context.
+                probe = {
+                    "probe_id": int(cols[1]), "outcome": cols[2], "reason": cols[3],
+                    "profile_id": int(cols[4]), "strategy_id": int(cols[5]),
+                    "strategy_generation": int(cols[6]), "hostname": cols[7].lower(),
+                    "source_port": int(cols[8]), "curl_rc": int(cols[9]),
+                    "http_status": int(cols[10]), "elapsed_ms": int(cols[11]),
+                    "flow_id": int(cols[12]), "network_epoch": 0,
+                    "transport": "tcp", "ip_family": "unknown",
+                    "network_health": "UNKNOWN", "network_health_reason": 0,
+                    "network_context_usable": False,
+                }
+                context_flag = "0"
+            else:
+                raise ValueError("unsupported record version")
         except (ValueError, IndexError) as exc:
             raise ValueError(f"line {line_no}: invalid PROBE_OUTCOME value") from exc
         if (probe["outcome"] not in {"STRONG_SUCCESS", "UNKNOWN"} or
@@ -54,7 +72,7 @@ def replay_controller_output(stream):
                 not probe["hostname"] or not 62000 <= probe["source_port"] <= 62015 or
                 probe["curl_rc"] < 0 or not 0 <= probe["http_status"] <= 599 or
                 probe["elapsed_ms"] < 0 or probe["flow_id"] < 0 or
-                probe["network_epoch"] < 0 or cols[19] not in {"0", "1"}):
+                probe["network_epoch"] < 0 or context_flag not in {"0", "1"}):
             raise ValueError(f"line {line_no}: PROBE_OUTCOME value outside allowed bounds")
         probes.append(probe)
 

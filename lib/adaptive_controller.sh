@@ -262,8 +262,9 @@ adaptive_learning_compare() {
     while :; do
       if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$allowlist")"; then
         break
+      else
+        status=$?
       fi
-      status=$?
       [ "$status" -eq 3 ] || { echo "Ожидание probe завершилось ошибкой (код $status)." >&2; return 1; }
       [ "$wait_count" -lt 95 ] || { echo "Истёк лимит ожидания завершения probe." >&2; return 1; }
       sleep 1
