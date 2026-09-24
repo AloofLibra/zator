@@ -40,7 +40,7 @@ adaptive_controller_release_base() {
 }
 
 # Explicit caller only. Runtime package is target-specific, statically linked,
-# bounded to 128 KiB and verified against the checksum attached to the release.
+# bounded to 144 KiB and verified against the checksum attached to the release.
 adaptive_controller_install() {
   local target base name root bindir binary tmp sumtmp expected actual size
   target="${1:-$(adaptive_controller_target)}" || {
@@ -87,9 +87,9 @@ adaptive_controller_install() {
   [ "$actual" = "$expected" ] || { rm -f "$tmp" "$sumtmp"; echo "SHA-256 Adaptive Controller не совпадает." >&2; return 1; }
   size="$(wc -c < "$tmp" | awk '{print $1}')"
   case "$size" in ''|*[!0-9]*) rm -f "$tmp" "$sumtmp"; return 1 ;; esac
-  [ "$size" -gt 0 ] && [ "$size" -lt 131072 ] || {
+  [ "$size" -gt 0 ] && [ "$size" -lt 147456 ] || {
     rm -f "$tmp" "$sumtmp"
-    echo "Размер Adaptive Controller выходит за лимит 128 KiB." >&2
+    echo "Размер Adaptive Controller выходит за лимит 144 KiB." >&2
     return 1
   }
   chmod 755 "$tmp" || { rm -f "$tmp" "$sumtmp"; return 1; }

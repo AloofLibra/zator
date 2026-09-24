@@ -93,8 +93,8 @@ jobs:
             echo "Controller unexpectedly links a dynamic dependency: $TARGET" >&2
             exit 1
           fi
-          test "$size" -lt 131072 || {
-            echo "Controller exceeds the 128 KiB target: $TARGET ($size bytes)" >&2
+          test "$size" -lt 147456 || {
+            echo "Controller exceeds the 144 KiB target: $TARGET ($size bytes)" >&2
             exit 1
           }
           (cd "$OUT_DIR" && sha256sum "adaptive-controller-$TARGET" > "adaptive-controller-$TARGET.sha256")

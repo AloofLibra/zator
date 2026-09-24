@@ -1149,7 +1149,7 @@ binary per supported Linux target and attaches each as a separate release
 asset plus a SHA-256 sidecar. This keeps the normal zator archives free of
 unused architecture binaries and lets the opt-in installer fetch only the
 matching small binary; `lib/adaptive_controller.sh` maps router `uname -m`,
-checks the digest and 128 KiB size ceiling, and refuses to fetch in offline
+checks the digest and 144 KiB size ceiling, and refuses to fetch in offline
 mode. The workflow also rejects dynamically linked or unexpectedly large
 outputs. No process starts and no runtime dependency is added unless the
 operator explicitly enables menu item 24. The menu is
