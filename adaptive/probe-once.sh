@@ -12,12 +12,17 @@ LOCK_DIR=/tmp/zator-adaptive-learning/experiment.lock
 
 usage()
 {
-	echo "Usage: $0 hostname" >&2
+	echo "Usage: $0 hostname [--reported-result]" >&2
 	exit 2
 }
 
-[ "$#" -eq 1 ] || usage
+case "$#" in 1|2) ;; *) usage ;; esac
 host="$1"
+report_only=0
+if [ "$#" -eq 2 ]; then
+	[ "$2" = --reported-result ] || usage
+	report_only=1
+fi
 case "$host" in
 	''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) usage ;;
 esac
@@ -117,4 +122,5 @@ if ! "$controller" --probe-result /tmp/zator-adaptive/events.sock \
 	echo "Controller did not accept the probe result; it will expire as unknown." >&2
 	exit 1
 fi
+[ "$report_only" -eq 1 ] && exit 0
 exit "$rc"

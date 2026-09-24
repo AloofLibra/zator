@@ -27,7 +27,7 @@
 #define MAX_OPEN_FLOWS 256
 #define MAX_CONTEXTS 128
 #define MAX_CANDIDATES 384
-#define MAX_PROBE_CANDIDATES 32
+#define MAX_PROBE_CANDIDATES 64
 #define MAX_PROBE_BUDGET 1024
 #define PROBE_GRACE_MS 90000ULL
 #define HOST_CAP 256
@@ -1609,7 +1609,7 @@ static int next_candidate_client(int argc, char **argv)
 	unsigned long profile, budget, strategy;
 	unsigned long long completed, total_budget, network_epoch_value;
 	int n, consumed = 0;
-	if (argc != 7 || !probe_host_valid(argv[3]) || strlen(argv[6]) > 512) return 2;
+	if (argc != 7 || !probe_host_valid(argv[3]) || strlen(argv[6]) > 1024) return 2;
 	profile = strtoul(argv[4], &end, 10);
 	if (!argv[4][0] || *end || profile != 1) return 2;
 	budget = strtoul(argv[5], &end, 10);
@@ -1624,6 +1624,12 @@ static int next_candidate_client(int argc, char **argv)
 	if (!strcmp(reply, "ACK\tPROBE_NEXT\tEXHAUSTED\n")) {
 		puts("candidate_exhausted");
 		return 0;
+	}
+	if (!strcmp(reply, "ACK\tPROBE_NEXT\tERR\tbusy\n")) return 3;
+	if (!strcmp(reply, "ACK\tPROBE_NEXT\tERR\tnetwork_unknown\n") ||
+		!strcmp(reply, "ACK\tPROBE_NEXT\tERR\tnetwork_degraded\n")) {
+		fprintf(stderr, "adaptive_controller: %s", reply);
+		return 4;
 	}
 	if (sscanf(reply, "ACK\tPROBE_NEXT\tOK\t%lu\t%llu\t%llu\t%llu%n",
 		&strategy, &completed, &total_budget, &network_epoch_value, &consumed) != 4 ||
@@ -1917,7 +1923,7 @@ int main(int argc, char **argv)
 		puts("       adaptive-controller --probe-begin /controller.sock host source_port profile strategy generation");
 		puts("       adaptive-controller --probe-result /controller.sock probe_id curl_rc http_status elapsed_ms");
 		puts("       adaptive-controller --next-candidate /controller.sock host profile budget id[,id...]");
-		puts("candidate selection is learning-only, max 32 candidates and 1024 settled probe attempts");
+		puts("candidate selection is learning-only, max 64 candidates and 1024 settled probe attempts");
 		puts("limits: 256 open flows, 128 contexts, 384 candidates; 7-day idle aggregate TTL");
 		puts("socket mode consumes nonblocking-sender Unix datagrams; gaps invalidate open flows");
 		puts("output: TSV FLOW_OUTCOME (confidence/rank; quarantine=NONE), TRACE_INCOMPLETE, overflow records");

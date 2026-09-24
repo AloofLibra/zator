@@ -2449,7 +2449,7 @@ ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Се�
 ${Fcyan}21.${yellow} Управление бэкапами (создание/восстановление/удаление архивов)
 ${Fcyan}23.${yellow} Client scopes (Beta): разные стратегии разным устройствам по IP. Сейчас: ${plain}[${MENU_CLIENT_SCOPE}]${yellow}
 ${Fcyan}24.${yellow} Adaptive Strategy Selection shadow (наблюдение без смены стратегии). Сейчас: ${plain}[$(adaptive_shadow_status_text)]${yellow}
-${Fcyan}25.${yellow} Learning worker / одноразовая HTTPS-проба. Сейчас: ${plain}[$(adaptive_learning_status_text)]${yellow}
+${Fcyan}25.${yellow} Learning worker / HTTPS probe и сравнение. Сейчас: ${plain}[$(adaptive_learning_status_text)]${yellow}
 ${Fcyan}666.${yellow} Ошибки nfqws2 — журнал последнего запуска${MENU_ERR_STATE}
 ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"

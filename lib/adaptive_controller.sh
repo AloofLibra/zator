@@ -203,6 +203,75 @@ adaptive_learning_set_candidate() {
   rmdir "$lock" 2>/dev/null || :
 }
 
+# Run a bounded, operator-started comparison over the strategies actually
+# present in the extracted TLS plan. Candidate ranking and attempt accounting
+# stay in C; this function only applies the acknowledged choice and runs probes.
+adaptive_learning_compare() {
+  local host="$1" budget="$2" controller allowlist next status strategy
+  local completed=0 wait_count
+  controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
+  case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
+  [ "${#host}" -le 253 ] || return 2
+  case "$budget" in ''|*[!0-9]*) return 2 ;; esac
+  [ "$budget" -ge 1 ] && [ "$budget" -le 64 ] || return 2
+  [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
+  allowlist="$(printf '%s\n' "${NFQWS2_OPT:-}" | awk '
+    /^--template=z2r_tcp_tls_common([[:space:]]|$)/ { inside=1; found=1; next }
+    inside && /^--new([[:space:]]|$)/ { exit }
+    inside && /^--lua-desync=/ {
+      for (i=1; i<=NF; i++) {
+        token=$i
+        while (match(token, /strategy=[0-9]+/)) {
+          id=substr(token, RSTART+9, RLENGTH-9)
+          if (!(id in seen)) { seen[id]=1; ids[++n]=id }
+          token=substr(token, RSTART+RLENGTH)
+        }
+      }
+    }
+    END {
+      if (!found || !n || n>64) exit 1
+      for (i=1; i<=n; i++) printf "%s%s", (i==1 ? "" : ","), ids[i]
+    }
+  ')" || {
+    echo "Не удалось получить ограниченный список strategy из TLS plan." >&2
+    return 1
+  }
+
+  if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$allowlist")"; then
+    :
+  else
+    status=$?
+    echo "C controller отказал в выборе кандидата (код $status)." >&2
+    return 1
+  fi
+  while :; do
+    case "$next" in
+      candidate_exhausted*) echo "Лимит probe-попыток исчерпан; новых проб не запускаю."; return 0 ;;
+    esac
+    strategy="$(printf '%s\n' "$next" | awk -F '\t' '$1=="candidate_next" && $2 ~ /^strategy=[0-9]+$/ { sub(/^strategy=/,"",$2); print $2 }')"
+    case "$strategy" in ''|*[!0-9]*) echo "C controller вернул некорректный candidate." >&2; return 1 ;; esac
+    echo "Проба $((completed + 1)): strategy $strategy для $host"
+    adaptive_learning_set_candidate "$strategy" || return 1
+    "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
+      echo "Проба не была принята controller; сравнение остановлено." >&2
+      return 1
+    }
+    completed=$((completed + 1))
+
+    wait_count=0
+    while :; do
+      if next="$($controller --next-candidate /tmp/zator-adaptive/events.sock "$host" 1 "$budget" "$allowlist")"; then
+        break
+      fi
+      status=$?
+      [ "$status" -eq 3 ] || { echo "Ожидание probe завершилось ошибкой (код $status)." >&2; return 1; }
+      [ "$wait_count" -lt 95 ] || { echo "Истёк лимит ожидания завершения probe." >&2; return 1; }
+      sleep 1
+      wait_count=$((wait_count + 1))
+    done
+  done
+}
+
 # zapret2's nfqws2 accepts @config only as argv[1]. The shared do_nfqws hook
 # prepends normal NFQWS2 options, so route the learning daemon through this
 # exec wrapper; it intentionally ignores those appended arguments.
@@ -298,7 +367,7 @@ adaptive_learning_toggle() {
   strategy_file="$root/extra_strats/cache/adaptive-learning.strategy"
 
   if adaptive_learning_enabled; then
-    read -r -p "Learning активен: 1 — сменить strategy для новых flow, 0 — выключить: " action
+    read -r -p "Learning активен: 1 — сменить strategy, 2 — сравнить candidates, 0 — выключить: " action
     case "$action" in
       1)
         read -r -p "Номер TCP/TLS strategy: " strategy
@@ -309,6 +378,13 @@ adaptive_learning_toggle() {
         echo "Candidate сменён с ACK от nfqws2; уже открытые flows сохраняют свою strategy."
         echo "Для отдельной пробы: $root/adaptive/probe-once.sh example.com"
         return 0
+        ;;
+      2)
+        local probe_host probe_budget
+        read -r -p "Hostname для HTTPS probe: " probe_host
+        read -r -p "Общий лимит завершённых probe-попыток (1–64): " probe_budget
+        adaptive_learning_compare "$probe_host" "$probe_budget"
+        return $?
         ;;
       0)
         [ ! -d /tmp/zator-adaptive-learning/experiment.lock ] || {

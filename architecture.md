@@ -1339,14 +1339,18 @@ TLS-plan allowlist, host, profile, and total settled-attempt budget. C picks the
 least-tried allowed candidate (numeric id breaks ties), consumes budget only
 when a probe lease settles, and counts `UNKNOWN` only as a scheduling attempt,
 never as negative evidence. It refuses unknown/degraded network state or an
-active probe, with limits of 32 candidates and 1024 settled attempts. The
-selector does not apply the returned candidate or run probes; the operator
-still drives one probe at a time. Probe correlation has not yet been validated
+active probe, with limits of 64 candidates and 1024 settled attempts. Menu
+item 25 offers an operator-started comparison runner bounded to 64 attempts
+per invocation: it extracts the
+allowlist from the live TLS template, asks C for each next candidate, applies
+the acknowledged worker update, and starts one probe at a time. It stops on
+the total attempt budget or any setup/correlation error. Probe correlation has not yet been validated
 on a live router and depends on the deployed nfqws2 emitting the v3 client
 source-port field.
 
 Menu item 25 enables/disables this learning-only worker and asks for the TLS
-strategy id. While enabled it can also set a new candidate; it validates that
+strategy id. While enabled it can also set a new candidate or start the bounded
+comparison runner; it validates that
 the strategy exists in the extracted TLS plan, sends it to C, waits for ACK,
 and persists it for worker restart. It checks mark overlap and C option support,
 starts the controller, installs the custom hook and restarts zapret2. The controller init services now start
