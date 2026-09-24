@@ -1,0 +1,167 @@
+#!/bin/sh
+# Opt-in isolated nfqws2 learning daemon and reserved-port probe steering.
+
+ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+Z2R_ADAPTIVE_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-learning.enabled"
+Z2R_ADAPTIVE_STRATEGY="$ZATOR_ROOT/extra_strats/cache/adaptive-learning.strategy"
+Z2R_ADAPTIVE_CONFIG=/tmp/zator-adaptive-learning/nfqws2.conf
+Z2R_ADAPTIVE_WRAPPER=/tmp/zator-adaptive-learning/nfqws2-wrapper
+Z2R_ADAPTIVE_SOCKET=/tmp/zator-adaptive/events.sock
+Z2R_ADAPTIVE_CONTROL_SOCKET=/tmp/zator-adaptive-learning/control.sock
+Z2R_ADAPTIVE_MARK_STATE=/tmp/zator-adaptive-learning/mark
+Z2R_ADAPTIVE_MARK_DEFAULT=0x08000000
+Z2R_ADAPTIVE_PORT_FIRST=62000
+Z2R_ADAPTIVE_PORT_LAST=62015
+
+[ -r "$ZATOR_ROOT/z2r_lib/adaptive_controller.sh" ] || return 0
+. "$ZATOR_ROOT/z2r_lib/adaptive_controller.sh" || return 0
+
+alloc_qnum QNUM_Z2R_ADAPTIVE_LEARNING
+alloc_dnum DNUM_Z2R_ADAPTIVE_LEARNING
+
+adaptive_mark_read()
+{
+	local action="$1" mark desync postnat filter n
+	if [ "$action" = 1 ]; then
+		mark="${Z2R_ADAPTIVE_MARK:-$Z2R_ADAPTIVE_MARK_DEFAULT}"
+	else
+		IFS= read -r mark <"$Z2R_ADAPTIVE_MARK_STATE" 2>/dev/null || mark="${Z2R_ADAPTIVE_MARK:-$Z2R_ADAPTIVE_MARK_DEFAULT}"
+	fi
+	case "$mark" in 0x[0-9A-Fa-f]*|[0-9]*) ;; *) return 1 ;; esac
+	case "$mark" in *[!0-9A-Fa-fxX]*) return 1 ;; esac
+	n=$((mark)) 2>/dev/null || return 1
+	[ "$n" -gt 0 ] && [ "$((n & (n - 1)))" -eq 0 ] || return 1
+	if [ "$action" = 1 ]; then
+		desync=$(( ${DESYNC_MARK:-0x40000000} ))
+		postnat=$(( ${DESYNC_MARK_POSTNAT:-0x20000000} ))
+		filter=0
+		[ -n "${FILTER_MARK:-}" ] && filter=$((FILTER_MARK))
+		[ "$((n & desync))" -eq 0 ] && [ "$((n & postnat))" -eq 0 ] && [ "$((n & filter))" -eq 0 ] || return 1
+		mkdir -p "${Z2R_ADAPTIVE_MARK_STATE%/*}" || return 1
+		printf '0x%x\n' "$n" >"$Z2R_ADAPTIVE_MARK_STATE.tmp.$$" || return 1
+		chmod 600 "$Z2R_ADAPTIVE_MARK_STATE.tmp.$$" && mv -f "$Z2R_ADAPTIVE_MARK_STATE.tmp.$$" "$Z2R_ADAPTIVE_MARK_STATE" || return 1
+	fi
+	printf '0x%x\n' "$n"
+}
+
+adaptive_source_ports_safe()
+{
+	local first last
+	read -r first last </proc/sys/net/ipv4/ip_local_port_range 2>/dev/null || return 1
+	case "$first:$last" in *[!0-9:]*) return 1 ;; esac
+	[ "$first" -gt 0 ] && [ "$last" -ge "$first" ] && [ "$last" -le 65535 ] || return 1
+	[ "$Z2R_ADAPTIVE_PORT_LAST" -lt "$first" ] || [ "$Z2R_ADAPTIVE_PORT_FIRST" -gt "$last" ]
+}
+
+adaptive_iptables_family()
+{
+	local action="$1" mark="$2" mcmd="$3"
+	local range="$Z2R_ADAPTIVE_PORT_FIRST:$Z2R_ADAPTIVE_PORT_LAST"
+	if [ "$action" = 1 ]; then
+		$mcmd 1 OUTPUT -t mangle -p tcp --sport "$range" --dport 443 -j MARK --set-xmark "$mark/$mark" || return 1
+		$mcmd 1 POSTROUTING -t mangle -p tcp -m mark --mark "$mark/$mark" --sport "$range" --dport 443 -j ACCEPT || return 1
+		$mcmd 1 POSTROUTING -t mangle -p tcp -m mark --mark "$mark/$mark" --sport "$range" --dport 443 -j NFQUEUE --queue-num "$QNUM_Z2R_ADAPTIVE_LEARNING" --queue-bypass || return 1
+		$mcmd 1 POSTROUTING -t mangle -p tcp -m mark --mark "$mark/$mark" --sport "$range" --dport 443 -j CONNMARK --or-mark "$mark" || return 1
+		$mcmd 1 PREROUTING -t mangle -p tcp --sport 443 --dport "$range" -m conntrack --ctstate ESTABLISHED -m connmark --mark "$mark/$mark" -j CONNMARK --restore-mark --nfmask "$mark" --ctmask "$mark" || return 1
+		$mcmd 1 INPUT -t mangle -p tcp --sport 443 --dport "$range" -m conntrack --ctstate ESTABLISHED -m connmark --mark "$mark/$mark" -j ACCEPT || return 1
+		$mcmd 1 INPUT -t mangle -p tcp --sport 443 --dport "$range" -m conntrack --ctstate ESTABLISHED -m connmark --mark "$mark/$mark" -j NFQUEUE --queue-num "$QNUM_Z2R_ADAPTIVE_LEARNING" --queue-bypass || return 1
+	else
+		# Remove the original development range during upgrade as well.
+		for range in "$range" 47100:47115; do
+			$mcmd 0 OUTPUT -t mangle -p tcp --sport "$range" --dport 443 -j MARK --set-xmark "$mark/$mark" || :
+			$mcmd 0 POSTROUTING -t mangle -p tcp -m mark --mark "$mark/$mark" --sport "$range" --dport 443 -j ACCEPT || :
+			$mcmd 0 POSTROUTING -t mangle -p tcp -m mark --mark "$mark/$mark" --sport "$range" --dport 443 -j NFQUEUE --queue-num "$QNUM_Z2R_ADAPTIVE_LEARNING" --queue-bypass || :
+			$mcmd 0 POSTROUTING -t mangle -p tcp -m mark --mark "$mark/$mark" --sport "$range" --dport 443 -j CONNMARK --or-mark "$mark" || :
+			$mcmd 0 PREROUTING -t mangle -p tcp --sport 443 --dport "$range" -m conntrack --ctstate ESTABLISHED -m connmark --mark "$mark/$mark" -j CONNMARK --restore-mark --nfmask "$mark" --ctmask "$mark" || :
+			$mcmd 0 INPUT -t mangle -p tcp --sport 443 --dport "$range" -m conntrack --ctstate ESTABLISHED -m connmark --mark "$mark/$mark" -j ACCEPT || :
+			$mcmd 0 INPUT -t mangle -p tcp --sport 443 --dport "$range" -m conntrack --ctstate ESTABLISHED -m connmark --mark "$mark/$mark" -j NFQUEUE --queue-num "$QNUM_Z2R_ADAPTIVE_LEARNING" --queue-bypass || :
+		done
+	fi
+}
+
+zapret_custom_firewall()
+{
+	local action="$1" mark
+	if [ "$action" = 1 ]; then
+		[ -f "$Z2R_ADAPTIVE_ENABLED" ] || return 0
+		adaptive_source_ports_safe || { echo "Adaptive learning: probe ports overlap the kernel ephemeral range; steering disabled." >&2; return 0; }
+		mark="$(adaptive_mark_read 1)" || { echo "Adaptive learning: mark collision or invalid mark; steering disabled." >&2; return 0; }
+		adaptive_iptables_family 1 "$mark" ipt_add_del || return 1
+		adaptive_iptables_family 1 "$mark" ipt6_add_del || return 1
+	else
+		mark="$(adaptive_mark_read 0)" || mark="$Z2R_ADAPTIVE_MARK_DEFAULT"
+		adaptive_iptables_family 0 "$mark" ipt_add_del || :
+		adaptive_iptables_family 0 "$mark" ipt6_add_del || :
+		rm -f "$Z2R_ADAPTIVE_MARK_STATE"
+	fi
+}
+
+adaptive_nft_chain_ensure()
+{
+	local chain="$1"
+	if nft list chain inet "$ZAPRET_NFT_TABLE" "$chain" >/dev/null 2>&1; then
+		nft flush chain inet "$ZAPRET_NFT_TABLE" "$chain"
+	else
+		nft add chain inet "$ZAPRET_NFT_TABLE" "$chain" || return 1
+	fi
+}
+
+zapret_custom_firewall_nft()
+{
+	[ -f "$Z2R_ADAPTIVE_ENABLED" ] || return 0
+	adaptive_source_ports_safe || { echo "Adaptive learning: probe ports overlap the kernel ephemeral range; steering disabled." >&2; return 0; }
+	local mark range="$Z2R_ADAPTIVE_PORT_FIRST-$Z2R_ADAPTIVE_PORT_LAST"
+	local post pre posthook prehook
+	mark="$(adaptive_mark_read 1)" || { echo "Adaptive learning: mark collision or invalid mark; steering disabled." >&2; return 0; }
+	post="$(get_postchain)"; pre="$(get_prechain)"
+	posthook="${post}_hook"; prehook="${pre}_hook"
+	adaptive_nft_chain_ensure z2r_adaptive_post || return 1
+	adaptive_nft_chain_ensure z2r_adaptive_pre || return 1
+	# Mark only router-originated sockets in output. Save/restore only this bit,
+	# preserving marks owned by policy routing and other firewall components.
+	nft_insert_rule predefrag meta skuid 0 tcp sport "$range" tcp dport 443 meta mark set meta mark or "$mark"
+	nft_add_rule z2r_adaptive_post meta mark and "$mark" != 0 tcp sport "$range" tcp dport 443 queue num "$QNUM_Z2R_ADAPTIVE_LEARNING" bypass
+	nft_add_rule z2r_adaptive_post return
+	# Head order is: jump to learning, then return from parent after the queued
+	# packet is accepted. This prevents fall-through to standard production NFQ.
+	nft_insert_rule "$posthook" meta mark and "$mark" != 0 return
+	nft_insert_rule "$posthook" meta mark and "$mark" != 0 jump z2r_adaptive_post
+	nft_insert_rule "$posthook" meta mark and "$mark" != 0 ct mark set ct mark or "$mark"
+	nft_add_rule z2r_adaptive_pre ct direction reply ct mark and "$mark" != 0 tcp sport 443 tcp dport "$range" queue num "$QNUM_Z2R_ADAPTIVE_LEARNING" bypass
+	nft_add_rule z2r_adaptive_pre return
+	nft_insert_rule "$prehook" meta mark and "$mark" != 0 tcp dport "$range" return
+	nft_insert_rule "$prehook" meta mark and "$mark" != 0 tcp dport "$range" jump z2r_adaptive_pre
+	nft_insert_rule "$prehook" ct mark and "$mark" != 0 tcp dport "$range" meta mark set meta mark or "$mark"
+}
+
+zapret_custom_firewall_nft_flush()
+{
+	[ -n "${ZAPRET_NFT_TABLE:-}" ] || return 0
+	nft delete chain inet "$ZAPRET_NFT_TABLE" z2r_adaptive_post 2>/dev/null || :
+	nft delete chain inet "$ZAPRET_NFT_TABLE" z2r_adaptive_pre 2>/dev/null || :
+	rm -f "$Z2R_ADAPTIVE_MARK_STATE"
+}
+
+zapret_custom_daemons()
+{
+	local strategy wrapper
+	# The stop path must run even after the opt-in marker was removed.
+	if [ "$1" = 1 ]; then
+		[ -f "$Z2R_ADAPTIVE_ENABLED" ] || return 0
+		[ -S "$Z2R_ADAPTIVE_SOCKET" ] || return 0
+		"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-strategy=<profile>:<strategy>' || return 0
+		"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>' || return 0
+		"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-control=<unix_path>' || return 0
+		IFS= read -r strategy <"$Z2R_ADAPTIVE_STRATEGY" || return 0
+		adaptive_learning_config_write "$strategy" "$QNUM_Z2R_ADAPTIVE_LEARNING" \
+			"$Z2R_ADAPTIVE_SOCKET" || return 0
+		wrapper="$(adaptive_learning_wrapper_install)" || return 0
+	else
+		wrapper="$Z2R_ADAPTIVE_WRAPPER"
+	fi
+
+	[ -n "$wrapper" ] || return 0
+	local NFQWS2="$wrapper"
+	local NFQWS2_OPT_BASE=
+	do_nfqws "$1" "$DNUM_Z2R_ADAPTIVE_LEARNING" ""
+}

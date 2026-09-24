@@ -49,10 +49,67 @@ permissions:
   contents: write
 
 jobs:
+  build-adaptive-controller:
+    name: adaptive-controller (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-musl
+          - armv6-unknown-linux-musleabi
+          - i586-unknown-linux-musl
+          - x86_64-unknown-linux-musl
+          - mips-unknown-linux-muslsf
+          - mipsel-unknown-linux-muslsf
+          - mips64-unknown-linux-musl
+          - mips64el-unknown-linux-musl
+          - powerpc-unknown-linux-musl
+          - riscv64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install matching static musl toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/tools"
+          curl -fsSL "https://github.com/bol-van/musl-cross/releases/download/latest/$TARGET.tar.xz" \
+            | tar -xJ -C "$HOME/tools"
+          echo "$HOME/tools/$TARGET/bin" >> "$GITHUB_PATH"
+
+      - name: Build and inspect static controller
+        env:
+          TARGET: ${{ matrix.target }}
+          OUT_DIR: ${{ runner.temp }}/adaptive-controller
+        run: |
+          tools/build-adaptive-controller.sh "$TARGET"
+          binary="$OUT_DIR/adaptive-controller-$TARGET"
+          test -s "$binary"
+          ! readelf -d "$binary" 2>/dev/null | grep -q NEEDED
+          test "$(stat -c %s "$binary")" -lt 131072
+          (cd "$OUT_DIR" && sha256sum "adaptive-controller-$TARGET" > "adaptive-controller-$TARGET.sha256")
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: adaptive-controller-${{ matrix.target }}
+          path: ${{ runner.temp }}/adaptive-controller/adaptive-controller-${{ matrix.target }}*
+          if-no-files-found: error
+          retention-days: 1
+
   pack-and-release:
+    needs: build-adaptive-controller
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Download router controller binaries
+        uses: actions/download-artifact@v6
+        with:
+          pattern: adaptive-controller-*
+          path: webui-src/dist
+          merge-multiple: true
 
       - uses: actions/setup-node@v5
         with:
@@ -66,6 +123,11 @@ jobs:
 
       - name: Verify outputs
         run: |
+          for target in aarch64-unknown-linux-musl armv6-unknown-linux-musleabi i586-unknown-linux-musl x86_64-unknown-linux-musl mips-unknown-linux-muslsf mipsel-unknown-linux-muslsf mips64-unknown-linux-musl mips64el-unknown-linux-musl powerpc-unknown-linux-musl riscv64-unknown-linux-musl; do
+            test -s "webui-src/dist/adaptive-controller-$target"
+            ! readelf -d "webui-src/dist/adaptive-controller-$target" 2>/dev/null | grep -q NEEDED
+            (cd webui-src/dist && sha256sum -c "adaptive-controller-$target.sha256")
+          done
           cd webui-src/dist
           for v in core webui full; do
             test -s "zator-$v.tar.gz"

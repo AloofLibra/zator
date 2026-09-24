@@ -123,7 +123,7 @@ project_tree_is_valid() {
   local root="$1" dir file
 
   [ -f "$root/offline/z2r" ] || return 1
-  for dir in blockcheck2.d data Entware extra_strats fake firewall init.d lib lists lua orchestra webui; do
+  for dir in adaptive blockcheck2.d data Entware extra_strats fake firewall init.d lib lists lua orchestra webui; do
     [ -d "$root/$dir" ] || return 1
   done
   for file in z2r.sh config.default fake_files.tar.gz recommendations.txt \

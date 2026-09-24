@@ -1,0 +1,31 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=19
+STOP=89
+
+ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+SHADOW_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-shadow.enabled"
+LEARNING_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-learning.enabled"
+BIN="$ZATOR_ROOT/adaptive/bin/adaptive-controller"
+NFQWS2="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+RUNDIR=/tmp/zator-adaptive
+SOCKET="$RUNDIR/events.sock"
+OUTPUT="$RUNDIR/shadow.tsv"
+STATE="$RUNDIR/state.tsv"
+
+start_service()
+{
+	[ -f "$SHADOW_ENABLED" ] || [ -f "$LEARNING_ENABLED" ] || return 0
+	[ -x "$BIN" ] || { echo "adaptive-controller binary is missing" >&2; return 1; }
+	[ -x "$NFQWS2" ] || return 0
+	"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>' || return 0
+	[ ! -L "$RUNDIR" ] || { echo "refusing symlink runtime directory" >&2; return 1; }
+	mkdir -p "$RUNDIR" || return 1
+	[ -d "$RUNDIR" ] && [ ! -L "$RUNDIR" ] || return 1
+	chmod 700 "$RUNDIR" || return 1
+	procd_open_instance
+	procd_set_param command "$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE"
+	procd_set_param respawn 3600 5 5
+	procd_close_instance
+}

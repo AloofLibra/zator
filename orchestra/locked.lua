@@ -660,6 +660,11 @@ function circular_locked(ctx, desync)
 
   local verdict = VERDICT_PASS
   DLOG("circular_locked: current strategy "..hrec.nstrategy.." profile="..profile)
+  -- C records immutable per-flow attribution; this hook does not choose strategy.
+  if flow_strategy_assign then
+    local selected = flow_strategy_assign(desync, hrec.nstrategy, scope)
+    if selected then hrec.nstrategy = selected end
+  end
   while true do
     local instance = plan_instance_pop(desync)
     if not instance then break end

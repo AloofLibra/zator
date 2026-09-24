@@ -1732,6 +1732,11 @@ function circular_quality(ctx, desync)
         log_strategy_switch(desync, hrec._last_strategy, hrec.nstrategy)
     end
     hrec._last_strategy = hrec.nstrategy
+    -- C records immutable per-flow attribution; this hook does not choose strategy.
+    if flow_strategy_assign then
+        local selected = flow_strategy_assign(desync, hrec.nstrategy, scope)
+        if selected then hrec.nstrategy = selected end
+    end
     local verdict = VERDICT_PASS
     while true do
         local instance = plan_instance_pop(desync)

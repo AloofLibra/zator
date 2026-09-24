@@ -196,6 +196,8 @@ add('extra_strats/cache/orchestra/locked.lua', 'orchestra/locked.lua')
 for (const repoPath of walkRepo('firewall', { recursive: false })) {
   add(repoPath, repoPath, { executable: true })
 }
+add('adaptive/90-zator-adaptive-learning', 'adaptive/90-zator-adaptive-learning', { executable: true })
+add('adaptive/probe-once.sh', 'adaptive/probe-once.sh', { executable: true })
 for (const repoPath of walkRepo('data', { recursive: true })) {
   add(repoPath, repoPath)
 }
@@ -209,6 +211,9 @@ add('_payload/fake_files.tar.gz', 'fake_files.tar.gz', { cls: 'payload' })
 add('_payload/Entware/keenetic-policy.sh', 'Entware/keenetic-policy.sh', { cls: 'payload', executable: true })
 add('_payload/Entware/z2r-strategy-validator', 'Entware/z2r-strategy-validator', { cls: 'payload', executable: true })
 add('_payload/init.d/openwrt/z2r-strategy-validator', 'init.d/openwrt/z2r-strategy-validator', { cls: 'payload', executable: true })
+add('_payload/Entware/z2r-adaptive-controller', 'Entware/z2r-adaptive-controller', { cls: 'payload', executable: true })
+add('_payload/init.d/openwrt/z2r-adaptive-controller', 'init.d/openwrt/z2r-adaptive-controller', { cls: 'payload', executable: true })
+add('_payload/Entware/zapret', 'Entware/zapret', { cls: 'payload', executable: true })
 for (const name of blockcheckZ4r) {
   add(`_payload/blockcheck2.d/z4r/${name}`, `blockcheck2.d/z4r/${name}`, {
     cls: 'payload', executable: name.endsWith('.sh'),

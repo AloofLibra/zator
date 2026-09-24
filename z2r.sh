@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh adaptive_context.sh adaptive_controller.sh"
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
@@ -338,7 +338,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua strategy-validator.sh; do
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua adaptive-executor.lua strategy-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -422,6 +422,10 @@ source "$LIB_DIR/config.sh"
 
 # Общий API ручных локов стратегий
 source "$LIB_DIR/orchestra_state.sh"
+
+# Примитивы network epoch и health для adaptive controller (без автозапуска).
+source "$LIB_DIR/adaptive_context.sh"
+source "$LIB_DIR/adaptive_controller.sh"
 
 # База подсказок по стратегиям (скачивание + вывод подсказки по провайдеру)
 # Функции: update_recommendations, show_hint
@@ -605,6 +609,7 @@ RST_GUARD_LUA="$ZATOR_ROOT/lua/rst-guard.lua"
 CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
 DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
+ADAPTIVE_EXECUTOR_LUA="$ZATOR_ROOT/lua/adaptive-executor.lua"
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
@@ -643,6 +648,7 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
+  z2r_download_project_file "$ADAPTIVE_EXECUTOR_LUA" "lua/adaptive-executor.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
 }
@@ -740,7 +746,7 @@ if [ -f "$ZAPRET2_ROOT/config" ]; then
   fi
   if [ ! -s "$CIRCULAR_DETECTOR_LUA" ] || [ ! -s "$SILENT_DROP_DETECTOR_LUA" ] || \
      [ ! -s "$DNS_CLONE_LUA" ] || \
-     [ ! -s "$STRATEGY_LOCK_MANAGER_LUA" ] || [ ! -s "$STRATEGY_VALIDATOR_WORKER" ]; then
+     [ ! -s "$STRATEGY_LOCK_MANAGER_LUA" ] || [ ! -s "$ADAPTIVE_EXECUTOR_LUA" ] || [ ! -s "$STRATEGY_VALIDATOR_WORKER" ]; then
     echo "Не найдены Lua-модули circular. Пытаюсь скачать из репозитория..."
     circular_runtime_update_from_repo || true
   fi
@@ -1042,7 +1048,7 @@ get_repo() {
   else
     rst_guard_lua_update_from_repo || true
   fi
-  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ] && [ -s "$ADAPTIVE_EXECUTOR_LUA" ]; then
     :
   else
     circular_runtime_update_from_repo || return 1
@@ -1132,6 +1138,16 @@ get_repo() {
   if fwtype_nft_available; then
     sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$ZAPRET2_ROOT/config.default"
   fi
+  mkdir -p "$ZATOR_ROOT/adaptive" \
+    "$ZAPRET2_ROOT/init.d/sysv/custom.d" "$ZAPRET2_ROOT/init.d/openwrt/custom.d" || return 1
+  z2r_repo_get "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" \
+    "adaptive/90-zator-adaptive-learning" || return 1
+  z2r_repo_get "$ZATOR_ROOT/adaptive/probe-once.sh" "adaptive/probe-once.sh" || return 1
+  chmod 755 "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" "$ZATOR_ROOT/adaptive/probe-once.sh" || return 1
+  cp -f "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" \
+    "$ZAPRET2_ROOT/init.d/sysv/custom.d/90-zator-adaptive-learning" || return 1
+  cp -f "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" \
+    "$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-zator-adaptive-learning" || return 1
 # cache
 mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
@@ -1170,6 +1186,9 @@ client_scope_firewall_apply_active_config() {
 }
 
 remove_zapret() {
+ # Shadow controller has no work without nfqws2. Updates restart it from
+ # install_zapret_reboot; zapret2-only removal leaves it stopped.
+ adaptive_controller_service_action stop >/dev/null 2>&1 || true
  # Cleanup is independent of the feature flag. Prefer the active config's
  # backend; when config is already absent, clean both isolated backends.
  if [ -f "$ZAPRET2_ROOT/config" ]; then
@@ -1214,6 +1233,14 @@ zator_remove() {
   if [ ! -d "$ZATOR_ROOT" ]; then
     echo -e "${yellow}Каталог zator не существует: $ZATOR_ROOT${plain}"
     return 0
+  fi
+  if [ "${OSystem:-}" = WRT ]; then
+    /etc/init.d/z2r-adaptive-controller stop >/dev/null 2>&1 || true
+    /etc/init.d/z2r-adaptive-controller disable >/dev/null 2>&1 || true
+    rm -f /etc/init.d/z2r-adaptive-controller
+  elif [ "${hardware:-}" = keenetic ]; then
+    /opt/etc/init.d/S89z2r-adaptive-controller stop >/dev/null 2>&1 || true
+    rm -f /opt/etc/init.d/S89z2r-adaptive-controller
   fi
   strategy_validator_remove_service || true
   webui_remove || true
@@ -1519,6 +1546,27 @@ unpatch_installer_zapret() {
 
 #Запуск установочных скриптов и перезагрузка
 install_zapret_reboot() {
+ if adaptive_shadow_enabled || adaptive_learning_enabled; then
+  if [ ! -x "$ZATOR_ROOT/adaptive/bin/adaptive-controller" ]; then
+   adaptive_controller_install >/dev/null || true
+  fi
+  adaptive_controller_service_install || true
+  if [ "${OSystem:-}" = WRT ]; then
+   /etc/init.d/z2r-adaptive-controller enable >/dev/null 2>&1 || true
+  fi
+  adaptive_controller_service_action start >/dev/null 2>&1 \
+   || echo -e "${yellow}Adaptive controller не запущен: проверьте поддержку telemetry в nfqws2.${plain}"
+  if adaptive_learning_enabled; then
+   local adaptive_wait=0
+   while [ "$adaptive_wait" -lt 5 ] && [ ! -S /tmp/zator-adaptive/events.sock ]; do
+    sleep 1
+    adaptive_wait=$((adaptive_wait + 1))
+   done
+   if [ ! -S /tmp/zator-adaptive/events.sock ]; then
+    echo -e "${yellow}Learning worker не запустится: controller event socket недоступен.${plain}"
+   fi
+  fi
+ fi
  sh -i "$ZAPRET2_ROOT/install_easy.sh"
  cleanup_zapret2_init_dirs
  client_scope_firewall_apply_active_config
@@ -1600,13 +1648,29 @@ wrt_fixes() {
  if ! grep -q '^contains()' "$f"; then
   sed -i '/^\. "\$ZAPRET_BASE\/init\.d\/openwrt\/functions"/a\contains() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }' "$f" || true
  fi
+ if ! grep -q 'z2r adaptive shadow telemetry' "$f"; then
+  awk '
+   { print }
+   /^NFQWS2_OPT_BASE=/ {
+    print "# z2r adaptive shadow telemetry (opt-in; C support is checked at start)"
+    print "if [ -f \"${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-shadow.enabled\" ] && \"$NFQWS2\" --help 2>&1 | grep -q -- \"--adaptive-events=<file|unix:path>\"; then"
+    print "\tNFQWS2_OPT_BASE=\"$NFQWS2_OPT_BASE --adaptive-events=unix:/tmp/zator-adaptive/events.sock\""
+    print "fi"
+   }
+  ' "$f" >"$f.z2r_tmp" || { rm -f "$f.z2r_tmp"; mv -f "$f.z2r_bak" "$f"; return 1; }
+  mv -f "$f.z2r_tmp" "$f" && chmod 755 "$f" || return 1
+ fi
+ if ! grep -q 'z2r adaptive shadow telemetry' "$f"; then
+  echo "Не удалось встроить Adaptive shadow telemetry в init OpenWrt."
+  return 1
+ fi
  if ! sh -n "$f"; then
   echo -e "${red}Патч OpenWRT сломал синтаксис init-скрипта — откат.${plain}"
   mv -f "$f.z2r_bak" "$f"
   return 1
  fi
  rm -f "$f.z2r_bak"
- echo "Патчи OpenWRT применены (stderr->syslog, линейный contains)."
+ echo "Патчи OpenWRT применены (stderr->syslog, линейный contains, optional adaptive telemetry)."
 }
 
 #Запрос на установку 3x-ui или аналогов
@@ -2384,6 +2448,8 @@ ${Fcyan}19.${yellow} Доп. настройки (reasm, WG, QUIC-fakes, keenetic
 ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}
 ${Fcyan}21.${yellow} Управление бэкапами (создание/восстановление/удаление архивов)
 ${Fcyan}23.${yellow} Client scopes (Beta): разные стратегии разным устройствам по IP. Сейчас: ${plain}[${MENU_CLIENT_SCOPE}]${yellow}
+${Fcyan}24.${yellow} Adaptive Strategy Selection shadow (наблюдение без смены стратегии). Сейчас: ${plain}[$(adaptive_shadow_status_text)]${yellow}
+${Fcyan}25.${yellow} Learning worker / одноразовая HTTPS-проба. Сейчас: ${plain}[$(adaptive_learning_status_text)]${yellow}
 ${Fcyan}666.${yellow} Ошибки nfqws2 — журнал последнего запуска${MENU_ERR_STATE}
 ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
@@ -2426,6 +2492,16 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "23")
     toggle_client_scope_mode || true
+    pause_enter
+    ;;
+
+  "24")
+    adaptive_shadow_toggle || echo -e "${yellow}Adaptive shadow не изменён. Проверьте поддержку C telemetry и release asset для архитектуры.${plain}"
+    pause_enter
+    ;;
+
+  "25")
+    adaptive_learning_toggle || echo -e "${yellow}Learning worker не изменён. Проверьте C telemetry, strategy и mark-бит.${plain}"
     pause_enter
     ;;
 

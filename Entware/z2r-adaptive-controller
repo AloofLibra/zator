@@ -1,0 +1,78 @@
+#!/bin/sh
+
+ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+SHADOW_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-shadow.enabled"
+LEARNING_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-learning.enabled"
+BIN="$ZATOR_ROOT/adaptive/bin/adaptive-controller"
+NFQWS2="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+RUNDIR=/tmp/zator-adaptive
+SOCKET="$RUNDIR/events.sock"
+OUTPUT="$RUNDIR/shadow.tsv"
+STATE="$RUNDIR/state.tsv"
+PIDFILE="${Z2R_ADAPTIVE_PIDFILE:-/opt/var/run/z2r-adaptive-controller.pid}"
+
+controller_pid_valid()
+{
+	[ -r "$PIDFILE" ] || return 1
+	pid=$(cat "$PIDFILE" 2>/dev/null)
+	case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+	[ -r "/proc/$pid/cmdline" ] || return 1
+	first=$(tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null | sed -n '1p')
+	[ "$first" = "$BIN" ]
+}
+
+start_controller()
+{
+	[ -f "$SHADOW_ENABLED" ] || [ -f "$LEARNING_ENABLED" ] || { echo "Adaptive режим выключен."; return 0; }
+	[ -x "$BIN" ] || { echo "Не установлен adaptive-controller."; return 1; }
+	[ -x "$NFQWS2" ] || return 0
+	"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>' || return 0
+	if controller_pid_valid; then echo "Adaptive Controller уже запущен."; return 0; fi
+	rm -f "$PIDFILE"
+	[ ! -L "$RUNDIR" ] || { echo "refusing symlink runtime directory" >&2; return 1; }
+	mkdir -p "$RUNDIR" "$(dirname "$PIDFILE")" || return 1
+	[ -d "$RUNDIR" ] && [ ! -L "$RUNDIR" ] || return 1
+	chmod 700 "$RUNDIR" || return 1
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE" </dev/null >/dev/null 2>&1 &
+	elif command -v nohup >/dev/null 2>&1; then
+		nohup "$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE" </dev/null >/dev/null 2>&1 &
+	else
+		"$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE" </dev/null >/dev/null 2>&1 &
+	fi
+	pid=$!
+	sleep 1
+	kill -0 "$pid" 2>/dev/null || { echo "Adaptive Controller не запустился."; return 1; }
+	printf '%s\n' "$pid" >"$PIDFILE"
+	chmod 600 "$PIDFILE" 2>/dev/null || :
+	echo "Adaptive Controller запущен (PID $pid)."
+}
+
+stop_controller()
+{
+	if ! controller_pid_valid; then
+		rm -f "$PIDFILE"
+		echo "Adaptive shadow не запущен."
+		return 0
+	fi
+	pid=$(cat "$PIDFILE")
+	kill -TERM "$pid" 2>/dev/null || :
+	i=0
+	while [ "$i" -lt 5 ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null || :; fi
+	rm -f "$PIDFILE"
+	echo "Adaptive Controller остановлен."
+}
+
+case "$1" in
+	start) start_controller ;;
+	stop) stop_controller ;;
+	restart) stop_controller; start_controller ;;
+	status)
+		if controller_pid_valid; then echo "running (PID $(cat "$PIDFILE"))"; else echo stopped; fi
+		;;
+	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 2 ;;
+esac
