@@ -117,6 +117,23 @@ adaptive_controller_nfqws2_supports_learning() {
     "$binary" --help 2>&1 | grep -q -- '--adaptive-control=<unix_path>'
 }
 
+# The interactive menu may inherit NFQWS2_OPT from its caller, but a boot-time
+# scheduler has no such environment. Read the quoted multiline option block
+# from the active config (or its shipped default) without evaluating config
+# contents as shell code.
+adaptive_learning_load_options() {
+  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -n "${NFQWS2_OPT:-}" ] && return 0
+  if [ ! -f "$cfg" ] || [ -L "$cfg" ]; then cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"; fi
+  [ -f "$cfg" ] && [ ! -L "$cfg" ] || return 1
+  NFQWS2_OPT="$(awk '
+    /^NFQWS2_OPT="[[:space:]]*$/ { inside=1; next }
+    inside && /^"[[:space:]]*$/ { exit }
+    inside { print }
+  ' "$cfg")"
+  [ -n "$NFQWS2_OPT" ]
+}
+
 # Build a self-contained, one-profile nfqws2 config for an isolated learning
 # worker. It intentionally imports only the shared TCP/TLS strategy template
 # and blobs from production NFQWS2_OPT; production Lua lock/detector modules
@@ -132,7 +149,7 @@ adaptive_learning_config_write() {
   [ "$event_socket" = /tmp/zator-adaptive/events.sock ] || return 2
   [ "$strategy" -gt 0 ] && [ "${#strategy}" -le 10 ] || return 2
   [ "$qnum" -ge 1 ] && [ "$qnum" -le 65535 ] || return 2
-  [ -n "${NFQWS2_OPT:-}" ] || return 1
+  adaptive_learning_load_options || return 1
   mkdir -p /tmp/zator-adaptive-learning || return 1
   [ ! -L /tmp/zator-adaptive-learning ] || return 1
   chmod 700 /tmp/zator-adaptive-learning || return 1
@@ -254,6 +271,7 @@ adaptive_learning_schedule_next_host() {
 }
 
 adaptive_learning_strategy_allowlist() {
+  adaptive_learning_load_options || return 1
   printf '%s\n' "${NFQWS2_OPT:-}" | awk '
     /^--template=z2r_tcp_tls_common([[:space:]]|$)/ { inside=1; found=1; next }
     inside && /^--new([[:space:]]|$)/ { exit }
@@ -681,7 +699,7 @@ adaptive_learning_status_text() {
   fi
   strategy_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-learning.strategy"
   IFS= read -r strategy <"$strategy_file" 2>/dev/null || strategy='?'
-  printf 'включён, strategy %s' "$strategy"
+  printf 'включён, strategy %s, фоновые scheduler-пробы: до 1 шага/24 ч' "$strategy"
 }
 
 adaptive_learning_toggle() {
@@ -691,7 +709,7 @@ adaptive_learning_toggle() {
   strategy_file="$root/extra_strats/cache/adaptive-learning.strategy"
 
   if adaptive_learning_enabled; then
-    read -r -p "Learning активен: 1 — сменить strategy, 2 — сравнить candidates, 3 — одна due-проба (не чаще раза в 24 ч), 0 — выключить: " action
+    read -r -p "Learning активен (фоновые пробы: до 1 шага/24 ч): 1 — сменить strategy, 2 — сравнить candidates, 3 — выполнить due-пробу сейчас, 0 — выключить: " action
     case "$action" in
       1)
         read -r -p "Номер TCP/TLS strategy: " strategy
@@ -808,7 +826,8 @@ adaptive_learning_toggle() {
     return 1
   fi
   echo "Learning worker запущен для strategy $strategy. Одна HTTPS проба: $root/adaptive/probe-once.sh example.com"
-  echo "Для bounded comparison используйте пункт 2, для одной due scheduler-пробы — пункт 3."
+  echo "Фоновый scheduler выполняет не более одного bounded шага за 24 часа; для ручного запуска due-задачи используйте пункт 3."
+  echo "Для bounded comparison используйте пункт 2."
 }
 
 adaptive_shadow_status_text() {

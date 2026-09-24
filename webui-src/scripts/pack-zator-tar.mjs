@@ -198,6 +198,7 @@ for (const repoPath of walkRepo('firewall', { recursive: false })) {
 }
 add('adaptive/90-zator-adaptive-learning', 'adaptive/90-zator-adaptive-learning', { executable: true })
 add('adaptive/probe-once.sh', 'adaptive/probe-once.sh', { executable: true })
+add('adaptive/scheduler-loop.sh', 'adaptive/scheduler-loop.sh', { executable: true })
 for (const repoPath of walkRepo('data', { recursive: true })) {
   add(repoPath, repoPath)
 }

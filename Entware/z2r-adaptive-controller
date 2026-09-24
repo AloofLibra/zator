@@ -10,6 +10,8 @@ SOCKET="$RUNDIR/events.sock"
 OUTPUT="$RUNDIR/shadow.tsv"
 STATE="$RUNDIR/state.tsv"
 PIDFILE="${Z2R_ADAPTIVE_PIDFILE:-/opt/var/run/z2r-adaptive-controller.pid}"
+SCHEDULER="$ZATOR_ROOT/adaptive/scheduler-loop.sh"
+SCHEDULER_PIDFILE="${Z2R_ADAPTIVE_SCHEDULER_PIDFILE:-/opt/var/run/z2r-adaptive-scheduler.pid}"
 
 controller_pid_valid()
 {
@@ -21,13 +23,58 @@ controller_pid_valid()
 	[ "$first" = "$BIN" ]
 }
 
+scheduler_pid_valid()
+{
+	[ -r "$SCHEDULER_PIDFILE" ] || return 1
+	pid=$(cat "$SCHEDULER_PIDFILE" 2>/dev/null)
+	case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+	[ -r "/proc/$pid/cmdline" ] || return 1
+	args=$(tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null)
+	first=$(printf '%s\n' "$args" | sed -n '1p')
+	second=$(printf '%s\n' "$args" | sed -n '2p')
+	[ "$first" = /bin/sh ] && [ "$second" = "$SCHEDULER" ]
+}
+
+start_scheduler()
+{
+	[ -f "$LEARNING_ENABLED" ] || { stop_scheduler; return 0; }
+	[ -x "$SCHEDULER" ] || { echo "Не установлен adaptive scheduler runner." >&2; return 1; }
+	if scheduler_pid_valid; then return 0; fi
+	rm -f "$SCHEDULER_PIDFILE"
+	/bin/sh "$SCHEDULER" </dev/null >/dev/null 2>&1 &
+	pid=$!
+	sleep 1
+	kill -0 "$pid" 2>/dev/null || { echo "Adaptive scheduler не запустился." >&2; return 1; }
+	printf '%s\n' "$pid" >"$SCHEDULER_PIDFILE" || return 1
+	chmod 600 "$SCHEDULER_PIDFILE" 2>/dev/null || :
+}
+
+stop_scheduler()
+{
+	if scheduler_pid_valid; then
+		pid=$(cat "$SCHEDULER_PIDFILE")
+		kill -TERM "$pid" 2>/dev/null || :
+		i=0
+		while [ "$i" -lt 180 ] && kill -0 "$pid" 2>/dev/null; do
+			sleep 1
+			i=$((i + 1))
+		done
+		if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || :; fi
+	fi
+	rm -f "$SCHEDULER_PIDFILE"
+}
+
 start_controller()
 {
 	[ -f "$SHADOW_ENABLED" ] || [ -f "$LEARNING_ENABLED" ] || { echo "Adaptive режим выключен."; return 0; }
 	[ -x "$BIN" ] || { echo "Не установлен adaptive-controller."; return 1; }
 	[ -x "$NFQWS2" ] || return 0
 	"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>' || return 0
-	if controller_pid_valid; then echo "Adaptive Controller уже запущен."; return 0; fi
+	if controller_pid_valid; then
+		start_scheduler || return 1
+		echo "Adaptive Controller уже запущен."
+		return 0
+	fi
 	rm -f "$PIDFILE"
 	[ ! -L "$RUNDIR" ] || { echo "refusing symlink runtime directory" >&2; return 1; }
 	mkdir -p "$RUNDIR" "$(dirname "$PIDFILE")" || return 1
@@ -45,11 +92,13 @@ start_controller()
 	kill -0 "$pid" 2>/dev/null || { echo "Adaptive Controller не запустился."; return 1; }
 	printf '%s\n' "$pid" >"$PIDFILE"
 	chmod 600 "$PIDFILE" 2>/dev/null || :
+	start_scheduler || return 1
 	echo "Adaptive Controller запущен (PID $pid)."
 }
 
 stop_controller()
 {
+	stop_scheduler
 	if ! controller_pid_valid; then
 		rm -f "$PIDFILE"
 		echo "Adaptive shadow не запущен."

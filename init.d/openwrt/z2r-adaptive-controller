@@ -13,6 +13,7 @@ RUNDIR=/tmp/zator-adaptive
 SOCKET="$RUNDIR/events.sock"
 OUTPUT="$RUNDIR/shadow.tsv"
 STATE="$RUNDIR/state.tsv"
+SCHEDULER="$ZATOR_ROOT/adaptive/scheduler-loop.sh"
 
 start_service()
 {
@@ -28,4 +29,10 @@ start_service()
 	procd_set_param command "$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE"
 	procd_set_param respawn 3600 5 5
 	procd_close_instance
+	if [ -f "$LEARNING_ENABLED" ] && [ -x "$SCHEDULER" ]; then
+		procd_open_instance scheduler
+		procd_set_param command /bin/sh "$SCHEDULER"
+		procd_set_param respawn 3600 5 5
+		procd_close_instance
+	fi
 }

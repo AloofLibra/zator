@@ -1558,12 +1558,16 @@ The step brackets its candidate probe with successful no-strategy controls,
 waits for the exact C-settled probe id, then restores the learning worker's
 prior strategy. One invocation is capped at three HTTPS requests (two controls
 and one candidate), and it stops when either control cannot confirm the target.
-The runner reserves one scheduler step per rolling 24 hours in a compact
-timestamp under the zator cache before making any request. Reservation is
-atomic across callers and remains consumed if the step fails. Missing,
-malformed, or backwards system time makes the scheduler step fail closed.
-Automatic wake-up remains Phase 8 work; there is no periodic polling or
-background traffic generator yet.
+When opt-in learning is enabled, a small shell sidecar wakes the scheduler once
+per hour while the C controller and isolated learning worker are available.
+It uses the active config's extracted TLS strategy plan, so it does not depend
+on an interactive menu environment. The runner reserves one scheduler step
+per rolling 24 hours in a compact timestamp under the zator cache before
+making any request. Reservation is atomic across callers and remains consumed
+if the step fails. Missing, malformed, or backwards system time makes the
+scheduler step fail closed. The sidecar exits when learning is disabled; the
+controller remains the source of task selection, while the shell runs bounded
+HTTPS controls and probes.
 
 ---
 

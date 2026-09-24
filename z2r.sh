@@ -1143,7 +1143,9 @@ get_repo() {
   z2r_repo_get "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" \
     "adaptive/90-zator-adaptive-learning" || return 1
   z2r_repo_get "$ZATOR_ROOT/adaptive/probe-once.sh" "adaptive/probe-once.sh" || return 1
-  chmod 755 "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" "$ZATOR_ROOT/adaptive/probe-once.sh" || return 1
+  z2r_repo_get "$ZATOR_ROOT/adaptive/scheduler-loop.sh" "adaptive/scheduler-loop.sh" || return 1
+  chmod 755 "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" "$ZATOR_ROOT/adaptive/probe-once.sh" \
+    "$ZATOR_ROOT/adaptive/scheduler-loop.sh" || return 1
   cp -f "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" \
     "$ZAPRET2_ROOT/init.d/sysv/custom.d/90-zator-adaptive-learning" || return 1
   cp -f "$ZATOR_ROOT/adaptive/90-zator-adaptive-learning" \
@@ -1547,6 +1549,10 @@ unpatch_installer_zapret() {
 #Запуск установочных скриптов и перезагрузка
 install_zapret_reboot() {
  if adaptive_shadow_enabled || adaptive_learning_enabled; then
+  if adaptive_learning_enabled; then
+   z2r_repo_get "$ZATOR_ROOT/adaptive/scheduler-loop.sh" "adaptive/scheduler-loop.sh" || true
+   chmod 755 "$ZATOR_ROOT/adaptive/scheduler-loop.sh" 2>/dev/null || true
+  fi
   if [ ! -x "$ZATOR_ROOT/adaptive/bin/adaptive-controller" ]; then
    adaptive_controller_install >/dev/null || true
   fi
