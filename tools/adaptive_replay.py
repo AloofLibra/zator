@@ -67,9 +67,11 @@ def replay_controller_output(stream):
         if not header_seen:
             raise ValueError(f"line {line_no}: unsupported PROBE_OUTCOME record")
         try:
-            if ((len(cols) == 36 and cols[1] == "v4") or
+            if ((len(cols) == 38 and cols[1] == "v5") or
+                    (len(cols) == 36 and cols[1] == "v4") or
                     (len(cols) == 35 and cols[1] == "v3")):
-                has_redirect_host = cols[1] == "v4"
+                has_redirect_host = cols[1] in {"v4", "v5"}
+                has_body_signature = cols[1] == "v5"
                 probe = {
                     "probe_id": int(cols[2]), "outcome": cols[3], "reason": cols[4],
                     "profile_id": int(cols[5]), "strategy_id": int(cols[6]),
@@ -92,6 +94,8 @@ def replay_controller_output(stream):
                     },
                     "termination_reason": cols[33], "provider_key": cols[34],
                     "redirect_host": cols[35] if has_redirect_host else "none",
+                    "body_sample_bytes": int(cols[36]) if has_body_signature else 0,
+                    "block_body_marker": cols[37] if has_body_signature else "none",
                 }
                 if not (probe["provider_key"] == "unknown" or
                         (probe["provider_key"].startswith("asn:") and
@@ -187,6 +191,21 @@ def replay_controller_output(stream):
                 not redirect_host.startswith(".") and not redirect_host.endswith(".") and
                 ".." not in redirect_host):
             raise ValueError(f"line {line_no}: invalid redirect host")
+        if (not 0 <= probe.get("body_sample_bytes", 0) <= 16384 or
+                probe.get("block_body_marker", "none") not in {
+                    "none", "eais.rkn.gov.ru", "vigruzki.rkn.gov.ru",
+                    "blocklist.rkn.gov.ru", "reestr.rublacklist.net", "nap.rkn.gov.ru",
+                    "zapret-info.gov.ru", "blacklist.rkn.gov.ru", "rkn.megafon.ru",
+                    "blocked.beeline.ru", "block.beeline.ru", "blocked.tele2.ru",
+                    "restriction.tele2.ru", "blocked.yota.ru", "blocking.ttk.ru",
+                    "block.ttk.ru", "blocked.domru.ru", "block.domru.ru",
+                    "blocked.2kom.ru", "blocked.ugmk-telecom.ru",
+                }):
+            raise ValueError(f"line {line_no}: invalid bounded body signature")
+        has_body_marker = probe.get("block_body_marker", "none") != "none"
+        if (has_body_marker != (probe["reason"] == "KNOWN_BLOCK_BODY_MARKER") or
+                (has_body_marker and probe.get("body_sample_bytes", 0) == 0)):
+            raise ValueError(f"line {line_no}: inconsistent bounded body marker")
         if metrics is not None and any(value < 0 for name, value in metrics.items()
                                        if name.endswith("packets") or name.endswith("bytes") or
                                        name in {"clienthello_count", "clienthello_retransmissions"}):
@@ -259,6 +278,19 @@ def replay_controller_output(stream):
                 "network_epoch": probe["network_epoch"],
                 "strategy_id": probe["strategy_id"],
                 "redirect_host": probe.get("redirect_host", "none"),
+                "bracketed_strategy_failure": probe["probe_id"] in bracketed_probe_ids,
+                "failure_votes": 0,
+            }, separators=(",", ":")))
+        elif probe["reason"] == "KNOWN_BLOCK_BODY_MARKER":
+            print(json.dumps({
+                "event": "EXPLICIT_BLOCK_BODY_MARKER",
+                "evidence": "EXACT_KNOWN_ISP_DOMAIN_IN_BOUNDED_BODY_SAMPLE",
+                "probe_id": probe["probe_id"], "flow_id": probe["flow_id"],
+                "hostname": probe["hostname"], "provider_key": probe["provider_key"],
+                "network_epoch": probe["network_epoch"],
+                "strategy_id": probe["strategy_id"],
+                "body_sample_bytes": probe.get("body_sample_bytes", 0),
+                "marker": probe.get("block_body_marker", "none"),
                 "bracketed_strategy_failure": probe["probe_id"] in bracketed_probe_ids,
                 "failure_votes": 0,
             }, separators=(",", ":")))

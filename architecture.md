@@ -1321,9 +1321,12 @@ this range does not overlap the kernel's configured ephemeral range; steering
 is refused when the range cannot be verified. It has a 15-second request bound, does not retry
 or schedule background traffic, and requires the opt-in marker and controller
 socket. Before curl starts, it registers a bounded probe lease with the
-resident controller using the current C worker strategy and generation; after
-curl exits it reports its exit code, HTTP status, and elapsed time over the
-same private socket, including when curl fails. The controller joins this
+resident controller using the current C worker strategy and generation. It
+issues a GET with a 16 KiB body-sample cap. The driver streams the body through
+a FIFO capped by `head -c`, so the cap still holds when a server ignores the
+requested byte range. It sends only the bounded hex sample, redirect hostname,
+curl status, and elapsed time to the controller, including when curl fails. The
+controller joins this
 report with one C `FLOW_END` using learning scope, normalized host, source
 port, profile, actual strategy, and generation. It accepts either arrival
 order, requires one unique `FLOW_START` candidate and a one-second quiet
@@ -1433,16 +1436,21 @@ There are two additional mechanics to account for in that integration:
 * probeability;
 * adaptive retry.
 
-The first active comparison runner uses one HTTPS HEAD request per candidate,
+The first active comparison runner uses one HTTPS GET per candidate,
 correlated to exactly one C learning flow. Settled `PROBE_OUTCOME` rows are
-written into the bounded controller journal as versioned v4 records with the
+written into the bounded controller journal as versioned v5 records with the
 probe id, outcome, reason, assigned strategy/generation, host, source port,
 HTTP result, correlated flow id, network epoch/health and context usability.
 When C flow correlation succeeds, the record also carries raw packet/byte
 counters, server/RST/FIN flags, ClientHello retransmissions and termination
 reason. The PC analyzer emits these as observed facts; they are diagnostic and
 does not turn them or curl error classes (DNS, connect, timeout, TLS, receive)
-into strategy failure votes. For HTTP redirects, curl supplies the normalized
+into strategy failure votes. C scans the capped body sample for exact
+provider/RKN domain markers migrated from the legacy detector; generic phrases
+are excluded. A matching no-strategy control stops the candidate comparison,
+while a candidate match is negative evidence only when bracketed by successful
+controls. The journal stores the matched marker and sample length, never the
+body itself. For HTTP redirects, curl supplies the normalized
 `Location` hostname to C with the result; C stores it on the matching probe
 lease and includes it in the same correlated outcome row. Replay reports a
 redirect divergence only when both successful no-strategy controls agree and a
@@ -1484,8 +1492,8 @@ unknowns, controls, comparative evidence, redirect divergences, and
 host/strategy probeability by
 network epoch; it also reads earlier probe row versions. Unknown outcomes do
 not become failures, and the analyzer reports zero general failure votes
-because this probe has no trusted explicit-block classifier. Explicit block
-body signatures and other ISP block endpoints remain open Phase 6 work.
+because this probe has no general explicit-block classifier. Generic body
+signatures and other ISP endpoints remain open Phase 6 work.
 
 ---
 
@@ -1505,7 +1513,7 @@ label clears a previously detected ASN key. The key expires after 24 hours;
 missing or stale identity is `unknown`, avoiding indefinite reuse after a WAN
 change without adding periodic network lookups.
 The key is context metadata supplied to the controller's active probe lease,
-then written in `PROBE_OUTCOME v3`; flow identity and transport observations
+then written in `PROBE_OUTCOME v5`; flow identity and transport observations
 remain C-owned. The resident C controller keeps bounded global and ASN-scoped
 counters for real attempts, confirmed successes, unknown outcomes, distinct
 hosts tested, and distinct hosts with confirmed success. Provider state is

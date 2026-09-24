@@ -23,6 +23,7 @@
  * Reads C-owned nfqws2 TSV v2/v3 from stdin and never changes production policy.
  */
 #define MAX_LINE 2048
+#define MAX_PROBE_RESULT_LINE (40U * 1024U)
 #define MAX_FIELDS 32
 #define MAX_OPEN_FLOWS 256
 #define MAX_CONTEXTS 128
@@ -39,6 +40,7 @@
 #define STATE_TTL_MS (7ULL * 24ULL * 60ULL * 60ULL * 1000ULL)
 #define CONTROL_BRACKET_MAX_MS 120000ULL
 #define CONTROL_STRATEGY_ID UINT32_MAX
+#define PROBE_BODY_MAX 16384U
 
 struct flow_state {
 	bool used, started, assigned, strategy_conflict, identity_conflict;
@@ -104,6 +106,9 @@ struct probe_state {
 	bool network_context_usable;
 	char host[HOST_CAP], termination_reason[32];
 	char redirect_host[HOST_CAP];
+	char block_body_marker[64];
+	uint8_t body_sample[PROBE_BODY_MAX];
+	uint32_t body_sample_len;
 	char provider_key[65];
 	char transport[8], family[8];
 };
@@ -128,6 +133,7 @@ static struct probe_tombstone probe_tombstones[16];
 static unsigned probe_tombstone_next;
 
 static bool provider_key_valid(const char *key);
+static bool probe_body_hex_decode(const char *hex, uint8_t *body, uint32_t *body_len);
 
 #define MAX_OUTPUT_BYTES (256U * 1024U)
 #define MAX_STATE_BYTES (128U * 1024U)
@@ -903,13 +909,13 @@ static bool probe_flow_id_completed(uint64_t flow_id)
 static void probe_emit_outcome(const char *outcome, const char *reason)
 {
 	struct probe_state *p = &active_probe;
-	printf("PROBE_OUTCOME\tv4\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
+	printf("PROBE_OUTCOME\tv5\t%" PRIu64 "\t%s\t%s\t%u\t%u\t%" PRIu64
 		"\t%s\t%u\t%u\t%u\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%s\t%s\t%s\t%u\t%u\t%u"
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
-		"\t%s\t%s\t%s\n",
+		"\t%s\t%s\t%s\t%u\t%s\n",
 		p->id, outcome, reason, p->profile, p->strategy, p->generation, p->host,
 		p->source_port, p->curl_rc, p->http_status, p->elapsed_ms, p->flow_id,
 		p->network_epoch, p->transport[0] ? p->transport : "tcp",
@@ -921,7 +927,9 @@ static void probe_emit_outcome(const char *outcome, const char *reason)
 		p->clienthello_count, p->clienthello_retransmissions,
 		p->termination_reason[0] ? p->termination_reason : "unknown",
 		p->provider_key[0] ? p->provider_key : "unknown",
-		p->redirect_host[0] ? p->redirect_host : "none");
+		p->redirect_host[0] ? p->redirect_host : "none",
+		p->body_sample_len,
+		p->block_body_marker[0] ? p->block_body_marker : "none");
 	/* The operator runner consumes this result by probe id before it can
 	 * launch another lease, so make the completed C-owned record visible now. */
 	(void)fflush(controller_output ? controller_output : stdout);
@@ -941,6 +949,49 @@ static bool known_block_redirect_host(const char *host)
 	return false;
 }
 
+static bool domain_byte(unsigned char c)
+{
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '.' || c == '-';
+}
+
+static bool probe_body_has_marker(const uint8_t *body, size_t body_len,
+		const char *marker)
+{
+	size_t i, j, marker_len = strlen(marker);
+	if (!marker_len || marker_len > body_len) return false;
+	for (i = 0; i <= body_len - marker_len; i++) {
+		for (j = 0; j < marker_len; j++) {
+			unsigned char c = body[i + j];
+			if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+			if (c != (unsigned char)marker[j]) break;
+		}
+		if (j != marker_len || (i && domain_byte(body[i - 1])) ||
+			(i + marker_len < body_len && domain_byte(body[i + marker_len]))) continue;
+		return true;
+	}
+	return false;
+}
+
+static bool probe_block_body_marker(struct probe_state *p)
+{
+	static const char *const markers[] = {
+		"eais.rkn.gov.ru", "vigruzki.rkn.gov.ru", "blocklist.rkn.gov.ru",
+		"reestr.rublacklist.net", "nap.rkn.gov.ru", "zapret-info.gov.ru",
+		"blacklist.rkn.gov.ru", "rkn.megafon.ru", "blocked.beeline.ru",
+		"block.beeline.ru", "blocked.tele2.ru", "restriction.tele2.ru",
+		"blocked.yota.ru", "blocking.ttk.ru", "block.ttk.ru",
+		"blocked.domru.ru", "block.domru.ru", "blocked.2kom.ru",
+		"blocked.ugmk-telecom.ru"
+	};
+	size_t i;
+	for (i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
+		if (probe_body_has_marker(p->body_sample, p->body_sample_len, markers[i]))
+			return copy_field(p->block_body_marker, sizeof(p->block_body_marker), markers[i]);
+	}
+	return false;
+}
+
 static bool provider_key_valid(const char *key)
 {
 	size_t i, n = strlen(key);
@@ -949,6 +1000,29 @@ static bool provider_key_valid(const char *key)
 	if (strncmp(key, "asn:", 4) || n < 5 || n > 14 || key[4] < '1' || key[4] > '9')
 		return false;
 	for (i = 4; i < n; i++) if (key[i] < '0' || key[i] > '9') return false;
+	return true;
+}
+
+static bool probe_body_hex_decode(const char *hex, uint8_t *body, uint32_t *body_len)
+{
+	size_t i, n;
+	if (!hex || !body || !body_len) return false;
+	n = strlen(hex);
+	if ((n & 1U) || n > (size_t)PROBE_BODY_MAX * 2U) return false;
+	for (i = 0; i < n / 2; i++) {
+		unsigned char hi = (unsigned char)hex[i * 2], lo = (unsigned char)hex[i * 2 + 1];
+		unsigned high, low;
+		if (hi >= '0' && hi <= '9') high = hi - '0';
+		else if (hi >= 'a' && hi <= 'f') high = hi - 'a' + 10U;
+		else if (hi >= 'A' && hi <= 'F') high = hi - 'A' + 10U;
+		else return false;
+		if (lo >= '0' && lo <= '9') low = lo - '0';
+		else if (lo >= 'a' && lo <= 'f') low = lo - 'a' + 10U;
+		else if (lo >= 'A' && lo <= 'F') low = lo - 'A' + 10U;
+		else return false;
+		body[i] = (uint8_t)((high << 4) | low);
+	}
+	*body_len = (uint32_t)(n / 2);
 	return true;
 }
 
@@ -1340,13 +1414,16 @@ static void probe_record_comparison_candidate(const struct probe_state *p,
 static void probe_maybe_finalize(uint64_t now, bool expired)
 {
 	struct probe_state *p = &active_probe;
-	bool valid, success, explicit_block;
+	bool valid, success, explicit_block, explicit_redirect, explicit_body;
 	int candidate_index = -1;
 	if (!p->active) return;
 	if (!expired && !(p->result_seen && p->flow_seen && now >= p->join_ready_ms)) return;
 	valid = p->result_seen && p->flow_seen && !p->flow_ambiguous;
-	explicit_block = valid && p->curl_rc == 0 && p->http_status >= 300 &&
+	explicit_redirect = valid && p->curl_rc == 0 && p->http_status >= 300 &&
 		p->http_status < 400 && known_block_redirect_host(p->redirect_host);
+	explicit_body = valid && p->curl_rc == 0 && p->http_status >= 100 &&
+		p->http_status <= 599 && probe_block_body_marker(p);
+	explicit_block = explicit_redirect || explicit_body;
 	success = valid && p->curl_rc == 0 && p->http_status >= 100 && p->http_status <= 599 &&
 		!explicit_block;
 	if (p->strategy != CONTROL_STRATEGY_ID) candidate_index = probe_record_attempt(now);
@@ -1355,17 +1432,19 @@ static void probe_maybe_finalize(uint64_t now, bool expired)
 	if (p->strategy == CONTROL_STRATEGY_ID) {
 		probe_record_control_result(p, success, now);
 		probe_emit_outcome(success ? "CONTROL_SUCCESS" : "CONTROL_UNKNOWN",
-		success ? "NO_STRATEGY_HTTP_RESPONSE" : explicit_block ? "KNOWN_BLOCK_REDIRECT" :
+		success ? "NO_STRATEGY_HTTP_RESPONSE" : explicit_redirect ? "KNOWN_BLOCK_REDIRECT" :
+			(explicit_body ? "KNOWN_BLOCK_BODY_MARKER" :
 			(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
-			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE")));
+			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE"))));
 	} else if (success) {
 		probe_record_active_success(now);
 		probe_emit_outcome("STRONG_SUCCESS", "HTTP_RESPONSE_AND_C_FLOW");
 	} else {
 		probe_record_comparison_candidate(p, candidate_index, now);
-		probe_emit_outcome("UNKNOWN", explicit_block ? "KNOWN_BLOCK_REDIRECT" :
+		probe_emit_outcome("UNKNOWN", explicit_redirect ? "KNOWN_BLOCK_REDIRECT" :
+			(explicit_body ? "KNOWN_BLOCK_BODY_MARKER" :
 			(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
-			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE")));
+			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE"))));
 	}
 	if (p->flow_seen && p->flow_id)
 		completed_probe_flows[completed_probe_flow_next++ %
@@ -2080,11 +2159,15 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 		return true;
 	}
 	if (((n == 6 && !strcmp(f[0], "PROBE_RESULT") && !strcmp(f[1], "v1")) ||
-		(n == 7 && !strcmp(f[0], "PROBE_RESULT") && !strcmp(f[1], "v2")))) {
-		bool has_redirect = n == 7;
+		(n == 7 && !strcmp(f[0], "PROBE_RESULT") && !strcmp(f[1], "v2")) ||
+		(n == 8 && !strcmp(f[0], "PROBE_RESULT") && !strcmp(f[1], "v3")))) {
+		bool has_redirect = n >= 7, has_body = n == 8;
+		uint8_t decoded_body[PROBE_BODY_MAX];
+		uint32_t decoded_body_len = 0;
 		if (!parse_u64(f[2], &a) || !a || !parse_u64(f[3], &b) || b > 255 ||
 			!parse_u64(f[4], &c) || c > 599 || !parse_u64(f[5], &d) ||
-			(has_redirect && strcmp(f[6], "none") && !probe_host_valid(f[6]))) {
+			(has_redirect && strcmp(f[6], "none") && !probe_host_valid(f[6])) ||
+			(has_body && !probe_body_hex_decode(f[7], decoded_body, &decoded_body_len))) {
 			controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tERR\tinvalid\n");
 			return true;
 		}
@@ -2096,7 +2179,9 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 			if (active_probe.curl_rc != b || active_probe.http_status != c ||
 				active_probe.elapsed_ms != d ||
 				(has_redirect && strcmp(active_probe.redirect_host,
-					!strcmp(f[6], "none") ? "" : f[6])))
+					!strcmp(f[6], "none") ? "" : f[6])) ||
+				(has_body && (active_probe.body_sample_len != decoded_body_len ||
+					memcmp(active_probe.body_sample, decoded_body, decoded_body_len))))
 				controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tERR\tconflict\n");
 			else controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tOK\tduplicate\n");
 			return true;
@@ -2109,6 +2194,10 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 			!copy_field(active_probe.redirect_host, sizeof(active_probe.redirect_host), f[6])) {
 			controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tERR\tinvalid\n");
 			return true;
+		}
+		if (has_body) {
+			memcpy(active_probe.body_sample, decoded_body, decoded_body_len);
+			active_probe.body_sample_len = decoded_body_len;
 		}
 		controller_reply(fd, peer, peer_len, "ACK\tPROBE_RESULT\tOK\n");
 		probe_maybe_finalize(now, false);
@@ -2253,13 +2342,16 @@ static int probe_begin_client(int argc, char **argv)
 
 static int probe_result_client(int argc, char **argv)
 {
-	char request[512], reply[160], *end;
+	char request[MAX_PROBE_RESULT_LINE], reply[160], *end;
 	unsigned long long id, elapsed;
 	unsigned long curl_rc, http_status;
 	const char *redirect_host = "none";
-	bool v2 = argc == 8;
+	const char *body_hex = "";
+	bool v2 = argc >= 8, v3 = argc == 9;
+	uint8_t body[PROBE_BODY_MAX];
+	uint32_t body_len;
 	int n;
-	if (argc != 7 && !v2) return 2;
+	if (argc != 7 && argc != 8 && argc != 9) return 2;
 	id = strtoull(argv[3], &end, 10); if (!argv[3][0] || *end || !id) return 2;
 	curl_rc = strtoul(argv[4], &end, 10); if (!argv[4][0] || *end || curl_rc > 255) return 2;
 	http_status = strtoul(argv[5], &end, 10); if (!argv[5][0] || *end || http_status > 599) return 2;
@@ -2267,7 +2359,12 @@ static int probe_result_client(int argc, char **argv)
 	if (v2) {
 		if (strcmp(argv[7], "none") && !probe_host_valid(argv[7])) return 2;
 		redirect_host = argv[7];
-		n = snprintf(request, sizeof(request), "PROBE_RESULT\tv2\t%llu\t%lu\t%lu\t%llu\t%s\n",
+		if (v3) {
+			body_hex = argv[8];
+			if (!probe_body_hex_decode(body_hex, body, &body_len)) return 2;
+			n = snprintf(request, sizeof(request), "PROBE_RESULT\tv3\t%llu\t%lu\t%lu\t%llu\t%s\t%s\n",
+				id, curl_rc, http_status, elapsed, redirect_host, body_hex);
+		} else n = snprintf(request, sizeof(request), "PROBE_RESULT\tv2\t%llu\t%lu\t%lu\t%llu\t%s\n",
 			id, curl_rc, http_status, elapsed, redirect_host);
 	} else n = snprintf(request, sizeof(request), "PROBE_RESULT\tv1\t%llu\t%lu\t%lu\t%llu\n",
 		id, curl_rc, http_status, elapsed);
@@ -2290,7 +2387,7 @@ static int run_stdin(void)
 	uint64_t last_checkpoint = monotonic_ms();
 	if (controller_state_path && !restore_state(controller_state_path))
 		fprintf(stderr, "adaptive_controller: state checkpoint discarded\n");
-	puts("# ADAPTIVE_CONTROLLER_OUTPUT v4: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host");
+	puts("# ADAPTIVE_CONTROLLER_OUTPUT v5: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host body_sample_bytes block_body_marker");
 	while (fgets(line, sizeof(line), stdin)) {
 		line_no++;
 		if (!strchr(line, '\n') && !feof(stdin)) {
@@ -2325,7 +2422,7 @@ static int run_socket(const char *path)
 	int fd, old_umask, probe_fd;
 	struct sockaddr_un addr;
 	struct stat before, current;
-	char line[MAX_LINE];
+	char line[MAX_PROBE_RESULT_LINE];
 	unsigned long line_no = 0;
 	uint64_t last_checkpoint = monotonic_ms();
 	struct sigaction sa;
@@ -2405,7 +2502,7 @@ static int run_socket(const char *path)
 	if (!next_probe_id) next_probe_id = 1;
 	if (controller_state_path && !restore_state(controller_state_path))
 		fprintf(stderr, "adaptive_controller: state checkpoint discarded\n");
-	puts("# ADAPTIVE_CONTROLLER_OUTPUT v4: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host");
+	puts("# ADAPTIVE_CONTROLLER_OUTPUT v5: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host body_sample_bytes block_body_marker");
 	while (!controller_stopping) {
 		ssize_t n;
 		recv_timeout.tv_sec = 30;
@@ -2484,7 +2581,7 @@ int main(int argc, char **argv)
 	if ((argc == 7 || argc == 8) && !strcmp(argv[1], "--next-candidate"))
 		return next_candidate_client(argc, argv);
 	if ((argc == 8 || argc == 9) && !strcmp(argv[1], "--probe-begin")) return probe_begin_client(argc, argv);
-	if ((argc == 7 || argc == 8) && !strcmp(argv[1], "--probe-result")) return probe_result_client(argc, argv);
+	if ((argc >= 7 && argc <= 9) && !strcmp(argv[1], "--probe-result")) return probe_result_client(argc, argv);
 	if (argc == 3 && !strcmp(argv[1], "--get-candidate"))
 		return get_worker_candidate(argv[2]);
 	if (argc == 5 && !strcmp(argv[1], "--set-candidate")) {
@@ -2505,7 +2602,7 @@ int main(int argc, char **argv)
 		puts("       adaptive-controller --set-candidate /worker.sock profile strategy");
 		puts("       adaptive-controller --get-candidate /worker.sock");
 		puts("       adaptive-controller --probe-begin /controller.sock host source_port profile strategy generation [provider_key]");
-		puts("       adaptive-controller --probe-result /controller.sock probe_id curl_rc http_status elapsed_ms [redirect_host]");
+		puts("       adaptive-controller --probe-result /controller.sock probe_id curl_rc http_status elapsed_ms [redirect_host [body_hex]]");
 		puts("       adaptive-controller --next-candidate /controller.sock host profile budget [provider_key] id[,id...]");
 		puts("candidate selection is learning-only, max 64 candidates and 1024 settled probe attempts");
 		puts("limits: 256 open flows, 128 contexts, 384 candidates, 128 provider priors, 512 host observations; 7-day TTL");
