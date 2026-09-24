@@ -1445,9 +1445,10 @@ When C flow correlation succeeds, the record also carries raw packet/byte
 counters, server/RST/FIN flags, ClientHello retransmissions and termination
 reason. The PC analyzer emits these as observed facts; they are diagnostic and
 does not turn them or curl error classes (DNS, connect, timeout, TLS, receive)
-into strategy failure votes. C scans the capped body sample for exact
-provider/RKN domain markers migrated from the legacy detector; generic phrases
-are excluded. A matching no-strategy control stops the candidate comparison,
+into strategy failure votes. C scans the capped body sample for exact domain
+markers migrated from the legacy detector's DPI-stub and provider/RKN sets
+(`ov.google.com`, four listed ISP redirect domains, and provider/RKN domains);
+generic phrases are excluded. A matching no-strategy control stops the candidate comparison,
 while a candidate match is negative evidence only when bracketed by successful
 controls. The journal stores the matched marker and sample length, never the
 body itself. For HTTP redirects, curl supplies the normalized

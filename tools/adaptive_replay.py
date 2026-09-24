@@ -193,6 +193,8 @@ def replay_controller_output(stream):
             raise ValueError(f"line {line_no}: invalid redirect host")
         if (not 0 <= probe.get("body_sample_bytes", 0) <= 16384 or
                 probe.get("block_body_marker", "none") not in {
+                    "ov.google.com", "blocked.mgts.ru", "warning.rt.ru",
+                    "block.mts.ru", "zapret.mts.ru",
                     "none", "eais.rkn.gov.ru", "vigruzki.rkn.gov.ru",
                     "blocklist.rkn.gov.ru", "reestr.rublacklist.net", "nap.rkn.gov.ru",
                     "zapret-info.gov.ru", "blacklist.rkn.gov.ru", "rkn.megafon.ru",

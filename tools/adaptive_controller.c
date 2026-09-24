@@ -976,6 +976,8 @@ static bool probe_body_has_marker(const uint8_t *body, size_t body_len,
 static bool probe_block_body_marker(struct probe_state *p)
 {
 	static const char *const markers[] = {
+		"ov.google.com", "blocked.mgts.ru", "warning.rt.ru",
+		"block.mts.ru", "zapret.mts.ru",
 		"eais.rkn.gov.ru", "vigruzki.rkn.gov.ru", "blocklist.rkn.gov.ru",
 		"reestr.rublacklist.net", "nap.rkn.gov.ru", "zapret-info.gov.ru",
 		"blacklist.rkn.gov.ru", "rkn.megafon.ru", "blocked.beeline.ru",
