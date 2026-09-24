@@ -226,9 +226,9 @@ def replay_controller_output(stream):
     comparative_by_provider_strategy = defaultdict(set)
     for failure in comparative_failures:
         key = (failure["provider_key"], failure["strategy_id"])
-        comparative_by_provider_strategy[key].add((
-            failure["hostname"], failure["flow_id"],
-            failure["control_before_probe_id"], failure["control_after_probe_id"]))
+        # The resident C prior is deduplicated by host/strategy. Keep replay
+        # summaries on the same unit even when a host has multiple brackets.
+        comparative_by_provider_strategy[key].add(failure["hostname"])
     for failure in comparative_failures:
         print(json.dumps({
             "event": "PROBE_COMPARATIVE_FAILURE",
