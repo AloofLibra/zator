@@ -244,6 +244,44 @@ adaptive_learning_schedule_next() {
     "$host" 1 "$provider_key" "$allowlist"
 }
 
+adaptive_learning_strategy_allowlist() {
+  printf '%s\n' "${NFQWS2_OPT:-}" | awk '
+    /^--template=z2r_tcp_tls_common([[:space:]]|$)/ { inside=1; found=1; next }
+    inside && /^--new([[:space:]]|$)/ { exit }
+    inside && /^--lua-desync=/ {
+      for (i=1; i<=NF; i++) {
+        token=$i
+        while (match(token, /strategy=[0-9]+/)) {
+          id=substr(token, RSTART+9, RLENGTH-9)
+          if (!(id in seen)) { seen[id]=1; ids[++n]=id }
+          token=substr(token, RSTART+RLENGTH)
+        }
+      }
+    }
+    END {
+      if (!found || !n || n>64) exit 1
+      for (i=1; i<=n; i++) printf "%s%s", (i==1 ? "" : ","), ids[i]
+    }
+  '
+}
+
+# Wait for one exact C-settled lease, without spending candidate-selection
+# budget or mistaking another caller's probe for this result.
+adaptive_learning_wait_probe_id() {
+  local journal="$1" journal_offset="$2" probe_id="$3" timeout="${4:-95}"
+  local waited=0 row
+  while [ "$waited" -le "$timeout" ]; do
+    row="$(awk -F '\t' -v skip="$journal_offset" -v wanted="$probe_id" \
+      '{ if (position >= skip && $1 == "PROBE_OUTCOME" && $3 == wanted) { print; exit } \
+         position += length($0) + 1 }' "$journal" 2>/dev/null)"
+    if [ -n "$row" ]; then printf '%s\n' "$row"; return 0; fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "Истёк срок ожидания PROBE_OUTCOME для probe_id=$probe_id." >&2
+  return 1
+}
+
 adaptive_learning_wait_probe_settled() {
   local controller="$1" host="$2" budget="$3" provider_key="$4" allowlist="$5"
   local next status waited=0
@@ -280,14 +318,9 @@ adaptive_learning_run_control_probe() {
   printf '%s\n' "$probe_output" >&2
   probe_id="$(printf '%s\n' "$probe_output" | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^probe_id=[0-9]+$/) { sub(/^probe_id=/, "", $i); print $i; exit } }')"
   case "$probe_id" in ''|*[!0-9]*) echo "No-strategy probe вернул некорректный id." >&2; return 1 ;; esac
-  adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist" >/dev/null || return 1
-  record="$(awk -F '\t' -v skip="$journal_offset" -v wanted="$probe_id" \
-    '{ if (position >= skip && $1 == "PROBE_OUTCOME" && $3 == wanted) { outcome=$4; epoch=$15 } \
-       position += length($0) + 1 } \
-     END { if (outcome != "") print outcome "\t" epoch }' \
-    "$journal" 2>/dev/null)"
-  outcome="${record%%$(printf '\t')*}"
-  epoch="${record#*$(printf '\t')}"
+  record="$(adaptive_learning_wait_probe_id "$journal" "$journal_offset" "$probe_id")" || return 1
+  outcome="$(printf '%s\n' "$record" | awk -F '\t' '{print $4}')"
+  epoch="$(printf '%s\n' "$record" | awk -F '\t' '{print $15}')"
   [ "$outcome" = CONTROL_SUCCESS ] || {
     echo "No-strategy контроль не подтвердил доступность target; candidate probes приостановлены." >&2
     return 1
@@ -310,24 +343,7 @@ adaptive_learning_compare() {
   [ "$budget" -ge 1 ] && [ "$budget" -le 64 ] || return 2
   [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
   provider_key="$(adaptive_learning_provider_key)" || provider_key=unknown
-  allowlist="$(printf '%s\n' "${NFQWS2_OPT:-}" | awk '
-    /^--template=z2r_tcp_tls_common([[:space:]]|$)/ { inside=1; found=1; next }
-    inside && /^--new([[:space:]]|$)/ { exit }
-    inside && /^--lua-desync=/ {
-      for (i=1; i<=NF; i++) {
-        token=$i
-        while (match(token, /strategy=[0-9]+/)) {
-          id=substr(token, RSTART+9, RLENGTH-9)
-          if (!(id in seen)) { seen[id]=1; ids[++n]=id }
-          token=substr(token, RSTART+RLENGTH)
-        }
-      }
-    }
-    END {
-      if (!found || !n || n>64) exit 1
-      for (i=1; i<=n; i++) printf "%s%s", (i==1 ? "" : ","), ids[i]
-    }
-  ')" || {
+  allowlist="$(adaptive_learning_strategy_allowlist)" || {
     echo "Не удалось получить ограниченный список strategy из TLS plan." >&2
     return 1
   }
@@ -414,6 +430,107 @@ adaptive_learning_compare() {
   fi
   [ -n "$last_strategy" ] || last_strategy="$original_strategy"
   adaptive_learning_set_candidate "$last_strategy" || return 1
+}
+
+# Consume at most one due scheduler task. Each step uses a successful
+# no-desync control before and after one candidate request, for a hard ceiling
+# of three HTTPS requests per invocation.
+adaptive_learning_scheduled_step() {
+  local host="$1" controller allowlist provider_key original_strategy strategy strategy_file
+  local task status probe_class journal journal_offset probe_output probe_id record outcome
+  case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
+  [ "${#host}" -le 253 ] || return 2
+  adaptive_learning_enabled || { echo "Adaptive learning выключен." >&2; return 1; }
+  controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
+  [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
+  allowlist="$(adaptive_learning_strategy_allowlist)" || {
+    echo "Не удалось получить ограниченный список strategy из TLS plan." >&2
+    return 1
+  }
+  provider_key="$(adaptive_learning_provider_key)" || provider_key=unknown
+  strategy_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-learning.strategy"
+  IFS= read -r original_strategy <"$strategy_file" || original_strategy=
+  case "$original_strategy" in ''|*[!0-9]*|0) echo "Не задана исходная learning strategy." >&2; return 1 ;; esac
+
+  if task="$(adaptive_learning_schedule_next "$host" "$allowlist")"; then
+    :
+  else
+    status=$?
+    [ "$status" -eq 3 ] && { echo "Для $host пока нет due scheduler-задачи."; return 3; }
+    return "$status"
+  fi
+  journal=/tmp/zator-adaptive/shadow.tsv
+  [ -f "$journal" ] && [ ! -L "$journal" ] || {
+    echo "Журнал Adaptive Controller недоступен." >&2
+    return 1
+  }
+  echo "Проверка baseline без desync для $host..."
+  if ! adaptive_learning_run_control_probe "$host" "$controller" 64 "$provider_key" "$allowlist" >/dev/null; then
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 ||
+      echo "Не удалось восстановить исходную learning strategy." >&2
+    return 1
+  fi
+  # Re-query after the control: an epoch change makes the old task stale.
+  if task="$(adaptive_learning_schedule_next "$host" "$allowlist")"; then
+    :
+  else
+    status=$?
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 ||
+      echo "Не удалось восстановить исходную learning strategy." >&2
+    [ "$status" -eq 3 ] && return 3
+    return "$status"
+  fi
+  strategy="$(printf '%s\n' "$task" | awk -F '\t' '$1=="schedule_task" && $2~/^strategy=[0-9]+$/ { sub(/^strategy=/,"",$2); print $2 }')"
+  probe_class="$(printf '%s\n' "$task" | awk -F '\t' '$1=="schedule_task" && $3~/^class=[A-Z_]+$/ { sub(/^class=/,"",$3); print $3 }')"
+  case ",$allowlist," in *,$strategy,*) ;; *) strategy= ;; esac
+  case "$strategy" in ''|*[!0-9]*|0) strategy= ;; esac
+  case "$probe_class" in UNKNOWN_EXPLORATION|PROMISING_RECHECK|UNKNOWN_RECHECK|CHAMPION_REVALIDATION|RUNNERUP_REVALIDATION|QUARANTINE_RETRY) ;; *) strategy= ;; esac
+  if [ -z "$strategy" ]; then
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 ||
+      echo "Не удалось восстановить исходную learning strategy." >&2
+    echo "C scheduler вернул некорректную или отсутствующую due-задачу." >&2
+    return 1
+  fi
+
+  journal_offset="$(wc -c <"$journal" | awk '{print $1}')"
+  case "$journal_offset" in ''|*[!0-9]*)
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+    return 1
+  ;; esac
+  adaptive_learning_set_candidate "$strategy" || {
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+    return 1
+  }
+  probe_output="$("${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result)" || {
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+    echo "Candidate probe не была принята controller." >&2
+    return 1
+  }
+  printf '%s\n' "$probe_output" >&2
+  probe_id="$(printf '%s\n' "$probe_output" | awk '{ for (i=1; i<=NF; i++) if ($i~/^probe_id=[0-9]+$/) { sub(/^probe_id=/,"",$i); print $i; exit } }')"
+  case "$probe_id" in ''|*[!0-9]*)
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+    echo "Candidate probe вернула некорректный probe_id." >&2
+    return 1
+  ;; esac
+  record="$(adaptive_learning_wait_probe_id "$journal" "$journal_offset" "$probe_id")" || {
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
+    return 1
+  }
+  outcome="$(printf '%s\n' "$record" | awk -F '\t' '{print $4}')"
+  echo "Scheduler: $probe_class, strategy $strategy, outcome $outcome."
+  echo "Проверка baseline без desync после candidate probe..."
+  if ! adaptive_learning_run_control_probe "$host" "$controller" 64 "$provider_key" "$allowlist" >/dev/null; then
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 ||
+      echo "Не удалось восстановить исходную learning strategy." >&2
+    echo "Post-control не подтвердился; сравнительная evidence не закрыта." >&2
+    return 1
+  fi
+  adaptive_learning_set_candidate "$original_strategy" || {
+    echo "Не удалось восстановить исходную learning strategy." >&2
+    return 1
+  }
+  return 0
 }
 
 # zapret2's nfqws2 accepts @config only as argv[1]. The shared do_nfqws hook
@@ -511,7 +628,7 @@ adaptive_learning_toggle() {
   strategy_file="$root/extra_strats/cache/adaptive-learning.strategy"
 
   if adaptive_learning_enabled; then
-    read -r -p "Learning активен: 1 — сменить strategy, 2 — сравнить candidates, 0 — выключить: " action
+    read -r -p "Learning активен: 1 — сменить strategy, 2 — сравнить candidates, 3 — выполнить одну due-пробу, 0 — выключить: " action
     case "$action" in
       1)
         read -r -p "Номер TCP/TLS strategy: " strategy
@@ -530,13 +647,24 @@ adaptive_learning_toggle() {
         adaptive_learning_compare "$probe_host" "$probe_budget"
         return $?
         ;;
+      3)
+        local probe_host step_status
+        read -r -p "Hostname для scheduler probe: " probe_host
+        if adaptive_learning_scheduled_step "$probe_host"; then
+          return 0
+        else
+          step_status=$?
+        fi
+        [ "$step_status" -eq 3 ] && return 0
+        return "$step_status"
+        ;;
       0)
         [ ! -d /tmp/zator-adaptive-learning/experiment.lock ] || {
           echo "Дождитесь завершения learning probe/candidate update." >&2
           return 1
         }
         ;;
-      *) echo "Введите 1 или 0." >&2; return 2 ;;
+      *) echo "Введите 1, 2, 3 или 0." >&2; return 2 ;;
     esac
     rm -f "$marker" "$strategy_file"
     z2r_service_action restart || return 1
@@ -617,7 +745,7 @@ adaptive_learning_toggle() {
     return 1
   fi
   echo "Learning worker запущен для strategy $strategy. Одна HTTPS проба: $root/adaptive/probe-once.sh example.com"
-  echo "Результат проверяйте в /tmp/zator-adaptive/shadow.tsv; автоматического сравнения пока нет."
+  echo "Для bounded comparison используйте пункт 2, для одной due scheduler-пробы — пункт 3."
 }
 
 adaptive_shadow_status_text() {

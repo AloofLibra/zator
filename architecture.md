@@ -1550,9 +1550,14 @@ and quarantine counters are persisted in `ADAPTIVE_STATE v7`, whose checkpoint
 remains capped tmpfs data and valid only for the current boot.
 
 `adaptive_learning_schedule_next` is the shell query wrapper. It does not
-generate network traffic: a bounded runner still needs to consume this task,
-bracket the probe with no-strategy controls, and enforce its per-run request
-budget. Automatic wake-up and runner integration remain Phase 8 work.
+generate network traffic by itself. Menu item 25 option 3 consumes one due
+task, brackets its candidate probe with successful no-strategy controls, waits
+for the exact C-settled probe id, then restores the learning worker's prior
+strategy. One invocation is capped at three HTTPS requests (two controls and
+one candidate), and it stops when either control cannot confirm the target.
+Automatic wake-up over recently observed hosts and an aggregate per-day request
+budget remain Phase 8 work; there is no periodic polling or background traffic
+generator yet.
 
 ---
 
