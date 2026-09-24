@@ -87,8 +87,16 @@ jobs:
           tools/build-adaptive-controller.sh "$TARGET"
           binary="$OUT_DIR/adaptive-controller-$TARGET"
           test -s "$binary"
-          ! readelf -d "$binary" 2>/dev/null | grep -q NEEDED
-          test "$(stat -c %s "$binary")" -lt 131072
+          size="$(stat -c %s "$binary")"
+          echo "Static controller size for $TARGET: $size bytes"
+          if readelf -d "$binary" 2>/dev/null | grep -q NEEDED; then
+            echo "Controller unexpectedly links a dynamic dependency: $TARGET" >&2
+            exit 1
+          fi
+          test "$size" -lt 131072 || {
+            echo "Controller exceeds the 128 KiB target: $TARGET ($size bytes)" >&2
+            exit 1
+          }
           (cd "$OUT_DIR" && sha256sum "adaptive-controller-$TARGET" > "adaptive-controller-$TARGET.sha256")
 
       - uses: actions/upload-artifact@v6
