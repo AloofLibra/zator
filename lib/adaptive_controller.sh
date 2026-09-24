@@ -40,7 +40,7 @@ adaptive_controller_release_base() {
 }
 
 # Explicit caller only. Runtime package is target-specific, statically linked,
-# bounded to 144 KiB and verified against the checksum attached to the release.
+# bounded to 512 KiB and verified against the checksum attached to the release.
 adaptive_controller_install() {
   local target base name root bindir binary tmp sumtmp expected actual size
   target="${1:-$(adaptive_controller_target)}" || {
@@ -87,9 +87,9 @@ adaptive_controller_install() {
   [ "$actual" = "$expected" ] || { rm -f "$tmp" "$sumtmp"; echo "SHA-256 Adaptive Controller не совпадает." >&2; return 1; }
   size="$(wc -c < "$tmp" | awk '{print $1}')"
   case "$size" in ''|*[!0-9]*) rm -f "$tmp" "$sumtmp"; return 1 ;; esac
-  [ "$size" -gt 0 ] && [ "$size" -lt 147456 ] || {
+  [ "$size" -gt 0 ] && [ "$size" -lt 524288 ] || {
     rm -f "$tmp" "$sumtmp"
-    echo "Размер Adaptive Controller выходит за лимит 144 KiB." >&2
+    echo "Размер Adaptive Controller выходит за лимит 512 KiB." >&2
     return 1
   }
   chmod 755 "$tmp" || { rm -f "$tmp" "$sumtmp"; return 1; }
@@ -242,6 +242,15 @@ adaptive_learning_schedule_next() {
   provider_key="$(adaptive_learning_provider_key)" || provider_key=unknown
   "$controller" --next-scheduled /tmp/zator-adaptive/events.sock \
     "$host" 1 "$provider_key" "$allowlist"
+}
+
+adaptive_learning_schedule_next_host() {
+  local allowlist="$1" provider_key controller
+  controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
+  [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
+  provider_key="$(adaptive_learning_provider_key)" || provider_key=unknown
+  "$controller" --next-background /tmp/zator-adaptive/events.sock \
+    "$provider_key" "$allowlist"
 }
 
 adaptive_learning_strategy_allowlist() {
@@ -472,10 +481,8 @@ adaptive_learning_compare() {
 # no-desync control before and after one candidate request, for a hard ceiling
 # of three HTTPS requests per invocation.
 adaptive_learning_scheduled_step() {
-  local host="$1" controller allowlist provider_key original_strategy strategy strategy_file
+  local host="${1:-}" controller allowlist provider_key original_strategy strategy strategy_file
   local task status probe_class journal journal_offset probe_output probe_id record outcome
-  case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
-  [ "${#host}" -le 253 ] || return 2
   adaptive_learning_enabled || { echo "Adaptive learning выключен." >&2; return 1; }
   controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
   [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
@@ -487,6 +494,19 @@ adaptive_learning_scheduled_step() {
   strategy_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-learning.strategy"
   IFS= read -r original_strategy <"$strategy_file" || original_strategy=
   case "$original_strategy" in ''|*[!0-9]*|0) echo "Не задана исходная learning strategy." >&2; return 1 ;; esac
+
+  if [ -z "$host" ]; then
+    if task="$(adaptive_learning_schedule_next_host "$allowlist")"; then
+      host="$(printf '%s\n' "$task" | awk -F '\t' '$1=="background_task" && $2~/^host=/ { sub(/^host=/,"",$2); print $2 }')"
+      echo "C scheduler выбрал недавно наблюдавшийся хост: $host"
+    else
+      status=$?
+      [ "$status" -eq 3 ] && { echo "Нет due-задачи для недавно наблюдавшихся хостов."; return 3; }
+      return "$status"
+    fi
+  fi
+  case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
+  [ "${#host}" -le 253 ] || return 2
 
   if task="$(adaptive_learning_schedule_next "$host" "$allowlist")"; then
     :
@@ -692,7 +712,7 @@ adaptive_learning_toggle() {
         ;;
       3)
         local probe_host step_status
-        read -r -p "Hostname для scheduler probe: " probe_host
+        read -r -p "Hostname для scheduler probe (Enter — выбрать из C flow telemetry): " probe_host
         if adaptive_learning_scheduled_step "$probe_host"; then
           return 0
         else

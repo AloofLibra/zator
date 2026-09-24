@@ -2143,12 +2143,184 @@ static unsigned probe_schedule_priority(const char *klass)
 	return 5;
 }
 
+static int find_learning_schedule_context(const char *host, uint64_t epoch)
+{
+	size_t i;
+	for (i = 0; i < MAX_CONTEXTS; i++) {
+		const struct context_state *ctx = &contexts[i];
+		if (ctx->used && ctx->profile == 1 && ctx->network_epoch == epoch &&
+			!strcmp(ctx->host, host) && !strcmp(ctx->scope, "learning") &&
+			!strcmp(ctx->transport, "tcp") && !strcmp(ctx->family, "any")) return (int)i;
+	}
+	return -1;
+}
+
+/* Choose a due strategy without creating scheduler state. This lets background
+ * host discovery inspect many recent flows while allocating state only for
+ * the one host returned to the runner. */
+static bool probe_schedule_choose(unsigned context_index, const uint32_t *ids,
+		unsigned count, const char *provider_key, uint64_t now,
+		uint32_t *selected, const char **selected_class, uint64_t *selected_due,
+		uint64_t *earliest)
+{
+	uint32_t champion = probe_schedule_champion(context_index, ids, count);
+	uint32_t runnerup = probe_schedule_runnerup(context_index, champion, ids, count);
+	uint64_t best_support = 0;
+	unsigned i;
+	*selected = 0;
+	*selected_class = NULL;
+	*selected_due = UINT64_MAX;
+	*earliest = UINT64_MAX;
+	for (i = 0; i < count; i++) {
+		int index = -1;
+		uint64_t due_at = now, support;
+		const char *klass;
+		size_t j;
+		for (j = 0; j < MAX_CANDIDATES; j++)
+			if (candidates[j].used && candidates[j].context_index == context_index &&
+				candidates[j].strategy == ids[i]) { index = (int)j; break; }
+		if (index < 0) klass = "UNKNOWN_EXPLORATION";
+		else klass = probe_schedule_class(&candidates[index], champion, runnerup, now, &due_at);
+		if (due_at < *earliest) *earliest = due_at;
+		if (!klass) continue;
+		support = provider_candidate_support(provider_key, ids[i], now, NULL);
+		if (!support && strcmp(provider_key, "global"))
+			support = provider_candidate_support("global", ids[i], now, NULL);
+		if (!*selected_class || probe_schedule_priority(klass) <
+			probe_schedule_priority(*selected_class) ||
+			(probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
+			 due_at < *selected_due) ||
+			(probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
+			 due_at == *selected_due && support > best_support) ||
+			(probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
+			 due_at == *selected_due && support == best_support && ids[i] < *selected)) {
+			*selected = ids[i]; *selected_class = klass; *selected_due = due_at;
+			best_support = support;
+		}
+	}
+	return *selected_class != NULL;
+}
+
+static int host_list_find(char hosts[][HOST_CAP], unsigned count, const char *host)
+{
+	unsigned i;
+	for (i = 0; i < count; i++) if (!strcmp(hosts[i], host)) return (int)i;
+	return -1;
+}
+
+static void handle_probe_background_next(char **f, size_t n, int fd,
+		const struct sockaddr_un *peer, socklen_t peer_len, uint64_t now)
+{
+	uint32_t ids[MAX_PROBE_CANDIDATES];
+	char hosts[MAX_CONTEXTS][HOST_CAP], host[HOST_CAP], provider_key[16];
+	uint64_t host_last_seen[MAX_CONTEXTS], earliest = UINT64_MAX;
+	uint64_t best_due = UINT64_MAX, best_seen = 0, best_support = 0;
+	uint8_t health_state, health_reason;
+	char *cursor, *part, reply[384];
+	const char *best_class = NULL;
+	uint32_t best_strategy = 0;
+	unsigned host_count = 0, id_count = 0, i;
+	if (n != 4 || strcmp(f[1], "v1") || !provider_key_valid(f[2]) ||
+		!copy_field(provider_key, sizeof(provider_key), f[2])) goto invalid;
+	if (!strcmp(provider_key, "unknown")) strcpy(provider_key, "global");
+	if (active_probe.active) {
+		controller_reply(fd, peer, peer_len, "ACK\tPROBE_BACKGROUND\tERR\tbusy\n");
+		return;
+	}
+	if (!network_context_known) {
+		controller_reply(fd, peer, peer_len, "ACK\tPROBE_BACKGROUND\tERR\tnetwork_unknown\n");
+		return;
+	}
+	network_health_current(&health_state, &health_reason);
+	if (health_state == NETWORK_HEALTH_DEGRADED) {
+		controller_reply(fd, peer, peer_len, "ACK\tPROBE_BACKGROUND\tERR\tnetwork_degraded\n");
+		return;
+	}
+	cursor = f[3];
+	while (cursor) {
+		char *comma, *end, *digit;
+		unsigned long id;
+		part = cursor;
+		comma = strchr(part, ',');
+		if (comma) { *comma = '\0'; cursor = comma + 1; }
+		else cursor = NULL;
+		if (!*part || id_count == MAX_PROBE_CANDIDATES) goto invalid;
+		for (digit = part; *digit; digit++) if (*digit < '0' || *digit > '9') goto invalid;
+		id = strtoul(part, &end, 10);
+		if (*end || !id || id > UINT32_MAX) goto invalid;
+		for (i = 0; i < id_count; i++) if (ids[i] == (uint32_t)id) goto invalid;
+		ids[id_count++] = (uint32_t)id;
+	}
+	if (!id_count) goto invalid;
+	for (i = 0; i < MAX_CONTEXTS; i++) {
+		const struct context_state *ctx = &contexts[i];
+		int existing_host;
+		if (!ctx->used || ctx->profile != 1 || ctx->network_epoch != network_epoch ||
+			strcmp(ctx->transport, "tcp") || !strcmp(ctx->scope, "learning") ||
+			!probe_host_valid(ctx->host) || now < ctx->last_seen_ms ||
+			now - ctx->last_seen_ms > 24ULL * 60ULL * 60ULL * 1000ULL) continue;
+		existing_host = host_list_find(hosts, host_count, ctx->host);
+		if (existing_host >= 0) {
+			if (ctx->last_seen_ms > host_last_seen[existing_host])
+				host_last_seen[existing_host] = ctx->last_seen_ms;
+			continue;
+		}
+		if (host_count >= MAX_CONTEXTS || !copy_field(hosts[host_count], HOST_CAP, ctx->host)) continue;
+		host_last_seen[host_count++] = ctx->last_seen_ms;
+	}
+	for (i = 0; i < host_count; i++) {
+		uint32_t strategy = 0;
+		uint64_t due_at = UINT64_MAX, next_due = UINT64_MAX, support = 0;
+		const char *klass = NULL;
+		int ci = find_learning_schedule_context(hosts[i], network_epoch);
+		if (ci < 0) {
+			unsigned j;
+			for (j = 0; j < id_count; j++) {
+				uint64_t candidate_support = provider_candidate_support(provider_key, ids[j], now, NULL);
+				if (!strategy || candidate_support > support ||
+					(candidate_support == support && ids[j] < strategy)) {
+					strategy = ids[j]; support = candidate_support;
+				}
+			}
+			klass = "UNKNOWN_EXPLORATION";
+			due_at = now;
+		} else if (!probe_schedule_choose((unsigned)ci, ids, id_count, provider_key,
+			now, &strategy, &klass, &due_at, &next_due)) {
+			if (next_due < earliest) earliest = next_due;
+			continue;
+		}
+		if (due_at < earliest) earliest = due_at;
+		support = provider_candidate_support(provider_key, strategy, now, NULL);
+		if (!best_class || probe_schedule_priority(klass) < probe_schedule_priority(best_class) ||
+			(probe_schedule_priority(klass) == probe_schedule_priority(best_class) && due_at < best_due) ||
+			(probe_schedule_priority(klass) == probe_schedule_priority(best_class) &&
+			 due_at == best_due && support > best_support) ||
+			(probe_schedule_priority(klass) == probe_schedule_priority(best_class) &&
+			 due_at == best_due && support == best_support && host_last_seen[i] > best_seen)) {
+			copy_field(host, sizeof(host), hosts[i]);
+			best_strategy = strategy; best_class = klass; best_due = due_at;
+			best_seen = host_last_seen[i]; best_support = support;
+		}
+	}
+	if (!best_class) {
+		snprintf(reply, sizeof(reply), "ACK\tPROBE_BACKGROUND\tWAIT\t%" PRIu64 "\n",
+			earliest == UINT64_MAX ? 0 : earliest);
+		controller_reply(fd, peer, peer_len, reply);
+		return;
+	}
+	snprintf(reply, sizeof(reply), "ACK\tPROBE_BACKGROUND\tTASK\t%s\t%u\t%s\t%" PRIu64 "\n",
+		host, best_strategy, best_class, best_due);
+	controller_reply(fd, peer, peer_len, reply);
+	return;
+invalid:
+	controller_reply(fd, peer, peer_len, "ACK\tPROBE_BACKGROUND\tERR\tinvalid\n");
+}
+
 static void handle_probe_schedule(char **f, size_t n, int fd,
 		const struct sockaddr_un *peer, socklen_t peer_len, uint64_t now)
 {
 	uint32_t ids[MAX_PROBE_CANDIDATES];
 	uint64_t profile64, earliest = UINT64_MAX, chosen_due = UINT64_MAX;
-	uint64_t best_support = 0;
 	uint8_t health_state, health_reason;
 	char host[HOST_CAP], provider_key[16], reply[192], *cursor, *part;
 	const char *chosen_class = NULL;
@@ -2196,45 +2368,8 @@ static void handle_probe_schedule(char **f, size_t n, int fd,
 		controller_reply(fd, peer, peer_len, "ACK\tPROBE_SCHEDULE\tERR\tcapacity\n");
 		return;
 	}
-	{
-		uint32_t champion;
-		uint32_t runnerup;
-		for (i = 0; i < count; i++) {
-			if (find_or_create_candidate((unsigned)ci, ids[i], now) < 0) {
-				controller_reply(fd, peer, peer_len, "ACK\tPROBE_SCHEDULE\tERR\tcapacity\n");
-				return;
-			}
-		}
-		champion = probe_schedule_champion((unsigned)ci, ids, count);
-		runnerup = probe_schedule_runnerup((unsigned)ci, champion, ids, count);
-		for (i = 0; i < count; i++) {
-			int index = find_or_create_candidate((unsigned)ci, ids[i], now);
-			uint64_t due_at = UINT64_MAX;
-			uint64_t support;
-			const char *klass;
-			if (index < 0) {
-				controller_reply(fd, peer, peer_len, "ACK\tPROBE_SCHEDULE\tERR\tcapacity\n");
-				return;
-			}
-			support = provider_candidate_support(provider_key, ids[i], now, NULL);
-			klass = probe_schedule_class(&candidates[index], champion, runnerup, now, &due_at);
-			if (due_at < earliest) earliest = due_at;
-			if (!klass) continue;
-		/* Keep the champion current before exploring unknowns or retries. */
-		{
-			unsigned priority = probe_schedule_priority(klass);
-			unsigned chosen_priority = chosen_class ? probe_schedule_priority(chosen_class) : UINT_MAX;
-			if (!chosen_class || priority < chosen_priority ||
-				(priority == chosen_priority && due_at < chosen_due) ||
-				(priority == chosen_priority && due_at == chosen_due && support > best_support) ||
-				(priority == chosen_priority && due_at == chosen_due && support == best_support && ids[i] < selected)) {
-				selected = ids[i]; chosen_class = klass; chosen_due = due_at;
-				best_support = support;
-			}
-		}
-		}
-	}
-	if (!chosen_class) {
+	if (!probe_schedule_choose((unsigned)ci, ids, count, provider_key, now,
+		&selected, &chosen_class, &chosen_due, &earliest)) {
 		snprintf(reply, sizeof(reply), "ACK\tPROBE_SCHEDULE\tWAIT\t%" PRIu64 "\n",
 			earliest == UINT64_MAX ? 0 : earliest);
 		controller_reply(fd, peer, peer_len, reply);
@@ -2363,6 +2498,10 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 	}
 	if (n == 6 && !strcmp(f[0], "PROBE_SCHEDULE")) {
 		handle_probe_schedule(f, n, fd, peer, peer_len, now);
+		return true;
+	}
+	if (n == 4 && !strcmp(f[0], "PROBE_BACKGROUND_NEXT")) {
+		handle_probe_background_next(f, n, fd, peer, peer_len, now);
 		return true;
 	}
 	if ((n == 7 && !strcmp(f[0], "PROBE_BEGIN") && !strcmp(f[1], "v1")) ||
@@ -2591,6 +2730,45 @@ static int next_scheduled_client(int argc, char **argv)
 		return 5;
 	}
 	fprintf(stderr, "adaptive_controller: invalid scheduler reply: %s", reply);
+	return 1;
+}
+
+static int next_background_client(int argc, char **argv)
+{
+	char request[MAX_LINE], reply[384], host[HOST_CAP], schedule_class[40];
+	const char *provider_key, *allowlist;
+	unsigned strategy;
+	unsigned long long due_at;
+	int n, consumed = 0;
+	if (argc != 5 || !provider_key_valid(argv[3]) || strlen(argv[4]) > 1024) return 2;
+	provider_key = argv[3];
+	allowlist = argv[4];
+	n = snprintf(request, sizeof(request), "PROBE_BACKGROUND_NEXT\tv1\t%s\t%s\n",
+		provider_key, allowlist);
+	if (n < 0 || (size_t)n >= sizeof(request) ||
+		controller_probe_request(argv[2], request, reply, sizeof(reply)) != 0) {
+		fputs("adaptive_controller: background scheduler request failed\n", stderr);
+		return 1;
+	}
+	if (sscanf(reply, "ACK\tPROBE_BACKGROUND\tTASK\t%255[A-Za-z0-9.-]\t%u\t%39[A-Z_]\t%llu%n",
+		host, &strategy, schedule_class, &due_at, &consumed) == 4 && consumed > 0 &&
+		!strcmp(reply + consumed, "\n") && strategy && probe_host_valid(host)) {
+		printf("background_task\thost=%s\tstrategy=%u\tclass=%s\tdue_at_ms=%llu\n",
+			host, strategy, schedule_class, due_at);
+		return 0;
+	}
+	if (sscanf(reply, "ACK\tPROBE_BACKGROUND\tWAIT\t%llu%n", &due_at, &consumed) == 1 &&
+		consumed > 0 && !strcmp(reply + consumed, "\n")) {
+		printf("background_wait\tdue_at_ms=%llu\n", due_at);
+		return 3;
+	}
+	if (!strcmp(reply, "ACK\tPROBE_BACKGROUND\tERR\tbusy\n")) return 4;
+	if (!strcmp(reply, "ACK\tPROBE_BACKGROUND\tERR\tnetwork_unknown\n") ||
+		!strcmp(reply, "ACK\tPROBE_BACKGROUND\tERR\tnetwork_degraded\n")) {
+		fprintf(stderr, "adaptive_controller: %s", reply);
+		return 5;
+	}
+	fprintf(stderr, "adaptive_controller: invalid background scheduler reply: %s", reply);
 	return 1;
 }
 
@@ -2876,6 +3054,8 @@ int main(int argc, char **argv)
 		return next_candidate_client(argc, argv);
 	if (argc == 7 && !strcmp(argv[1], "--next-scheduled"))
 		return next_scheduled_client(argc, argv);
+	if (argc == 5 && !strcmp(argv[1], "--next-background"))
+		return next_background_client(argc, argv);
 	if ((argc == 8 || argc == 9) && !strcmp(argv[1], "--probe-begin")) return probe_begin_client(argc, argv);
 	if ((argc >= 7 && argc <= 9) && !strcmp(argv[1], "--probe-result")) return probe_result_client(argc, argv);
 	if (argc == 3 && !strcmp(argv[1], "--get-candidate"))
@@ -2901,6 +3081,7 @@ int main(int argc, char **argv)
 		puts("       adaptive-controller --probe-result /controller.sock probe_id curl_rc http_status elapsed_ms [redirect_host [body_hex]]");
 		puts("       adaptive-controller --next-candidate /controller.sock host profile budget [provider_key] id[,id...]");
 		puts("       adaptive-controller --next-scheduled /controller.sock host profile provider_key id[,id...]");
+		puts("       adaptive-controller --next-background /controller.sock provider_key id[,id...]");
 		puts("candidate selection is learning-only, max 64 candidates and 1024 settled probe attempts");
 		puts("limits: 256 open flows, 128 contexts, 384 candidates, 128 provider priors, 512 host observations; 7-day TTL");
 		puts("socket mode consumes nonblocking-sender Unix datagrams; gaps invalidate open flows");

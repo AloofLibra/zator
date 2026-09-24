@@ -1155,7 +1155,7 @@ binary per supported Linux target and attaches each as a separate release
 asset plus a SHA-256 sidecar. This keeps the normal zator archives free of
 unused architecture binaries and lets the opt-in installer fetch only the
 matching small binary; `lib/adaptive_controller.sh` maps router `uname -m`,
-checks the digest and 144 KiB size ceiling, and refuses to fetch in offline
+checks the digest and 512 KiB size ceiling, and refuses to fetch in offline
 mode. The workflow also rejects dynamically linked or unexpectedly large
 outputs. No process starts and no runtime dependency is added unless the
 operator explicitly enables menu item 24. The menu is
@@ -1550,17 +1550,19 @@ and quarantine counters are persisted in `ADAPTIVE_STATE v7`, whose checkpoint
 remains capped tmpfs data and valid only for the current boot.
 
 `adaptive_learning_schedule_next` is the shell query wrapper. It does not
-generate network traffic by itself. Menu item 25 option 3 consumes one due
-task, brackets its candidate probe with successful no-strategy controls, waits
-for the exact C-settled probe id, then restores the learning worker's prior
-strategy. One invocation is capped at three HTTPS requests (two controls and
-one candidate), and it stops when either control cannot confirm the target.
+generate network traffic by itself. For menu item 25 option 3, an empty host
+asks the C `--next-background` selector to choose a hostname seen in a usable
+profile-1 TCP flow during the last 24 hours. C checks due candidates across
+those observed hosts, so a host in cooldown does not starve another due host.
+The step brackets its candidate probe with successful no-strategy controls,
+waits for the exact C-settled probe id, then restores the learning worker's
+prior strategy. One invocation is capped at three HTTPS requests (two controls
+and one candidate), and it stops when either control cannot confirm the target.
 The runner reserves one scheduler step per rolling 24 hours in a compact
 timestamp under the zator cache before making any request. Reservation is
 atomic across callers and remains consumed if the step fails. Missing,
 malformed, or backwards system time makes the scheduler step fail closed.
-Automatic wake-up over recently observed hosts and an aggregate per-day request
-budget across hosts remain Phase 8 work; there is no periodic polling or
+Automatic wake-up remains Phase 8 work; there is no periodic polling or
 background traffic generator yet.
 
 ---
