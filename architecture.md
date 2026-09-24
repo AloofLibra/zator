@@ -923,12 +923,18 @@ completed successfully for Linux, Android, FreeBSD, and Windows at commit
 `2aca66d`.
 The C telemetry privilege-drop fix is pushed to that branch at `b1a9504`
 (following `58671fb`). The MIPSel artifact is ELF32 little-endian MIPS R3000
-and contains both adaptive CLI options. The fork currently has no published
-release, and its workflow only creates releases on version-tag pushes; zator
-still downloads MarkinAlexander release archives. Therefore the built fork
-binary is not yet distributed to router installs. Draft PR #1 remains closed
-without merge. The telemetry file sink checks write results and disables
-further trace writes after a short or failed record write.
+and contains both adaptive CLI options. Draft PR #1 remains closed without
+merge. The telemetry file sink checks write results and disables further trace
+writes after a short or failed record write. The fork beta
+`v1.0.5.2-adaptive-beta.1` is published as a prerelease with Linux, OpenWrt
+embedded, Windows, Android, and FreeBSD archives; CI run
+[`36021707984`](https://github.com/AloofLibra/zapret2/actions/runs/36021707984)
+passed all platform builds. The matching zator prerelease `adaptive-beta.1`
+is published from `develop`; its CI run
+[`36023851594`](https://github.com/AloofLibra/zator/actions/runs/36023851594)
+passed all ten static controller targets and assembled the deployable archives.
+The rolling `latest` release now also contains the controller binaries used by
+the opt-in installer.
 
 Replay C telemetry with `python tools/adaptive_replay.py /path/to/events.tsv`.
 Server payload is `WEAK_SUCCESS`; no server payload is `UNKNOWN`, never inferred
@@ -1340,13 +1346,16 @@ when either shadow or learning is enabled; previously their shadow-only guard
 made learning-only mode impossible. Menu item 24 remains the separate passive
 production shadow switch and does not change production strategy.
 
-**Deployment gate:** `patches/zapret2/adaptive-flow-telemetry.patch` is not yet
-applied by the zapret2 release/offline build path. That path currently fetches
-MarkinAlexander release archives, while the patch worktree targets the user's
-AloofLibra fork. The runtime checks the installed binary's
-`--adaptive-events`, `--adaptive-strategy`, and `--adaptive-control` options
-and refuses to enable learning without them. Reconcile the fork baseline, then generate and deploy
-patched `nfqws2` binaries before a router probe can run end to end.
+**Deployment gate:** patched `nfqws2` binaries are available in the
+`AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.1`; the zator beta also
+ships controller executables for ten Linux targets. Zator's normal zapret2
+installer and carried-forward offline archive still use the MarkinAlexander
+build, so they do not automatically install the patched C binary. Install the
+matching fork archive separately before enabling shadow telemetry or learning.
+The runtime checks `--adaptive-events`, `--adaptive-strategy`, and
+`--adaptive-control`, and refuses to enable either mode when an option is
+missing. Live router verification of firewall steering, source-port attribution,
+and probe correlation is still required.
 
 ### Integration constraints verified against the zapret2 fork
 
@@ -1374,10 +1383,11 @@ to the production queue. The worker sees reply packets only when conntrack
 retains the adaptive mark. The iptables and nft callbacks and one-shot probe
 driver now exist; rule order and teardown still require validation on
 representative OpenWrt nftables and Keenetic iptables routers. The controller
-does not yet join curl's HTTP result with the matching source-port and
-strategy-generation C flow. Automatic candidate selection and repeated
-comparative probes remain future Phase 5–6 work, so this is not yet a
-self-running learning PoC.
+joins each probe's HTTP result to a unique learning flow using the reserved
+source-port range and C-owned strategy generation; ambiguous or missing joins
+remain unknown. The workflow supports manual candidate changes and one-off
+probes only. Automatic candidate selection and repeated comparative probes
+remain future Phase 5–6 work, so this is an operator-driven learning PoC.
 
 There are two additional mechanics to account for in that integration:
 
