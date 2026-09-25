@@ -144,7 +144,7 @@ diff --git a/nfq2/conntrack.c b/nfq2/conntrack.c
 index 1eaad17..44c9ac4 100644
 --- a/nfq2/conntrack.c
 +++ b/nfq2/conntrack.c
-@@ -3,10 +3,253 @@
+@@ -3,10 +3,260 @@
  #include "darkmagic.h"
  #include <arpa/inet.h>
  #include <stdio.h>
@@ -333,6 +333,11 @@ index 1eaad17..44c9ac4 100644
 +	int n;
 +	struct timespec wall;
 +	if (!params.adaptive_events_file[0] || !t || !t->flow_id) return;
++	if (!strcmp(event, "FLOW_END") && t->adaptive_terminal_emitted) return;
++	/* Keep the file sink complete for offline diagnostics. The live controller
++	 * only needs flows whose strategy assignment is authoritative in C; otherwise
++	 * unrelated conntrack entries consume its bounded open-flow table. */
++	if (!strncmp(params.adaptive_events_file, "unix:", 5) && !t->strategy_assigned) return;
 +	snprintf(scope, sizeof(scope), "%s", t->adaptive_scope[0] ? t->adaptive_scope : "default");
 +	for (h=scope; *h; h++) if (*h=='\t' || *h=='\r' || *h=='\n') *h='_';
 +	h = t->hostname ? t->hostname : "";
@@ -357,7 +362,8 @@ index 1eaad17..44c9ac4 100644
 +	if (n<=0 || (size_t)n>=sizeof(line)) return;
 +	if (!strncmp(params.adaptive_events_file, "unix:", 5)) {
 +#ifdef __linux__
-+		(void)adaptive_send_unix(line, (size_t)n);
++		if (adaptive_send_unix(line, (size_t)n) && !strcmp(event, "FLOW_END"))
++			t->adaptive_terminal_emitted = true;
 +#endif
 +		return;
 +	}
@@ -378,6 +384,7 @@ index 1eaad17..44c9ac4 100644
 +	{
 +		ssize_t written = write(fd, line, (size_t)n);
 +		if (written != n) adaptive_trace_limited = true;
++		else if (!strcmp(event, "FLOW_END")) t->adaptive_terminal_emitted = true;
 +	}
 +}
 +
@@ -398,7 +405,7 @@ index 1eaad17..44c9ac4 100644
  #undef uthash_nonfatal_oom
  #define uthash_nonfatal_oom(elt) ut_oom_recover(elt)
  
-@@ -53,7 +296,11 @@ static void ConntrackFreeElem(t_conntrack_pool *elem)
+@@ -53,7 +303,11 @@ static void ConntrackFreeElem(t_conntrack_pool *elem)
  static void ConntrackPoolDestroyPool(t_conntrack_pool **pp)
  {
  	t_conntrack_pool *elem, *tmp;
@@ -411,7 +418,7 @@ index 1eaad17..44c9ac4 100644
  }
  void ConntrackPoolDestroy(t_conntrack *p)
  {
-@@ -103,6 +350,11 @@ static t_conntrack_pool *ConntrackPoolSearch(t_conntrack_pool *p, const t_conn *
+@@ -103,6 +357,11 @@ static t_conntrack_pool *ConntrackPoolSearch(t_conntrack_pool *p, const t_conn *
  static void ConntrackInitTrack(t_ctrack *t)
  {
  	memset(t, 0, sizeof(*t));
@@ -423,7 +430,7 @@ index 1eaad17..44c9ac4 100644
  	t->l7proto = L7_UNKNOWN;
  	t->reasm_client_payload = L7P_UNKNOWN;
  	t->pos.client.scale = t->pos.server.scale = 0;
-@@ -173,33 +425,38 @@ static void ConntrackApplyPos(t_ctrack *t, bool bReverse, const struct dissect *
+@@ -173,33 +432,38 @@ static void ConntrackApplyPos(t_ctrack *t, bool bReverse, const struct dissect *
  
  static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect *dis)
  {
@@ -475,7 +482,7 @@ index 1eaad17..44c9ac4 100644
  			if (!t->pos.client.seq0) t->pos.client.seq0 = seq0;
  			t->pos.server.seq0 = ntohl(dis->tcp->th_seq);
  		}
-@@ -218,6 +475,26 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+@@ -218,7 +482,31 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
  
  		ConntrackApplyPos(t, bReverse, dis);
  	}
@@ -502,7 +509,12 @@ index 1eaad17..44c9ac4 100644
  
  	clock_gettime(CLOCK_BOOT_OR_UPTIME, &t->pos.t_last);
  	// make sure t_start gets exactly the same value as first t_last
-@@ -287,6 +564,12 @@ static bool ConntrackPoolFeedPool(t_conntrack_pool **pp, const struct dissect *d
+ 	if (!t->t_start.tv_sec) t->t_start = t->pos.t_last;
++	if (t->client_rst || t->server_rst)
++		adaptive_emit(t, "FLOW_END", "rst");
++	else if (t->client_fin && t->server_fin)
++		adaptive_emit(t, "FLOW_END", "fin");
+@@ -287,6 +574,12 @@ static bool ConntrackPoolFeedPool(t_conntrack_pool **pp, const struct dissect *d
  	return false;
  ok:
  	ctr->track.pos.ipproto = proto;
@@ -515,7 +527,7 @@ index 1eaad17..44c9ac4 100644
  	if (ctrack) *ctrack = &ctr->track;
  	if (bReverse) *bReverse = b_rev;
  	return true;
-@@ -307,6 +590,7 @@ static bool ConntrackPoolDropPool(t_conntrack_pool **pp, const struct dissect *d
+@@ -307,6 +600,7 @@ static bool ConntrackPoolDropPool(t_conntrack_pool **pp, const struct dissect *d
  		t = ConntrackPoolSearch(*pp, &connswp);
  	}
  	if (!t) return false;
@@ -523,7 +535,7 @@ index 1eaad17..44c9ac4 100644
  	HASH_DEL(*pp, t); ConntrackFreeElem(t);
  	return true;
  }
-@@ -334,6 +618,12 @@ void ConntrackPoolPurge(t_conntrack *p)
+@@ -334,6 +628,12 @@ void ConntrackPoolPurge(t_conntrack *p)
  					) || (t->conn.l4proto == IPPROTO_UDP && tidle >= p->timeout_udp)
  				)
  			{
@@ -536,7 +548,7 @@ index 1eaad17..44c9ac4 100644
  				HASH_DEL(p->pool, t); ConntrackFreeElem(t);
  			}
  		}
-@@ -425,3 +715,127 @@ bool ReasmHasSpace(t_reassemble *reasm, size_t len)
+@@ -425,3 +725,133 @@ bool ReasmHasSpace(t_reassemble *reasm, size_t len)
  {
  	return (reasm->size_present + len) <= reasm->size;
  }
@@ -573,7 +585,13 @@ index 1eaad17..44c9ac4 100644
 +	snprintf(track->adaptive_scope, sizeof(track->adaptive_scope), "%s", scope ? scope : "default");
 +	track->strategy_generation = pinned ? track->candidate_generation : adaptive_strategy_seq++;
 +	track->strategy_assigned = true;
-+	adaptive_emit(track, "STRATEGY_APPLIED", "");
++	/* A live controller flow starts at authoritative assignment and carries
++	 * the strategy snapshot in the same datagram. File traces keep the separate
++	 * STRATEGY_APPLIED event for offline compatibility. */
++	if (!strncmp(params.adaptive_events_file, "unix:", 5))
++		adaptive_emit(track, "FLOW_START", "");
++	else
++		adaptive_emit(track, "STRATEGY_APPLIED", "");
 +	if (selected_strategy) *selected_strategy = strategy_id;
 +	return true;
 +}
@@ -685,7 +703,7 @@ index 42caf8b..f8dad9d 100644
 +	uint32_t profile_id, strategy_id;
 +	uint32_t candidate_profile_id, candidate_strategy_id;
 +	char adaptive_scope[64];
-+	bool strategy_assigned, strategy_conflict;
++	bool strategy_assigned, strategy_conflict, adaptive_terminal_emitted;
 +	bool client_rst, server_rst, client_fin, server_fin;
 +	bool clienthello_seq_seen;
 +	uint32_t clienthello_first_seq;

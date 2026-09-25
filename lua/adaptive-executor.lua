@@ -8,7 +8,7 @@ function adaptive_execute(ctx, desync)
   end
 
   local scope = desync.arg and desync.arg.scope or "default"
-  local selected = flow_strategy_assign(desync, 1, scope)
+  local selected = flow_strategy_assign(ctx, 1, scope)
   if type(selected) ~= "number" or selected < 1 then
     return VERDICT_PASS
   end

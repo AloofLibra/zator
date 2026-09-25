@@ -1540,9 +1540,9 @@ function circular_quality(ctx, desync)
     -- rotation. Existing manual or legacy locks keep precedence and use the
     -- normal path; C only applies mappings for the explicit canary scope.
     if not slm_get_locked(desync.arg.key, hostkey, scope) and flow_strategy_canary_get then
-        local canary = flow_strategy_canary_get(desync)
+        local canary = flow_strategy_canary_get(ctx)
         if canary then
-            local selected = flow_strategy_assign(desync, canary, "production_canary")
+            local selected = flow_strategy_assign(ctx, canary, "production_canary")
             if selected ~= canary then
                 DLOG("circular_quality: canary assignment unavailable; passing without tampering")
                 return VERDICT_PASS
@@ -1758,7 +1758,7 @@ function circular_quality(ctx, desync)
     hrec._last_strategy = hrec.nstrategy
     -- C records immutable per-flow attribution; this hook does not choose strategy.
     if flow_strategy_assign then
-        local selected = flow_strategy_assign(desync, hrec.nstrategy, scope)
+        local selected = flow_strategy_assign(ctx, hrec.nstrategy, scope)
         if selected then hrec.nstrategy = selected end
     end
     local verdict = VERDICT_PASS

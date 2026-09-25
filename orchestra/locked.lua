@@ -651,9 +651,9 @@ function circular_locked(ctx, desync)
   -- C owns the production-canary assignment; this adapter runs only after
   -- host gates and lock resolution, so an existing lock keeps precedence.
   if not locked and flow_strategy_canary_get and flow_strategy_assign then
-    local canary = flow_strategy_canary_get(desync)
+    local canary = flow_strategy_canary_get(ctx)
     if canary then
-      local selected = flow_strategy_assign(desync, canary, "production_canary")
+      local selected = flow_strategy_assign(ctx, canary, "production_canary")
       if selected ~= canary then
         DLOG_ERR("circular_locked: canary assignment unavailable; passing without tampering")
         return VERDICT_PASS
@@ -687,7 +687,7 @@ function circular_locked(ctx, desync)
   DLOG("circular_locked: current strategy "..hrec.nstrategy.." profile="..profile)
   -- C records immutable per-flow attribution; this hook does not choose strategy.
   if flow_strategy_assign then
-    local selected = flow_strategy_assign(desync, hrec.nstrategy, scope)
+    local selected = flow_strategy_assign(ctx, hrec.nstrategy, scope)
     if selected then hrec.nstrategy = selected end
   end
   while true do

@@ -155,6 +155,44 @@ def main():
         replay_module.replay(io.StringIO(no_start))
     assert json.loads(out.getvalue())["decision"] == "UNATTRIBUTED"
 
+    # Resident shadow output may include valid flows that never received a
+    # strategy assignment. Accept only the all-zero, explicitly unattributed
+    # shape; it must remain diagnostic and never count as strategy evidence.
+    flow_columns = ("FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion "
+                    "challenger action independent confidence_lcb95_milli rank candidate_count "
+                    "top_strategy quarantine decision scope transport ip_family network_epoch "
+                    "network_health network_health_reason client_packets server_packets client_bytes "
+                    "server_bytes server_seen server_payload_seen client_rst server_rst client_fin "
+                    "server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions "
+                    "termination_reason source_port dst_port dst_ip").split()
+    header = ("# ADAPTIVE_CONTROLLER_OUTPUT v7: " + " ".join(
+        flow_columns + ["PROBE_OUTCOME", "redirect_host", "body_sample_bytes", "block_body_marker"]))
+    unassigned_row = ["FLOW_OUTCOME", "77", "0", "0", "0", "WEAK_SUCCESS", "example.com",
+                      "0", "0", "UNATTRIBUTED", "0", "0", "0", "0", "0", "NONE",
+                      "UNATTRIBUTED", "default", "tcp", "ipv4", "1", "UNKNOWN",
+                      "CANARY_REQUIRED", "1", "1", "100", "200", "1", "1", "0", "0",
+                      "1", "0", "1000", "1200", "1", "0", "timeout_fin", "50000",
+                      "443", "93.184.216.34"]
+    assert len(unassigned_row) == len(flow_columns)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        replay_module.replay_controller_output(io.StringIO(
+            header + "\n" + "\t".join(unassigned_row) + "\n"))
+    controller_rows = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert controller_rows[0]["profile_id"] == 0
+    assert controller_rows[0]["decision"] == "UNATTRIBUTED"
+    assert controller_rows[-1]["unattributed_flow_count"] == 1
+    assert controller_rows[-1]["attributed_flow_count"] == 0
+
+    invalid_assignment = unassigned_row.copy()
+    invalid_assignment[3] = "7"
+    try:
+        replay_module.replay_controller_output(io.StringIO(
+            header + "\n" + "\t".join(invalid_assignment) + "\n"))
+        raise AssertionError("profile zero with strategy must be rejected")
+    except ValueError as exc:
+        assert "outside allowed bounds" in str(exc)
+
     # A bounded C trace reports truncation; unmatched flows stay incomplete.
     partial = event("FLOW_START", 99) + "# TRACE_LIMIT\tmax_bytes=524288\n"
     out = io.StringIO()
@@ -172,6 +210,8 @@ def main():
     patch_text = patch_path.read_text(encoding="utf-8")
     for primitive in ("FLOW_START", "STRATEGY_APPLIED", "FLOW_END", "adaptive-events", "v2"):
         assert primitive in patch_text
+    assert 'strncmp(params.adaptive_events_file, "unix:", 5) && !t->strategy_assigned' in patch_text
+    assert 'adaptive_emit(track, "FLOW_START", "")' in patch_text
     for lua_path in (ROOT / "orchestra" / "locked.lua",
                      ROOT / "lua" / "combined-detector.lua"):
         assert "flow_strategy_assign" in lua_path.read_text(encoding="utf-8")

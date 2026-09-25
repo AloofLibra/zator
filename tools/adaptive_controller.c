@@ -26,7 +26,7 @@
 #define MAX_LINE 2048
 #define MAX_PROBE_RESULT_LINE (40U * 1024U)
 #define MAX_FIELDS 32
-#define MAX_OPEN_FLOWS 256
+#define MAX_OPEN_FLOWS 1024
 #define OPEN_FLOW_RETENTION_MS 120000ULL
 #define MAX_CONTEXTS 128
 #define MAX_CANDIDATES 384
@@ -43,6 +43,7 @@
 #define CONTROL_BRACKET_MAX_MS 120000ULL
 #define CONTROL_STRATEGY_ID UINT32_MAX
 #define PROBE_BODY_MAX 16384U
+#define ADAPTIVE_DGRAM_QLEN_MIN 512U
 #define PROMISING_RECHECK_MS (10ULL * 60ULL * 1000ULL)
 #define UNKNOWN_RECHECK_MS (30ULL * 60ULL * 1000ULL)
 #define CHAMPION_RECHECK_MS (6ULL * 60ULL * 60ULL * 1000ULL)
@@ -2339,6 +2340,83 @@ static bool same_assignment(const struct flow_state *f, uint32_t profile,
 		f->generation == generation;
 }
 
+#if defined(__linux__)
+static unsigned int adaptive_dgram_qlen_original;
+static bool adaptive_dgram_qlen_changed;
+
+static void adaptive_dgram_qlen_tune(void)
+{
+	const char *path = "/proc/sys/net/unix/max_dgram_qlen";
+	FILE *fp;
+	unsigned int current;
+	int written, closed;
+	fp = fopen(path, "r");
+	if (!fp) return;
+	if (fscanf(fp, "%u", &current) != 1) { fclose(fp); return; }
+	fclose(fp);
+	if (current >= ADAPTIVE_DGRAM_QLEN_MIN) return;
+	fp = fopen(path, "w");
+	if (!fp) return;
+	written = fprintf(fp, "%u\n", ADAPTIVE_DGRAM_QLEN_MIN);
+	closed = fclose(fp);
+	if (written > 0 && closed == 0) {
+		adaptive_dgram_qlen_original = current;
+		adaptive_dgram_qlen_changed = true;
+		fprintf(stderr, "adaptive_controller: raised net.unix.max_dgram_qlen %u -> %u\n",
+			current, ADAPTIVE_DGRAM_QLEN_MIN);
+	} else {
+		fprintf(stderr, "adaptive_controller: could not raise net.unix.max_dgram_qlen\n");
+	}
+}
+
+static void adaptive_dgram_qlen_restore(void)
+{
+	const char *path = "/proc/sys/net/unix/max_dgram_qlen";
+	FILE *fp;
+	unsigned int current;
+	int written, closed;
+	if (!adaptive_dgram_qlen_changed) return;
+	fp = fopen(path, "r");
+	if (!fp) return;
+	if (fscanf(fp, "%u", &current) != 1) { fclose(fp); return; }
+	fclose(fp);
+	/* Preserve an administrator's change made while the controller was running. */
+	if (current != ADAPTIVE_DGRAM_QLEN_MIN) return;
+	fp = fopen(path, "w");
+	if (!fp) return;
+	written = fprintf(fp, "%u\n", adaptive_dgram_qlen_original);
+	closed = fclose(fp);
+	if (written > 0 && closed == 0)
+		fprintf(stderr, "adaptive_controller: restored net.unix.max_dgram_qlen to %u\n",
+			adaptive_dgram_qlen_original);
+}
+#else
+static void adaptive_dgram_qlen_tune(void) { }
+static void adaptive_dgram_qlen_restore(void) { }
+#endif
+
+static void flow_set_assignment(struct flow_state *flow, uint32_t profile,
+		uint32_t strategy, uint64_t generation, const char *host, const char *scope)
+{
+	if (flow->assigned && !same_assignment(flow, profile, strategy, generation)) {
+		flow->strategy_conflict = true;
+		return;
+	}
+	if ((flow->scope[0] && strcmp(flow->scope, scope)) ||
+		(flow->host[0] && host[0] && strcmp(flow->host, host))) {
+		flow->strategy_conflict = true;
+		return;
+	}
+	flow->assigned = true;
+	flow->profile = profile;
+	flow->strategy = strategy;
+	flow->generation = generation;
+	if (!flow->host[0] && !copy_field(flow->host, sizeof(flow->host), host))
+		flow->strategy_conflict = true;
+	if (!flow->scope[0] && !copy_field(flow->scope, sizeof(flow->scope), scope))
+		flow->strategy_conflict = true;
+}
+
 static void network_health_current(uint8_t *state, uint8_t *reason)
 {
 	if (!network_context_known) {
@@ -2466,25 +2544,15 @@ static void process_event(char **c, uint64_t now, uint32_t source_port,
 			flow->network_context_usable = !network_sampling_enabled || network_context_known;
 			network_health_current(&flow->health_state, &flow->health_reason);
 		}
+		/* New live C telemetry may combine the authoritative assignment with
+		 * FLOW_START so one datagram establishes a complete controller flow. */
+		if (profile && strategy)
+			flow_set_assignment(flow, profile, strategy, generation, c[8], c[7]);
 		return;
 	}
 
 	if (!strcmp(c[2], "STRATEGY_APPLIED")) {
-		if (flow->assigned && !same_assignment(flow, profile, strategy, generation))
-			flow->strategy_conflict = true;
-		else {
-			if ((flow->scope[0] && strcmp(flow->scope, c[7])) ||
-				(flow->host[0] && c[8][0] && strcmp(flow->host, c[8])))
-				flow->strategy_conflict = true;
-			flow->assigned = true;
-			flow->profile = profile;
-			flow->strategy = strategy;
-			flow->generation = generation;
-			if (!flow->host[0] && !copy_field(flow->host, sizeof(flow->host), c[8]))
-				flow->strategy_conflict = true;
-			if (!flow->scope[0] && !copy_field(flow->scope, sizeof(flow->scope), c[7]))
-				flow->strategy_conflict = true;
-		}
+		flow_set_assignment(flow, profile, strategy, generation, c[8], c[7]);
 		return;
 	}
 	if (!strcmp(c[2], "STRATEGY_CONFLICT")) {
@@ -3859,8 +3927,27 @@ static int run_socket(const char *path)
 		perror("adaptive_controller: inspect socket path");
 		return 1;
 	}
+	adaptive_dgram_qlen_tune();
 	fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-	if (fd < 0) { perror("adaptive_controller: socket"); return 1; }
+	if (fd < 0) { perror("adaptive_controller: socket"); adaptive_dgram_qlen_restore(); return 1; }
+	{
+		int requested = 1024 * 1024;
+		int actual = 0;
+		socklen_t actual_len = sizeof(actual);
+		bool configured = false;
+#if defined(__linux__) && defined(SO_RCVBUFFORCE)
+		if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &requested, sizeof(requested)) == 0)
+			configured = true;
+#endif
+		if (!configured && setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested, sizeof(requested)) == 0)
+			configured = true;
+		if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actual, &actual_len) == 0) {
+			fprintf(stderr, "adaptive_controller: event socket receive buffer=%d bytes%s\n",
+				actual, actual < requested ? " (kernel limit)" : "");
+		} else if (!configured) {
+			perror("adaptive_controller: event socket receive buffer");
+		}
+	}
 	memset(&addr, 0, sizeof(addr));
 	addr.sun_family = AF_UNIX;
 	memcpy(addr.sun_path, path, strlen(path) + 1);
@@ -3869,6 +3956,7 @@ static int run_socket(const char *path)
 		umask(old_umask);
 		perror("adaptive_controller: bind");
 		close(fd);
+		adaptive_dgram_qlen_restore();
 		return 1;
 	}
 	umask(old_umask);
@@ -3876,6 +3964,7 @@ static int run_socket(const char *path)
 		perror("adaptive_controller: secure socket");
 		close(fd);
 		unlink(path);
+		adaptive_dgram_qlen_restore();
 		return 1;
 	}
 	memset(&sa, 0, sizeof(sa));
@@ -3885,6 +3974,7 @@ static int run_socket(const char *path)
 		perror("adaptive_controller: sigaction");
 		close(fd);
 		unlink(path);
+		adaptive_dgram_qlen_restore();
 		return 1;
 	}
 	recv_timeout.tv_sec = 30;
@@ -3893,6 +3983,7 @@ static int run_socket(const char *path)
 		perror("adaptive_controller: socket timeout");
 		close(fd);
 		unlink(path);
+		adaptive_dgram_qlen_restore();
 		return 1;
 	}
 	network_sampling_enabled = true;
@@ -3974,6 +4065,7 @@ static int run_socket(const char *path)
 	close(fd);
 	if (lstat(path, &current) == 0 && current.st_dev == before.st_dev && current.st_ino == before.st_ino)
 		(void)unlink(path);
+	adaptive_dgram_qlen_restore();
 	return fflush(stdout) == EOF ? 1 : 0;
 }
 

@@ -88,8 +88,18 @@ awk -F '\t' '$1 == "FLOW_OUTCOME" { if ($6 != "UNKNOWN" || $12 != 0 || $13 != 0 
   exit 1
 }
 
+{
+  record 46000 FLOW_START 102 13 assigned-start.test 0 ""
+  record 46001 FLOW_END 102 13 assigned-start.test 600 process_exit
+} | "$TMP/adaptive-controller" > "$TMP/assigned-start"
+awk -F '\t' '$1 == "FLOW_OUTCOME" { if ($2 != 102 || $3 != 2 || $4 != 13 || $6 != "WEAK_SUCCESS") exit 1; found=1 } END { exit !found }' "$TMP/assigned-start" || {
+  cat "$TMP/assigned-start" >&2
+  echo "controller did not accept an assigned FLOW_START snapshot" >&2
+  exit 1
+}
+
 i=1
-while [ "$i" -le 257 ]; do
+while [ "$i" -le 1025 ]; do
   record 50000 FLOW_START "$i" 0 "" 0 ""
   i=$((i + 1))
 done | "$TMP/adaptive-controller" > "$TMP/overflow"

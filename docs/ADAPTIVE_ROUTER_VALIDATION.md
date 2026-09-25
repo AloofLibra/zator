@@ -195,6 +195,19 @@ If a flow is absent, check for journal truncation; do not treat a missing audit
 row as a passed rollback review. Preserve the original TSV; the analyzer is
 read-only and Python is a developer-side dependency only.
 
+The live `unix:` event stream is intentionally narrower than the file trace:
+nfqws2 publishes a flow to the controller only after C has confirmed its
+strategy assignment, as one `FLOW_START` carrying the assignment snapshot. This
+keeps ordinary unassigned conntrack entries out of the controller's bounded
+open-flow table and halves assignment-time IPC messages. The controller uses a
+1 MiB requested receive buffer and raises Linux `net.unix.max_dgram_qlen` to
+512 while its socket is active, restoring the previous value on clean shutdown.
+File-based traces retain distinct `FLOW_START` and `STRATEGY_APPLIED` events for
+offline diagnostics.
+After upgrading nfqws2, start a fresh shadow capture; do not combine a journal
+from the old all-flows stream with the new filtered stream when checking
+controller overflow or attribution completeness.
+
 ## Acceptance criteria
 
 - Both platform service paths start and stop cleanly with shadow, learning,

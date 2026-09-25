@@ -271,7 +271,11 @@ def replay_controller_output(stream):
             except ValueError as exc:
                 raise ValueError(f"line {line_no}: invalid FLOW_OUTCOME value") from exc
             flags = cols[10:11] + cols[27:33]
-            if (flow["flow_id"] <= 0 or flow["profile_id"] <= 0 or
+            unassigned = (flow["profile_id"] == 0 and flow["strategy_id"] == 0 and
+                          flow["strategy_generation"] == 0 and
+                          flow["action"] == "UNATTRIBUTED" and
+                          flow["decision"] == "UNATTRIBUTED")
+            if (flow["flow_id"] <= 0 or (flow["profile_id"] <= 0 and not unassigned) or
                     not 0 <= flow["strategy_id"] <= 0xffffffff or
                     flow["strategy_generation"] < 0 or flow["independent"] not in {0, 1} or
                     (flow["hostname"] and
@@ -881,8 +885,11 @@ def replay_controller_output(stream):
                           "clear": not any(pending.values())}, separators=(",", ":")))
 
     flows_by_id = defaultdict(list)
+    unattributed_flow_count = 0
     for flow in flow_outcomes:
         flows_by_id[flow["flow_id"]].append(flow)
+        if flow["profile_id"] == 0:
+            unattributed_flow_count += 1
         print(json.dumps(flow, separators=(",", ":")))
     for event in canary_events:
         if event["event"] != "CANARY_ROLLBACK":
@@ -947,6 +954,8 @@ def replay_controller_output(stream):
                       rollback_audit_incomplete_count == 0),
         "header_present": header_seen,
         "output_limited": output_limited,
+        "attributed_flow_count": len(flow_outcomes) - unattributed_flow_count,
+        "unattributed_flow_count": unattributed_flow_count,
         "integrity_event_count": len(integrity_events),
         "rollback_audit_incomplete_count": rollback_audit_incomplete_count,
     }, separators=(",", ":")))
