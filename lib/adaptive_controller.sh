@@ -114,8 +114,7 @@ adaptive_controller_install() {
   tmp="$binary.tmp.$$"
   sumtmp="$tmp.sha256"
   rm -f "$tmp" "$sumtmp"
-  if ! adaptive_controller_fetch_limited "$tmp" "$base/$name" 524288 ||
-     ! adaptive_controller_fetch_limited "$sumtmp" "$base/$name.sha256" 4096; then
+  if ! adaptive_controller_fetch_limited "$sumtmp" "$base/$name.sha256" 4096; then
     rm -f "$tmp" "$sumtmp"
     echo "Не удалось скачать Adaptive Controller ($target)." >&2
     return 1
@@ -125,6 +124,24 @@ adaptive_controller_install() {
     *[!0-9a-f]*|'') rm -f "$tmp" "$sumtmp"; echo "Некорректный SHA-256 asset." >&2; return 1 ;;
   esac
   [ "${#expected}" -eq 64 ] || { rm -f "$tmp" "$sumtmp"; echo "Некорректная длина SHA-256." >&2; return 1; }
+  if [ -x "$binary" ]; then
+    actual="$(sha256sum "$binary" 2>/dev/null | awk '{print $1}')"
+    if [ "$actual" = "$expected" ]; then
+      size="$(wc -c < "$binary" | awk '{print $1}')"
+      case "$size" in ''|*[!0-9]*) size=0 ;; esac
+      if [ "$size" -gt 0 ] && [ "$size" -le 524288 ]; then
+        rm -f "$sumtmp"
+        ln -sfn "$name" "$bindir/adaptive-controller" || return 1
+        printf '%s\n' "$binary"
+        return 0
+      fi
+    fi
+  fi
+  if ! adaptive_controller_fetch_limited "$tmp" "$base/$name" 524288; then
+    rm -f "$tmp" "$sumtmp"
+    echo "Не удалось скачать Adaptive Controller ($target)." >&2
+    return 1
+  fi
   actual="$(sha256sum "$tmp" 2>/dev/null | awk '{print $1}')"
   [ "$actual" = "$expected" ] || { rm -f "$tmp" "$sumtmp"; echo "SHA-256 Adaptive Controller не совпадает." >&2; return 1; }
   size="$(wc -c < "$tmp" | awk '{print $1}')"
