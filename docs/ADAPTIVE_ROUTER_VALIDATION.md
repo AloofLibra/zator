@@ -25,6 +25,55 @@ hosts, but it changes production traffic for those hosts while enabled.
 - Keep a local console or another management path available while restarting
   zapret2.
 
+### Install the beta `nfqws2` binary for a controlled test
+
+The beta archive is a complete upstream tree, so do not unpack it over the
+router installation. On a PC, extract only `binaries/linux-<target>/nfqws2`
+from [`v1.0.5.2-adaptive-beta.2`](https://github.com/AloofLibra/zapret2/releases/tag/v1.0.5.2-adaptive-beta.2),
+then copy that one file to `/tmp/nfqws2-adaptive` on the router. Select the
+archive directory from `uname -m`:
+
+| `uname -m` | Archive directory |
+| --- | --- |
+| `aarch64`, `arm64` | `linux-arm64` |
+| `armv6l`, `armv7l`, `armv8l` | `linux-arm` |
+| `i586`, `i686`, `i786` | `linux-x86` |
+| `x86_64`, `amd64` | `linux-x86_64` |
+| `mips` | `linux-mips` |
+| `mipsel`, `mipsle` | `linux-mipsel` |
+| `mips64` | `linux-mips64` |
+| `riscv64` | `linux-riscv64` |
+| `ppc`, `powerpc` | `linux-ppc` |
+
+On the router, check the staged binary before stopping the service:
+
+```sh
+chmod 755 /tmp/nfqws2-adaptive
+/tmp/nfqws2-adaptive --help 2>&1 | grep -E -- '--adaptive-events|--adaptive-control|--adaptive-canary-profile|--adaptive-strategy'
+```
+
+Require all four options. Then stop zapret2 using `/etc/init.d/zapret2` on
+OpenWrt or `/opt/etc/init.d/S90-zapret2` on Keenetic, and run:
+
+```sh
+BIN=/opt/zapret2/nfq2/nfqws2
+cp -p "$BIN" /tmp/nfqws2.pre-beta2 || exit 1
+cp /tmp/nfqws2-adaptive "$BIN.new" && chmod 755 "$BIN.new" && mv -f "$BIN.new" "$BIN" || exit 1
+```
+
+Start zapret2 and verify its service log before enabling shadow or learning.
+For rollback during the same router uptime, stop zapret2, then run:
+
+```sh
+cp /tmp/nfqws2.pre-beta2 "$BIN.new" && chmod 755 "$BIN.new" && mv -f "$BIN.new" "$BIN" || exit 1
+```
+
+Start the service again. The backup is in tmpfs and is lost on reboot; keep
+the normal zapret2 reinstall path available as the durable recovery option.
+
+This is a temporary test install. A regular zapret2 update replaces the fork
+binary with the build selected by the existing zator flavor setting.
+
 ## OpenWrt
 
 Validate on the target firewall backend in use (nftables or iptables). Keep the
