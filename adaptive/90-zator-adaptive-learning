@@ -56,8 +56,12 @@ adaptive_mark_read()
 
 adaptive_source_ports_safe()
 {
-	local first last
-	read -r first last </proc/sys/net/ipv4/ip_local_port_range 2>/dev/null || return 1
+	local first last range
+	range="$(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null | awk 'NF == 2 { print $1, $2 }')"
+	set -- $range
+	[ "$#" -eq 2 ] || return 1
+	first="$1"
+	last="$2"
 	case "$first:$last" in *[!0-9:]*) return 1 ;; esac
 	[ "$first" -gt 0 ] && [ "$last" -ge "$first" ] && [ "$last" -le 65535 ] || return 1
 	[ "$Z2R_ADAPTIVE_PORT_LAST" -lt "$first" ] || [ "$Z2R_ADAPTIVE_PORT_FIRST" -gt "$last" ]

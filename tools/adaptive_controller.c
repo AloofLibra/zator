@@ -28,7 +28,11 @@
 #define MAX_FIELDS 32
 #define MAX_OPEN_FLOWS 1024
 #define OPEN_FLOW_RETENTION_MS 120000ULL
-#define MAX_CONTEXTS 128
+/* Keep enough room for ordinary browsing plus explicitly scheduled Learning
+ * targets. The table is fixed-size to keep memory bounded on small routers;
+ * 256 contexts add only a small fixed footprint and remain under the 512 KiB
+ * checkpoint limit (serialized state is substantially smaller than structs). */
+#define MAX_CONTEXTS 256
 #define MAX_CANDIDATES 384
 #define MAX_PROVIDER_PRIORS 128
 #define MAX_PROVIDER_HOSTS 512
@@ -2799,7 +2803,7 @@ static int set_worker_candidate(const char *worker_path, uint32_t profile, uint3
 	ssize_t received;
 	if (!worker_path || worker_path[0] != '/' || strlen(worker_path) >= sizeof(remote.sun_path) ||
 		!profile || !strategy) return 2;
-	if (snprintf(local_path, sizeof(local_path), "/tmp/zator-adaptive/set-%ld.sock", (long)getpid()) >= (int)sizeof(local_path)) return 2;
+	if (snprintf(local_path, sizeof(local_path), "/tmp/zator-adaptive-learning/set-%ld.sock", (long)getpid()) >= (int)sizeof(local_path)) return 2;
 	if (lstat(local_path, &before) == 0 || errno != ENOENT) {
 		fputs("adaptive_controller: local control socket path is unavailable\n", stderr);
 		return 1;
@@ -2809,7 +2813,7 @@ static int set_worker_candidate(const char *worker_path, uint32_t profile, uint3
 	memset(&local, 0, sizeof(local));
 	local.sun_family = AF_UNIX;
 	memcpy(local.sun_path, local_path, strlen(local_path) + 1);
-	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0 || chmod(local_path, 0600) != 0) {
+	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0 || chmod(local_path, 0222) != 0) {
 		perror("adaptive_controller: bind control socket"); goto done;
 	}
 	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
@@ -2856,7 +2860,7 @@ static int get_worker_candidate(const char *worker_path)
 	char local_path[sizeof(local.sun_path)], reply[192];
 	ssize_t received;
 	if (!worker_path || worker_path[0] != '/' || strlen(worker_path) >= sizeof(remote.sun_path)) return 2;
-	if (snprintf(local_path, sizeof(local_path), "/tmp/zator-adaptive/get-%ld.sock", (long)getpid()) >= (int)sizeof(local_path)) return 2;
+	if (snprintf(local_path, sizeof(local_path), "/tmp/zator-adaptive-learning/get-%ld.sock", (long)getpid()) >= (int)sizeof(local_path)) return 2;
 	if (lstat(local_path, &before) == 0 || errno != ENOENT) {
 		fputs("adaptive_controller: local control socket path is unavailable\n", stderr);
 		return 1;
@@ -2866,7 +2870,7 @@ static int get_worker_candidate(const char *worker_path)
 	memset(&local, 0, sizeof(local));
 	local.sun_family = AF_UNIX;
 	memcpy(local.sun_path, local_path, strlen(local_path) + 1);
-	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0 || chmod(local_path, 0600) != 0) {
+	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0 || chmod(local_path, 0222) != 0) {
 		perror("adaptive_controller: bind control socket"); goto done;
 	}
 	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
@@ -3419,7 +3423,7 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 		controller_reply(fd, peer, peer_len, reply);
 		return true;
 	}
-	if (n == 6 && !strcmp(f[0], "PROBE_NEXT")) {
+	if ((n == 6 || n == 7) && !strcmp(f[0], "PROBE_NEXT")) {
 		handle_probe_next(f, n, fd, peer, peer_len, now);
 		return true;
 	}
@@ -3533,13 +3537,13 @@ static int controller_probe_request(const char *path, const char *request, char 
 	char local_path[sizeof(local.sun_path)];
 	ssize_t received;
 	if (!path || path[0] != '/' || strlen(path) >= sizeof(remote.sun_path) ||
-		snprintf(local_path, sizeof(local_path), "/tmp/zator-adaptive/pr-%ld.sock", (long)getpid()) >= (int)sizeof(local_path)) return 2;
+		snprintf(local_path, sizeof(local_path), "/tmp/zator-adaptive-learning/pr-%ld.sock", (long)getpid()) >= (int)sizeof(local_path)) return 2;
 	if (lstat(local_path, &before) == 0 || errno != ENOENT) return 1;
 	fd = socket(AF_UNIX, SOCK_DGRAM, 0);
 	if (fd < 0) goto done;
 	memset(&local, 0, sizeof(local)); local.sun_family = AF_UNIX;
 	memcpy(local.sun_path, local_path, strlen(local_path) + 1);
-	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0 || chmod(local_path, 0600) != 0 ||
+	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0 || chmod(local_path, 0222) != 0 ||
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) goto done;
 	memset(&remote, 0, sizeof(remote)); remote.sun_family = AF_UNIX;
 	memcpy(remote.sun_path, path, strlen(path) + 1);

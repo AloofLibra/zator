@@ -211,7 +211,10 @@ adaptive_learning_config_write() {
   adaptive_learning_load_options || return 1
   mkdir -p /tmp/zator-adaptive-learning || return 1
   [ ! -L /tmp/zator-adaptive-learning ] || return 1
-  chmod 700 /tmp/zator-adaptive-learning || return 1
+  # nfqws2 drops to nobody after binding control.sock. It needs to traverse
+  # this root-owned directory to send replies to short-lived controller
+  # datagram sockets; non-writable search-only access keeps names protected.
+  chmod 711 /tmp/zator-adaptive-learning || return 1
   tmp="$out.tmp.$$"
   rm -f "$tmp"
   {
@@ -229,9 +232,12 @@ adaptive_learning_config_write() {
       /^--blob=/ { print; next }
       $0 == "--template=z2r_tcp_tls_common" { in_template=1; seen_template=1; print; next }
       in_template && /^--new([[:space:]]|$)/ { exit }
-      in_template && /^--(out-range|in-range|payload|lua-desync)=/ {
+      in_template && /^--(out-range|in-range|payload)=/ {
         print
-        if ($0 ~ ("strategy=" wanted "([[:space:]]|$)")) seen_strategy=1
+      }
+      in_template && /^--lua-desync=/ && $0 ~ ("strategy=" wanted "([[:space:]]|$)") {
+        print
+        seen_strategy=1
       }
       END { if (!seen_template || (wanted != "4294967295" && !seen_strategy)) exit 1 }
     ' || return 1
@@ -485,7 +491,7 @@ adaptive_learning_wait_probe_settled() {
 adaptive_learning_run_control_probe() {
   local host="$1" controller="$2" budget="$3" provider_key="$4" allowlist="$5"
   local probe_output probe_id journal journal_offset record outcome epoch record_host
-  local record_profile record_strategy record_flow_id
+  local record_profile record_strategy record_flow_id record_network_usable record_flow_metrics
   host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
   journal=/tmp/zator-adaptive/shadow.tsv
   [ -f "$journal" ] && [ ! -L "$journal" ] || {
@@ -494,7 +500,9 @@ adaptive_learning_run_control_probe() {
   }
   journal_offset="$(wc -c <"$journal" | awk '{print $1}')"
   case "$journal_offset" in ''|*[!0-9]*) echo "Не удалось определить позицию журнала." >&2; return 1 ;; esac
-  adaptive_learning_set_candidate 4294967295 || return 1
+  # Keep the function's machine-readable stdout contract: callers capture the
+  # epoch returned below, while set_candidate may print its ACK for operators.
+  adaptive_learning_set_candidate 4294967295 >/dev/null || return 1
   probe_output="$("${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result)" || return 1
   printf '%s\n' "$probe_output" >&2
   probe_id="$(printf '%s\n' "$probe_output" | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^probe_id=[0-9]+$/) { sub(/^probe_id=/, "", $i); print $i; exit } }')"
@@ -506,7 +514,22 @@ adaptive_learning_run_control_probe() {
   record_strategy="$(printf '%s\n' "$record" | awk -F '\t' '{print $7}')"
   record_host="$(printf '%s\n' "$record" | awk -F '\t' '{print $9}')"
   record_flow_id="$(printf '%s\n' "$record" | awk -F '\t' '{print $14}')"
-  [ "$outcome" = CONTROL_SUCCESS ] && [ "$record_profile" = 1 ] &&
+  record_network_usable="$(printf '%s\n' "$record" | awk -F '\t' '{print $20}')"
+  record_flow_metrics="$(printf '%s\n' "$record" | awk -F '\t' '{print $21}')"
+  if [ "$outcome" = CONTROL_UNKNOWN ] &&
+    case "$record_flow_id:$record_network_usable:$record_flow_metrics" in
+      *[!0-9:]*|0:*|*:0:*|*::* ) false ;;
+      *) true ;;
+    esac; then
+    # A blocked target is a useful no-strategy baseline when C confirms the
+    # exact flow and the controller has a usable network context. Without a
+    # matched C flow, a curl failure remains infrastructure-unknown.
+    echo "No-strategy контроль не получил HTTP-ответ, но C подтвердил flow; продолжаю ограниченное сравнение." >&2
+  elif [ "$outcome" != CONTROL_SUCCESS ]; then
+    echo "No-strategy контроль не подтвердил доступность target или C flow; candidate probes приостановлены." >&2
+    return 1
+  fi
+  [ "$record_profile" = 1 ] &&
     [ "$record_strategy" = 4294967295 ] && [ "$record_host" = "$host" ] &&
     case "$record_flow_id" in ''|*[!0-9]*|0) false ;; *) true ;; esac || {
     echo "No-strategy контроль не подтвердил доступность target; candidate probes приостановлены." >&2

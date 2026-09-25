@@ -49,14 +49,28 @@ command -v curl >/dev/null 2>&1 || {
 	echo "curl is required for a one-shot adaptive probe." >&2
 	exit 1
 }
-command -v od >/dev/null 2>&1 && head -c 0 </dev/null >/dev/null 2>&1 || {
-	echo "Bounded body-sample tools (head -c and od) are unavailable." >&2
+BODY_HEX_TOOL=
+if command -v od >/dev/null 2>&1; then
+	BODY_HEX_TOOL=od
+elif command -v hexdump >/dev/null 2>&1 &&
+	hexdump -v -e '1/1 "%02x"' /dev/null >/dev/null 2>&1; then
+	BODY_HEX_TOOL=hexdump
+fi
+head -c 0 </dev/null >/dev/null 2>&1 && [ -n "$BODY_HEX_TOOL" ] || {
+	echo "Bounded body-sample tools (head -c and od/hexdump) are unavailable." >&2
 	exit 1
 }
-read -r ephemeral_first ephemeral_last </proc/sys/net/ipv4/ip_local_port_range 2>/dev/null || {
+ephemeral_range="$(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null | awk 'NF == 2 { print $1, $2 }')" || {
 	echo "Cannot verify the kernel ephemeral port range; refusing to steer probe traffic." >&2
 	exit 1
 }
+set -- $ephemeral_range
+[ "$#" -eq 2 ] || {
+	echo "Invalid kernel ephemeral port range; refusing to steer probe traffic." >&2
+	exit 1
+}
+ephemeral_first="$1"
+ephemeral_last="$2"
 case "$ephemeral_first:$ephemeral_last" in *[!0-9:]*)
 	echo "Invalid kernel ephemeral port range; refusing to steer probe traffic." >&2
 	exit 1
@@ -188,7 +202,11 @@ if [ "$rc" -eq 23 ] && [ "$head_rc" -eq 0 ] &&
 	# head closed the FIFO at the sample cap; curl's write error is intentional.
 	rc=0
 fi
-body_hex="$(od -An -v -tx1 "$BODY_FILE" | tr -d ' \t\n\r')"
+if [ "$BODY_HEX_TOOL" = od ]; then
+	body_hex="$(od -An -v -tx1 "$BODY_FILE" | tr -d ' \t\n\r')"
+else
+	body_hex="$(hexdump -v -e '1/1 "%02x"' "$BODY_FILE" | tr -d ' \t\n\r')"
+fi
 body_hex_chars=${#body_hex}
 case "$body_hex" in *[!0-9a-fA-F]*) rc=255 ;; esac
 [ "$body_hex_chars" -eq $((body_bytes * 2)) ] || rc=255
