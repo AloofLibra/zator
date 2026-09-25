@@ -36,6 +36,30 @@ adaptive_controller_asset_base() {
 
 # Explicit caller only. Runtime package is target-specific, statically linked,
 # bounded to 512 KiB and verified against the checksum in the selected zator branch.
+adaptive_controller_fetch_limited() {
+  local dest="$1" url="$2" max_bytes="$3" size
+  case "$max_bytes" in ''|*[!0-9]*) return 2 ;; esac
+  [ "$max_bytes" -gt 0 ] || return 2
+  rm -f "$dest"
+  if command -v curl >/dev/null 2>&1; then
+    # Close the pipe after max+1 bytes so an unbounded response cannot fill tmpfs.
+    curl -fsSL --connect-timeout 10 "$url" 2>/dev/null |
+      head -c "$((max_bytes + 1))" > "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -T 10 -O - "$url" 2>/dev/null |
+      head -c "$((max_bytes + 1))" > "$dest"
+  else
+    return 127
+  fi
+  size="$(wc -c < "$dest" | awk '{print $1}')"
+  case "$size" in ''|*[!0-9]*) rm -f "$dest"; return 1 ;; esac
+  [ "$size" -gt 0 ] && [ "$size" -le "$max_bytes" ] || {
+    rm -f "$dest"
+    return 1
+  }
+  return 0
+}
+
 adaptive_controller_install() {
   local target base name root bindir binary tmp sumtmp expected actual size
   target="${1:-$(adaptive_controller_target)}" || {
@@ -67,8 +91,8 @@ adaptive_controller_install() {
   tmp="$binary.tmp.$$"
   sumtmp="$tmp.sha256"
   rm -f "$tmp" "$sumtmp"
-  if ! z2r_fetch_url_to_file "$tmp" "$base/$name" ||
-     ! z2r_fetch_url_to_file "$sumtmp" "$base/$name.sha256"; then
+  if ! adaptive_controller_fetch_limited "$tmp" "$base/$name" 524288 ||
+     ! adaptive_controller_fetch_limited "$sumtmp" "$base/$name.sha256" 4096; then
     rm -f "$tmp" "$sumtmp"
     echo "Не удалось скачать Adaptive Controller ($target)." >&2
     return 1
