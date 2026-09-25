@@ -2,7 +2,10 @@ diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
 index e8e5d2d..32878ea 100644
 --- a/.github/workflows/build.yml
 +++ b/.github/workflows/build.yml
-@@ -495,0 +496,72 @@ jobs:
+@@ -493,6 +493,78 @@ jobs:
+           if-no-files-found: error
+ 
+ 
 +  package-adaptive-artifacts:
 +    if: github.event_name == 'workflow_dispatch'
 +    needs: [ build-linux ]
@@ -75,21 +78,36 @@ index e8e5d2d..32878ea 100644
 +            ${{ env.repo_dir }}-openwrt-embedded.tar.gz
 +          if-no-files-found: error
 +
-@@ -604,0 +677 @@ jobs:
+   release:
+     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+     needs: [ build-linux, build-windows, build-freebsd, build-android ]
+@@ -602,13 +674,17 @@ jobs:
+           tar --owner=0 --group=0 -c ${{ env.repo_dir }} | pigz -11 >${{ env.repo_dir }}-openwrt-embedded.tar.gz
+ 
+       - name: Upload release assets
 +        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-@@ -608 +681 @@ jobs:
+         uses: softprops/action-gh-release@v2
+         with:
+           fail_on_unmatched_files: true
 -          prerelease: false
 +          prerelease: ${{ contains(github.ref_name, '-adaptive-beta.') }}
-@@ -609,0 +683 @@ jobs:
+           draft: false
 +          name: ${{ contains(github.ref_name, '-adaptive-beta.') && format('Adaptive Beta {0}', github.ref_name) || github.ref_name }}
-@@ -611,0 +686,2 @@ jobs:
+           body: |
+             ### zapret2 ${{ github.ref_name }}
 +
 +            ${{ contains(github.ref_name, '-adaptive-beta.') && 'Adaptive Strategy Selection beta: opt-in C flow telemetry, immutable per-flow strategy attribution, and acknowledged candidate control for controlled router testing. Learning remains disabled by default.' || 'zapret2 release build.' }}
+           files: |
+             zapret2*.tar.gz
+             zapret2*.zip
 diff --git a/lua/zapret-auto.lua b/lua/zapret-auto.lua
 index c6999e2..c234278 100644
 --- a/lua/zapret-auto.lua
 +++ b/lua/zapret-auto.lua
-@@ -346,0 +347,17 @@ function circular(ctx, desync)
+@@ -344,6 +344,23 @@ function circular(ctx, desync)
+ 		DLOG_ERR("circular: conntrack is missing but required")
+ 		return
+ 	end
 +	-- A controller-managed canary flow bypasses legacy nstrategy rotation.
 +	if flow_strategy_canary_get then
 +		local canary = flow_strategy_canary_get(desync)
@@ -107,17 +125,34 @@ index c6999e2..c234278 100644
 +			return verdict
 +		end
 +	end
-@@ -375,0 +393,5 @@ function circular(ctx, desync)
+ 
+ 	local hrec = automate_host_record(desync)
+ 	if not hrec then
+@@ -373,6 +390,11 @@ function circular(ctx, desync)
+ 	end
+ 
+ 	DLOG("circular: current strategy "..hrec.nstrategy)
 +	-- Optional C-side flow attribution only; legacy selection remains unchanged.
 +	if flow_strategy_assign then
 +		local selected = flow_strategy_assign(desync, hrec.nstrategy, "default")
 +		if selected then hrec.nstrategy = selected end
 +	end
+ 	while true do
+ 		local instance = plan_instance_pop(desync)
+ 		if not instance then break end
 diff --git a/nfq2/conntrack.c b/nfq2/conntrack.c
-index 1eaad17..11ace6b 100644
+index 1eaad17..44c9ac4 100644
 --- a/nfq2/conntrack.c
 +++ b/nfq2/conntrack.c
-@@ -9,0 +10,144 @@
+@@ -3,10 +3,253 @@
+ #include "darkmagic.h"
+ #include <arpa/inet.h>
+ #include <stdio.h>
++#include <time.h>
+ 
+ #include "params.h"
+ #include "lua.h"
+ 
 +#include <inttypes.h>
 +#include <fcntl.h>
 +#include <unistd.h>
@@ -128,7 +163,9 @@ index 1eaad17..11ace6b 100644
 +#endif
 +
 +static void taddr2str(uint8_t l3proto, const t_addr *a, char *buf, size_t bufsize);
-+static uint64_t adaptive_flow_seq = 1;
++static uint64_t adaptive_flow_seq;
++static bool adaptive_flow_seq_initialized;
++static bool adaptive_flow_seq_exhausted;
 +static uint64_t adaptive_strategy_seq = 1;
 +static uint64_t adaptive_candidate_generation = 1;
 +static uint64_t adaptive_host_strategy_generation = 1;
@@ -139,14 +176,92 @@ index 1eaad17..11ace6b 100644
 +	char host[256];
 +};
 +static struct adaptive_host_strategy adaptive_host_strategies[ADAPTIVE_HOST_STRATEGIES_MAX];
-+#define ADAPTIVE_EVENTS_MAX_BYTES (4U * 1024U * 1024U)
++#define ADAPTIVE_EVENTS_MAX_BYTES (512U * 1024U)
 +static bool adaptive_trace_limited;
-+static const char adaptive_trace_limit_marker[] = "# TRACE_LIMIT\tmax_bytes=4194304\n";
++static const char adaptive_trace_limit_marker[] = "# TRACE_LIMIT\tmax_bytes=524288\n";
 +#ifdef __linux__
 +static int adaptive_event_socket = -1;
 +static uint64_t adaptive_event_drops;
 +#endif
 +static int adaptive_event_file_fd = -1;
++
++static uint64_t adaptive_flow_id_next(void)
++{
++	struct timespec started;
++	uint64_t id;
++	if (adaptive_flow_seq_exhausted) return 0;
++	if (!adaptive_flow_seq_initialized) {
++		uint64_t seed;
++		if (clock_gettime(CLOCK_REALTIME, &started) != 0) {
++			started.tv_sec = time(NULL);
++			started.tv_nsec = 0;
++		}
++		seed = ((uint64_t)(uint32_t)getpid() << 32) ^
++			(uint64_t)started.tv_sec ^ ((uint64_t)started.tv_nsec << 1);
++		seed ^= seed >> 30;
++		seed *= UINT64_C(0xbf58476d1ce4e5b9);
++		seed ^= seed >> 27;
++		seed *= UINT64_C(0x94d049bb133111eb);
++		seed ^= seed >> 31;
++		adaptive_flow_seq = seed ? seed : 1;
++		adaptive_flow_seq_initialized = true;
++	}
++	id = adaptive_flow_seq;
++	if (adaptive_flow_seq == UINT64_MAX) adaptive_flow_seq_exhausted = true;
++	else adaptive_flow_seq++;
++	return id;
++}
++
++static bool adaptive_trace_has_limit_marker(int fd, off_t size, bool *found)
++{
++	char buffer[4096 + sizeof(adaptive_trace_limit_marker)-1];
++	size_t carry = 0;
++	off_t offset = 0;
++	*found = false;
++	while (offset < size) {
++		size_t want = size - offset > 4096 ? 4096 : (size_t)(size - offset);
++		ssize_t got;
++		size_t total, i;
++		if (lseek(fd, offset, SEEK_SET) < 0) return false;
++		got = read(fd, buffer + carry, want);
++		if (got <= 0) return false;
++		total = carry + (size_t)got;
++		for (i = 0; i + sizeof(adaptive_trace_limit_marker)-1 <= total; i++)
++			if (!memcmp(buffer + i, adaptive_trace_limit_marker,
++				sizeof(adaptive_trace_limit_marker)-1)) {
++				*found = true;
++				return true;
++			}
++		carry = total < sizeof(adaptive_trace_limit_marker)-1 ? total :
++			sizeof(adaptive_trace_limit_marker)-2;
++		memmove(buffer, buffer + total - carry, carry);
++		offset += got;
++	}
++	return true;
++}
++
++static bool adaptive_trace_file_prepare(int fd)
++{
++	struct stat st;
++	bool has_marker;
++	if (fstat(fd, &st) != 0 || st.st_size < 0) return false;
++	if ((uint64_t)st.st_size > ADAPTIVE_EVENTS_MAX_BYTES -
++		(sizeof(adaptive_trace_limit_marker)-1)) {
++		/* Discard an old oversized capture and leave an explicit incomplete trace. */
++		if (ftruncate(fd, 0) != 0 || lseek(fd, 0, SEEK_SET) < 0) return false;
++		if (write(fd, adaptive_trace_limit_marker,
++			sizeof(adaptive_trace_limit_marker)-1) !=
++			(ssize_t)(sizeof(adaptive_trace_limit_marker)-1)) {
++			adaptive_trace_limited = true;
++			return false;
++		}
++		adaptive_trace_limited = true;
++		return true;
++	}
++	if (!adaptive_trace_has_limit_marker(fd, st.st_size, &has_marker)) return false;
++	if (has_marker) adaptive_trace_limited = true;
++	return true;
++}
 +
 +void ConntrackAdaptiveTelemetryInit(void)
 +{
@@ -174,8 +289,11 @@ index 1eaad17..11ace6b 100644
 +	}
 +#endif
 +	if (params.adaptive_events_file[0] && adaptive_event_file_fd < 0) {
-+		adaptive_event_file_fd = open(params.adaptive_events_file, O_WRONLY|O_CREAT|O_APPEND, 0600);
++		adaptive_event_file_fd = open(params.adaptive_events_file, O_RDWR|O_CREAT|O_APPEND, 0600);
 +		if (adaptive_event_file_fd >= 0 && fchmod(adaptive_event_file_fd, 0600) != 0) {
++			close(adaptive_event_file_fd);
++			adaptive_event_file_fd = -1;
++		} else if (adaptive_event_file_fd >= 0 && !adaptive_trace_file_prepare(adaptive_event_file_fd)) {
 +			close(adaptive_event_file_fd);
 +			adaptive_event_file_fd = -1;
 +		}
@@ -223,7 +341,7 @@ index 1eaad17..11ace6b 100644
 +	taddr2str(t->tuple.l3proto, &t->tuple.dst, dst, sizeof(dst));
 +	clock_gettime(CLOCK_REALTIME, &wall);
 +	n = snprintf(line, sizeof(line),
-+		"v3\t%llu\t%s\t%" PRIu64 "\t%u\t%u\t%" PRIu64 "\t%s\t%s\t%s\t%s\t%s\t%u\t%u\t%llu\t%llu\t%llu\t%llu\t%d\t%d\t%d\t%d\t%d\t%d\t%llu\t%llu\t%u\t%u\t%s\n",
++		"v4\t%llu\t%s\t%" PRIu64 "\t%u\t%u\t%" PRIu64 "\t%s\t%s\t%s\t%s\t%s\t%u\t%u\t%llu\t%llu\t%llu\t%llu\t%d\t%d\t%d\t%d\t%d\t%d\t%llu\t%llu\t%u\t%u\t%llu\t%llu\t%s\n",
 +		(unsigned long long)wall.tv_sec*1000 + wall.tv_nsec/1000000, event, t->flow_id, t->profile_id, t->strategy_id,
 +		t->strategy_generation, scope, host, t->tuple.l4proto==IPPROTO_TCP ? "tcp" : (t->l7proto==L7_QUIC ? "quic" : "udp"),
 +		t->tuple.l3proto==IPPROTO_IPV6 ? "ipv6" : "ipv4", dst, ntohs(t->tuple.dport), ntohs(t->tuple.sport),
@@ -233,6 +351,8 @@ index 1eaad17..11ace6b 100644
 +		t->client_fin, t->server_fin, (unsigned long long)t->t_start.tv_sec*1000 + t->t_start.tv_nsec/1000000,
 +		(unsigned long long)t->pos.t_last.tv_sec*1000 + t->pos.t_last.tv_nsec/1000000,
 +		(unsigned)t->clienthello_count, (unsigned)t->clienthello_retransmissions,
++		(unsigned long long)t->adaptive_injected_packets,
++		(unsigned long long)t->adaptive_injected_bytes,
 +		reason ? reason : "");
 +	if (n<=0 || (size_t)n>=sizeof(line)) return;
 +	if (!strncmp(params.adaptive_events_file, "unix:", 5)) {
@@ -261,32 +381,63 @@ index 1eaad17..11ace6b 100644
 +	}
 +}
 +
++void ConntrackAdaptiveRecordInjection(t_ctrack *track, uint64_t packets, uint64_t bytes)
++{
++	if (!track) return;
++	if (UINT64_MAX - track->adaptive_injected_packets < packets)
++		track->adaptive_injected_packets = UINT64_MAX;
++	else
++		track->adaptive_injected_packets += packets;
++	if (UINT64_MAX - track->adaptive_injected_bytes < bytes)
++		track->adaptive_injected_bytes = UINT64_MAX;
++	else
++		track->adaptive_injected_bytes += bytes;
++}
 +
-@@ -56 +200,5 @@ static void ConntrackPoolDestroyPool(t_conntrack_pool **pp)
++
+ #undef uthash_nonfatal_oom
+ #define uthash_nonfatal_oom(elt) ut_oom_recover(elt)
+ 
+@@ -53,7 +296,11 @@ static void ConntrackFreeElem(t_conntrack_pool *elem)
+ static void ConntrackPoolDestroyPool(t_conntrack_pool **pp)
+ {
+ 	t_conntrack_pool *elem, *tmp;
 -	HASH_ITER(hh, *pp, elem, tmp) { HASH_DEL(*pp, elem); ConntrackFreeElem(elem); }
 +	HASH_ITER(hh, *pp, elem, tmp) {
 +		adaptive_emit(&elem->track, "FLOW_END", "process_exit");
 +		HASH_DEL(*pp, elem);
 +		ConntrackFreeElem(elem);
 +	}
-@@ -105,0 +254,5 @@ static void ConntrackInitTrack(t_ctrack *t)
+ }
+ void ConntrackPoolDestroy(t_conntrack *p)
+ {
+@@ -103,6 +350,11 @@ static t_conntrack_pool *ConntrackPoolSearch(t_conntrack_pool *p, const t_conn *
+ static void ConntrackInitTrack(t_ctrack *t)
+ {
+ 	memset(t, 0, sizeof(*t));
 +	if (params.adaptive_strategy_profile && params.adaptive_strategy_id) {
 +		t->candidate_profile_id = params.adaptive_strategy_profile;
 +		t->candidate_strategy_id = params.adaptive_strategy_id;
 +		t->candidate_generation = adaptive_candidate_generation;
 +	}
-@@ -176,8 +329,2 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 	t->l7proto = L7_UNKNOWN;
+ 	t->reasm_client_payload = L7P_UNKNOWN;
+ 	t->pos.client.scale = t->pos.server.scale = 0;
+@@ -173,33 +425,38 @@ static void ConntrackApplyPos(t_ctrack *t, bool bReverse, const struct dissect *
+ 
+ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect *dis)
+ {
 -	if (bReverse)
--	{
++	if (!bReverse && dis->tcp && dis->len_payload &&
++		IsTLSClientHelloPartial(dis->data_payload, dis->len_payload))
+ 	{
 -		t->pos.server.pcounter++;
 -		t->pos.server.pdcounter += !!dis->len_payload;
 -		t->pos.server.pbcounter += dis->len_payload;
 -	}
 -
 -	else
-+	if (!bReverse && dis->tcp && dis->len_payload &&
-+		IsTLSClientHelloPartial(dis->data_payload, dis->len_payload))
-@@ -185,3 +332,9 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+-	{
 -		t->pos.client.pcounter++;
 -		t->pos.client.pdcounter += !!dis->len_payload;
 -		t->pos.client.pbcounter += dis->len_payload;
@@ -299,19 +450,35 @@ index 1eaad17..11ace6b 100644
 +			t->clienthello_seq_seen = true;
 +			t->clienthello_first_seq = seq;
 +		}
-@@ -194 +347,4 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 	}
+ 
+ 	if (dis->tcp)
+ 	{
+ 		if (tcp_syn_segment(dis->tcp))
+ 		{
 -			if (t->pos.state != SYN) ConntrackReInitTrack(t); // erase current entry
 +			if (t->pos.state != SYN) {
 +				adaptive_emit(t, "FLOW_END", "tuple_reuse");
 +				ConntrackReInitTrack(t); // erase current entry
 +			}
-@@ -201 +357,2 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 			t->pos.client.seq0 = ntohl(dis->tcp->th_seq);
+ 		}
+ 		else if (tcp_synack_segment(dis->tcp))
+ 		{
+ 			// ignore SA dups
+ 			uint32_t seq0 = ntohl(dis->tcp->th_ack) - 1;
 -			if (t->pos.state != SYN && t->pos.client.seq0 != seq0)
 +			if (t->pos.state != SYN && t->pos.client.seq0 != seq0) {
 +				adaptive_emit(t, "FLOW_END", "tuple_reuse");
-@@ -202,0 +360 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 				ConntrackReInitTrack(t); // erase current entry
 +			}
-@@ -220,0 +379,20 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 			if (!t->pos.client.seq0) t->pos.client.seq0 = seq0;
+ 			t->pos.server.seq0 = ntohl(dis->tcp->th_seq);
+ 		}
+@@ -218,6 +475,26 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 
+ 		ConntrackApplyPos(t, bReverse, dis);
+ 	}
 +	if (bReverse)
 +	{
 +		t->pos.server.pcounter++;
@@ -332,23 +499,47 @@ index 1eaad17..11ace6b 100644
 +			t->client_fin |= !!(dis->tcp->th_flags & TH_FIN);
 +		}
 +	}
-@@ -289,0 +468,6 @@ ok:
+ 
+ 	clock_gettime(CLOCK_BOOT_OR_UPTIME, &t->pos.t_last);
+ 	// make sure t_start gets exactly the same value as first t_last
+@@ -287,6 +564,12 @@ static bool ConntrackPoolFeedPool(t_conntrack_pool **pp, const struct dissect *d
+ 	return false;
+ ok:
+ 	ctr->track.pos.ipproto = proto;
 +	if (!ctr->track.flow_id) {
-+		ctr->track.flow_id = ((uint64_t)(uint32_t)getpid() << 32) |
-+			(adaptive_flow_seq++ & UINT32_MAX);
++		ctr->track.flow_id = adaptive_flow_id_next();
++		if (!ctr->track.flow_id) return false;
 +		ctr->track.tuple = ctr->conn;
 +		adaptive_emit(&ctr->track, "FLOW_START", "");
 +	}
-@@ -309,0 +494 @@ static bool ConntrackPoolDropPool(t_conntrack_pool **pp, const struct dissect *d
+ 	if (ctrack) *ctrack = &ctr->track;
+ 	if (bReverse) *bReverse = b_rev;
+ 	return true;
+@@ -307,6 +590,7 @@ static bool ConntrackPoolDropPool(t_conntrack_pool **pp, const struct dissect *d
+ 		t = ConntrackPoolSearch(*pp, &connswp);
+ 	}
+ 	if (!t) return false;
 +	adaptive_emit(&t->track, "FLOW_END", "drop");
-@@ -336,0 +522,6 @@ void ConntrackPoolPurge(t_conntrack *p)
+ 	HASH_DEL(*pp, t); ConntrackFreeElem(t);
+ 	return true;
+ }
+@@ -334,6 +618,12 @@ void ConntrackPoolPurge(t_conntrack *p)
+ 					) || (t->conn.l4proto == IPPROTO_UDP && tidle >= p->timeout_udp)
+ 				)
+ 			{
 +				const char *reason = t->track.b_cutoff ? "cutoff" :
 +					(t->track.client_rst || t->track.server_rst ? "rst_timeout" :
 +					(t->conn.l4proto == IPPROTO_UDP ? "timeout_udp" :
 +					(t->track.pos.state == SYN ? "timeout_syn" :
 +					(t->track.pos.state == FIN ? "timeout_fin" : "timeout_established"))));
 +				adaptive_emit(&t->track, "FLOW_END", reason);
-@@ -427,0 +619,124 @@ bool ReasmHasSpace(t_reassemble *reasm, size_t len)
+ 				HASH_DEL(p->pool, t); ConntrackFreeElem(t);
+ 			}
+ 		}
+@@ -425,3 +715,127 @@ bool ReasmHasSpace(t_reassemble *reasm, size_t len)
+ {
+ 	return (reasm->size_present + len) <= reasm->size;
+ }
 +
 +bool ConntrackSetStrategy(t_ctrack *track, uint32_t profile_id, uint32_t strategy_id,
 +	const char *scope, uint32_t *selected_strategy)
@@ -474,12 +665,21 @@ index 1eaad17..11ace6b 100644
 +	return true;
 +}
 diff --git a/nfq2/conntrack.h b/nfq2/conntrack.h
-index 42caf8b..0c33037 100644
+index 42caf8b..f8dad9d 100644
 --- a/nfq2/conntrack.h
 +++ b/nfq2/conntrack.h
-@@ -32,0 +33 @@
+@@ -30,6 +30,7 @@
+ #define RETRANS_COUNTER_STOP ((uint8_t)-1)
+ 
+ #define RAW_PACKET_QUEUE_DELAYED_MAX	64
 +#define ADAPTIVE_HOST_STRATEGIES_MAX 64
-@@ -59,0 +61,11 @@ typedef struct
+ 
+ typedef union {
+ 	struct in_addr ip;
+@@ -57,6 +58,18 @@ typedef struct
+ 	bool bCheckDone, bCheckResult, bCheckExcluded; // hostlist check result cache
+ 
+ 	struct timespec t_start;
 +	/* Z2R C-owned flow identity and assignment snapshot. */
 +	uint64_t flow_id, strategy_generation, candidate_generation;
 +	uint32_t profile_id, strategy_id;
@@ -490,8 +690,15 @@ index 42caf8b..0c33037 100644
 +	bool clienthello_seq_seen;
 +	uint32_t clienthello_first_seq;
 +	uint32_t clienthello_count, clienthello_retransmissions;
++	uint64_t adaptive_injected_packets, adaptive_injected_bytes;
 +	t_conn tuple; // client-oriented tuple copied at flow creation
-@@ -113,0 +126,12 @@ void ConntrackClearHostname(t_ctrack *track);
+ 
+ 	// this block of data can change between delayed (queued) packets. need to remeber this data for each packet for further replay
+ 	t_ctrack_positions pos;
+@@ -111,6 +124,19 @@ bool ConntrackExtractConn(t_conn *c, bool bReverse, const struct dissect *dis);
+ void ConntrackPoolDump(const t_conntrack *p);
+ void ConntrackPoolPurge(t_conntrack *p);
+ void ConntrackClearHostname(t_ctrack *track);
 +void ConntrackAdaptiveTelemetryInit(void);
 +bool ConntrackSetStrategy(t_ctrack *track, uint32_t profile_id, uint32_t strategy_id,
 +	const char *scope, uint32_t *selected_strategy);
@@ -499,16 +706,23 @@ index 42caf8b..0c33037 100644
 +uint64_t ConntrackAdaptiveCandidateGeneration(void);
 +bool ConntrackAdaptiveSetHostStrategy(uint32_t profile_id, const char *host,
 +	uint32_t strategy_id, uint64_t *generation);
++void ConntrackAdaptiveRecordInjection(t_ctrack *track, uint64_t packets, uint64_t bytes);
 +bool ConntrackAdaptiveClearHostStrategy(uint32_t profile_id, const char *host);
 +bool ConntrackAdaptiveGetHostStrategy(uint32_t profile_id, const char *host,
 +	uint32_t *strategy_id, uint64_t *generation);
 +bool ConntrackAdaptiveLookupCanaryStrategy(const t_ctrack *track, uint32_t profile_id,
 +	const char *host, uint32_t *strategy_id);
+ 
+ bool ReasmInit(t_reassemble *reasm, size_t size_requested, uint32_t seq_start);
+ bool ReasmResize(t_reassemble *reasm, size_t new_size);
 diff --git a/nfq2/lua.c b/nfq2/lua.c
-index 61e4027..03a5d2d 100644
+index 61e4027..bb3be43 100644
 --- a/nfq2/lua.c
 +++ b/nfq2/lua.c
-@@ -1082,0 +1083,29 @@ static int luacall_execution_plan(lua_State *L)
+@@ -1080,6 +1080,35 @@ static int luacall_execution_plan(lua_State *L)
+ 
+ 	LUA_STACK_GUARD_RETURN(L,1)
+ }
 +static int luacall_flow_strategy_assign(lua_State *L)
 +{
 +	lua_check_argc(L,"flow_strategy_assign",3);
@@ -538,17 +752,102 @@ index 61e4027..03a5d2d 100644
 +	return 1;
 +}
 +
-@@ -4565,0 +4595,3 @@ static void lua_init_functions(void)
+ static int luacall_execution_plan_cancel(lua_State *L)
+ {
+ 	lua_check_argc(L,"execution_plan_cancel",1);
+@@ -2983,6 +3012,15 @@ static int luacall_rawsend(lua_State *L)
+ 	uint32_t fwmark;
+ 	sockaddr_in46 sa;
+ 	bool b;
++	t_lua_desync_context *ctx = NULL;
++	t_ctrack *track = NULL;
++
++	if (params.ref_desync_ctx) {
++		lua_rawgeti(L, LUA_REGISTRYINDEX, params.ref_desync_ctx);
++		ctx = (t_lua_desync_context *)lua_touserdata(L, -1);
++		lua_pop(L, 1);
++		if (ctx && ctx->valid) track = ctx->ctrack;
++	}
+ 
+ 	data=(uint8_t*)lua_reqlstring(L,1,&len);
+ 	lua_rawsend_extract_options(L,2,&repeats,&fwmark,&ifout);
+@@ -2991,7 +3029,14 @@ static int luacall_rawsend(lua_State *L)
+ 		luaL_error(L, "bad ip4/ip6 header");
+ 	DLOG("rawsend repeats=%d size=%zu ifout=%s fwmark=%08X\n", repeats,len,ifout ? ifout : "",fwmark);
+ 
+-	b = rawsend_rep(repeats, (struct sockaddr*)&sa, fwmark, ifout, data, len);
++	b = true;
++	for (int i = 0; i < repeats; i++) {
++		if (!rawsend((struct sockaddr*)&sa, fwmark, ifout, data, len)) {
++			b = false;
++			break;
++		}
++		ConntrackAdaptiveRecordInjection(track, 1, len);
++	}
+ 	lua_pushboolean(L, b);
+ 
+ 	LUA_STACK_GUARD_RETURN(L,1)
+@@ -3010,9 +3055,18 @@ static int luacall_rawsend_dissect(lua_State *L)
+ 	uint32_t fwmark;
+ 	sockaddr_in46 sa;
+ 	bool b, badsum, keepsum, ip6_preserve_next;
++	t_lua_desync_context *ctx = NULL;
++	t_ctrack *track = NULL;
+ 	uint8_t last_proto;
+ 	uint8_t buf[RECONSTRUCT_MAX_SIZE] __attribute__((aligned(16)));
+ 
++	if (params.ref_desync_ctx) {
++		lua_rawgeti(L, LUA_REGISTRYINDEX, params.ref_desync_ctx);
++		ctx = (t_lua_desync_context *)lua_touserdata(L, -1);
++		lua_pop(L, 1);
++		if (ctx && ctx->valid) track = ctx->ctrack;
++	}
++
+ 	luaL_checktype(L,1,LUA_TTABLE);
+ 	lua_rawsend_extract_options(L,2, &repeats, &fwmark, &ifout);
+ 	lua_reconstruct_extract_options(L, 3, &keepsum, &badsum, &ip6_preserve_next, &last_proto);
+@@ -3024,7 +3078,14 @@ static int luacall_rawsend_dissect(lua_State *L)
+ 	if (!extract_dst(buf, len, (struct sockaddr*)&sa))
+ 		luaL_error(L, "bad ip4/ip6 header");
+ 	DLOG("rawsend_dissect repeats=%d size=%zu badsum=%u ifout=%s fwmark=%08X\n", repeats,len,badsum,ifout ? ifout : "",fwmark);
+-	b = rawsend_rep(repeats, (struct sockaddr*)&sa, fwmark, ifout, buf, len);
++	b = true;
++	for (int i = 0; i < repeats; i++) {
++		if (!rawsend((struct sockaddr*)&sa, fwmark, ifout, buf, len)) {
++			b = false;
++			break;
++		}
++		ConntrackAdaptiveRecordInjection(track, 1, len);
++	}
+ 	lua_pushboolean(L, b);
+ 
+ 	LUA_STACK_GUARD_RETURN(L,1)
+@@ -4563,6 +4624,9 @@ static void lua_init_functions(void)
+ 		{"execution_plan",luacall_execution_plan},
+ 		// cancel execution of upcoming desync instances and their arguments
+ 		{"execution_plan_cancel",luacall_execution_plan_cancel},
 +		// C-owned immutable first strategy attribution for this conntrack flow
 +		{"flow_strategy_assign",luacall_flow_strategy_assign},
 +		{"flow_strategy_canary_get",luacall_flow_strategy_canary_get},
+ 		// get raw packet data
+ 		{"raw_packet",luacall_raw_packet},
+ 
 diff --git a/nfq2/nfqws.c b/nfq2/nfqws.c
 index ae4bef9..027b413 100644
 --- a/nfq2/nfqws.c
 +++ b/nfq2/nfqws.c
-@@ -47,0 +48 @@
+@@ -45,6 +45,7 @@
+ 
+ #ifdef __linux__
+ #include <sys/ioctl.h>
 +#include <sys/un.h>
-@@ -441,0 +443,190 @@ static void notify_ready(void)
+ #include <libnetfilter_queue/libnetfilter_queue.h>
+ #define NF_DROP 0
+ #define NF_ACCEPT 1
+@@ -439,6 +440,196 @@ static void notify_ready(void)
+ #endif
+ }
+ 
 +#ifdef __linux__
 +/* The control datagram is bounded, while host names use their DNS wire limit. */
 +#define ADAPTIVE_CONTROL_MAX 384
@@ -739,9 +1038,21 @@ index ae4bef9..027b413 100644
 +}
 +#endif
 +
-@@ -448,0 +640 @@ static int nfq_main(void)
+ // extra space for netlink headers
+ #define NFQ_MAX_RECV_SIZE (RECONSTRUCT_MAX_SIZE+4096)
+ static int nfq_main(void)
+@@ -446,6 +637,7 @@ static int nfq_main(void)
+ 	struct nfq_handle *h = NULL;
+ 	struct nfq_q_handle *qh = NULL;
+ 	int res, fd, e;
 +	int control_fd = -1;
-@@ -461,0 +654,10 @@ static int nfq_main(void)
+ 	ssize_t rd;
+ 	FILE *Fpid = NULL;
+ 	uint8_t *buf=NULL, *mod=NULL;
+@@ -459,6 +651,16 @@ static int nfq_main(void)
+ 		DLOG_PERROR("create pidfile");
+ 		return 1;
+ 	}
 +	if (params.adaptive_canary_profile &&
 +		(!*params.adaptive_control_socket || !adaptive_profile_exists(params.adaptive_canary_profile) ||
 +		 params.adaptive_strategy_profile == params.adaptive_canary_profile)) {
@@ -752,10 +1063,16 @@ index ae4bef9..027b413 100644
 +	ConntrackAdaptiveTelemetryInit();
 +	control_fd = adaptive_control_open();
 +	if (*params.adaptive_control_socket && control_fd < 0) goto err;
-@@ -537 +739 @@ static int nfq_main(void)
+ 
+ 	if (params.droproot && !droproot(params.uid, params.user, params.gid, params.gid_count) || !dropcaps())
+ 		goto err;
+@@ -534,17 +736,21 @@ static int nfq_main(void)
+ 		if (bQuit) goto quit;
+ 		for(;;)
+ 		{
 -			if (params.timers)
 +			if (params.timers || control_fd >= 0)
-@@ -539,5 +741,7 @@ static int nfq_main(void)
+ 			{
 -				if (!bt_next) bt_next = TimerPoolNext(params.timers, &params.timers_dirty);
 -				bt = boottime_ms();
 -				dbt = bt_next>bt ? bt_next-bt : 0;
@@ -768,43 +1085,81 @@ index ae4bef9..027b413 100644
 +					tv.tv_sec = (time_t)(dbt/1000);
 +					tv.tv_usec = (suseconds_t)(dbt%1000*1000);
 +				}
-@@ -547 +751,3 @@ static int nfq_main(void)
+ 
+ 				FD_ZERO(&fdset);
+ 				FD_SET(fd, &fdset);
 -				res = select(fd+1, &fdset, NULL, NULL, &tv);
 +				if (control_fd >= 0) FD_SET(control_fd, &fdset);
 +				res = select((fd > control_fd ? fd : control_fd)+1, &fdset, NULL, NULL,
 +					params.timers ? &tv : NULL);
-@@ -564 +770,3 @@ static int nfq_main(void)
+ 				if (bQuit) goto quit;
+ 				if (res == -1)
+ 				{
+@@ -561,7 +767,9 @@ static int nfq_main(void)
+ 			}
+ 			lua_do_gc();
+ 			ReloadCheck();
 -			if (res)
 +			if (control_fd >= 0 && res > 0 && FD_ISSET(control_fd, &fdset))
 +				adaptive_control_handle(control_fd);
 +			if (res && (control_fd < 0 || FD_ISSET(fd, &fdset)))
-@@ -612,0 +821,4 @@ ex:
+ 			{
+ 				rd = recv(fd, buf, NFQ_MAX_RECV_SIZE, 0);
+ 				if (rd<0) break;
+@@ -610,6 +818,10 @@ ex:
+ 	free(buf);
+ 	nfq_deinit(&h, &qh);
+ 	if (cbdata.sock>=0) close(cbdata.sock);
 +	if (control_fd >= 0) {
 +		close(control_fd);
 +		unlink(params.adaptive_control_socket);
 +	}
-@@ -1839,0 +2052,6 @@ static void exithelp(void)
+ 	lua_shutdown();
+ #ifdef HAS_FILTER_SSID
+ 	wlan_info_deinit();
+@@ -1837,6 +2049,12 @@ static void exithelp(void)
+ #endif
+ 		" --ctrack-timeouts=S:E:F[:U]\t\t\t\t; internal conntrack timeouts for TCP SYN, ESTABLISHED, FIN stages, UDP timeout. default %u:%u:%u:%u\n"
+ 		" --ctrack-disable=[0|1]\t\t\t\t\t; 1 or no argument disables conntrack\n"
 +		" --adaptive-events=<file|unix:path>\t\t; append TSV or send nonblocking Unix datagrams (optional)\n"
 +		" --adaptive-strategy=<profile>:<strategy>\t; pin only that profile to one controller-selected learning strategy\n"
 +#ifdef __linux__
 +		" --adaptive-control=<unix_path>\t\t; private Unix datagram candidate/host strategy endpoint (optional)\n"
 +		" --adaptive-canary-profile=<profile>\t; allow up to 64 host-scoped assignments for this profile\n"
 +#endif
-@@ -2002,0 +2221,6 @@ enum opt_indices {
+ 		" --payload-disable=[type[,type]]\t\t\t; do not discover these payload types. for available payload types see '--payload'. disable all if no argument.\n"
+ 		" --server=[0|1]\t\t\t\t\t\t; change multiple aspects of src/dst ip/port handling for incoming connections\n"
+ 		" --ipcache-lifetime=<int>\t\t\t\t; time in seconds to keep cached hop count and domain name (default %u). 0 = no expiration\n"
+@@ -2000,6 +2218,12 @@ enum opt_indices {
+ #endif
+ 	IDX_CTRACK_TIMEOUTS,
+ 	IDX_CTRACK_DISABLE,
 +	IDX_ADAPTIVE_EVENTS,
 +	IDX_ADAPTIVE_STRATEGY,
 +#ifdef __linux__
 +	IDX_ADAPTIVE_CONTROL,
 +	IDX_ADAPTIVE_CANARY_PROFILE,
 +#endif
-@@ -2113,0 +2338,6 @@ static const struct option long_options[] = {
+ 	IDX_PAYLOAD_DISABLE,
+ 	IDX_SERVER,
+ 	IDX_IPCACHE_LIFETIME,
+@@ -2111,6 +2335,12 @@ static const struct option long_options[] = {
+ #endif
+ 	[IDX_CTRACK_TIMEOUTS] = {"ctrack-timeouts", required_argument, 0, 0},
+ 	[IDX_CTRACK_DISABLE] = {"ctrack-disable", optional_argument, 0, 0},
 +	[IDX_ADAPTIVE_EVENTS] = {"adaptive-events", required_argument, 0, 0},
 +	[IDX_ADAPTIVE_STRATEGY] = {"adaptive-strategy", required_argument, 0, 0},
 +#ifdef __linux__
 +	[IDX_ADAPTIVE_CONTROL] = {"adaptive-control", required_argument, 0, 0},
 +	[IDX_ADAPTIVE_CANARY_PROFILE] = {"adaptive-canary-profile", required_argument, 0, 0},
 +#endif
-@@ -2489,0 +2720,57 @@ int main(int argc, char **argv)
+ 	[IDX_PAYLOAD_DISABLE] = {"payload-disable", optional_argument, 0, 0},
+ 	[IDX_SERVER] = {"server", optional_argument, 0, 0},
+ 	[IDX_IPCACHE_LIFETIME] = {"ipcache-lifetime", required_argument, 0, 0},
+@@ -2487,6 +2717,63 @@ int main(int argc, char **argv)
+ 		case IDX_CTRACK_DISABLE:
+ 			params.ctrack_disable = !optarg || atoi(optarg);
+ 			break;
 +		case IDX_ADAPTIVE_EVENTS:
 +			if (!optarg || !*optarg || strlen(optarg) >= sizeof(params.adaptive_events_file))
 +			{
@@ -862,16 +1217,25 @@ index ae4bef9..027b413 100644
 +			break;
 +		}
 +#endif
+ 		case IDX_SERVER:
+ 			params.server = !optarg || atoi(optarg);
+ 			break;
 diff --git a/nfq2/params.h b/nfq2/params.h
 index 309fb75..0863dc7 100644
 --- a/nfq2/params.h
 +++ b/nfq2/params.h
-@@ -181,0 +182,5 @@ struct params_s
+@@ -179,6 +179,11 @@ struct params_s
+ 	// LUA var blobs
+ 	struct blob_collection_head blobs;
+ 
 +	char adaptive_events_file[PATH_MAX]; // optional C-side TSV event sink
 +	char adaptive_control_socket[PATH_MAX]; // optional local Unix datagram controller endpoint
 +	uint32_t adaptive_strategy_profile; // optional controller-pinned learning profile
 +	uint32_t adaptive_strategy_id; // optional controller-pinned learning strategy
 +	uint32_t adaptive_canary_profile; // optional profile accepting host-scoped strategy assignments
+ 	unsigned int ctrack_t_syn, ctrack_t_est, ctrack_t_fin, ctrack_t_udp;
+ 	t_conntrack conntrack;
+ 	bool ctrack_disable, server;
 diff --git a/tools/adaptive-controller b/tools/adaptive-controller
 new file mode 100755
 index 0000000..1cf4af0

@@ -18,29 +18,24 @@ adaptive_controller_target() {
   esac
 }
 
-adaptive_controller_release_base() {
+adaptive_controller_asset_base() {
   local raw="${Z2R_PROJECT_RAW_BASE:-}"
-  local path owner repo
+  local asset_base
+  asset_base="${Z2R_ADAPTIVE_ASSET_BASE:-}"
+  if [ -n "$asset_base" ]; then
+    case "$asset_base" in https://* ) printf '%s\n' "${asset_base%/}"; return 0 ;; esac
+    return 1
+  fi
   case "$raw" in
     https://raw.githubusercontent.com/*/*/*)
-      path="${raw#https://raw.githubusercontent.com/}"
-      owner="${path%%/*}"
-      path="${path#*/}"
-      repo="${path%%/*}"
-      case "$owner/$repo" in
-        *[!A-Za-z0-9_.-]*|*/) return 1 ;;
-      esac
-      printf 'https://github.com/%s/%s/releases/download/latest\n' "$owner" "$repo"
+      printf '%s/adaptive/assets/linux\n' "${raw%/}"
       ;;
-    *)
-      [ -n "${Z2R_ADAPTIVE_RELEASE_BASE:-}" ] || return 1
-      printf '%s\n' "${Z2R_ADAPTIVE_RELEASE_BASE%/}"
-      ;;
+    *) return 1 ;;
   esac
 }
 
 # Explicit caller only. Runtime package is target-specific, statically linked,
-# bounded to 512 KiB and verified against the checksum attached to the release.
+# bounded to 512 KiB and verified against the checksum in the selected zator branch.
 adaptive_controller_install() {
   local target base name root bindir binary tmp sumtmp expected actual size
   target="${1:-$(adaptive_controller_target)}" || {
@@ -64,8 +59,8 @@ adaptive_controller_install() {
     echo "Adaptive Controller отсутствует в offline-пакете." >&2
     return 1
   }
-  base="$(adaptive_controller_release_base)" || {
-    echo "Не удалось определить GitHub release для Adaptive Controller." >&2
+  base="$(adaptive_controller_asset_base)" || {
+    echo "Не удалось определить raw asset path для Adaptive Controller." >&2
     return 1
   }
   mkdir -p "$bindir" || return 1
@@ -87,7 +82,7 @@ adaptive_controller_install() {
   [ "$actual" = "$expected" ] || { rm -f "$tmp" "$sumtmp"; echo "SHA-256 Adaptive Controller не совпадает." >&2; return 1; }
   size="$(wc -c < "$tmp" | awk '{print $1}')"
   case "$size" in ''|*[!0-9]*) rm -f "$tmp" "$sumtmp"; return 1 ;; esac
-  [ "$size" -gt 0 ] && [ "$size" -lt 524288 ] || {
+  [ "$size" -gt 0 ] && [ "$size" -le 524288 ] || {
     rm -f "$tmp" "$sumtmp"
     echo "Размер Adaptive Controller выходит за лимит 512 KiB." >&2
     return 1
@@ -192,6 +187,62 @@ EOF
 
 # Validate a requested id against the exact extracted TLS plan before asking C
 # to change the learning worker's default for future flows. Persist only after ACK.
+adaptive_learning_runner_lock_check() {
+  local lock owner_file owner
+  lock=/tmp/zator-adaptive-learning/runner.lock
+  [ ! -e "$lock" ] && [ ! -L "$lock" ] && return 0
+  [ -d "$lock" ] && [ ! -L "$lock" ] || return 1
+  owner_file="$lock/pid"
+  [ -f "$owner_file" ] && [ ! -L "$owner_file" ] || return 1
+  IFS= read -r owner <"$owner_file" || owner=
+  case "$owner" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$owner" = "${Z2R_ADAPTIVE_RUNNER_PID:-}" ] && return 0
+  if kill -0 "$owner" 2>/dev/null; then
+    echo "Завершите текущий Adaptive learning run перед ручным изменением." >&2
+    return 1
+  fi
+  rm -f "$owner_file" && rmdir "$lock" 2>/dev/null
+}
+
+adaptive_learning_runner_lock_acquire() {
+  local lock owner_file
+  lock=/tmp/zator-adaptive-learning/runner.lock
+  [ -d /tmp/zator-adaptive-learning ] && [ ! -L /tmp/zator-adaptive-learning ] || return 1
+  if ! mkdir "$lock" 2>/dev/null; then
+    adaptive_learning_runner_lock_check || return 1
+    mkdir "$lock" 2>/dev/null || {
+      echo "Уже выполняется Adaptive learning run." >&2
+      return 1
+    }
+  fi
+  chmod 700 "$lock" || { rmdir "$lock" 2>/dev/null || :; return 1; }
+  owner_file="$lock/pid"
+  (umask 077; printf '%s\n' "$$" >"$owner_file") || {
+    rm -f "$owner_file"
+    rmdir "$lock" 2>/dev/null || :
+    return 1
+  }
+  chmod 600 "$owner_file" || {
+    rm -f "$owner_file"
+    rmdir "$lock" 2>/dev/null || :
+    return 1
+  }
+  Z2R_ADAPTIVE_RUNNER_PID="$$"
+  export Z2R_ADAPTIVE_RUNNER_PID
+}
+
+adaptive_learning_runner_lock_release() {
+  local lock owner_file owner
+  lock=/tmp/zator-adaptive-learning/runner.lock
+  owner_file="$lock/pid"
+  [ -d "$lock" ] && [ ! -L "$lock" ] &&
+    [ -f "$owner_file" ] && [ ! -L "$owner_file" ] || return 1
+  IFS= read -r owner <"$owner_file" || return 1
+  [ "$owner" = "$$" ] || return 1
+  rm -f "$owner_file" && rmdir "$lock" || return 1
+  unset Z2R_ADAPTIVE_RUNNER_PID
+}
+
 adaptive_learning_set_candidate() {
   local strategy="$1" strategy_file controller tmp lock
   strategy_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-learning.strategy"
@@ -199,6 +250,7 @@ adaptive_learning_set_candidate() {
   case "$strategy" in ''|*[!0-9]*) return 2 ;; esac
   [ "$strategy" -gt 0 ] && [ "${#strategy}" -le 10 ] || return 2
   adaptive_learning_enabled || { echo "Adaptive learning is not enabled." >&2; return 1; }
+  adaptive_learning_runner_lock_check || return 1
   [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
   [ -S /tmp/zator-adaptive-learning/control.sock ] || { echo "Learning worker control socket is unavailable." >&2; return 1; }
   lock=/tmp/zator-adaptive-learning/experiment.lock
@@ -365,10 +417,12 @@ adaptive_learning_wait_probe_settled() {
 
 # Run a no-desync control and require the exact C-owned outcome before using
 # candidate results as a comparison or retry baseline. The active runner owns
-# the experiment lock, so this probe id cannot be interleaved by another run.
+# the run-level and experiment locks, so this probe id cannot be interleaved.
 adaptive_learning_run_control_probe() {
   local host="$1" controller="$2" budget="$3" provider_key="$4" allowlist="$5"
-  local probe_output probe_id journal journal_offset record outcome epoch
+  local probe_output probe_id journal journal_offset record outcome epoch record_host
+  local record_profile record_strategy record_flow_id
+  host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
   journal=/tmp/zator-adaptive/shadow.tsv
   [ -f "$journal" ] && [ ! -L "$journal" ] || {
     echo "Журнал Adaptive Controller недоступен." >&2
@@ -384,7 +438,13 @@ adaptive_learning_run_control_probe() {
   record="$(adaptive_learning_wait_probe_id "$journal" "$journal_offset" "$probe_id")" || return 1
   outcome="$(printf '%s\n' "$record" | awk -F '\t' '{print $4}')"
   epoch="$(printf '%s\n' "$record" | awk -F '\t' '{print $15}')"
-  [ "$outcome" = CONTROL_SUCCESS ] || {
+  record_profile="$(printf '%s\n' "$record" | awk -F '\t' '{print $6}')"
+  record_strategy="$(printf '%s\n' "$record" | awk -F '\t' '{print $7}')"
+  record_host="$(printf '%s\n' "$record" | awk -F '\t' '{print $9}')"
+  record_flow_id="$(printf '%s\n' "$record" | awk -F '\t' '{print $14}')"
+  [ "$outcome" = CONTROL_SUCCESS ] && [ "$record_profile" = 1 ] &&
+    [ "$record_strategy" = 4294967295 ] && [ "$record_host" = "$host" ] &&
+    case "$record_flow_id" in ''|*[!0-9]*|0) false ;; *) true ;; esac || {
     echo "No-strategy контроль не подтвердил доступность target; candidate probes приостановлены." >&2
     return 1
   }
@@ -395,13 +455,15 @@ adaptive_learning_run_control_probe() {
 # Run a bounded, operator-started comparison over the strategies actually
 # present in the extracted TLS plan. Candidate ranking and attempt accounting
 # stay in C; this function only applies the acknowledged choice and runs probes.
-adaptive_learning_compare() {
+adaptive_learning_compare_impl() {
   local host="$1" budget="$2" controller allowlist next status strategy provider_key prior_support
-  local completed=0 strategy_file original_strategy last_strategy
+  local completed=0 strategy_file original_strategy last_strategy probe_output probe_id
+  local journal journal_offset record record_profile record_strategy record_host record_outcome
   local verified_epoch next_epoch controls_used=0 max_recovery_controls
   controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
   case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
   [ "${#host}" -le 253 ] || return 2
+  host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
   case "$budget" in ''|*[!0-9]*) return 2 ;; esac
   [ "$budget" -ge 1 ] && [ "$budget" -le 64 ] || return 2
   [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
@@ -466,17 +528,49 @@ adaptive_learning_compare() {
     ;; esac
     case "$prior_support" in ''|*[!0-9]*) prior_support=0 ;; esac
     echo "Проба $((completed + 1)): strategy $strategy для $host (prior support: $prior_support)"
+    journal=/tmp/zator-adaptive/shadow.tsv
+    [ -f "$journal" ] && [ ! -L "$journal" ] || {
+      echo "Журнал Adaptive Controller недоступен." >&2
+      [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      return 1
+    }
+    journal_offset="$(wc -c <"$journal" | awk '{print $1}')"
+    case "$journal_offset" in ''|*[!0-9]*)
+      [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      return 1
+    ;; esac
     adaptive_learning_set_candidate "$strategy" || {
       [ -n "$last_strategy" ] && adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
       [ -n "$last_strategy" ] || adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 || :
       return 1
     }
     last_strategy="$strategy"
-    "${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result || {
+    probe_output="$("${ZATOR_ROOT:-/opt/zator}/adaptive/probe-once.sh" "$host" --reported-result)" || {
       echo "Проба не была принята controller; сравнение остановлено." >&2
       adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
       return 1
     }
+    probe_id="$(printf '%s\n' "$probe_output" | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^probe_id=[0-9]+$/) { sub(/^probe_id=/, "", $i); print $i; exit } }')"
+    case "$probe_id" in ''|*[!0-9]*)
+      echo "Проба вернула некорректный probe_id." >&2
+      adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      return 1
+    ;; esac
+    record="$(adaptive_learning_wait_probe_id "$journal" "$journal_offset" "$probe_id")" || {
+      adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      return 1
+    }
+    record_profile="$(printf '%s\n' "$record" | awk -F '\t' '{print $6}')"
+    record_strategy="$(printf '%s\n' "$record" | awk -F '\t' '{print $7}')"
+    record_host="$(printf '%s\n' "$record" | awk -F '\t' '{print $9}')"
+    record_outcome="$(printf '%s\n' "$record" | awk -F '\t' '{print $4}')"
+    if [ "$record_profile" != 1 ] || [ "$record_strategy" != "$strategy" ] ||
+      [ "$record_host" != "$host" ] ||
+      { [ "$record_outcome" != STRONG_SUCCESS ] && [ "$record_outcome" != UNKNOWN ]; }; then
+      echo "PROBE_OUTCOME не совпадает с выбранными host/profile/strategy; сравнение остановлено." >&2
+      adaptive_learning_set_candidate "$last_strategy" >/dev/null 2>&1 || :
+      return 1
+    fi
     completed=$((completed + 1))
 
     next="$(adaptive_learning_wait_probe_settled "$controller" "$host" "$budget" "$provider_key" "$allowlist")" || {
@@ -495,12 +589,24 @@ adaptive_learning_compare() {
   adaptive_learning_set_candidate "$last_strategy" || return 1
 }
 
+adaptive_learning_compare() {
+  local run_status
+  adaptive_learning_runner_lock_acquire || return 1
+  if adaptive_learning_compare_impl "$@"; then run_status=0; else run_status=$?; fi
+  adaptive_learning_runner_lock_release || {
+    echo "Не удалось освободить Adaptive learning run lock." >&2
+    return 1
+  }
+  return "$run_status"
+}
+
 # Consume at most one due scheduler task. Each step uses a successful
 # no-desync control before and after one candidate request, for a hard ceiling
 # of three HTTPS requests per invocation.
-adaptive_learning_scheduled_step() {
+adaptive_learning_scheduled_step_impl() {
   local host="${1:-}" controller allowlist provider_key original_strategy strategy strategy_file
   local task status probe_class journal journal_offset probe_output probe_id record outcome
+  local record_profile record_strategy record_host
   adaptive_learning_enabled || { echo "Adaptive learning выключен." >&2; return 1; }
   controller="${ZATOR_ROOT:-/opt/zator}/adaptive/bin/adaptive-controller"
   [ -x "$controller" ] || { echo "adaptive-controller is not installed." >&2; return 1; }
@@ -525,6 +631,7 @@ adaptive_learning_scheduled_step() {
   fi
   case "$host" in ''|.*|*..*|*-.*|*.-*|*-.|*.|*[!A-Za-z0-9.-]*) return 2 ;; esac
   [ "${#host}" -le 253 ] || return 2
+  host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
 
   if task="$(adaptive_learning_schedule_next "$host" "$allowlist")"; then
     :
@@ -599,6 +706,16 @@ adaptive_learning_scheduled_step() {
     return 1
   }
   outcome="$(printf '%s\n' "$record" | awk -F '\t' '{print $4}')"
+  record_profile="$(printf '%s\n' "$record" | awk -F '\t' '{print $6}')"
+  record_strategy="$(printf '%s\n' "$record" | awk -F '\t' '{print $7}')"
+  record_host="$(printf '%s\n' "$record" | awk -F '\t' '{print $9}')"
+  if [ "$record_profile" != 1 ] || [ "$record_strategy" != "$strategy" ] ||
+    [ "$record_host" != "$host" ]; then
+    adaptive_learning_set_candidate "$original_strategy" >/dev/null 2>&1 ||
+      echo "Не удалось восстановить исходную learning strategy." >&2
+    echo "PROBE_OUTCOME не совпадает с due host/profile/strategy; scheduler остановлен." >&2
+    return 1
+  fi
   echo "Scheduler: $probe_class, strategy $strategy, outcome $outcome."
   echo "Проверка baseline без desync после candidate probe..."
   if ! adaptive_learning_run_control_probe "$host" "$controller" 64 "$provider_key" "$allowlist" >/dev/null; then
@@ -612,6 +729,17 @@ adaptive_learning_scheduled_step() {
     return 1
   }
   return 0
+}
+
+adaptive_learning_scheduled_step() {
+  local run_status
+  adaptive_learning_runner_lock_acquire || return 1
+  if adaptive_learning_scheduled_step_impl "$@"; then run_status=0; else run_status=$?; fi
+  adaptive_learning_runner_lock_release || {
+    echo "Не удалось освободить Adaptive learning run lock." >&2
+    return 1
+  }
+  return "$run_status"
 }
 
 # zapret2's nfqws2 accepts @config only as argv[1]. The shared do_nfqws hook
@@ -669,6 +797,155 @@ adaptive_controller_service_action() {
   "$service" "$action"
 }
 
+adaptive_controller_nfqws2_supports_canary() {
+  local binary
+  binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+  [ -x "$binary" ] || return 1
+  "$binary" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>' &&
+    "$binary" --help 2>&1 | grep -q -- '--adaptive-control=<unix_path>' &&
+    "$binary" --help 2>&1 | grep -q -- '--adaptive-canary-profile=<profile>'
+}
+
+adaptive_canary_enabled() {
+  [ -f "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-canary.enabled" ]
+}
+
+adaptive_canary_status_text() {
+  local hosts_file count
+  if ! adaptive_canary_enabled; then
+    printf '%s' 'выключен'
+    return 0
+  fi
+  hosts_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-canary.hosts"
+  count=0
+  [ ! -f "$hosts_file" ] || count="$(awk 'END { print NR + 0 }' "$hosts_file" 2>/dev/null)"
+  printf 'включён, allowlist: %s хостов (profile 1)' "$count"
+}
+
+adaptive_canary_toggle() {
+  local root cache marker hosts_file hosts_tmp marker_tmp controller control_sock host clear_failed wait_count
+  adaptive_learning_runner_lock_check || return 1
+  root="${ZATOR_ROOT:-/opt/zator}"
+  cache="$root/extra_strats/cache"
+  marker="$cache/adaptive-canary.enabled"
+  hosts_file="$cache/adaptive-canary.hosts"
+  controller="$root/adaptive/bin/adaptive-controller"
+  control_sock=/tmp/zator-adaptive/production-control.sock
+
+  if adaptive_canary_enabled; then
+    clear_failed=0
+    if [ -S "$control_sock" ]; then
+      if [ -x "$controller" ]; then
+        while IFS= read -r host || [ -n "$host" ]; do
+          [ -n "$host" ] || continue
+          "$controller" --production-clear-host "$control_sock" 1 "$host" >/dev/null || {
+            clear_failed=1
+            break
+          }
+        done <"$hosts_file"
+      else
+        clear_failed=1
+      fi
+    fi
+    if [ "$clear_failed" -eq 1 ]; then
+      z2r_service_action restart || {
+        echo "Не удалось сбросить C host-map перезапуском; режим оставлен включённым." >&2
+        return 1
+      }
+    fi
+    adaptive_controller_service_action stop || {
+      echo "Не удалось остановить controller; режим оставлен включённым." >&2
+      return 1
+    }
+    rm -f "$marker" "$hosts_file" /tmp/zator-adaptive/state.tsv.canary.tsv || return 1
+    adaptive_controller_service_action start || return 1
+    z2r_service_action restart || return 1
+    echo "Adaptive canary выключен; C host-map очищен."
+    return 0
+  fi
+
+  if [ "${OSystem:-}" != WRT ] && [ "${hardware:-}" != keenetic ]; then
+    echo "Adaptive canary пока поддерживает OpenWrt и Keenetic Entware." >&2
+    return 1
+  fi
+  adaptive_learning_enabled || {
+    echo "Сначала включите Learning worker (пункт 25), чтобы накопить probe evidence." >&2
+    return 1
+  }
+  adaptive_controller_nfqws2_supports_canary || {
+    echo "Установленный nfqws2 не поддерживает C canary и telemetry." >&2
+    return 1
+  }
+  if [ ! -x "$controller" ] || ! "$controller" --help 2>&1 | grep -q -- '--canary-hosts'; then
+    adaptive_controller_install >/dev/null || return 1
+  fi
+  "$controller" --help 2>&1 | grep -q -- '--canary-hosts' || {
+    echo "Adaptive Controller не содержит canary policy; обновите runtime asset." >&2
+    return 1
+  }
+  read -r -p "Точные hostname через запятую для canary (1–64): " hosts
+  mkdir -p "$cache" || return 1
+  hosts_tmp="$hosts_file.tmp.$$"
+  marker_tmp="$marker.tmp.$$"
+  rm -f "$hosts_tmp" "$marker_tmp"
+  rm -f /tmp/zator-adaptive/state.tsv.canary.tsv
+  if ! printf '%s\n' "$hosts" | tr ',' '\n' | awk '
+    {
+      h = tolower($0)
+      if (length(h) == 0 || length(h) >= 256 || h ~ /[^a-z0-9.-]/ ||
+          h ~ /^\./ || h ~ /\.$/ || h ~ /\.\./ || h ~ /(^|\.)-/ || h ~ /-(\.|$)/) exit 1
+      if (!seen[h]++) {
+        if (++n > 64) exit 1
+        print h
+      }
+    }
+    END { if (n < 1) exit 1 }
+  ' >"$hosts_tmp"; then
+    rm -f "$hosts_tmp"
+    echo "Allowlist должен содержать от 1 до 64 корректных hostname без пробелов." >&2
+    return 2
+  fi
+  chmod 600 "$hosts_tmp" || { rm -f "$hosts_tmp"; return 1; }
+  mv -f "$hosts_tmp" "$hosts_file" || { rm -f "$hosts_tmp"; return 1; }
+  printf 'enabled\n' >"$marker_tmp" && chmod 600 "$marker_tmp" && mv -f "$marker_tmp" "$marker" || {
+    rm -f "$marker_tmp" "$hosts_file"
+    return 1
+  }
+
+  if [ "${OSystem:-}" = WRT ]; then
+    wrt_fixes || { rm -f "$marker" "$hosts_file" /tmp/zator-adaptive/state.tsv.canary.tsv; return 1; }
+  else
+    z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/zapret2" "Entware/zapret" || {
+      rm -f "$marker" "$hosts_file" /tmp/zator-adaptive/state.tsv.canary.tsv; return 1;
+    }
+    chmod 755 "$ZAPRET2_ROOT/init.d/sysv/zapret2" || return 1
+  fi
+  adaptive_controller_service_install || { rm -f "$marker" "$hosts_file" /tmp/zator-adaptive/state.tsv.canary.tsv; return 1; }
+  adaptive_controller_service_action restart || {
+    rm -f "$marker" "$hosts_file" /tmp/zator-adaptive/state.tsv.canary.tsv
+    adaptive_controller_service_action restart >/dev/null 2>&1 || true
+    return 1
+  }
+  wait_count=0
+  while [ "$wait_count" -lt 5 ] && [ ! -S /tmp/zator-adaptive/events.sock ]; do
+    sleep 1
+    wait_count=$((wait_count + 1))
+  done
+  if [ ! -S /tmp/zator-adaptive/events.sock ]; then
+    rm -f "$marker" "$hosts_file" /tmp/zator-adaptive/state.tsv.canary.tsv
+    adaptive_controller_service_action restart >/dev/null 2>&1 || true
+    echo "Adaptive Controller не создал telemetry socket; canary не включён." >&2
+    return 1
+  fi
+  if ! z2r_service_action restart; then
+    rm -f "$marker" "$hosts_file" /tmp/zator-adaptive/state.tsv.canary.tsv
+    adaptive_controller_service_action restart >/dev/null 2>&1 || true
+    z2r_service_action restart >/dev/null 2>&1 || true
+    return 1
+  fi
+  echo "Adaptive canary включён для $(awk 'END {print NR}' "$hosts_file") hostname; смена стратегии требует подтверждённого champion."
+}
+
 adaptive_shadow_enabled() {
   [ -f "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-shadow.enabled" ]
 }
@@ -678,10 +955,20 @@ adaptive_learning_enabled() {
 }
 
 adaptive_learning_mark_available() {
-  local mark n desync postnat filter
+  local mark n desync postnat filter digits
   mark="${Z2R_ADAPTIVE_MARK:-0x08000000}"
   case "$mark" in 0x[0-9A-Fa-f]*|[0-9]*) ;; *) return 1 ;; esac
   case "$mark" in *[!0-9A-Fa-fxX]*) return 1 ;; esac
+  case "$mark" in
+    0x*)
+      digits=${mark#0x}
+      [ "${#digits}" -le 8 ] || return 1
+      if [ "${#digits}" -eq 8 ]; then
+        case "$digits" in [0-7]*) ;; *) return 1 ;; esac
+      fi
+      ;;
+    *) [ "${#mark}" -le 9 ] || return 1 ;;
+  esac
   n=$((mark)) 2>/dev/null || return 1
   [ "$n" -gt 0 ] && [ "$((n & (n - 1)))" -eq 0 ] || return 1
   desync=$(( ${DESYNC_MARK:-0x40000000} ))
@@ -740,6 +1027,10 @@ adaptive_learning_toggle() {
         return "$step_status"
         ;;
       0)
+        adaptive_learning_runner_lock_check || {
+          echo "Дождитесь завершения Adaptive learning run." >&2
+          return 1
+        }
         [ ! -d /tmp/zator-adaptive-learning/experiment.lock ] || {
           echo "Дождитесь завершения learning probe/candidate update." >&2
           return 1
@@ -837,6 +1128,7 @@ adaptive_shadow_status_text() {
 adaptive_shadow_toggle() {
   local marker
   marker="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-shadow.enabled"
+  adaptive_learning_runner_lock_check || return 1
   if adaptive_shadow_enabled; then
     rm -f "$marker"
     if ! adaptive_learning_enabled; then

@@ -20,6 +20,8 @@ usage() {
   --zapret2-openwrt FILE    локальный OpenWrt release вместо скачивания
   --zator-tar FILE          готовый zator-<variant>.tar.gz (pack-zator-tar.mjs)
                              вместо копии дерева репо; bundle = z2r + tar + vendor
+  --adaptive-binaries DIR   static adaptive-controller-* assets + .sha256 для
+                             всех Linux target'ов (из deploy-tar build output)
   --project-dir DIR         локальный checkout zator вместо автоопределения
   --output FILE             путь итогового zator-offline-VERSION.tar.gz
 EOF
@@ -130,6 +132,9 @@ project_tree_is_valid() {
     3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md; do
     [ -f "$root/$file" ] || return 1
   done
+  for file in adaptive_context.sh adaptive_controller.sh; do
+    [ -f "$root/lib/$file" ] || return 1
+  done
 }
 
 validate_archive_paths() {
@@ -146,6 +151,7 @@ validate_archive_paths() {
 zapret2_archive=""
 openwrt_archive=""
 zator_tar=""
+adaptive_binaries=""
 project_dir=""
 project_dir_was_set=0
 requested_version="latest"
@@ -181,6 +187,11 @@ while [ "$#" -gt 0 ]; do
     --zator-tar)
       [ "$#" -ge 2 ] || usage
       zator_tar="$2"
+      shift 2
+      ;;
+    --adaptive-binaries)
+      [ "$#" -ge 2 ] || usage
+      adaptive_binaries="$2"
       shift 2
       ;;
     --project-dir)
@@ -254,6 +265,12 @@ else
   validate_archive_paths "$zator_tar"
   [ -n "$project_dir" ] || project_dir="$DEFAULT_REPO_DIR"
   [ -f "$project_dir/offline/z2r" ] || fail "в $project_dir нет offline/z2r (нужен checkout репозитория)"
+  if [ -n "$adaptive_binaries" ]; then
+    tar -tzf "$zator_tar" | grep -Fx 'z2r_lib/deploy.sh' >/dev/null || \
+      fail "offline bundle с adaptive binaries требует полный zator tar с z2r_lib/deploy.sh"
+    tar -tzf "$zator_tar" | grep -Fx 'z2r_lib/adaptive_controller.sh' >/dev/null || \
+      fail "offline bundle с adaptive binaries требует adaptive_controller.sh в zator tar"
+  fi
 fi
 REPO_DIR="$(cd -- "$project_dir" && pwd)"
 version=""
@@ -315,6 +332,34 @@ bundle_dir="$work_dir/$bundle_name"
 mkdir -p "$bundle_dir/vendor"
 
 cp -f "$REPO_DIR/offline/z2r" "$bundle_dir/z2r"
+
+if [ -n "$adaptive_binaries" ]; then
+  [ -d "$adaptive_binaries" ] || fail "не найден каталог adaptive binaries: $adaptive_binaries"
+  mkdir -p "$bundle_dir/adaptive"
+  for target in aarch64-unknown-linux-musl armv6-unknown-linux-musleabi \
+    i586-unknown-linux-musl x86_64-unknown-linux-musl \
+    mips-unknown-linux-muslsf mipsel-unknown-linux-muslsf \
+    mips64-unknown-linux-musl mips64el-unknown-linux-musl \
+    powerpc-unknown-linux-musl riscv64-unknown-linux-musl; do
+    name="adaptive-controller-$target"
+    binary="$adaptive_binaries/$name"
+    [ -s "$binary" ] || fail "отсутствует offline controller binary: $binary"
+    [ -s "$binary.sha256" ] || fail "отсутствует checksum: $binary.sha256"
+    awk -v name="$name" 'NR == 1 && NF == 2 && length($1) == 64 &&
+      $1 !~ /[^0-9a-f]/ && $2 == name { valid = 1 }
+      END { exit !(NR == 1 && valid) }' "$binary.sha256" || \
+      fail "некорректный checksum manifest: $name.sha256"
+    (cd "$adaptive_binaries" && sha256sum -c "$name.sha256") >/dev/null || \
+      fail "checksum adaptive controller не совпадает: $name"
+    size="$(wc -c < "$binary" | tr -d '[:space:]')"
+    case "$size" in ''|*[!0-9]*) fail "не удалось проверить размер $name" ;; esac
+    [ "$size" -gt 0 ] && [ "$size" -le 524288 ] || \
+      fail "adaptive controller превышает лимит 512 KiB: $name ($size bytes)"
+    cp -f "$binary" "$bundle_dir/adaptive/$name"
+    cp -f "$binary.sha256" "$bundle_dir/adaptive/$name.sha256"
+    chmod 755 "$bundle_dir/adaptive/$name"
+  done
+fi
 
 if [ -n "$zator_tar" ]; then
   cp -f "$zator_tar" "$bundle_dir/$(basename -- "$zator_tar")"

@@ -10,6 +10,8 @@ SOURCE_PORT_LAST=62015
 SOURCE_PORT="$SOURCE_PORT_FIRST"
 SOURCE_PORT_FILE=/tmp/zator-adaptive-learning/probe-port.next
 LOCK_DIR=/tmp/zator-adaptive-learning/experiment.lock
+ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
+ADAPTIVE_LIB="$ZATOR_ROOT/z2r_lib/adaptive_controller.sh"
 BODY_FIFO=/tmp/zator-adaptive-learning/probe-body-fifo.$$
 BODY_FILE=/tmp/zator-adaptive-learning/probe-body.$$
 BODY_STATUS=/tmp/zator-adaptive-learning/probe-status.$$
@@ -77,6 +79,9 @@ case "$ephemeral_first:$ephemeral_last" in *[!0-9:]*)
 	echo "Learning runtime directory is unavailable." >&2
 	exit 1
 }
+[ -r "$ADAPTIVE_LIB" ] || { echo "Adaptive controller library is unavailable." >&2; exit 1; }
+. "$ADAPTIVE_LIB" || exit 1
+adaptive_learning_runner_lock_check || exit 1
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 	echo "Another learning probe is running." >&2
 	exit 1

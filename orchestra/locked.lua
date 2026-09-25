@@ -646,7 +646,32 @@ function circular_locked(ctx, desync)
   if locked == 0 then
     DLOG("circular_locked: profile disabled by lock 0 profile="..profile)
     return VERDICT_PASS
-  elseif locked and locked >= 1 and locked <= hrec.ctstrategy then
+  end
+
+  -- C owns the production-canary assignment; this adapter runs only after
+  -- host gates and lock resolution, so an existing lock keeps precedence.
+  if not locked and flow_strategy_canary_get and flow_strategy_assign then
+    local canary = flow_strategy_canary_get(desync)
+    if canary then
+      local selected = flow_strategy_assign(desync, canary, "production_canary")
+      if selected ~= canary then
+        DLOG_ERR("circular_locked: canary assignment unavailable; passing without tampering")
+        return VERDICT_PASS
+      end
+      DLOG("circular_locked: C-owned canary strategy "..selected.." profile="..profile)
+      local canary_verdict = VERDICT_PASS
+      while true do
+        local instance = plan_instance_pop(desync)
+        if not instance then break end
+        if instance.arg.strategy and tonumber(instance.arg.strategy) == selected then
+          canary_verdict = blob_override_execute(desync, canary_verdict, instance, base_profile)
+        end
+      end
+      return canary_verdict
+    end
+  end
+
+  if locked and locked >= 1 and locked <= hrec.ctstrategy then
     hrec.nstrategy = locked
     if scope ~= "default" then
       DLOG("circular_locked: locked strategy "..hrec.nstrategy.." scope="..scope.." profile="..profile)

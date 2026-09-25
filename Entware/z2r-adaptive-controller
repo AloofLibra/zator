@@ -3,11 +3,14 @@
 ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
 SHADOW_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-shadow.enabled"
 LEARNING_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-learning.enabled"
+CANARY_ENABLED="$ZATOR_ROOT/extra_strats/cache/adaptive-canary.enabled"
+CANARY_HOSTS="$ZATOR_ROOT/extra_strats/cache/adaptive-canary.hosts"
 BIN="$ZATOR_ROOT/adaptive/bin/adaptive-controller"
 NFQWS2="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
 RUNDIR=/tmp/zator-adaptive
 SOCKET="$RUNDIR/events.sock"
 OUTPUT="$RUNDIR/shadow.tsv"
+ERRLOG="$RUNDIR/controller.err"
 STATE="$RUNDIR/state.tsv"
 PIDFILE="${Z2R_ADAPTIVE_PIDFILE:-/opt/var/run/z2r-adaptive-controller.pid}"
 SCHEDULER="$ZATOR_ROOT/adaptive/scheduler-loop.sh"
@@ -66,10 +69,17 @@ stop_scheduler()
 
 start_controller()
 {
-	[ -f "$SHADOW_ENABLED" ] || [ -f "$LEARNING_ENABLED" ] || { echo "Adaptive режим выключен."; return 0; }
+	[ -f "$SHADOW_ENABLED" ] || [ -f "$LEARNING_ENABLED" ] || [ -f "$CANARY_ENABLED" ] || { echo "Adaptive режим выключен."; return 0; }
 	[ -x "$BIN" ] || { echo "Не установлен adaptive-controller."; return 1; }
 	[ -x "$NFQWS2" ] || return 0
 	"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>' || return 0
+	if [ -f "$CANARY_ENABLED" ]; then
+		[ -r "$CANARY_HOSTS" ] || { echo "Canary host allowlist is missing." >&2; return 1; }
+		"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-control=<unix_path>' &&
+		"$NFQWS2" --help 2>&1 | grep -q -- '--adaptive-canary-profile=<profile>' || {
+			echo "Установленный nfqws2 не поддерживает canary endpoint." >&2; return 1;
+		}
+	fi
 	if controller_pid_valid; then
 		start_scheduler || return 1
 		echo "Adaptive Controller уже запущен."
@@ -80,12 +90,20 @@ start_controller()
 	mkdir -p "$RUNDIR" "$(dirname "$PIDFILE")" || return 1
 	[ -d "$RUNDIR" ] && [ ! -L "$RUNDIR" ] || return 1
 	chmod 700 "$RUNDIR" || return 1
+	[ ! -L "$ERRLOG" ] || { echo "refusing symlink controller error log" >&2; return 1; }
+	: >"$ERRLOG" || return 1
+	chmod 600 "$ERRLOG" || return 1
+	set -- "$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE"
+	if [ -f "$CANARY_ENABLED" ]; then
+		set -- "$@" --canary-control /tmp/zator-adaptive/production-control.sock \
+			--canary-profile 1 --canary-hosts "$CANARY_HOSTS"
+	fi
 	if command -v setsid >/dev/null 2>&1; then
-		setsid "$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE" </dev/null >/dev/null 2>&1 &
+		setsid "$@" </dev/null >/dev/null 2>>"$ERRLOG" &
 	elif command -v nohup >/dev/null 2>&1; then
-		nohup "$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE" </dev/null >/dev/null 2>&1 &
+		nohup "$@" </dev/null >/dev/null 2>>"$ERRLOG" &
 	else
-		"$BIN" --socket "$SOCKET" --output "$OUTPUT" --state "$STATE" </dev/null >/dev/null 2>&1 &
+		"$@" </dev/null >/dev/null 2>>"$ERRLOG" &
 	fi
 	pid=$!
 	sleep 1

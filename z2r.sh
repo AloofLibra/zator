@@ -1666,8 +1666,26 @@ wrt_fixes() {
   ' "$f" >"$f.z2r_tmp" || { rm -f "$f.z2r_tmp"; mv -f "$f.z2r_bak" "$f"; return 1; }
   mv -f "$f.z2r_tmp" "$f" && chmod 755 "$f" || return 1
  fi
+ if ! grep -q 'z2r adaptive canary assignments' "$f"; then
+  awk '
+   { print }
+   /^NFQWS2_OPT_BASE=/ {
+    print "# z2r adaptive canary assignments (opt-in; controller requires explicit allowlist)"
+    print "if [ -f \"${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-canary.enabled\" ] && \"$NFQWS2\" --help 2>&1 | grep -q -- \"--adaptive-control=<unix_path>\" && \"$NFQWS2\" --help 2>&1 | grep -q -- \"--adaptive-canary-profile=<profile>\" && \"$NFQWS2\" --help 2>&1 | grep -q -- \"--adaptive-events=<file|unix:path>\"; then"
+    print "\tcase \" $NFQWS2_OPT_BASE \" in *\" --adaptive-events=\"*) ;; *) NFQWS2_OPT_BASE=\"$NFQWS2_OPT_BASE --adaptive-events=unix:/tmp/zator-adaptive/events.sock\" ;; esac"
+    print "\tNFQWS2_OPT_BASE=\"$NFQWS2_OPT_BASE --adaptive-control=/tmp/zator-adaptive/production-control.sock --adaptive-canary-profile=1\""
+    print "fi"
+   }
+  ' "$f" >"$f.z2r_tmp" || { rm -f "$f.z2r_tmp"; mv -f "$f.z2r_bak" "$f"; return 1; }
+  mv -f "$f.z2r_tmp" "$f" && chmod 755 "$f" || return 1
+ fi
  if ! grep -q 'z2r adaptive shadow telemetry' "$f"; then
   echo "Не удалось встроить Adaptive shadow telemetry в init OpenWrt."
+  return 1
+ fi
+ if ! grep -q 'z2r adaptive canary assignments' "$f"; then
+  echo "Не удалось встроить Adaptive canary assignments в init OpenWrt."
+  mv -f "$f.z2r_bak" "$f"
   return 1
  fi
  if ! sh -n "$f"; then
@@ -1676,7 +1694,7 @@ wrt_fixes() {
   return 1
  fi
  rm -f "$f.z2r_bak"
- echo "Патчи OpenWRT применены (stderr->syslog, линейный contains, optional adaptive telemetry)."
+ echo "Патчи OpenWRT применены (stderr->syslog, линейный contains, optional adaptive telemetry/canary)."
 }
 
 #Запрос на установку 3x-ui или аналогов
@@ -2456,6 +2474,7 @@ ${Fcyan}21.${yellow} Управление бэкапами (создание/в�
 ${Fcyan}23.${yellow} Client scopes (Beta): разные стратегии разным устройствам по IP. Сейчас: ${plain}[${MENU_CLIENT_SCOPE}]${yellow}
 ${Fcyan}24.${yellow} Adaptive Strategy Selection shadow (наблюдение без смены стратегии). Сейчас: ${plain}[$(adaptive_shadow_status_text)]${yellow}
 ${Fcyan}25.${yellow} Learning worker / HTTPS probe и сравнение. Сейчас: ${plain}[$(adaptive_learning_status_text)]${yellow}
+${Fcyan}26.${yellow} Adaptive canary (ограниченный production rollout). Сейчас: ${plain}[$(adaptive_canary_status_text)]${yellow}
 ${Fcyan}666.${yellow} Ошибки nfqws2 — журнал последнего запуска${MENU_ERR_STATE}
 ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
@@ -2502,12 +2521,17 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "24")
-    adaptive_shadow_toggle || echo -e "${yellow}Adaptive shadow не изменён. Проверьте поддержку C telemetry и release asset для архитектуры.${plain}"
+    adaptive_shadow_toggle || echo -e "${yellow}Adaptive shadow не изменён. Проверьте поддержку C telemetry и бинарный asset для архитектуры в выбранной ветке zator.${plain}"
     pause_enter
     ;;
 
   "25")
     adaptive_learning_toggle || echo -e "${yellow}Learning worker не изменён. Проверьте C telemetry, strategy и mark-бит.${plain}"
+    pause_enter
+    ;;
+
+  "26")
+    adaptive_canary_toggle || echo -e "${yellow}Adaptive canary не изменён. Проверьте C telemetry, learning worker и allowlist.${plain}"
     pause_enter
     ;;
 

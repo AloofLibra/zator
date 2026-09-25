@@ -14,7 +14,8 @@ name: deploy-tar
 # свободного места на устройстве).
 #
 # Офлайн-сборка zator-offline-<zapret2вер>.tar.gz (zator-full + архивы zapret2
-# из форка MarkinAlexander) — галочка build_offline, по умолчанию ВЫКЛЮЧЕНА:
+# и статические adaptive-controller binaries для Linux target'ов) — галочка
+# build_offline, по умолчанию ВЫКЛЮЧЕНА:
 # ассет тяжёлый и нужен только к значимым релизам. У предыдущего latest
 # офлайн-ассет переносится в новый latest, чтобы ссылки не ломались.
 
@@ -93,7 +94,7 @@ jobs:
             echo "Controller unexpectedly links a dynamic dependency: $TARGET" >&2
             exit 1
           fi
-          test "$size" -lt 524288 || {
+          test "$size" -le 524288 || {
             echo "Controller exceeds the 512 KiB target: $TARGET ($size bytes)" >&2
             exit 1
           }
@@ -166,6 +167,7 @@ jobs:
           curl -fsSL -o "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz" "$base/zapret2-v$V-openwrt-embedded.tar.gz"
           bash tools/build-offline-archive.sh \
             --zator-tar webui-src/dist/zator-full.tar.gz \
+            --adaptive-binaries webui-src/dist \
             --zapret2 "webui-src/dist/zapret2-v$V.tar.gz" \
             --zapret2-openwrt "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz" \
             --version "$V" \

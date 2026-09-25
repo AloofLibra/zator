@@ -156,7 +156,7 @@ def main():
     assert json.loads(out.getvalue())["decision"] == "UNATTRIBUTED"
 
     # A bounded C trace reports truncation; unmatched flows stay incomplete.
-    partial = event("FLOW_START", 99) + "# TRACE_LIMIT\tmax_bytes=4194304\n"
+    partial = event("FLOW_START", 99) + "# TRACE_LIMIT\tmax_bytes=524288\n"
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         replay_module.replay(io.StringIO(partial))

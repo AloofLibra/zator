@@ -20,12 +20,14 @@
 
 /*
  * Small, dependency-free adaptive controller.
- * Reads C-owned nfqws2 TSV v2/v3 from stdin and never changes production policy.
+ * Reads C-owned nfqws2 TSV v2/v3/v4. Production changes require explicit canary
+ * arguments, a root-owned exact-host allowlist, and supported learning evidence.
  */
 #define MAX_LINE 2048
 #define MAX_PROBE_RESULT_LINE (40U * 1024U)
 #define MAX_FIELDS 32
 #define MAX_OPEN_FLOWS 256
+#define OPEN_FLOW_RETENTION_MS 120000ULL
 #define MAX_CONTEXTS 128
 #define MAX_CANDIDATES 384
 #define MAX_PROVIDER_PRIORS 128
@@ -48,11 +50,13 @@
 
 struct flow_state {
 	bool used, started, assigned, strategy_conflict, identity_conflict;
-	bool network_context_usable;
-	uint64_t id, tuple_hash, generation, network_epoch;
+	bool network_context_usable, injection_cost_observed;
+	uint64_t id, tuple_hash, generation, network_epoch, last_event_ms;
+	uint64_t injected_packets, injected_bytes;
 	uint32_t profile, strategy, source_port;
+	uint16_t dst_port;
 	uint8_t health_state, health_reason;
-	char host[HOST_CAP], scope[SCOPE_CAP], transport[8], family[8];
+	char host[HOST_CAP], scope[SCOPE_CAP], transport[8], family[8], dst_ip[64];
 };
 
 struct context_state {
@@ -71,6 +75,7 @@ struct candidate_state {
 	bool has_last_success;
 	uint64_t probe_unknown_ms, probe_unknown_id, probe_unknown_flow_id, probe_unknown_control_id;
 	uint64_t last_probe_success_ms, comparative_failures, last_comparative_ms;
+	uint64_t cost_samples, injected_packets, injected_bytes;
 	bool probe_unknown_eligible;
 	char probe_unknown_provider[16], probe_unknown_family[8];
 };
@@ -100,11 +105,12 @@ struct control_context_state {
  * HTTP result; it does not schedule candidates or promote policy. */
 struct probe_state {
 	bool active, result_seen, flow_seen, flow_ambiguous;
-	bool flow_metrics_seen;
+	bool flow_metrics_seen, injection_cost_observed;
 	uint64_t id, started_ms, deadline_ms, join_ready_ms, flow_id, candidate_flow_id;
 	uint64_t network_epoch;
 	uint32_t source_port, profile, strategy, curl_rc, http_status;
 	uint64_t generation, elapsed_ms;
+	uint64_t injected_packets, injected_bytes;
 	uint64_t flow_metrics[10], clienthello_count, clienthello_retransmissions;
 	uint8_t health_state, health_reason;
 	bool network_context_usable;
@@ -139,8 +145,23 @@ static unsigned probe_tombstone_next;
 static bool provider_key_valid(const char *key);
 static bool probe_body_hex_decode(const char *hex, uint8_t *body, uint32_t *body_len);
 
-#define MAX_OUTPUT_BYTES (256U * 1024U)
-#define MAX_STATE_BYTES (128U * 1024U)
+#define MAX_OUTPUT_BYTES (512U * 1024U)
+#define OUTPUT_LIMIT_MARKER "# OUTPUT_LIMIT\tmax_bytes=524288\n"
+#define OUTPUT_LIMIT_MARKER_BYTES (sizeof(OUTPUT_LIMIT_MARKER) - 1U)
+#define MAX_OUTPUT_DATA_BYTES (MAX_OUTPUT_BYTES - OUTPUT_LIMIT_MARKER_BYTES)
+#define PROBE_OUTPUT_RESERVE_BYTES 8192U
+#define CANARY_OUTPUT_RESERVE_BYTES 2048U
+#define CANARY_CLEAR_OUTPUT_RESERVE_BYTES (32U * 1024U)
+#define MAX_CANARY_STDERR_ROLLBACKS 64U
+#define MAX_CANARY_STDERR_CLEARS 64U
+#define MAX_CANARY_STDERR_RESTORES 64U
+#define MAX_CANARY_STDERR_PENDING 64U
+#define MAX_STATE_BYTES (512U * 1024U)
+#define MAX_CANARY_HOSTS 64
+#define MAX_CANARY_STATE_BYTES (32U * 1024U)
+#define CANARY_MIN_ACTIVE_SUCCESSES 3
+#define CANARY_RST_WINDOW_MS (10ULL * 60ULL * 1000ULL)
+#define CANARY_RST_REQUIRED 3
 #define STATE_SAVE_INTERVAL_MS (5ULL * 60ULL * 1000ULL)
 #define NETWORK_SAMPLE_INTERVAL_MS (30ULL * 1000ULL)
 #define MAX_NETWORK_SNAPSHOT_BYTES (64U * 1024U)
@@ -155,6 +176,31 @@ enum network_health_reason {
 static FILE *controller_output;
 static bool controller_output_limited;
 static const char *controller_state_path;
+static const char *canary_control_path;
+static const char *canary_hosts_path;
+static char canary_state_path[PATH_MAX];
+static uint32_t canary_profile;
+static char canary_hosts[MAX_CANARY_HOSTS][HOST_CAP];
+static bool canary_enrolled[MAX_CANARY_HOSTS];
+static bool canary_reconcile_pending[MAX_CANARY_HOSTS];
+static uint32_t canary_strategy[MAX_CANARY_HOSTS];
+static uint64_t canary_generation[MAX_CANARY_HOSTS];
+static uint64_t canary_rst_window_start[MAX_CANARY_HOSTS];
+static uint64_t canary_rst_flow_ids[MAX_CANARY_HOSTS][CANARY_RST_REQUIRED];
+static uint64_t canary_rst_flow_ms[MAX_CANARY_HOSTS][CANARY_RST_REQUIRED];
+static unsigned canary_rst_count[MAX_CANARY_HOSTS];
+static uint64_t canary_quarantine_epoch[MAX_CANARY_HOSTS];
+static unsigned canary_stderr_rollbacks;
+static unsigned canary_stderr_clears;
+static unsigned canary_stderr_restores;
+static unsigned canary_stderr_pending;
+static bool checkpoint_warning_reported;
+static bool output_limit_warning_reported;
+static unsigned canary_host_count;
+static uint64_t canary_last_epoch;
+static uint64_t canary_last_reconcile_ms;
+static bool canary_degraded_cleared;
+static bool canary_force_clear;
 static uint64_t network_epoch, network_fingerprint, network_last_sample_ms;
 static bool network_context_known, network_sampling_enabled;
 static bool network_default_route, network_dns_configured;
@@ -167,10 +213,17 @@ static bool copy_field(char *dst, size_t cap, const char *src);
 static size_t split_tsv(char *line, char **fields, size_t cap);
 static const char *network_health_name(uint8_t state);
 static uint64_t monotonic_ms(void);
+static int controller_probe_request(const char *path, const char *request, char *reply, size_t reply_cap);
+static bool canary_clear_assignments(const char *reason);
+static bool canary_clear_host(const char *host);
+static bool canary_state_save(void);
+static bool canary_state_restore(void);
+static void canary_reconcile(void);
 static void expire_state(uint64_t now);
 static bool network_snapshot_fingerprint(uint64_t *fingerprint,
 		bool *default_route, bool *dns_configured);
 static void network_context_refresh(uint64_t now);
+static void network_health_current(uint8_t *state, uint8_t *reason);
 static void network_context_maybe_refresh(uint64_t now);
 
 static bool secure_parent_dir(const char *path)
@@ -192,6 +245,16 @@ static bool secure_parent_dir(const char *path)
 	return true;
 }
 
+static void controller_mark_output_limited(void)
+{
+	if (active_probe.active) active_probe.flow_ambiguous = true;
+	controller_output_limited = true;
+	if (!output_limit_warning_reported) {
+		fputs("adaptive_controller: decision journal reached its size limit; active probe invalidated and new probes/promotions disabled\n", stderr);
+		output_limit_warning_reported = true;
+	}
+}
+
 static void controller_printf(const char *format, ...)
 {
 	char line[4096];
@@ -199,7 +262,6 @@ static void controller_printf(const char *format, ...)
 	int n;
 	struct stat st;
 	int fd;
-	const char marker[] = "# OUTPUT_LIMIT\tmax_bytes=262144\n";
 	if (controller_output_limited) return;
 	if (!controller_output) controller_output = stdout;
 	va_start(args, format);
@@ -209,17 +271,44 @@ static void controller_printf(const char *format, ...)
 	fd = fileno(controller_output);
 	if (fd >= 0 && controller_output != stdout) {
 		if (fflush(controller_output) != 0 || fstat(fd, &st) != 0 ||
-			st.st_size < 0 || (uint64_t)st.st_size + (size_t)n > MAX_OUTPUT_BYTES) {
+			st.st_size < 0 || (uint64_t)st.st_size + (size_t)n > MAX_OUTPUT_DATA_BYTES) {
 			if (fstat(fd, &st) == 0 && st.st_size >= 0 &&
-				(uint64_t)st.st_size + sizeof(marker) - 1 <= MAX_OUTPUT_BYTES) {
-				(void)fwrite(marker, 1, sizeof(marker) - 1, controller_output);
+				(uint64_t)st.st_size + OUTPUT_LIMIT_MARKER_BYTES <= MAX_OUTPUT_BYTES) {
+				(void)fwrite(OUTPUT_LIMIT_MARKER, 1, OUTPUT_LIMIT_MARKER_BYTES, controller_output);
 				(void)fflush(controller_output);
 			}
-			controller_output_limited = true;
+			if (active_probe.active) active_probe.flow_ambiguous = true;
+			controller_mark_output_limited();
 			return;
 		}
 	}
-	(void)fwrite(line, 1, (size_t)n, controller_output);
+	if (fwrite(line, 1, (size_t)n, controller_output) != (size_t)n)
+		controller_mark_output_limited();
+}
+
+static bool controller_output_reserve(size_t bytes)
+{
+	int fd;
+	struct stat st;
+	if (controller_output_limited) return false;
+	if (!controller_output || controller_output == stdout) return true;
+	if (fflush(controller_output) != 0) {
+		controller_mark_output_limited();
+		return false;
+	}
+	fd = fileno(controller_output);
+	if (fd < 0 || fstat(fd, &st) != 0 || st.st_size < 0 ||
+		(uint64_t)st.st_size > MAX_OUTPUT_DATA_BYTES ||
+		bytes > MAX_OUTPUT_DATA_BYTES - (size_t)st.st_size) {
+		if (fd >= 0 && fstat(fd, &st) == 0 && st.st_size >= 0 &&
+			(uint64_t)st.st_size + OUTPUT_LIMIT_MARKER_BYTES <= MAX_OUTPUT_BYTES) {
+			(void)fwrite(OUTPUT_LIMIT_MARKER, 1, OUTPUT_LIMIT_MARKER_BYTES, controller_output);
+			(void)fflush(controller_output);
+		}
+		controller_mark_output_limited();
+		return false;
+	}
+	return true;
 }
 
 static void controller_puts(const char *line)
@@ -232,7 +321,7 @@ static void controller_puts(const char *line)
 
 static bool controller_output_open(const char *path)
 {
-	int flags = O_WRONLY | O_CREAT | O_APPEND;
+	int flags = O_RDWR | O_CREAT | O_APPEND;
 	int fd;
 	struct stat st;
 	if (!secure_parent_dir(path)) return false;
@@ -247,11 +336,24 @@ static bool controller_output_open(const char *path)
 		close(fd);
 		return false;
 	}
-	controller_output_limited = (uint64_t)st.st_size >= MAX_OUTPUT_BYTES;
+	controller_output_limited = false;
 	controller_output = fdopen(fd, "a");
 	if (!controller_output) {
 		close(fd);
 		return false;
+	}
+	if ((uint64_t)st.st_size > MAX_OUTPUT_DATA_BYTES) {
+		if (ftruncate(fd, (off_t)MAX_OUTPUT_DATA_BYTES) != 0) {
+			fclose(controller_output);
+			controller_output = NULL;
+			return false;
+		}
+		controller_printf(OUTPUT_LIMIT_MARKER);
+		if (!controller_output_limited) {
+			fclose(controller_output);
+			controller_output = NULL;
+			return false;
+		}
 	}
 	return true;
 }
@@ -285,7 +387,7 @@ static bool checkpoint_state(uint64_t now)
 	if (fd < 0) return false;
 	fp = fdopen(fd, "w");
 	if (!fp) { close(fd); unlink(tmp); return false; }
-	if (fprintf(fp, "ADAPTIVE_STATE\t7\t%" PRIu64 "\t%" PRIu64
+	if (fprintf(fp, "ADAPTIVE_STATE\t8\t%" PRIu64 "\t%" PRIu64
 		"\t%" PRIu64 "\t%u\n", now, network_epoch,
 		network_fingerprint, network_context_known ? 1U : 0U) < 0) ok = false;
 	for (i = 0; ok && i < MAX_CONTEXTS; i++) {
@@ -301,12 +403,14 @@ static bool checkpoint_state(uint64_t now)
 		if (!cand->used) continue;
 		if (fprintf(fp, "S\t%u\t%u\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 			"\t%" PRIu64 "\t%" PRIu64 "\t%u\t%" PRIu64
+			"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64
 			"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\n", cand->context_index,
 			cand->strategy, cand->successes, cand->active_successes, cand->unknown,
 			cand->last_success_ms, cand->last_seen_ms,
 			cand->has_last_success ? 1U : 0U, cand->probe_attempts,
 			cand->last_probe_success_ms, cand->comparative_failures,
-			cand->last_comparative_ms) < 0) ok = false;
+			cand->last_comparative_ms, cand->cost_samples,
+			cand->injected_packets, cand->injected_bytes) < 0) ok = false;
 	}
 	for (i = 0; ok && i < MAX_PROVIDER_PRIORS; i++) {
 		const struct provider_prior_state *prior = &provider_priors[i];
@@ -375,7 +479,7 @@ static bool restore_state(const char *path)
 		count = split_tsv(line, c, MAX_FIELDS);
 		if (!header_seen) {
 			if (count != 6 || strcmp(c[0], "ADAPTIVE_STATE") ||
-				!state_number(c[1], &saved_version) || (saved_version < 2 || saved_version > 7) ||
+				!state_number(c[1], &saved_version) || (saved_version < 2 || saved_version > 8) ||
 				!state_number(c[2], &saved_at) ||
 				!state_number(c[3], &saved_epoch) ||
 				!state_number(c[4], &saved_fingerprint) ||
@@ -431,13 +535,15 @@ static bool restore_state(const char *path)
 				key = hash_fields((const char *const *)key_fields, 6);
 			}
 			if (key != ctx->key) valid = false;
-		} else if ((count == 8 || count == 9 || count == 10 || count == 13) && !strcmp(c[0], "S")) {
+		} else if ((count == 8 || count == 9 || count == 10 || count == 13 || count == 16) && !strcmp(c[0], "S")) {
 			struct candidate_state *cand = NULL;
 			size_t i;
 			uint64_t probe_attempts = 0;
 			uint64_t last_probe_success_ms = 0, comparative_failures = 0;
 			uint64_t last_comparative_ms = 0;
-			if ((saved_version >= 7 && count != 13) ||
+			uint64_t cost_samples = 0, injected_packets = 0, injected_bytes = 0;
+			if ((saved_version == 7 && count != 13) ||
+				(saved_version >= 8 && count != 16) ||
 				!state_number(c[1], &v[0]) || v[0] >= MAX_CONTEXTS ||
 				!state_number(c[2], &v[1]) || v[1] == 0 || v[1] > UINT32_MAX ||
 				!state_number(c[3], &v[2]) ||
@@ -446,12 +552,17 @@ static bool restore_state(const char *path)
 				!state_number(c[count >= 9 ? 6 : 5], &v[4]) ||
 				!state_number(c[count >= 9 ? 7 : 6], &v[5]) ||
 				!state_number(c[count >= 9 ? 8 : 7], &v[6]) || v[6] > 1 ||
-				((count == 10 || count == 13) && (!state_number(c[9], &probe_attempts) || saved_version < 4)) ||
-				(count == 13 && (saved_version < 7 ||
+				((count == 10 || count == 13 || count == 16) &&
+					(!state_number(c[9], &probe_attempts) || saved_version < 4)) ||
+				((count == 13 || count == 16) && (saved_version < 7 ||
 					!state_number(c[10], &last_probe_success_ms) || last_probe_success_ms > now ||
 					!state_number(c[11], &comparative_failures) ||
 					!state_number(c[12], &last_comparative_ms) || last_comparative_ms > now ||
 					((comparative_failures == 0) != (last_comparative_ms == 0)))) ||
+				(count == 16 && (saved_version < 8 ||
+					!state_number(c[13], &cost_samples) ||
+					!state_number(c[14], &injected_packets) ||
+					!state_number(c[15], &injected_bytes))) ||
 				!contexts[v[0]].used || v[5] > now) { valid = false; continue; }
 			for (i = 0; i < MAX_CANDIDATES; i++) {
 				if (!candidates[i].used) { cand = &candidates[i]; break; }
@@ -470,12 +581,18 @@ static bool restore_state(const char *path)
 			cand->last_success_ms = v[4];
 			cand->last_seen_ms = v[5];
 			cand->has_last_success = v[6] != 0;
-			if (count == 13) {
+			if (count == 13 || count == 16) {
 				cand->last_probe_success_ms = last_probe_success_ms;
 				cand->comparative_failures = comparative_failures;
 				cand->last_comparative_ms = last_comparative_ms;
 			}
+			if (count == 16) {
+				cand->cost_samples = cost_samples;
+				cand->injected_packets = injected_packets;
+				cand->injected_bytes = injected_bytes;
+			}
 			if (cand->active_successes > cand->successes ||
+				cand->cost_samples > cand->active_successes ||
 				(!cand->has_last_success && cand->last_success_ms != 0) ||
 				(cand->has_last_success && cand->successes == 0)) valid = false;
 		} else if (((count == 9 && saved_version == 5) ||
@@ -737,12 +854,23 @@ static void network_context_refresh(uint64_t now)
 {
 	uint64_t fingerprint;
 	bool default_route, dns_configured;
+	bool was_known = network_context_known;
 	uint8_t degraded_reason = NETWORK_REASON_CANARY_REQUIRED;
 	network_last_sample_ms = now;
 	if (!network_snapshot_fingerprint(&fingerprint, &default_route, &dns_configured)) {
 		network_context_known = false;
 		network_degraded_reason = NETWORK_REASON_SNAPSHOT_UNAVAILABLE;
 		network_degraded_streak = 0;
+		if (was_known || canary_host_count) {
+			if (!canary_clear_assignments("network_snapshot_unavailable")) {
+				memset(canary_strategy, 0, sizeof(canary_strategy));
+				memset(canary_enrolled, 0, sizeof(canary_enrolled));
+				canary_force_clear = true;
+				(void)canary_state_save();
+			}
+			canary_last_epoch = 0;
+			canary_degraded_cleared = true;
+		}
 		return;
 	}
 	if (!network_epoch) network_epoch = 1;
@@ -759,11 +887,35 @@ static void network_context_refresh(uint64_t now)
 	if (degraded_reason == NETWORK_REASON_CANARY_REQUIRED) {
 		network_degraded_reason = degraded_reason;
 		network_degraded_streak = 0;
+		canary_degraded_cleared = false;
 	} else if (network_degraded_reason == degraded_reason) {
 		if (network_degraded_streak < 2) network_degraded_streak++;
 	} else {
 		network_degraded_reason = degraded_reason;
 		network_degraded_streak = 1;
+	}
+	if (network_epoch && canary_last_epoch != network_epoch) {
+		if (!canary_clear_assignments("network_epoch_changed")) {
+			memset(canary_strategy, 0, sizeof(canary_strategy));
+			memset(canary_enrolled, 0, sizeof(canary_enrolled));
+			canary_force_clear = true;
+			(void)canary_state_save();
+		}
+		memset(canary_quarantine_epoch, 0, sizeof(canary_quarantine_epoch));
+		memset(canary_rst_count, 0, sizeof(canary_rst_count));
+		memset(canary_rst_window_start, 0, sizeof(canary_rst_window_start));
+		memset(canary_rst_flow_ids, 0, sizeof(canary_rst_flow_ids));
+		memset(canary_rst_flow_ms, 0, sizeof(canary_rst_flow_ms));
+		canary_last_epoch = network_epoch;
+	}
+	if (network_degraded_streak >= 2 && !canary_degraded_cleared) {
+		if (!canary_clear_assignments("network_degraded")) {
+			memset(canary_strategy, 0, sizeof(canary_strategy));
+			memset(canary_enrolled, 0, sizeof(canary_enrolled));
+			canary_force_clear = true;
+			(void)canary_state_save();
+		}
+		canary_degraded_cleared = true;
 	}
 }
 
@@ -816,13 +968,27 @@ static size_t split_tsv(char *line, char **fields, size_t cap)
 static uint64_t monotonic_ms(void)
 {
 	struct timespec ts;
+	/* Match nfqws2's CLOCK_BOOT_OR_UPTIME (CLOCK_BOOTTIME on Linux), so
+	 * controller event timestamps remain comparable across system suspend. */
+#if defined(__linux__) && defined(CLOCK_BOOTTIME)
+	if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0) return 0;
+#else
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+#endif
 	return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
 static void expire_state(uint64_t now)
 {
 	size_t i;
+	for (i = 0; i < MAX_OPEN_FLOWS; i++) {
+		struct flow_state *flow = &flows[i];
+		if (flow->used && now >= flow->last_event_ms &&
+			now - flow->last_event_ms > OPEN_FLOW_RETENTION_MS) {
+			printf("TRACE_INCOMPLETE\topen_flow_unclosed\tflow_id=%" PRIu64 "\n", flow->id);
+			memset(flow, 0, sizeof(*flow));
+		}
+	}
 	for (i = 0; i < MAX_CANDIDATES; i++) {
 		if (candidates[i].used && now >= candidates[i].last_seen_ms &&
 			now - candidates[i].last_seen_ms > STATE_TTL_MS)
@@ -916,6 +1082,482 @@ static bool probe_host_valid(const char *host)
 			(c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
 	}
 	return true;
+}
+
+static int canary_host_index(const char *host)
+{
+	unsigned i;
+	for (i = 0; i < canary_host_count; i++)
+		if (!strcmp(canary_hosts[i], host)) return (int)i;
+	return -1;
+}
+
+static bool canary_load_hosts(const char *path)
+{
+	char parent[PATH_MAX], line[HOST_CAP + 4];
+	char *slash;
+	struct stat file_st, parent_st;
+	int fd = -1, result = false;
+	FILE *fp = NULL;
+	if (!path || path[0] != '/' || strlen(path) >= PATH_MAX ||
+		lstat(path, &file_st) != 0 || !S_ISREG(file_st.st_mode) ||
+		file_st.st_uid != 0 || (file_st.st_mode & 022) != 0) return false;
+	strcpy(parent, path);
+	slash = strrchr(parent, '/');
+	if (!slash) return false;
+	if (slash == parent) slash[1] = '\0'; else *slash = '\0';
+	if (lstat(parent, &parent_st) != 0 || !S_ISDIR(parent_st.st_mode) ||
+		parent_st.st_uid != 0 || (parent_st.st_mode & 022) != 0) return false;
+	fd = open(path, O_RDONLY
+#ifdef O_NOFOLLOW
+		| O_NOFOLLOW
+#endif
+	);
+	if (fd < 0 || fstat(fd, &file_st) != 0 || !S_ISREG(file_st.st_mode) ||
+		file_st.st_uid != 0 || (file_st.st_mode & 022) != 0) goto done;
+	fp = fdopen(fd, "r");
+	if (!fp) goto done;
+	fd = -1;
+	canary_host_count = 0;
+	while (fgets(line, sizeof(line), fp)) {
+		size_t len = strlen(line), i;
+		if (!strchr(line, '\n') && !feof(fp)) goto done;
+		while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+		if (!len || line[0] == '#') continue;
+		if (!probe_host_valid(line) || canary_host_count >= MAX_CANARY_HOSTS) goto done;
+		for (i = 0; i < len; i++) {
+			if (line[i] >= 'A' && line[i] <= 'Z') line[i] = (char)(line[i] - 'A' + 'a');
+		}
+		for (i = 0; i < canary_host_count; i++)
+			if (!strcmp(canary_hosts[i], line)) break;
+		if (i == canary_host_count) {
+			if (!copy_field(canary_hosts[canary_host_count], HOST_CAP, line)) goto done;
+			canary_enrolled[canary_host_count++] = false;
+		}
+	}
+	if (ferror(fp)) goto done;
+	result = true;
+done:
+	if (fp) fclose(fp);
+	if (fd >= 0) close(fd);
+	if (!result) canary_host_count = 0;
+	return result;
+}
+
+static bool canary_reply_parse(const char *reply, uint32_t profile, uint32_t strategy,
+	uint64_t *generation_out)
+{
+	unsigned long long reply_profile, reply_strategy, generation;
+	int consumed = 0;
+	if (sscanf(reply, "ACK\t1\tOK\t%llu\t%llu\t%llu%n", &reply_profile,
+		&reply_strategy, &generation, &consumed) != 3 || consumed <= 0 ||
+		strcmp(reply + consumed, "\n")) return false;
+	if (reply_profile != profile || (strategy && reply_strategy != strategy) || !generation)
+		return false;
+	if (generation_out) *generation_out = (uint64_t)generation;
+	return true;
+}
+
+static bool canary_set_assignment(const char *host, uint32_t strategy, uint64_t *generation)
+{
+	char request[384], reply[192];
+	int n;
+	if (!canary_control_path || !strategy) return false;
+	n = snprintf(request, sizeof(request), "SET_HOST_STRATEGY\t1\t%u\t%s\t%u\n",
+		canary_profile, host, strategy);
+	if (n < 0 || (size_t)n >= sizeof(request) ||
+		controller_probe_request(canary_control_path, request, reply, sizeof(reply)) != 0 ||
+		!canary_reply_parse(reply, canary_profile, strategy, generation)) return false;
+	return true;
+}
+
+static void canary_reset_rst_evidence(unsigned index)
+{
+	canary_rst_window_start[index] = 0;
+	canary_rst_count[index] = 0;
+	memset(canary_rst_flow_ids[index], 0, sizeof(canary_rst_flow_ids[index]));
+	memset(canary_rst_flow_ms[index], 0, sizeof(canary_rst_flow_ms[index]));
+}
+
+static void report_checkpoint_write_failure(void)
+{
+	if (checkpoint_warning_reported) return;
+	fputs("adaptive_controller: checkpoint write failed; further warnings suppressed\n", stderr);
+	checkpoint_warning_reported = true;
+}
+
+static void canary_observe_production_flow(const struct flow_state *flow,
+	uint64_t flow_id, uint64_t now, const uint64_t *telemetry)
+{
+	char host[HOST_CAP];
+	size_t i;
+	int hi;
+	uint64_t rolled_generation;
+	bool severe;
+	char rollback_record[768];
+	if (!canary_control_path || !flow->started || !flow->assigned ||
+		flow->identity_conflict || flow->strategy_conflict ||
+		!flow->network_context_usable || flow->health_state == NETWORK_HEALTH_DEGRADED ||
+		flow->profile != canary_profile || flow->network_epoch != network_epoch ||
+	flow->dst_port != 443 || strcmp(flow->scope, "production_canary") ||
+		strcmp(flow->transport, "tcp") ||
+		!flow->host[0] || !flow_id || !network_context_known ||
+		!network_default_route || !network_dns_configured || network_degraded_streak >= 2)
+		return;
+	if (!copy_field(host, sizeof(host), flow->host)) return;
+	for (i = 0; host[i]; i++)
+		if (host[i] >= 'A' && host[i] <= 'Z') host[i] = (char)(host[i] - 'A' + 'a');
+	hi = canary_host_index(host);
+	if (hi < 0 || !canary_enrolled[hi] || canary_strategy[hi] != flow->strategy ||
+		!canary_generation[hi] || canary_generation[hi] != flow->generation) return;
+	severe = telemetry[12] > 0 && telemetry[2] > 0 && telemetry[7] && !telemetry[5];
+	if (telemetry[5]) {
+		canary_reset_rst_evidence((unsigned)hi);
+		return;
+	}
+	if (!severe) return;
+	if (canary_rst_window_start[hi] && now >= canary_rst_window_start[hi] &&
+		now - canary_rst_window_start[hi] > CANARY_RST_WINDOW_MS)
+		canary_reset_rst_evidence((unsigned)hi);
+	for (i = 0; i < canary_rst_count[hi]; i++)
+		if (canary_rst_flow_ids[hi][i] == flow_id) return;
+	if (!canary_rst_count[hi]) canary_rst_window_start[hi] = now;
+	if (canary_rst_count[hi] < CANARY_RST_REQUIRED) {
+		canary_rst_flow_ids[hi][canary_rst_count[hi]] = flow_id;
+		canary_rst_flow_ms[hi][canary_rst_count[hi]] = now;
+		canary_rst_count[hi]++;
+	}
+	if (canary_rst_count[hi] < CANARY_RST_REQUIRED) return;
+	rolled_generation = canary_generation[hi];
+	canary_enrolled[hi] = false;
+	canary_strategy[hi] = 0;
+	canary_generation[hi] = 0;
+	canary_quarantine_epoch[hi] = network_epoch;
+	if (!canary_clear_host(host)) canary_force_clear = true;
+	if (!canary_state_save()) {
+		/* Never leave a stale assignment restorable after a failed rollback save. */
+		if (canary_state_path[0]) (void)unlink(canary_state_path);
+		canary_force_clear = true;
+	}
+	snprintf(rollback_record, sizeof(rollback_record),
+		"CANARY_ROLLBACK\tprofile=%u\thost=%s\tstrategy=%u\tgeneration=%llu\tepoch=%llu\tflow_id=%llu\tflow_ids=%llu,%llu,%llu\tevidence_ms=%llu,%llu,%llu\trollback_ms=%llu\tflows=%u\treason=server_rst_before_payload\n",
+		canary_profile, host, flow->strategy, (unsigned long long)rolled_generation,
+		(unsigned long long)network_epoch,
+		(unsigned long long)flow_id,
+		(unsigned long long)canary_rst_flow_ids[hi][0],
+		(unsigned long long)canary_rst_flow_ids[hi][1],
+		(unsigned long long)canary_rst_flow_ids[hi][2],
+		(unsigned long long)canary_rst_flow_ms[hi][0],
+		(unsigned long long)canary_rst_flow_ms[hi][1],
+		(unsigned long long)canary_rst_flow_ms[hi][2],
+		(unsigned long long)now, CANARY_RST_REQUIRED);
+	printf("%s", rollback_record);
+	if (controller_output_limited && canary_stderr_rollbacks < MAX_CANARY_STDERR_ROLLBACKS) {
+		fprintf(stderr, "%s", rollback_record);
+		canary_stderr_rollbacks++;
+	}
+	canary_reset_rst_evidence((unsigned)hi);
+}
+
+static bool canary_clear_host(const char *host)
+{
+	char request[384], reply[192];
+	int n;
+	if (!canary_control_path) return false;
+	n = snprintf(request, sizeof(request), "CLEAR_HOST_STRATEGY\t1\t%u\t%s\n",
+		canary_profile, host);
+	unsigned long long gen;
+	int consumed = 0;
+	if (n < 0 || (size_t)n >= sizeof(request) ||
+		controller_probe_request(canary_control_path, request, reply, sizeof(reply)) != 0)
+		return false;
+	if (sscanf(reply, "ACK\t1\tOK\t%*u\t%*u\t%llu%n", &gen, &consumed) == 1 &&
+		consumed > 0 && !strcmp(reply + consumed, "\n")) return true;
+	return !strcmp(reply, "ACK\t1\tERR\tno_host_strategy\n");
+}
+
+static void canary_emit_record(const char *record, bool journal_available,
+		unsigned *stderr_count, unsigned stderr_limit)
+{
+	if (journal_available) {
+		printf("%s", record);
+		if (!controller_output_limited) return;
+	}
+	if (*stderr_count < stderr_limit) {
+		fprintf(stderr, "%s", record);
+		(*stderr_count)++;
+	}
+}
+
+static bool canary_clear_assignments(const char *reason)
+{
+	unsigned i;
+	bool ok = true, changed = false;
+	size_t reserve_bytes = 0;
+	bool journal_available;
+	for (i = 0; i < canary_host_count; i++)
+		if (canary_strategy[i] || canary_enrolled[i])
+			reserve_bytes += 512U;
+	journal_available = !reserve_bytes || controller_output_reserve(reserve_bytes);
+	for (i = 0; i < canary_host_count; i++) {
+		uint32_t old_strategy = canary_strategy[i];
+		uint64_t old_generation = canary_generation[i];
+		char record[512];
+		int n;
+		if (!canary_strategy[i] && !canary_enrolled[i]) continue;
+		if (canary_clear_host(canary_hosts[i])) {
+			canary_enrolled[i] = false;
+			canary_strategy[i] = 0;
+			canary_generation[i] = 0;
+			changed = true;
+			n = snprintf(record, sizeof(record),
+				"CANARY_CLEAR\tprofile=%u\thost=%s\tstrategy=%u\tgeneration=%llu\tepoch=%llu\treason=%s\n",
+				canary_profile, canary_hosts[i], old_strategy,
+				(unsigned long long)old_generation, (unsigned long long)network_epoch, reason);
+			if (n > 0 && (size_t)n < sizeof(record)) {
+				canary_emit_record(record, journal_available, &canary_stderr_clears,
+					MAX_CANARY_STDERR_CLEARS);
+			}
+		}
+		else ok = false;
+	}
+	if (changed && !canary_state_save()) ok = false;
+	return ok;
+}
+
+static bool canary_state_save(void)
+{
+	char tmp[PATH_MAX];
+	struct stat st;
+	FILE *fp;
+	int fd, n;
+	unsigned i;
+	bool ok = true;
+	if (!canary_control_path) return true;
+	if (!canary_state_path[0] || !secure_parent_dir(canary_state_path)) return false;
+	n = snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", canary_state_path, (long)getpid());
+	if (n <= 0 || (size_t)n >= sizeof(tmp)) return false;
+#ifdef O_NOFOLLOW
+	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+#else
+	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+#endif
+	if (fd < 0) return false;
+	fp = fdopen(fd, "w");
+	if (!fp) { close(fd); unlink(tmp); return false; }
+	if (fprintf(fp, "ZATOR_CANARY\t1\t%u\t%llu\t%llu\n", canary_profile,
+		(unsigned long long)network_epoch, (unsigned long long)network_fingerprint) < 0) ok = false;
+	for (i = 0; ok && i < canary_host_count; i++) {
+		if (canary_strategy[i] && fprintf(fp, "A\t%s\t%u\n",
+			canary_hosts[i], canary_strategy[i]) < 0) ok = false;
+		if (ok && canary_quarantine_epoch[i] == network_epoch &&
+			canary_quarantine_epoch[i] && fprintf(fp, "Q\t%s\t%llu\n",
+			canary_hosts[i], (unsigned long long)canary_quarantine_epoch[i]) < 0) ok = false;
+	}
+	if (fflush(fp) != 0 || fsync(fileno(fp)) != 0 || fstat(fileno(fp), &st) != 0 ||
+		st.st_size < 0 || (uint64_t)st.st_size > MAX_CANARY_STATE_BYTES) ok = false;
+	if (fclose(fp) != 0) ok = false;
+	if (ok && rename(tmp, canary_state_path) == 0) return true;
+	(void)unlink(tmp);
+	return false;
+}
+
+static bool canary_state_restore(void)
+{
+	int fd;
+	FILE *fp;
+	struct stat st;
+	char line[HOST_CAP + 64], *fields[5];
+	bool header = false, matches_network = false, valid = true;
+	uint64_t profile, epoch, fingerprint;
+	if (!canary_control_path) return true;
+	if (!canary_state_path[0] || !secure_parent_dir(canary_state_path)) return false;
+#ifdef O_NOFOLLOW
+	fd = open(canary_state_path, O_RDONLY | O_NOFOLLOW);
+#else
+	fd = open(canary_state_path, O_RDONLY);
+#endif
+	if (fd < 0) {
+		if (errno == ENOENT) {
+			canary_force_clear = true;
+			return true;
+		}
+		return false;
+	}
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+		(st.st_mode & 077) != 0 || st.st_size < 0 ||
+		(uint64_t)st.st_size > MAX_CANARY_STATE_BYTES) { close(fd); return false; }
+	fp = fdopen(fd, "r");
+	if (!fp) { close(fd); return false; }
+	while (fgets(line, sizeof(line), fp)) {
+		size_t count;
+		uint64_t strategy;
+		int host_index;
+		if (!strchr(line, '\n') && !feof(fp)) { valid = false; break; }
+		count = split_tsv(line, fields, 5);
+		if (!header) {
+			if (count != 5 || strcmp(fields[0], "ZATOR_CANARY") ||
+				strcmp(fields[1], "1") || !parse_u64(fields[2], &profile) ||
+				profile != canary_profile || !parse_u64(fields[3], &epoch) ||
+				!parse_u64(fields[4], &fingerprint)) {
+				valid = false; break;
+			}
+			matches_network = network_context_known && epoch == network_epoch &&
+				fingerprint == network_fingerprint;
+			header = true;
+			continue;
+		}
+		if (count != 3 || !probe_host_valid(fields[1]) || !parse_u64(fields[2], &strategy)) {
+			valid = false; break;
+		}
+		host_index = canary_host_index(fields[1]);
+		if (host_index < 0) continue;
+		if (!strcmp(fields[0], "A") && strategy && strategy <= UINT32_MAX) {
+			if (canary_strategy[host_index]) { valid = false; break; }
+			canary_strategy[host_index] = (uint32_t)strategy;
+		} else if (!strcmp(fields[0], "Q") && strategy == epoch) {
+			canary_quarantine_epoch[host_index] = strategy;
+		} else { valid = false; break; }
+	}
+	if (ferror(fp)) valid = false;
+	fclose(fp);
+	if (!valid || !header) {
+		memset(canary_strategy, 0, sizeof(canary_strategy));
+		memset(canary_quarantine_epoch, 0, sizeof(canary_quarantine_epoch));
+		canary_force_clear = true;
+		return false;
+	}
+	if (!matches_network) {
+		memset(canary_strategy, 0, sizeof(canary_strategy));
+		memset(canary_quarantine_epoch, 0, sizeof(canary_quarantine_epoch));
+		canary_force_clear = true;
+		if (!canary_state_save()) return false;
+	} else canary_last_epoch = network_epoch;
+	return true;
+}
+
+static void canary_reconcile(void)
+{
+	struct stat st;
+	unsigned i;
+	if (!canary_control_path) return;
+	if (lstat(canary_control_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+		canary_force_clear = true;
+		for (i = 0; i < canary_host_count; i++) {
+			if (!canary_reconcile_pending[i]) {
+				bool journal_available = controller_output_reserve(512U);
+				char record[384];
+				int record_len = snprintf(record, sizeof(record),
+					"CANARY_RECONCILE_PENDING\tprofile=%u\thost=%s\tstrategy=%u\tepoch=%llu\treason=control_unavailable\n",
+					canary_profile, canary_hosts[i], canary_strategy[i],
+					(unsigned long long)network_epoch);
+				canary_reconcile_pending[i] = true;
+				if (record_len > 0 && (size_t)record_len < sizeof(record))
+					canary_emit_record(record, journal_available, &canary_stderr_pending,
+						MAX_CANARY_STDERR_PENDING);
+			}
+		}
+		return;
+	}
+	if (!canary_force_clear && !canary_last_reconcile_ms) canary_force_clear = true;
+	if (canary_force_clear) {
+		bool journal_available = controller_output_reserve(CANARY_CLEAR_OUTPUT_RESERVE_BYTES);
+		for (i = 0; i < canary_host_count; i++) {
+			char record[512];
+			int n;
+			if (!canary_clear_host(canary_hosts[i])) return;
+			canary_enrolled[i] = false;
+			canary_generation[i] = 0;
+			canary_reconcile_pending[i] = false;
+			n = snprintf(record, sizeof(record),
+				"CANARY_CLEAR\tprofile=%u\thost=%s\tstrategy=0\tgeneration=0\tepoch=%llu\treason=controller_reconcile\n",
+				canary_profile, canary_hosts[i], (unsigned long long)network_epoch);
+			if (n > 0 && (size_t)n < sizeof(record)) {
+				canary_emit_record(record, journal_available, &canary_stderr_clears,
+					MAX_CANARY_STDERR_CLEARS);
+			}
+		}
+		canary_force_clear = false;
+		(void)canary_state_save();
+	}
+	if (!network_context_known || !network_default_route || !network_dns_configured ||
+		network_degraded_streak >= 2) return;
+	for (i = 0; i < canary_host_count; i++) {
+		char request[384], reply[192];
+		int n;
+		if (!canary_strategy[i] && !canary_reconcile_pending[i]) continue;
+		n = snprintf(request, sizeof(request), "GET_HOST_STRATEGY\t1\t%u\t%s\n",
+			canary_profile, canary_hosts[i]);
+		if (n <= 0 || (size_t)n >= sizeof(request) ||
+			controller_probe_request(canary_control_path, request, reply, sizeof(reply)) != 0) {
+			canary_force_clear = true;
+			if (!canary_reconcile_pending[i]) {
+				bool journal_available = controller_output_reserve(512U);
+				char record[384];
+				int record_len = snprintf(record, sizeof(record),
+					"CANARY_RECONCILE_PENDING\tprofile=%u\thost=%s\tstrategy=%u\tepoch=%llu\treason=control_unavailable\n",
+					canary_profile, canary_hosts[i], canary_strategy[i],
+					(unsigned long long)network_epoch);
+				canary_reconcile_pending[i] = true;
+				if (record_len > 0 && (size_t)record_len < sizeof(record))
+					canary_emit_record(record, journal_available, &canary_stderr_pending,
+						MAX_CANARY_STDERR_PENDING);
+			}
+			return;
+		}
+		canary_reconcile_pending[i] = false;
+		if (!canary_strategy[i]) continue;
+		if (canary_reply_parse(reply, canary_profile, canary_strategy[i],
+			&canary_generation[i])) {
+			if (!canary_enrolled[i]) {
+				bool journal_available = controller_output_reserve(CANARY_OUTPUT_RESERVE_BYTES);
+				char record[384];
+				int record_len = snprintf(record, sizeof(record),
+					"CANARY_RESTORED\tprofile=%u\thost=%s\tstrategy=%u\tepoch=%llu\n",
+					canary_profile, canary_hosts[i], canary_strategy[i],
+					(unsigned long long)network_epoch);
+				if (record_len <= 0 || (size_t)record_len >= sizeof(record)) return;
+				canary_emit_record(record, journal_available, &canary_stderr_restores,
+					MAX_CANARY_STDERR_RESTORES);
+			}
+			canary_enrolled[i] = true;
+			continue;
+		}
+		{
+			bool journal_available = controller_output_reserve(CANARY_OUTPUT_RESERVE_BYTES);
+			char record[384];
+			int record_len;
+			if (canary_set_assignment(canary_hosts[i], canary_strategy[i],
+				&canary_generation[i])) {
+				canary_enrolled[i] = true;
+				record_len = snprintf(record, sizeof(record),
+					"CANARY_RESTORED\tprofile=%u\thost=%s\tstrategy=%u\tepoch=%llu\n",
+					canary_profile, canary_hosts[i], canary_strategy[i],
+					(unsigned long long)network_epoch);
+				if (record_len > 0 && (size_t)record_len < sizeof(record)) {
+					canary_emit_record(record, journal_available, &canary_stderr_restores,
+						MAX_CANARY_STDERR_RESTORES);
+				}
+			} else {
+				record_len = snprintf(record, sizeof(record),
+					"CANARY_RESTORE_PENDING\tprofile=%u\thost=%s\tstrategy=%u\tepoch=%llu\treason=control_ack_failed\n",
+					canary_profile, canary_hosts[i], canary_strategy[i],
+					(unsigned long long)network_epoch);
+				if (record_len > 0 && (size_t)record_len < sizeof(record))
+					canary_emit_record(record, journal_available, &canary_stderr_pending,
+						MAX_CANARY_STDERR_PENDING);
+				return;
+			}
+		}
+	}
+}
+
+static void canary_reconcile_maybe(uint64_t now)
+{
+	if (!canary_control_path || (canary_last_reconcile_ms && now >= canary_last_reconcile_ms &&
+		now - canary_last_reconcile_ms < 30000ULL)) return;
+	canary_last_reconcile_ms = now;
+	canary_reconcile();
 }
 
 static bool probe_flow_id_completed(uint64_t flow_id)
@@ -1235,6 +1877,19 @@ static bool probe_port_recent(uint64_t now, uint32_t source_port)
 	return false;
 }
 
+static void candidate_record_cost(struct candidate_state *cand,
+		const struct probe_state *probe)
+{
+	if (!cand || !probe || !probe->injection_cost_observed) return;
+	if (cand->cost_samples < UINT64_MAX) cand->cost_samples++;
+	if (UINT64_MAX - cand->injected_packets < probe->injected_packets)
+		cand->injected_packets = UINT64_MAX;
+	else cand->injected_packets += probe->injected_packets;
+	if (UINT64_MAX - cand->injected_bytes < probe->injected_bytes)
+		cand->injected_bytes = UINT64_MAX;
+	else cand->injected_bytes += probe->injected_bytes;
+}
+
 static void probe_record_active_success(uint64_t now)
 {
 	struct probe_state *p = &active_probe;
@@ -1272,6 +1927,7 @@ static void probe_record_active_success(uint64_t now)
 		cand->has_last_success = true;
 		success_added = true;
 	}
+	if (success_added) candidate_record_cost(cand, p);
 	/* Scheduler attempts are grouped under family=any. Clear a pending unknown
 	 * and mirror successful evidence there so scheduler cadence matches the
 	 * family-specific flow record. */
@@ -1300,9 +1956,130 @@ static void probe_record_active_success(uint64_t now)
 					pending->active_successes++;
 					pending->last_success_ms = now;
 					pending->has_last_success = true;
+					candidate_record_cost(pending, p);
 				}
 			}
 		}
+	}
+}
+
+static int fraction_compare(uint64_t an, uint64_t ad, uint64_t bn, uint64_t bd)
+{
+	bool reverse = false;
+	for (;;) {
+		uint64_t aq = an / ad, bq = bn / bd;
+		uint64_t ar, br;
+		int order;
+		if (aq != bq) {
+			order = aq < bq ? -1 : 1;
+			return reverse ? -order : order;
+		}
+		ar = an % ad; br = bn % bd;
+		if (!ar || !br) {
+			if (!ar && !br) return 0;
+			order = !ar ? -1 : 1;
+			return reverse ? -order : order;
+		}
+		an = ad; ad = ar; bn = bd; bd = br;
+		reverse = !reverse;
+	}
+}
+
+/* A cost lead is accepted only as a Pareto improvement after at least three
+ * attributed successful probes on each equally successful candidate. */
+static int candidate_cost_compare(const struct candidate_state *a,
+		const struct candidate_state *b)
+{
+	int packets, bytes;
+	if (!a || !b || a->cost_samples < 3 || b->cost_samples < 3 ||
+		a->active_successes != b->active_successes ||
+		a->comparative_failures || b->comparative_failures) return 0;
+	packets = fraction_compare(a->injected_packets, a->cost_samples,
+		b->injected_packets, b->cost_samples);
+	bytes = fraction_compare(a->injected_bytes, a->cost_samples,
+		b->injected_bytes, b->cost_samples);
+	if (packets <= 0 && bytes <= 0 && (packets < 0 || bytes < 0)) return -1;
+	if (packets >= 0 && bytes >= 0 && (packets > 0 || bytes > 0)) return 1;
+	return 0;
+}
+
+static void canary_consider_learning_success(const struct probe_state *p, int candidate_index)
+{
+	const struct candidate_state *champion;
+	uint64_t runnerup = 0;
+	int allow_index;
+	size_t i;
+	bool cost_tiebreak = false;
+	char host[HOST_CAP];
+	if (!controller_output_reserve(CANARY_OUTPUT_RESERVE_BYTES)) return;
+	if (!canary_control_path || p->profile != canary_profile ||
+		strcmp(p->transport, "tcp") || p->health_state == NETWORK_HEALTH_DEGRADED ||
+		!p->network_context_usable || candidate_index < 0 ||
+		candidate_index >= MAX_CANDIDATES) return;
+	if (!copy_field(host, sizeof(host), p->host)) return;
+	for (i = 0; host[i]; i++)
+		if (host[i] >= 'A' && host[i] <= 'Z') host[i] = (char)(host[i] - 'A' + 'a');
+	allow_index = canary_host_index(host);
+	if (allow_index < 0) return;
+	if (canary_quarantine_epoch[allow_index] == p->network_epoch) return;
+	champion = &candidates[candidate_index];
+	if (!champion->used || champion->strategy == CONTROL_STRATEGY_ID ||
+		champion->context_index >= MAX_CONTEXTS || !contexts[champion->context_index].used ||
+		contexts[champion->context_index].profile != canary_profile ||
+		contexts[champion->context_index].network_epoch != p->network_epoch ||
+		strcmp(contexts[champion->context_index].scope, "learning") ||
+		strcmp(contexts[champion->context_index].host, host) ||
+		champion->active_successes < CANARY_MIN_ACTIVE_SUCCESSES ||
+		champion->comparative_failures) return;
+	for (i = 0; i < MAX_CANDIDATES; i++) {
+		const struct candidate_state *other = &candidates[i];
+		if (!other->used || i == (size_t)candidate_index ||
+			other->context_index != champion->context_index ||
+			other->strategy == CONTROL_STRATEGY_ID || other->comparative_failures) continue;
+		if (other->active_successes > runnerup) runnerup = other->active_successes;
+	}
+	if (champion->active_successes < runnerup) return;
+	if (champion->active_successes == runnerup) {
+		bool cost_lead = false;
+		for (i = 0; i < MAX_CANDIDATES; i++) {
+			const struct candidate_state *other = &candidates[i];
+			if (!other->used || i == (size_t)candidate_index ||
+				other->context_index != champion->context_index ||
+				other->strategy == CONTROL_STRATEGY_ID || other->comparative_failures ||
+				other->active_successes != champion->active_successes) continue;
+			if (candidate_cost_compare(champion, other) != -1) return;
+			cost_lead = true;
+		}
+		if (!cost_lead) return;
+		cost_tiebreak = true;
+	}
+	if (canary_enrolled[allow_index] &&
+		canary_strategy[allow_index] == champion->strategy) return;
+	{
+		uint32_t previous_strategy = canary_strategy[allow_index];
+		canary_strategy[allow_index] = champion->strategy;
+		if (!canary_state_save()) {
+			canary_strategy[allow_index] = previous_strategy;
+			printf("CANARY_STATE_SAVE_FAILED\tprofile=%u\thost=%s\tstrategy=%u\n",
+				canary_profile, host, champion->strategy);
+			return;
+		}
+	}
+	if (canary_set_assignment(host, champion->strategy,
+		&canary_generation[allow_index])) {
+		canary_enrolled[allow_index] = true;
+		canary_strategy[allow_index] = champion->strategy;
+		printf("CANARY_SET\tprofile=%u\thost=%s\tstrategy=%u\tactive_successes=%llu\trunnerup=%llu\tepoch=%llu\tselection=%s\n",
+			canary_profile, host, champion->strategy,
+			(unsigned long long)champion->active_successes,
+			(unsigned long long)runnerup, (unsigned long long)p->network_epoch,
+			cost_tiebreak ? "lower_injection_cost" : "active_success_lead");
+	} else {
+		printf("CANARY_SET_PENDING\tprofile=%u\thost=%s\tstrategy=%u\tactive_successes=%llu\trunnerup=%llu\tepoch=%llu\treason=control_ack_failed\tselection=%s\n",
+			canary_profile, host, champion->strategy,
+			(unsigned long long)champion->active_successes,
+			(unsigned long long)runnerup, (unsigned long long)p->network_epoch,
+			cost_tiebreak ? "lower_injection_cost" : "active_success_lead");
 	}
 }
 
@@ -1456,10 +2233,21 @@ static void probe_maybe_finalize(uint64_t now, bool expired)
 {
 	struct probe_state *p = &active_probe;
 	bool valid, success, explicit_block, explicit_redirect, explicit_body;
+	bool epoch_stable, network_eligible, evidence_eligible;
+	const char *outcome_reason;
 	int candidate_index = -1;
 	if (!p->active) return;
 	if (!expired && !(p->result_seen && p->flow_seen && now >= p->join_ready_ms)) return;
-	valid = p->result_seen && p->flow_seen && !p->flow_ambiguous;
+	if (network_sampling_enabled) network_context_refresh(now);
+	if (network_sampling_enabled)
+		network_health_current(&p->health_state, &p->health_reason);
+	(void)controller_output_reserve(PROBE_OUTPUT_RESERVE_BYTES);
+	epoch_stable = !network_sampling_enabled || (network_context_known &&
+		p->network_epoch == network_epoch);
+	network_eligible = epoch_stable && (!network_sampling_enabled ||
+		(network_default_route && network_dns_configured && network_degraded_streak < 2));
+	evidence_eligible = network_eligible && !controller_output_limited;
+	valid = p->result_seen && p->flow_seen && !p->flow_ambiguous && evidence_eligible;
 	explicit_redirect = valid && p->curl_rc == 0 && p->http_status >= 300 &&
 		p->http_status < 400 && known_block_redirect_host(p->redirect_host);
 	explicit_body = valid && p->curl_rc == 0 && p->http_status >= 100 &&
@@ -1467,25 +2255,28 @@ static void probe_maybe_finalize(uint64_t now, bool expired)
 	explicit_block = explicit_redirect || explicit_body;
 	success = valid && p->curl_rc == 0 && p->http_status >= 100 && p->http_status <= 599 &&
 		!explicit_block;
-	if (p->strategy != CONTROL_STRATEGY_ID) candidate_index = probe_record_attempt(now);
-	if (p->network_context_usable && p->health_state != NETWORK_HEALTH_DEGRADED)
+	outcome_reason = !network_context_known && network_sampling_enabled ?
+		"NETWORK_CONTEXT_UNAVAILABLE" : (!epoch_stable ? "NETWORK_EPOCH_CHANGED" :
+		(!network_eligible ? "NETWORK_CONTEXT_UNUSABLE" :
+		(explicit_redirect ? "KNOWN_BLOCK_REDIRECT" :
+		(explicit_body ? "KNOWN_BLOCK_BODY_MARKER" :
+		(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
+		(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE"))))));
+	if (evidence_eligible && p->strategy != CONTROL_STRATEGY_ID)
+		candidate_index = probe_record_attempt(now);
+	if (evidence_eligible && p->network_context_usable && p->health_state != NETWORK_HEALTH_DEGRADED)
 		provider_record_probe(p, success, now);
 	if (p->strategy == CONTROL_STRATEGY_ID) {
-		probe_record_control_result(p, success, now);
+		if (evidence_eligible) probe_record_control_result(p, success, now);
 		probe_emit_outcome(success ? "CONTROL_SUCCESS" : "CONTROL_UNKNOWN",
-		success ? "NO_STRATEGY_HTTP_RESPONSE" : explicit_redirect ? "KNOWN_BLOCK_REDIRECT" :
-			(explicit_body ? "KNOWN_BLOCK_BODY_MARKER" :
-			(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
-			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE"))));
+			success ? "NO_STRATEGY_HTTP_RESPONSE" : outcome_reason);
 	} else if (success) {
 		probe_record_active_success(now);
+		canary_consider_learning_success(p, candidate_index);
 		probe_emit_outcome("STRONG_SUCCESS", "HTTP_RESPONSE_AND_C_FLOW");
 	} else {
-		probe_record_comparison_candidate(p, candidate_index, now);
-		probe_emit_outcome("UNKNOWN", explicit_redirect ? "KNOWN_BLOCK_REDIRECT" :
-			(explicit_body ? "KNOWN_BLOCK_BODY_MARKER" :
-			(p->flow_ambiguous ? "AMBIGUOUS_FLOW" :
-			(expired ? "JOIN_TIMEOUT" : "NO_CONFIRMED_HTTP_RESPONSE"))));
+		if (evidence_eligible) probe_record_comparison_candidate(p, candidate_index, now);
+		probe_emit_outcome("UNKNOWN", outcome_reason);
 	}
 	if (p->flow_seen && p->flow_id)
 		completed_probe_flows[completed_probe_flow_next++ %
@@ -1586,7 +2377,8 @@ static const char *network_health_reason_name(uint8_t reason)
 	}
 }
 
-static void process_event(char **c, uint64_t now, uint32_t source_port)
+static void process_event(char **c, uint64_t now, uint32_t source_port,
+	bool injection_cost_observed, uint64_t injected_packets, uint64_t injected_bytes)
 {
 	uint64_t event_ms, flow_id, generation, tuple_hash;
 	uint64_t telemetry[14];
@@ -1599,7 +2391,10 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 	char *tuple_fields[5];
 	bool valid_ids, leased_flow;
 
-	if (network_sampling_enabled) network_context_maybe_refresh(now);
+	if (network_sampling_enabled) {
+		network_context_maybe_refresh(now);
+		canary_reconcile_maybe(now);
+	}
 	if (strcmp(c[0], "v2")) return;
 	valid_ids = parse_u64(c[1], &event_ms) && parse_u64(c[3], &flow_id) &&
 		parse_u64(c[4], &profile64) && parse_u64(c[5], &strategy64) &&
@@ -1640,17 +2435,27 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 		return;
 	}
 	flow = &flows[fi];
+	flow->last_event_ms = now;
+	if (injection_cost_observed) {
+		flow->injection_cost_observed = true;
+		flow->injected_packets = injected_packets;
+		flow->injected_bytes = injected_bytes;
+	}
 	if (!flow->tuple_hash) flow->tuple_hash = tuple_hash;
 	else if (flow->tuple_hash != tuple_hash) flow->identity_conflict = true;
 	if (flow->source_port && source_port && flow->source_port != source_port)
 		flow->identity_conflict = true;
 	if (!flow->source_port) flow->source_port = source_port;
+	if (!flow->dst_port) flow->dst_port = (uint16_t)port64;
 	if (strcmp(flow->transport, "") && strcmp(flow->transport, c[9]))
 		flow->identity_conflict = true;
 	if (!flow->transport[0]) copy_field(flow->transport, sizeof(flow->transport), c[9]);
 	if (strcmp(flow->family, "") && strcmp(flow->family, c[10]))
 		flow->identity_conflict = true;
 	if (!flow->family[0]) copy_field(flow->family, sizeof(flow->family), c[10]);
+	if (flow->dst_ip[0] && strcmp(flow->dst_ip, c[11])) flow->identity_conflict = true;
+	if (!flow->dst_ip[0] && !copy_field(flow->dst_ip, sizeof(flow->dst_ip), c[11]))
+		flow->identity_conflict = true;
 	if (!strcmp(c[2], "FLOW_START")) {
 		if (flow->started) {
 			if (flow->network_epoch != (network_context_known ? network_epoch : 0))
@@ -1702,6 +2507,8 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 			!flow->started || !flow->assigned || flow->identity_conflict ||
 			flow->strategy_conflict || !flow->network_context_usable ||
 			flow->health_state == NETWORK_HEALTH_DEGRADED ||
+			flow->network_epoch != active_probe.network_epoch ||
+			flow->network_epoch != network_epoch ||
 			active_probe.candidate_flow_id != flow_id ||
 			(active_probe.flow_seen && active_probe.flow_id != flow_id)) {
 			active_probe.flow_ambiguous = true;
@@ -1717,6 +2524,9 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 			memcpy(active_probe.flow_metrics, telemetry, sizeof(active_probe.flow_metrics));
 			active_probe.clienthello_count = telemetry[12];
 			active_probe.clienthello_retransmissions = telemetry[13];
+			active_probe.injection_cost_observed = flow->injection_cost_observed;
+			active_probe.injected_packets = flow->injected_packets;
+			active_probe.injected_bytes = flow->injected_bytes;
 			if (!copy_field(active_probe.termination_reason,
 				sizeof(active_probe.termination_reason), c[27]))
 				copy_field(active_probe.termination_reason,
@@ -1728,6 +2538,7 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 		memset(flow, 0, sizeof(*flow));
 		return;
 	}
+	canary_observe_production_flow(flow, flow_id, now, telemetry);
 	{
 		bool usable = flow->started && flow->assigned && flow->profile > 0 && flow->strategy > 0 &&
 			flow->generation > 0 && !flow->strategy_conflict && !flow->identity_conflict &&
@@ -1740,7 +2551,7 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 		uint32_t confidence = 0;
 		unsigned rank = 0, candidate_count = 0;
 		bool independent = false;
-		int ci = -1, candidate_index = -1;
+		int candidate_index = -1;
 		uint64_t context_key = 0;
 		char epoch_output[32];
 		const char *health_output = network_health_name(flow->health_state);
@@ -1791,7 +2602,6 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 					confidence = confidence_lcb95_milli(cand->successes);
 					rank = rank_candidate((unsigned)context_index, flow->strategy,
 						cand->successes, &candidate_count, &top_strategy);
-					ci = context_index;
 				} else usable = false;
 			} else usable = false;
 		}
@@ -1802,16 +2612,17 @@ static void process_event(char **c, uint64_t now, uint32_t source_port)
 			"\t%s\t%s\t%u\t%u\t%s\t%d\t%u\t%u\t%u\t%u\tNONE\t%s"
 			"\t%s\t%s\t%s\t%s\t%s\t%s"
 			"\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s"
-			"\t%s\t%s\t%s\t%s\t%s\t%u\n",
+			"\t%s\t%s\t%s\t%s\t%s\t%u\t%u\t%s\n",
 		flow_id, flow->profile, flow->strategy, flow->generation, evidence,
-			usable ? (ci >= 0 ? contexts[ci].host : flow->host) : "", champion,
+			flow->host, champion,
 			challenger, action, independent ? 1 : 0, confidence, rank,
 			candidate_count, top_strategy,
 			freeze_learning ? "NETWORK_FROZEN" : (usable ? "SHADOW_ONLY" : "UNATTRIBUTED"),
 			flow->scope, flow->transport, flow->family, epoch_output,
 			health_output, health_reason_output,
 			c[13], c[14], c[15], c[16], c[17], c[18], c[19], c[20], c[21], c[22],
-			c[23], c[24], c[25], c[26], c[27], flow->source_port);
+			c[23], c[24], c[25], c[26], c[27], flow->source_port, flow->dst_port,
+			flow->dst_ip);
 		(void)candidate_index; (void)context_key;
 	}
 	memset(flow, 0, sizeof(*flow));
@@ -1843,6 +2654,8 @@ static void process_line(char *line, unsigned long line_no)
 	char *normalized[MAX_FIELDS];
 	size_t count, i;
 	uint32_t source_port = 0;
+	uint64_t injected_packets = 0, injected_bytes = 0;
+	bool injection_cost_observed = false;
 	if (!strncmp(line, "# TRACE_LIMIT", 13)) {
 		puts("TRACE_INCOMPLETE\tmax_bytes");
 		if (active_probe.active) {
@@ -1866,27 +2679,37 @@ static void process_line(char *line, unsigned long line_no)
 	}
 	if (!line[0] || line[0] == '#') return;
 	count = split_tsv(line, fields, MAX_FIELDS);
-	if (count == 29 && !strcmp(fields[0], "v3")) {
+	if ((count == 29 && !strcmp(fields[0], "v3")) ||
+		(count == 31 && !strcmp(fields[0], "v4"))) {
+		bool v4 = !strcmp(fields[0], "v4");
 		uint64_t source_port64;
 		if (!parse_u64(fields[13], &source_port64) || source_port64 > 65535) {
-			printf("INPUT_REJECTED\t%lu\tbad_v3_source_port\n", line_no);
+			printf("INPUT_REJECTED\t%lu\tbad_v3_v4_source_port\n", line_no);
 			return;
 		}
+		if (v4 && (!parse_u64(fields[28], &injected_packets) ||
+			!parse_u64(fields[29], &injected_bytes))) {
+			printf("INPUT_REJECTED\t%lu\tbad_v4_injection_cost\n", line_no);
+			return;
+		}
+		injection_cost_observed = v4;
 		source_port = (uint32_t)source_port64;
 		for (i = 0; i < 13; i++) normalized[i] = fields[i];
-		for (i = 13; i < 28; i++) normalized[i] = fields[i + 1];
+		for (i = 13; i < 27; i++) normalized[i] = fields[i + 1];
+		normalized[27] = v4 ? fields[30] : fields[28];
 		normalized[0] = "v2";
 		fields[0] = normalized[0];
 		expire_state(monotonic_ms());
-		process_event(normalized, monotonic_ms(), source_port);
+		process_event(normalized, monotonic_ms(), source_port, injection_cost_observed,
+			injected_packets, injected_bytes);
 		return;
 	}
 	if (count != 28 || strcmp(fields[0], "v2")) {
-		printf("INPUT_REJECTED\t%lu\tbad_v2_v3_record\n", line_no);
+		printf("INPUT_REJECTED\t%lu\tbad_v2_v3_v4_record\n", line_no);
 		return;
 	}
 	expire_state(monotonic_ms());
-	process_event(fields, monotonic_ms(), source_port);
+	process_event(fields, monotonic_ms(), source_port, false, 0, 0);
 }
 
 static void report_open_flows(void)
@@ -2161,20 +2984,23 @@ static int find_learning_schedule_context(const char *host, uint64_t epoch)
 static bool probe_schedule_choose(unsigned context_index, const uint32_t *ids,
 		unsigned count, const char *provider_key, uint64_t now,
 		uint32_t *selected, const char **selected_class, uint64_t *selected_due,
-		uint64_t *earliest)
+		uint64_t *earliest, bool *selected_by_cost)
 {
 	uint32_t champion = probe_schedule_champion(context_index, ids, count);
 	uint32_t runnerup = probe_schedule_runnerup(context_index, champion, ids, count);
 	uint64_t best_support = 0;
+	int best_index = -1;
 	unsigned i;
 	*selected = 0;
 	*selected_class = NULL;
 	*selected_due = UINT64_MAX;
 	*earliest = UINT64_MAX;
+	*selected_by_cost = false;
 	for (i = 0; i < count; i++) {
 		int index = -1;
 		uint64_t due_at = now, support;
 		const char *klass;
+		int cost_order = 0;
 		size_t j;
 		for (j = 0; j < MAX_CANDIDATES; j++)
 			if (candidates[j].used && candidates[j].context_index == context_index &&
@@ -2186,6 +3012,10 @@ static bool probe_schedule_choose(unsigned context_index, const uint32_t *ids,
 		support = provider_candidate_support(provider_key, ids[i], now, NULL);
 		if (!support && strcmp(provider_key, "global"))
 			support = provider_candidate_support("global", ids[i], now, NULL);
+		if (*selected_class && index >= 0 && best_index >= 0 &&
+			probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
+			due_at == *selected_due && support == best_support)
+			cost_order = candidate_cost_compare(&candidates[index], &candidates[best_index]);
 		if (!*selected_class || probe_schedule_priority(klass) <
 			probe_schedule_priority(*selected_class) ||
 			(probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
@@ -2193,9 +3023,13 @@ static bool probe_schedule_choose(unsigned context_index, const uint32_t *ids,
 			(probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
 			 due_at == *selected_due && support > best_support) ||
 			(probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
-			 due_at == *selected_due && support == best_support && ids[i] < *selected)) {
+			 due_at == *selected_due && support == best_support && cost_order == -1) ||
+			(probe_schedule_priority(klass) == probe_schedule_priority(*selected_class) &&
+			 due_at == *selected_due && support == best_support && cost_order == 0 &&
+			 ids[i] < *selected)) {
 			*selected = ids[i]; *selected_class = klass; *selected_due = due_at;
-			best_support = support;
+			best_support = support; best_index = index;
+			*selected_by_cost = cost_order == -1;
 		}
 	}
 	return *selected_class != NULL;
@@ -2219,6 +3053,7 @@ static void handle_probe_background_next(char **f, size_t n, int fd,
 	char *cursor, *part, reply[384];
 	const char *best_class = NULL;
 	uint32_t best_strategy = 0;
+	bool best_cost_selection = false;
 	unsigned host_count = 0, id_count = 0, i;
 	if (n != 4 || strcmp(f[1], "v1") || !provider_key_valid(f[2]) ||
 		!copy_field(provider_key, sizeof(provider_key), f[2])) goto invalid;
@@ -2272,6 +3107,7 @@ static void handle_probe_background_next(char **f, size_t n, int fd,
 		uint32_t strategy = 0;
 		uint64_t due_at = UINT64_MAX, next_due = UINT64_MAX, support = 0;
 		const char *klass = NULL;
+		bool cost_selected = false;
 		int ci = find_learning_schedule_context(hosts[i], network_epoch);
 		if (ci < 0) {
 			unsigned j;
@@ -2285,7 +3121,7 @@ static void handle_probe_background_next(char **f, size_t n, int fd,
 			klass = "UNKNOWN_EXPLORATION";
 			due_at = now;
 		} else if (!probe_schedule_choose((unsigned)ci, ids, id_count, provider_key,
-			now, &strategy, &klass, &due_at, &next_due)) {
+			now, &strategy, &klass, &due_at, &next_due, &cost_selected)) {
 			if (next_due < earliest) earliest = next_due;
 			continue;
 		}
@@ -2300,6 +3136,7 @@ static void handle_probe_background_next(char **f, size_t n, int fd,
 			copy_field(host, sizeof(host), hosts[i]);
 			best_strategy = strategy; best_class = klass; best_due = due_at;
 			best_seen = host_last_seen[i]; best_support = support;
+			best_cost_selection = cost_selected;
 		}
 	}
 	if (!best_class) {
@@ -2308,8 +3145,9 @@ static void handle_probe_background_next(char **f, size_t n, int fd,
 		controller_reply(fd, peer, peer_len, reply);
 		return;
 	}
-	snprintf(reply, sizeof(reply), "ACK\tPROBE_BACKGROUND\tTASK\t%s\t%u\t%s\t%" PRIu64 "\n",
-		host, best_strategy, best_class, best_due);
+	snprintf(reply, sizeof(reply), "ACK\tPROBE_BACKGROUND\tTASK\t%s\t%u\t%s\t%" PRIu64 "\tselection=%s\n",
+		host, best_strategy, best_class, best_due,
+		best_cost_selection ? "lower_injection_cost" : "schedule_priority");
 	controller_reply(fd, peer, peer_len, reply);
 	return;
 invalid:
@@ -2326,6 +3164,7 @@ static void handle_probe_schedule(char **f, size_t n, int fd,
 	const char *chosen_class = NULL;
 	unsigned count = 0, i;
 	uint32_t selected = 0;
+	bool selected_by_cost = false;
 	int ci;
 	if (n != 6 || strcmp(f[1], "v1") || !probe_host_valid(f[2]) ||
 		!parse_u64(f[3], &profile64) || profile64 != 1 ||
@@ -2369,14 +3208,15 @@ static void handle_probe_schedule(char **f, size_t n, int fd,
 		return;
 	}
 	if (!probe_schedule_choose((unsigned)ci, ids, count, provider_key, now,
-		&selected, &chosen_class, &chosen_due, &earliest)) {
+		&selected, &chosen_class, &chosen_due, &earliest, &selected_by_cost)) {
 		snprintf(reply, sizeof(reply), "ACK\tPROBE_SCHEDULE\tWAIT\t%" PRIu64 "\n",
 			earliest == UINT64_MAX ? 0 : earliest);
 		controller_reply(fd, peer, peer_len, reply);
 		return;
 	}
-	snprintf(reply, sizeof(reply), "ACK\tPROBE_SCHEDULE\tTASK\t%u\t%s\t%" PRIu64 "\n",
-		selected, chosen_class, chosen_due);
+	snprintf(reply, sizeof(reply), "ACK\tPROBE_SCHEDULE\tTASK\t%u\t%s\t%" PRIu64 "\tselection=%s\n",
+		selected, chosen_class, chosen_due,
+		selected_by_cost ? "lower_injection_cost" : "schedule_priority");
 	controller_reply(fd, peer, peer_len, reply);
 	return;
 invalid:
@@ -2396,6 +3236,8 @@ static void handle_probe_next(char **f, size_t n, int fd,
 	unsigned count = 0, i;
 	int ci;
 	uint32_t selected = 0;
+	int selected_index = -1;
+	bool selected_by_cost = false;
 	bool v2 = n == 7 && !strcmp(f[1], "v2");
 	if (!((n == 6 && !strcmp(f[1], "v1")) || v2) || !probe_host_valid(f[2]) ||
 		!parse_u64(f[3], &profile64) || profile64 != 1 ||
@@ -2448,6 +3290,7 @@ static void handle_probe_next(char **f, size_t n, int fd,
 	}
 	for (i = 0; i < count; i++) {
 		int index = find_or_create_candidate((unsigned)ci, ids[i], now);
+		int cost_order = 0;
 		uint64_t attempts, prior_successes;
 		bool provider_has_failure = false;
 		if (index < 0) {
@@ -2459,14 +3302,21 @@ static void handle_probe_next(char **f, size_t n, int fd,
 			&provider_has_failure);
 		if (!prior_successes && !provider_has_failure && strcmp(provider_key, "global"))
 			prior_successes = provider_candidate_support("global", ids[i], now, NULL);
+		if (index >= 0 && selected_index >= 0 && attempts == least &&
+			prior_successes == best_prior)
+			cost_order = candidate_cost_compare(&candidates[index], &candidates[selected_index]);
 		if (UINT64_MAX - total < attempts) total = UINT64_MAX;
 		else total += attempts;
 		if (!selected || attempts < least ||
 			(attempts == least && prior_successes > best_prior) ||
-			(attempts == least && prior_successes == best_prior && ids[i] < selected)) {
+			(attempts == least && prior_successes == best_prior && cost_order == -1) ||
+			(attempts == least && prior_successes == best_prior && cost_order == 0 &&
+			 ids[i] < selected)) {
 			selected = ids[i];
 			least = attempts;
 			best_prior = prior_successes;
+			selected_index = index;
+			selected_by_cost = cost_order == -1;
 		}
 	}
 	if (total >= budget) {
@@ -2474,8 +3324,9 @@ static void handle_probe_next(char **f, size_t n, int fd,
 		return;
 	}
 	snprintf(reply, sizeof(reply), "ACK\tPROBE_NEXT\tOK\t%u\t%" PRIu64
-		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\n", selected, total,
-		budget, network_epoch, best_prior);
+		"\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\tselection=%s\n", selected, total,
+		budget, network_epoch, best_prior,
+		selected_by_cost ? "lower_injection_cost" : "attempts_and_prior");
 	controller_reply(fd, peer, peer_len, reply);
 	return;
 invalid:
@@ -2492,6 +3343,14 @@ static bool handle_probe_command(char *line, int fd, const struct sockaddr_un *p
 	uint64_t a, b, c, d;
 	if (strncmp(line, "PROBE_", 6)) return false;
 	n = split_tsv(line, f, MAX_FIELDS);
+	if (n > 0 &&
+		(!strcmp(f[0], "PROBE_NEXT") || !strcmp(f[0], "PROBE_SCHEDULE") ||
+		 !strcmp(f[0], "PROBE_BACKGROUND_NEXT") || !strcmp(f[0], "PROBE_BEGIN")) &&
+		!controller_output_reserve(PROBE_OUTPUT_RESERVE_BYTES)) {
+		snprintf(reply, sizeof(reply), "ACK\t%s\tERR\toutput_limited\n", f[0]);
+		controller_reply(fd, peer, peer_len, reply);
+		return true;
+	}
 	if (n == 6 && !strcmp(f[0], "PROBE_NEXT")) {
 		handle_probe_next(f, n, fd, peer, peer_len, now);
 		return true;
@@ -2630,7 +3489,7 @@ done:
 
 static int next_candidate_client(int argc, char **argv)
 {
-	char request[MAX_LINE], reply[192], *end;
+	char request[MAX_LINE], reply[192], selection[32] = "attempts_and_prior", *end;
 	unsigned long profile, budget, strategy;
 	unsigned long long completed, total_budget, network_epoch_value, prior_success_hosts = 0;
 	int n, consumed = 0;
@@ -2669,7 +3528,10 @@ static int next_candidate_client(int argc, char **argv)
 		return 4;
 	}
 	{
-		int parsed = sscanf(reply, "ACK\tPROBE_NEXT\tOK\t%lu\t%llu\t%llu\t%llu\t%llu%n",
+		int parsed = sscanf(reply, "ACK\tPROBE_NEXT\tOK\t%lu\t%llu\t%llu\t%llu\t%llu\tselection=%31[A-Za-z_]%n",
+			&strategy, &completed, &total_budget, &network_epoch_value,
+			&prior_success_hosts, selection, &consumed);
+		if (parsed != 6) parsed = sscanf(reply, "ACK\tPROBE_NEXT\tOK\t%lu\t%llu\t%llu\t%llu\t%llu%n",
 			&strategy, &completed, &total_budget, &network_epoch_value,
 			&prior_success_hosts, &consumed);
 		if (parsed == 4) {
@@ -2678,21 +3540,27 @@ static int next_candidate_client(int argc, char **argv)
 			parsed = sscanf(reply, "ACK\tPROBE_NEXT\tOK\t%lu\t%llu\t%llu\t%llu%n",
 				&strategy, &completed, &total_budget, &network_epoch_value, &consumed);
 		}
-		if ((parsed != 4 && parsed != 5) ||
+		if ((parsed != 4 && parsed != 5 && parsed != 6) ||
 		consumed <= 0 || strcmp(reply + consumed, "\n") ||
 			!strategy || strategy > UINT32_MAX) {
 		fprintf(stderr, "adaptive_controller: candidate rejected: %s", reply);
 		return 1;
 	}
+		if (strcmp(selection, "lower_injection_cost") &&
+			strcmp(selection, "attempts_and_prior")) {
+			fprintf(stderr, "adaptive_controller: invalid candidate selection reason\n");
+			return 1;
+		}
 	}
-	printf("candidate_next\tstrategy=%lu\tcompleted=%llu\tbudget=%llu\tepoch=%llu\tprior_support=%llu\n",
-		strategy, completed, total_budget, network_epoch_value, prior_success_hosts);
+	printf("candidate_next\tstrategy=%lu\tcompleted=%llu\tbudget=%llu\tepoch=%llu\tprior_support=%llu\tselection=%s\n",
+		strategy, completed, total_budget, network_epoch_value, prior_success_hosts, selection);
 	return 0;
 }
 
 static int next_scheduled_client(int argc, char **argv)
 {
 	char request[MAX_LINE], reply[192], *end;
+	char selection[32] = "schedule_priority";
 	unsigned long profile;
 	int n, consumed = 0;
 	const char *provider_key, *allowlist;
@@ -2711,12 +3579,18 @@ static int next_scheduled_client(int argc, char **argv)
 		fputs("adaptive_controller: scheduler request failed\n", stderr);
 		return 1;
 	}
-	if (sscanf(reply, "ACK\tPROBE_SCHEDULE\tTASK\t%u\t%39[A-Z_]\t%llu%n",
-		&strategy, schedule_class, &due_at, &consumed) == 3 && consumed > 0 &&
+	{
+		int parsed = sscanf(reply, "ACK\tPROBE_SCHEDULE\tTASK\t%u\t%39[A-Z_]\t%llu\tselection=%31[A-Za-z_]%n",
+			&strategy, schedule_class, &due_at, selection, &consumed);
+		if (parsed != 4) parsed = sscanf(reply, "ACK\tPROBE_SCHEDULE\tTASK\t%u\t%39[A-Z_]\t%llu%n",
+			&strategy, schedule_class, &due_at, &consumed);
+		if ((parsed == 3 || parsed == 4) && consumed > 0 &&
 		!strcmp(reply + consumed, "\n") && strategy) {
-		printf("schedule_task\tstrategy=%u\tclass=%s\tdue_at_ms=%llu\n",
-			strategy, schedule_class, due_at);
+		if (strcmp(selection, "lower_injection_cost") && strcmp(selection, "schedule_priority")) return 1;
+		printf("schedule_task\tstrategy=%u\tclass=%s\tdue_at_ms=%llu\tselection=%s\n",
+			strategy, schedule_class, due_at, selection);
 		return 0;
+	}
 	}
 	if (sscanf(reply, "ACK\tPROBE_SCHEDULE\tWAIT\t%llu%n", &due_at, &consumed) == 1 &&
 		consumed > 0 && !strcmp(reply + consumed, "\n")) {
@@ -2736,6 +3610,7 @@ static int next_scheduled_client(int argc, char **argv)
 static int next_background_client(int argc, char **argv)
 {
 	char request[MAX_LINE], reply[384], host[HOST_CAP], schedule_class[40];
+	char selection[32] = "schedule_priority";
 	const char *provider_key, *allowlist;
 	unsigned strategy;
 	unsigned long long due_at;
@@ -2750,12 +3625,18 @@ static int next_background_client(int argc, char **argv)
 		fputs("adaptive_controller: background scheduler request failed\n", stderr);
 		return 1;
 	}
-	if (sscanf(reply, "ACK\tPROBE_BACKGROUND\tTASK\t%255[A-Za-z0-9.-]\t%u\t%39[A-Z_]\t%llu%n",
-		host, &strategy, schedule_class, &due_at, &consumed) == 4 && consumed > 0 &&
+	{
+		int parsed = sscanf(reply, "ACK\tPROBE_BACKGROUND\tTASK\t%255[A-Za-z0-9.-]\t%u\t%39[A-Z_]\t%llu\tselection=%31[A-Za-z_]%n",
+			host, &strategy, schedule_class, &due_at, selection, &consumed);
+		if (parsed != 5) parsed = sscanf(reply, "ACK\tPROBE_BACKGROUND\tTASK\t%255[A-Za-z0-9.-]\t%u\t%39[A-Z_]\t%llu%n",
+			host, &strategy, schedule_class, &due_at, &consumed);
+		if ((parsed == 4 || parsed == 5) && consumed > 0 &&
 		!strcmp(reply + consumed, "\n") && strategy && probe_host_valid(host)) {
-		printf("background_task\thost=%s\tstrategy=%u\tclass=%s\tdue_at_ms=%llu\n",
-			host, strategy, schedule_class, due_at);
+		if (strcmp(selection, "lower_injection_cost") && strcmp(selection, "schedule_priority")) return 1;
+		printf("background_task\thost=%s\tstrategy=%u\tclass=%s\tdue_at_ms=%llu\tselection=%s\n",
+			host, strategy, schedule_class, due_at, selection);
 		return 0;
+	}
 	}
 	if (sscanf(reply, "ACK\tPROBE_BACKGROUND\tWAIT\t%llu%n", &due_at, &consumed) == 1 &&
 		consumed > 0 && !strcmp(reply + consumed, "\n")) {
@@ -2801,7 +3682,8 @@ static int production_host_strategy_client(int argc, char **argv, const char *op
 		reply_profile = (uint64_t)reply_profile_ull;
 		reply_strategy = (uint64_t)reply_strategy_ull;
 		generation = (uint64_t)generation_ull;
-		if (reply_profile == profile && (clearing || reply_strategy) &&
+		if (reply_profile == profile && reply_strategy <= UINT32_MAX &&
+			(clearing || (reply_strategy && generation)) &&
 			(!setting || reply_strategy == strategy)) {
 			if (clearing) printf("host_strategy_cleared\tprofile=%llu\thost=%s\n",
 				(unsigned long long)profile, argv[4]);
@@ -2906,7 +3788,7 @@ static int run_stdin(void)
 	uint64_t last_checkpoint = monotonic_ms();
 	if (controller_state_path && !restore_state(controller_state_path))
 		fprintf(stderr, "adaptive_controller: state checkpoint discarded\n");
-	puts("# ADAPTIVE_CONTROLLER_OUTPUT v5: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host body_sample_bytes block_body_marker");
+	puts("# ADAPTIVE_CONTROLLER_OUTPUT v7: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port dst_port dst_ip PROBE_OUTCOME redirect_host body_sample_bytes block_body_marker");
 	while (fgets(line, sizeof(line), stdin)) {
 		line_no++;
 		if (!strchr(line, '\n') && !feof(stdin)) {
@@ -2920,8 +3802,7 @@ static int run_stdin(void)
 			uint64_t now = monotonic_ms();
 			if (now >= last_checkpoint && now - last_checkpoint >= STATE_SAVE_INTERVAL_MS) {
 				expire_state(now);
-				if (!checkpoint_state(now))
-					fprintf(stderr, "adaptive_controller: checkpoint write failed\n");
+				if (!checkpoint_state(now)) report_checkpoint_write_failure();
 				last_checkpoint = now;
 			}
 		}
@@ -2931,8 +3812,7 @@ static int run_stdin(void)
 		return 1;
 	}
 	report_open_flows();
-	if (controller_state_path && !checkpoint_state(monotonic_ms()))
-		fprintf(stderr, "adaptive_controller: final checkpoint write failed\n");
+	if (controller_state_path && !checkpoint_state(monotonic_ms())) report_checkpoint_write_failure();
 	return fflush(stdout) == EOF ? 1 : 0;
 }
 
@@ -3021,7 +3901,13 @@ static int run_socket(const char *path)
 	if (!next_probe_id) next_probe_id = 1;
 	if (controller_state_path && !restore_state(controller_state_path))
 		fprintf(stderr, "adaptive_controller: state checkpoint discarded\n");
-	puts("# ADAPTIVE_CONTROLLER_OUTPUT v5: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port PROBE_OUTCOME redirect_host body_sample_bytes block_body_marker");
+	puts("# ADAPTIVE_CONTROLLER_OUTPUT v7: FLOW_OUTCOME flow_id profile strategy generation evidence hostname champion challenger action independent confidence_lcb95_milli rank candidate_count top_strategy quarantine decision scope transport ip_family network_epoch network_health network_health_reason client_packets server_packets client_bytes server_bytes server_seen server_payload_seen client_rst server_rst client_fin server_fin start_ms last_seen_ms clienthello_count clienthello_retransmissions termination_reason source_port dst_port dst_ip PROBE_OUTCOME redirect_host body_sample_bytes block_body_marker");
+	if (canary_control_path) {
+		canary_force_clear = true;
+		if (!canary_state_restore())
+			fprintf(stderr, "adaptive_controller: canary assignment checkpoint discarded; clearing allowlist\n");
+		canary_reconcile_maybe(monotonic_ms());
+	}
 	while (!controller_stopping) {
 		ssize_t n;
 		recv_timeout.tv_sec = 30;
@@ -3047,11 +3933,11 @@ static int run_socket(const char *path)
 				uint64_t now = monotonic_ms();
 				probe_maybe_finalize(now, active_probe.active && now >= active_probe.deadline_ms);
 				network_context_maybe_refresh(now);
+				canary_reconcile_maybe(now);
+				expire_state(now);
 				if (controller_state_path && now >= last_checkpoint &&
 					now - last_checkpoint >= STATE_SAVE_INTERVAL_MS) {
-					expire_state(now);
-					if (!checkpoint_state(now))
-						fprintf(stderr, "adaptive_controller: checkpoint write failed\n");
+					if (!checkpoint_state(now)) report_checkpoint_write_failure();
 					last_checkpoint = now;
 				}
 				continue;
@@ -3078,15 +3964,13 @@ static int run_socket(const char *path)
 			uint64_t now = monotonic_ms();
 			if (now >= last_checkpoint && now - last_checkpoint >= STATE_SAVE_INTERVAL_MS) {
 				expire_state(now);
-				if (!checkpoint_state(now))
-					fprintf(stderr, "adaptive_controller: checkpoint write failed\n");
+			if (!checkpoint_state(now)) report_checkpoint_write_failure();
 				last_checkpoint = now;
 			}
 		}
 	}
 	report_open_flows();
-	if (controller_state_path && !checkpoint_state(monotonic_ms()))
-		fprintf(stderr, "adaptive_controller: final checkpoint write failed\n");
+	if (controller_state_path && !checkpoint_state(monotonic_ms())) report_checkpoint_write_failure();
 	close(fd);
 	if (lstat(path, &current) == 0 && current.st_dev == before.st_dev && current.st_ino == before.st_ino)
 		(void)unlink(path);
@@ -3096,6 +3980,9 @@ static int run_socket(const char *path)
 int main(int argc, char **argv)
 {
 	const char *socket_path = NULL, *output_path = NULL;
+	const char *canary_profile_text = NULL;
+	uint64_t canary_profile_value;
+	bool canary_config_seen = false;
 	int i, result;
 	if ((argc == 7 || argc == 8) && !strcmp(argv[1], "--next-candidate"))
 		return next_candidate_client(argc, argv);
@@ -3126,7 +4013,7 @@ int main(int argc, char **argv)
 	}
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--help")) {
-		puts("adaptive-controller: native shadow learner for nfqws2 TSV v2/v3");
+		puts("adaptive-controller: native shadow learner for nfqws2 TSV v2/v3/v4");
 		puts("usage: adaptive-controller [--socket /absolute/path] [--output /absolute/path] [--state /absolute/path] < events.tsv");
 		puts("       adaptive-controller --set-candidate /worker.sock profile strategy");
 		puts("       adaptive-controller --get-candidate /worker.sock");
@@ -3138,23 +4025,49 @@ int main(int argc, char **argv)
 		puts("       adaptive-controller --production-set-host /nfqws.sock profile host strategy");
 		puts("       adaptive-controller --production-get-host /nfqws.sock profile host");
 		puts("       adaptive-controller --production-clear-host /nfqws.sock profile host");
+		puts("       adaptive-controller --socket /controller.sock --canary-control /nfqws.sock --canary-profile N --canary-hosts /root/owned/file");
+		puts("canary promotion requires 3 independent successful learning probes and a strict active-success lead");
 		puts("candidate selection is learning-only, max 64 candidates and 1024 settled probe attempts");
 		puts("limits: 256 open flows, 128 contexts, 384 candidates, 128 provider priors, 512 host observations; 7-day TTL");
 		puts("socket mode consumes nonblocking-sender Unix datagrams; gaps invalidate open flows");
 		puts("output: TSV FLOW_OUTCOME (confidence/rank; quarantine=NONE), TRACE_INCOMPLETE, overflow records");
-		puts("optional output file is append-only and capped at 256 KiB");
-		puts("optional state checkpoint is same-boot tmpfs data, capped at 128 KiB");
+		puts("optional output file is append-only and capped at 512 KiB");
+		puts("optional state checkpoint is same-boot tmpfs data, capped at 512 KiB");
 		return 0;
 		}
 		if ((!strcmp(argv[i], "--socket") || !strcmp(argv[i], "--output") ||
-			!strcmp(argv[i], "--state")) && i + 1 < argc) {
+			!strcmp(argv[i], "--state") || !strcmp(argv[i], "--canary-control") ||
+			!strcmp(argv[i], "--canary-profile") || !strcmp(argv[i], "--canary-hosts")) && i + 1 < argc) {
 			if (!strcmp(argv[i], "--socket")) socket_path = argv[++i];
 			else if (!strcmp(argv[i], "--output")) output_path = argv[++i];
-			else controller_state_path = argv[++i];
+			else if (!strcmp(argv[i], "--state")) controller_state_path = argv[++i];
+			else if (!strcmp(argv[i], "--canary-control")) { canary_control_path = argv[++i]; canary_config_seen = true; }
+			else if (!strcmp(argv[i], "--canary-profile")) { canary_profile_text = argv[++i]; canary_config_seen = true; }
+			else { canary_hosts_path = argv[++i]; canary_config_seen = true; }
 			continue;
 		}
-		fputs("usage: adaptive-controller [--help] [--socket /absolute/path] [--output /absolute/path] [--state /absolute/path] < events.tsv\n", stderr);
+		fputs("usage: adaptive-controller [--help] [--socket /absolute/path] [--output /absolute/path] [--state /absolute/path] [--canary-control /nfqws.sock --canary-profile N --canary-hosts /root/owned/file] < events.tsv\n", stderr);
 		return 2;
+	}
+	if (canary_config_seen) {
+		if (!socket_path || !canary_control_path || !canary_hosts_path || !canary_profile_text ||
+			!controller_state_path ||
+			canary_control_path[0] != '/' || strlen(canary_control_path) >= sizeof(((struct sockaddr_un *)0)->sun_path) ||
+			!parse_u64(canary_profile_text, &canary_profile_value) || !canary_profile_value ||
+			canary_profile_value != 1 || !canary_load_hosts(canary_hosts_path)) {
+			fputs("adaptive_controller: invalid canary config or unreadable root-owned host allowlist\n", stderr);
+			return 2;
+		}
+		canary_profile = (uint32_t)canary_profile_value;
+		if (snprintf(canary_state_path, sizeof(canary_state_path), "%s.canary.tsv",
+			controller_state_path) >= (int)sizeof(canary_state_path)) {
+			fputs("adaptive_controller: canary state path is too long\n", stderr);
+			return 2;
+		}
+		if (!secure_parent_dir(canary_state_path)) {
+			fputs("adaptive_controller: canary state requires a private owner-only parent directory\n", stderr);
+			return 2;
+		}
 	}
 	if (output_path && !controller_output_open(output_path)) {
 		perror("adaptive_controller: open output");

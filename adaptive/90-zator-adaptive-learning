@@ -21,7 +21,7 @@ alloc_dnum DNUM_Z2R_ADAPTIVE_LEARNING
 
 adaptive_mark_read()
 {
-	local action="$1" mark desync postnat filter n
+	local action="$1" mark desync postnat filter n digits
 	if [ "$action" = 1 ]; then
 		mark="${Z2R_ADAPTIVE_MARK:-$Z2R_ADAPTIVE_MARK_DEFAULT}"
 	else
@@ -29,6 +29,16 @@ adaptive_mark_read()
 	fi
 	case "$mark" in 0x[0-9A-Fa-f]*|[0-9]*) ;; *) return 1 ;; esac
 	case "$mark" in *[!0-9A-Fa-fxX]*) return 1 ;; esac
+	case "$mark" in
+		0x*)
+			digits=${mark#0x}
+			[ "${#digits}" -le 8 ] || return 1
+			if [ "${#digits}" -eq 8 ]; then
+				case "$digits" in [0-7]*) ;; *) return 1 ;; esac
+			fi
+			;;
+		*) [ "${#mark}" -le 9 ] || return 1 ;;
+	esac
 	n=$((mark)) 2>/dev/null || return 1
 	[ "$n" -gt 0 ] && [ "$((n & (n - 1)))" -eq 0 ] || return 1
 	if [ "$action" = 1 ]; then

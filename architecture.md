@@ -869,13 +869,21 @@ State хранить преимущественно в `/tmp`.
 Phase 1 telemetry is sourced from the `nfqws2` conntrack C path in the user's
 `AloofLibra/zapret2` fork. Apply
 [`adaptive-flow-telemetry.patch`](patches/zapret2/adaptive-flow-telemetry.patch)
-to that fork and build a binary supporting `--adaptive-events=<file>` before
-enabling the option in a deployed config. The opt-in TSV v3 records flow start,
+from the fork root with `patch -p1 < /path/to/zator/patches/zapret2/adaptive-flow-telemetry.patch`,
+then build a binary supporting `--adaptive-events=<file>` before enabling the
+option in a deployed config. The opt-in TSV v4 records flow start,
 strategy attribution, its client scope, and flow end with C-owned tuple,
 client source port, counters, timestamps,
 RST/FIN flags, observed TLS ClientHello packet count and retransmissions of the
-first observed ClientHello sequence, and termination reason. Flow IDs combine process ID and a local
-sequence; strategy generation is assigned in C at attribution.
+first observed ClientHello sequence, termination reason, and per-flow counts
+of packets and bytes successfully submitted by strategy Lua `rawsend` calls.
+These are local send successes, not proof of remote delivery; sends made
+outside a valid conntrack-bound desync context are intentionally unattributed.
+Flow IDs are a
+full 64-bit sequence seeded with PID and the process-start wall clock, reducing
+ID reuse when the OS recycles a PID while an append-only controller journal
+still contains older rows. A long-lived process does not reuse IDs after a
+32-bit counter wrap. Strategy generation is assigned in C at attribution.
 
 Conntrack table destruction now emits a terminal `FLOW_END` with reason
 `process_exit` before freeing live entries, so orderly `nfqws2` shutdown no
@@ -883,7 +891,17 @@ longer leaves those observed flows open in a trace. Abrupt process death still
 cannot emit a final event; replay must treat unmatched starts as incomplete,
 never as strategy failures.
 
-The optional file sink is capped at 4 MiB per trace and reserves room for a
+The resident controller applies the same conservative lifecycle rule to live
+IPC: a flow without any C event for more than two minutes is emitted as
+`TRACE_INCOMPLETE open_flow_unclosed` and removed from the bounded in-flight table.
+The socket receive timeout checks this at most 30 seconds later when no other
+events arrive. The telemetry has no per-packet heartbeat, so this is a
+retention limit, not a claim that the network flow was idle. It releases memory
+after abrupt `nfqws2` death; it never converts an unclosed flow into negative
+evidence. A later terminal event without its retained start is unattributed and
+cannot update learning statistics.
+
+The optional file sink is capped at 512 KiB per trace and reserves room for a
 `# TRACE_LIMIT` marker. On reaching the cap, C stops writing rather than
 growing `/tmp`; replay emits a `TRACE_STATUS` row and counts any unmatched flow
 starts as incomplete. This is a bounded capture sink for Phase 1, not the final
@@ -903,10 +921,24 @@ enables a C-owned map of at most 64 exact host/profile strategy assignments.
 `SET_HOST_STRATEGY`, `GET_HOST_STRATEGY`, and `CLEAR_HOST_STRATEGY` datagrams
 change only future flow assignments; conntrack snapshots the selected strategy
 and generation, while unlisted hosts retain the legacy strategy path. The
-zator Lua adapter checks C's canary mapping before entering legacy detector or
-rotation state, and honors existing profile/host locks. This is an application
-primitive only: controller-side canary eligibility, evidence thresholds,
-rollback policy, and map restoration after daemon restart remain Phase 9 work.
+zator `circular_quality` and `circular_locked` adapters check C's canary mapping
+after host gates and manual/legacy lock lookup, then execute only the C-selected
+plan entry; profile 1's active `config.default` path is `circular_locked`. They
+do not own canary assignments or strategy choice. The controller now has
+an explicitly enabled socket mode that accepts a root-owned exact-host
+allowlist (maximum 64 entries) and promotes only a learning candidate with at
+least three independent successful probes, no comparative failures, and either
+a strict lead in active successes or the v4 Pareto-cost rule for tied success
+counts in the same host/profile/transport/family and network epoch. The cost
+rule also requires at least three attributed cost samples per candidate and a
+strict improvement in both mean injected packets and mean injected bytes; a
+trade-off does not break the tie. A network epoch change or confirmed degraded
+network health clears assignments. The OpenWrt and Entware services pass canary options only
+while the explicit marker exists. Desired assignments are checkpointed in a
+separate owner-only file under tmpfs, checked against the allowlist and network
+fingerprint, then reconciled with the C endpoint after controller or nfqws2
+restart. Host-local rollback requires exact production-canary FLOW_END attribution
+and is documented with the Phase 9 policy below.
 Replay requires the `FLOW_END` attribution snapshot to match the assignment
 event and rejects changes to the C-owned tuple context. A controller must not
 act on missing or conflicting attribution.
@@ -917,10 +949,14 @@ The patch applies to `AloofLibra/zapret2` base
 C-owned host-scoped canary assignment, bounded to 64 exact hosts per process.
 This endpoint is separate from the learning worker's global candidate pin.
 `adaptive-controller --production-set-host/--production-get-host/--production-clear-host`
-are transport clients for that private endpoint; they do not choose a strategy.
+are transport clients for that private endpoint. Socket mode can also be opted
+into with `--canary-control`, `--canary-profile`, and `--canary-hosts`; only the
+controller makes the supported-champion decision and sends the assignment.
 The Linux `nfq2` build and host Adaptive Controller build pass with these
-changes. No controller-side canary promotion policy or automatic rollback is
-implemented yet.
+changes. Automatic promotion, network-context rollback, and router service
+wiring are implemented. Controller desired assignments survive same-boot
+service restarts under `/tmp`; the C map itself remains process-local and is
+reconciled from that checkpoint when nfqws2 comes back.
 The fork's active `build.yml` workflow covers its Linux cross-build matrix,
 Android, Windows, and FreeBSD. Manual run
 [`36010286865`](https://github.com/AloofLibra/zapret2/actions/runs/36010286865)
@@ -935,15 +971,14 @@ The C telemetry privilege-drop fix is pushed to that branch at `b1a9504`
 and contains both adaptive CLI options. Draft PR #1 remains closed without
 merge. The telemetry file sink checks write results and disables further trace
 writes after a short or failed record write. The fork beta
-`v1.0.5.2-adaptive-beta.1` is published as a prerelease with Linux, OpenWrt
+`v1.0.5.2-adaptive-beta.1` was published as a prerelease with Linux, OpenWrt
 embedded, Windows, Android, and FreeBSD archives; CI run
 [`36021707984`](https://github.com/AloofLibra/zapret2/actions/runs/36021707984)
-passed all platform builds. The matching zator prerelease `adaptive-beta.1`
-is published from `develop`; its CI run
+passed all platform builds. A matching zator beta and rolling release were
+published during the earlier PoC deployment; they are historical artifacts,
+not the delivery path for ongoing `develop` changes. Its CI run
 [`36023851594`](https://github.com/AloofLibra/zator/actions/runs/36023851594)
-passed all ten static controller targets and assembled the deployable archives.
-The rolling `latest` release now also contains the controller binaries used by
-the opt-in installer.
+passed all ten static controller targets and assembled deployable archives.
 
 Replay C telemetry with `python tools/adaptive_replay.py /path/to/events.tsv`.
 Server payload is `WEAK_SUCCESS`; no server payload is `UNKNOWN`, never inferred
@@ -1124,7 +1159,7 @@ native snapshot keeps runtime dependencies small and bounded.
 Работает только shadow.
 
 `tools/adaptive_controller.c` is the first native Phase 4 implementation. It
-consumes C-owned TSV v2/v3 on stdin or Linux Unix datagrams, uses only POSIX/C library facilities, keeps
+consumes C-owned TSV v2/v3/v4 on stdin or Linux Unix datagrams, uses only POSIX/C library facilities, keeps
 fixed-capacity flow/context/candidate tables, expires idle aggregate state,
 and emits TSV shadow outcomes. It requires an explicit `FLOW_START` plus an
 immutable strategy assignment; weak success needs server payload, while silence
@@ -1158,27 +1193,33 @@ on `PATH`:
 OUT_DIR=/tmp/adaptive-build tools/build-adaptive-controller.sh all
 ```
 
-This is a controller core/prototype, not yet connected to adaptive policy
-changes or deployed by default. The `deploy-tar` workflow cross-builds a static
-binary per supported Linux target and attaches each as a separate release
-asset plus a SHA-256 sidecar. This keeps the normal zator archives free of
-unused architecture binaries and lets the opt-in installer fetch only the
-matching small binary; `lib/adaptive_controller.sh` maps router `uname -m`,
-checks the digest and 512 KiB size ceiling, and refuses to fetch in offline
-mode. The workflow also rejects dynamically linked or unexpectedly large
-outputs. No process starts and no runtime dependency is added unless the
-operator explicitly enables menu item 24. The menu is
+This remains an opt-in controller and is not deployed by default. Shadow mode
+does not change policy; a separately gated canary mode can change only
+allowlisted host assignments. The `deploy-tar` workflow cross-builds a static
+binary per supported Linux target; the checked-in `adaptive/assets/linux/`
+assets and SHA-256 sidecars on the selected zator branch let `z2r` install the
+matching binary directly from that branch without requiring a zator release.
+This keeps normal zator archives free of unused architecture binaries;
+`lib/adaptive_controller.sh` maps router `uname -m`, checks the digest and
+512 KiB size ceiling, and refuses to fetch in offline mode. The workflow also
+rejects dynamically linked or unexpectedly large outputs. When building an
+offline bundle, the workflow includes each target binary and its checksum
+outside the normal zator tar; `offline/z2r` verifies and installs only the
+binary matching the router architecture, so offline opt-in does not need a
+network fetch or extra runtime package manager. No process
+starts and no runtime dependency is added unless the
+operator explicitly enables shadow, learning, or canary mode from menu items
+24–26. The menu is
 available on OpenWrt and Keenetic Entware and is guarded by the installed
 `nfqws2 --help` option check. On OpenWrt, procd supervises a controller
 service started before zapret2; on Keenetic, the Entware `S89` service starts
 before `S90-zapret2`. C telemetry is added
 to the nfqws2 arguments only while the marker file is present. Both service
 paths stop cleanly when disabled, and full zator removal uninstalls their init
-entries. The controller writes a 256 KiB maximum decision log under tmpfs,
-keeps evidence only in bounded memory, and never modifies production
-strategy. It still requires the telemetry patch in the deployed nfqws2 fork;
-the release installer refuses to turn on shadow mode without that support.
-The service checkpoints bounded aggregate candidate/context and provider data to a 128 KiB
+entries. The controller writes a 512 KiB maximum decision log under tmpfs,
+keeps evidence only in bounded memory. It still requires the telemetry patch in the deployed nfqws2 fork;
+the installer refuses to turn on shadow mode without that support.
+The service checkpoints bounded aggregate candidate/context and provider data to a 512 KiB
 bounded file in `/tmp`, every five minutes and on graceful stop. A checkpoint
 is restored only during the same system uptime; after reboot or a bad/partial
 checkpoint the controller starts with empty aggregates. Open flows are never
@@ -1189,10 +1230,15 @@ evidence while retaining compatibility with earlier checkpoint versions. The
 current checkpoint carries the network fingerprint and epoch; on same-uptime restart an unchanged fingerprint
 continues the epoch, while a changed fingerprint starts a fresh context. The
 route/DNS sampling estimate has at most 30 seconds of detection lag.
-Production-calibrated confidence,
-negative-evidence quarantine, and reboot-safe learning remain later work.
-Current ranking is a deterministic ordering
-by independent weak-success count, with strategy id as a tie-breaker. The
+Production-calibrated confidence and general negative-evidence quarantine
+remain later work. Aggregate learning checkpoints are same-boot only; canary
+host assignments and rollback quarantine have a separate bounded tmpfs
+checkpoint and are reconciled against C after service restart.
+Passive shadow ranking remains ordered by independent weak-success count and
+strategy id. The active learning selector uses injection cost only after
+attempt/prior ties, equal active-success evidence, zero comparative failures,
+and at least three cost samples per candidate; it requires a Pareto improvement
+in both packet and byte averages. The
 reported `confidence_lcb95_milli` is a conservative integer lower-bound proxy
 `successes / (successes + 4)` on a 0–100000 scale; unknown outcomes do not count
 as failures, and quarantine is always `NONE` until reliable negative evidence
@@ -1208,10 +1254,11 @@ The controller uses fixed limits (256 open flows, 128 contexts, 384 candidates)
 and expires idle aggregate records after seven days. Static cross-builds for
 all ten supported Linux targets succeeded after adding the bounded journal,
 network epoch and health observations, and tmpfs checkpoint; stripped ARMv6,
-MIPSel, and PowerPC binaries are 45.4 KiB, 82.0 KiB, and 65.2 KiB,
-respectively, with about 164 KiB of BSS. The build disables C unwind tables to
+MIPSel, and PowerPC binaries are 89.4 KiB, 163.6 KiB, and 129.2 KiB,
+respectively. The corresponding cross-linker reports about 336.3 KiB of BSS
+for each; this excludes stack, heap, and shared libraries. The build disables C unwind tables to
 avoid unnecessary static text and linker page-padding on small targets. The
-Python replay remains the development analyzer; it accepts C telemetry v1/v2/v3
+Python replay remains the development analyzer; it accepts C telemetry v1/v2/v3/v4
 and `PROBE_RESULT v1` records. It reports strong active success only when curl
 received an HTTP status and one usable learning flow matches hostname, source
 port, strategy, and C candidate generation. Missing or ambiguous matches stay
@@ -1224,7 +1271,12 @@ intended low-cost streaming IPC path; the controller blocks in `recv`, while
 `nfqws2` sends each small event with a nonblocking datagram. Send failures are
 counted by C and reported with a `# EVENT_GAP` marker on the next successful
 send. The controller clears in-flight attribution on a gap so a partial flow
-cannot update candidate statistics. The C sender is available as
+cannot update candidate statistics. On orderly conntrack-pool teardown, C
+also makes a bounded one-second attempt to flush the final accumulated gap
+marker after emitting terminal flow events, so loss during shutdown is visible
+even when no later packet arrives if the controller listener remains available
+long enough to drain its socket. Abrupt process death or a stopped/unreachable
+listener can still prevent this final marker. The C sender is available as
 `--adaptive-events=unix:/tmp/zator-adaptive/events.sock`. The zator menu
 installs the target-specific controller only on explicit enable, prepares a
 private tmpfs directory, starts its platform service, then restarts nfqws2.
@@ -1233,8 +1285,31 @@ disabling stops the controller and removes the argument on restart.
 
 For supervised shadow mode, the controller accepts optional
 `--output /tmp/zator-adaptive/shadow.tsv`. That append-only output is owner-only
-and capped at 256 KiB; once full, it writes a single `# OUTPUT_LIMIT` marker
-and continues learning in memory without further disk writes. The default
+and capped at 512 KiB, reserving space for a single `# OUTPUT_LIMIT` marker
+even when restarted after reaching the data ceiling; it continues shadow
+learning in memory without further disk writes, but refuses new scheduled or
+manual probe leases and canary promotions when the remaining journal space is
+below the reserved outcome budget. It marks the journal limited before refusing
+the operation, so no new network probe or production strategy assignment can
+outlive its audit record. Hitting the limit while a lease is active invalidates
+that join, so it settles as unknown and cannot update candidate, provider,
+comparison, or scheduler state.
+Canary assignment clears after network snapshot loss, epoch change, or confirmed
+degradation emit one `CANARY_CLEAR` row per C-acknowledged host, with the old
+strategy/generation and reason. Startup reconciliation records the confirmed
+cleared state as strategy/generation zero. The controller reserves bounded
+journal room before the batch; when output is already capped, the same bounded
+records go to stderr while the fail-safe C clear proceeds. Reconciliation also
+reserves journal room before reapplying a checkpointed strategy and falls back
+to a bounded `CANARY_RESTORED` stderr record when the journal is capped.
+Existing canary rollback remains enabled as a safety action and reports to stderr
+if the journal is already full.
+OpenWrt routes controller stderr through
+procd to syslog; Entware keeps a private `/tmp/zator-adaptive/controller.err`
+log, truncated on service start. The controller limits fallback rollback,
+clear, restore, and restore-pending records to 64 of each type per process and
+coalesces repeated checkpoint-write warnings, so these diagnostics stay bounded.
+The default
 stdout/replay path is unchanged. The output is an inspectable bounded decision
 journal, not a checkpoint. The separate `--state /tmp/zator-adaptive/state.tsv`
 option enables the bounded same-uptime checkpoint described above.
@@ -1264,7 +1339,7 @@ immutable. A small `adaptive-controller --set-candidate` client sends the
 command and waits for the C ACK. The shell validates the requested strategy
 against the extracted TLS plan before updating the live worker. Lua reads the
 C-pinned id only to execute configured plan entries; production gets no
-control endpoint. The C telemetry is v3 and includes the client source port,
+control endpoint. The C telemetry is v4 and includes the client source port,
 so learning probe flows can be separated from other flows to the same host.
 The bounded candidate selector and operator-started comparison runner are now
 implemented; a learning instance must not use the legacy `circular_quality`
@@ -1321,7 +1396,9 @@ after NFQUEUE so accepted probes cannot fall through to the production queue.
 The nft callbacks use dedicated subchains, conntrack mark restoration, and
 parent-chain return guards for the same isolation. Queue bypass preserves
 connectivity if the learning daemon is absent. The adaptive mark defaults to
-`0x08000000`; steering is refused if it overlaps DESYNC_MARK,
+`0x08000000`; the configured one-bit value is range-checked before BusyBox
+shell arithmetic and kept within the positive signed 31-bit range. Steering
+is refused if it overlaps DESYNC_MARK,
 DESYNC_MARK_POSTNAT, or FILTER_MARK. Other mark owners must reserve or change
 this bit before opting in. `adaptive/probe-once.sh` provides one explicitly
 requested HTTPS probe using a serialized local source port selected
@@ -1339,7 +1416,14 @@ controller joins this
 report with one C `FLOW_END` using learning scope, normalized host, source
 port, profile, actual strategy, and generation. It accepts either arrival
 order, requires one unique `FLOW_START` candidate and a one-second quiet
-interval, and emits one `PROBE_OUTCOME`. A valid HTTP response plus an
+interval, and requires the lease, C flow, and current network epoch to agree
+before emitting a correlated `PROBE_OUTCOME`. If the network epoch changes
+while a lease is active, that flow remains unknown and cannot update an
+aggregate. At result finalization, the controller refreshes the network
+snapshot and also requires the current default route and resolver configuration
+to be usable; an unavailable or degraded context cannot update candidate,
+provider, or control aggregates even if the probe's HTTP response arrived.
+A valid HTTP response plus an
 attributable, usable, non-degraded C flow contributes exactly one active-probe
 success to that candidate. Leased flows bypass the passive `server_seen`
 success update; invalid, failed, incomplete, ambiguous, or missing joins add no
@@ -1363,7 +1447,7 @@ allowlist from the live TLS template, asks C for each next candidate, applies
 the acknowledged worker update, and starts one probe at a time. It stops on
 the total attempt budget or any setup error. Failed or uncorrelated leases
 remain `UNKNOWN`. Probe correlation has not yet been validated
-on a live router and depends on the deployed nfqws2 emitting the v3 client
+on a live router and depends on the deployed nfqws2 emitting the v4 client
 source-port field.
 
 Menu item 25 enables/disables this learning-only worker and asks for the TLS
@@ -1376,12 +1460,18 @@ when either shadow or learning is enabled; previously their shadow-only guard
 made learning-only mode impossible. Menu item 24 remains the separate passive
 production shadow switch and does not change production strategy.
 
-**Deployment gate:** patched `nfqws2` binaries are available in the
-`AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.1`; zator prerelease
-`adaptive-beta.6` ships controller executables for ten Linux targets. Zator's normal zapret2
-installer and carried-forward offline archive still use the MarkinAlexander
-build, so they do not automatically install the patched C binary. Install the
-matching fork archive separately before enabling shadow telemetry or learning.
+**Deployment gate:** patched `nfqws2` binaries were built in the separate
+`AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.1`; the earlier zator
+beta shipped controller executables for ten Linux targets. Ongoing zator
+changes are delivered through the `develop` branch and `z2r` update path,
+not by creating more zator releases. The normal zapret2 installer and carried-
+forward offline archive still use the MarkinAlexander build, so they do not
+automatically install the patched C binary. Install the matching fork archive
+separately before enabling shadow telemetry or learning.
+The current patched tree also cross-builds locally as static AArch64, ARMv6
+EABI, and MIPSel `nfqws2` ELF binaries without an interpreter segment. This
+verifies those target toolchains and link closures; it does not replace on-router
+startup, NFQUEUE, or flow-correlation validation.
 The runtime checks `--adaptive-events`, `--adaptive-strategy`, and
 `--adaptive-control`, and refuses to enable either mode when an option is
 missing. Live router verification of firewall steering, source-port attribution,
@@ -1419,7 +1509,7 @@ remain unknown. The workflow supports manual candidate changes, bounded
 operator-started comparative probes, and an opt-in hourly scheduler wake-up
 with a strict rolling daily traffic budget. The scheduler selects learning
 tasks and runs isolated learning probes; it does not change production
-strategy. Production canary decisions remain a later phase.
+strategy. Production canary decisions are separately opt-in under Phase 9.
 
 There are two additional mechanics to account for in that integration:
 
@@ -1487,7 +1577,10 @@ the controls and the bracketed evidence separately. Restarted state does not
 restore in-flight brackets.
 
 The operator comparison requires an exact `CONTROL_SUCCESS` journal row for
-its probe id before launching candidates. If C observes a new network epoch
+its probe id, reserved control strategy, profile, and normalized host before
+launching candidates. It also validates every candidate's exact settled
+`PROBE_OUTCOME` against the selected host/profile/strategy before counting the
+run attempt. If C observes a new network epoch
 during the run, the runner first sends another no-desync control and resumes
 candidates only after that control gets an HTTP response. Candidate probes have
 one total run budget across all epochs, so epoch changes cannot reset the shell
@@ -1497,14 +1590,43 @@ missing control stops the comparison and restores the last candidate. This is
 a bounded retry after C-observed network-context change with target-level
 revalidation; it does not classify arbitrary block pages.
 
+The comparison and scheduled-step runners hold one PID-owned runtime lock for
+the whole multi-probe sequence. Manual candidate changes, direct one-shot
+probes, and learning/shadow/canary mode toggles refuse to interfere while that
+lock is held. The shorter experiment lock still serializes each individual
+worker update and curl probe; stale run locks are cleared only after their PID
+is confirmed gone.
+
 `python tools/adaptive_replay.py --controller-output
 /tmp/zator-adaptive/shadow.tsv` reports attempts, confirmed successes,
 unknowns, controls, comparative evidence, redirect divergences, and
 host/strategy probeability by
-network epoch; it also reads earlier probe row versions. Unknown outcomes do
+network epoch; it also reads earlier probe row versions and reports canary
+promotion, pending assignment, restoration, and rollback events by host and epoch. Unknown outcomes do
 not become failures, and the analyzer reports zero general failure votes
 because this probe has no general explicit-block classifier. Generic body
-signatures and other ISP endpoints remain open Phase 6 work.
+signatures and other ISP endpoints remain open Phase 6 work. For current v5
+rows, the analyzer rejects `STRONG_SUCCESS` and `CONTROL_SUCCESS` unless their
+HTTP result, reason, C flow id, C metrics, and usable network context agree.
+It also emits `CONTROLLER_OUTPUT_STATUS`; an output limit marker, incomplete
+trace, controller overflow, rejected input, or missing versioned header makes
+the journal explicitly incomplete rather than silently reporting partial
+canary/probe summaries as complete. Unknown output record types, an unsettled
+`PROBE_BEGIN`, ambiguous probe joins, and probe identity mismatches also mark
+the replay incomplete. Controller header labels are restricted to v5–v7 and
+must declare a known 39–41-column flow schema; a mixed-version journal or flow
+row/header schema mismatch also makes replay incomplete. Known begin/outcome pairs are checked across hostname,
+profile, source port, strategy, and generation. Each comparative-failure record
+is cross-checked against exactly one candidate probe and its two successful
+no-strategy controls, including the strict probe-id bracket, host, provider,
+family, epoch, and candidate flow attribution. A failed audit remains visible
+but contributes zero comparative-failure votes or provider prior support.
+The exact provider/RKN hostname markers and four known redirect hosts from the
+legacy detector are represented in the C probe classifier and replay schema.
+Generic default-server text (`Welcome to nginx`, `It works!`, and similar) is
+not block evidence and is intentionally not migrated as a failure vote;
+additional ISP signatures require controlled observations before promotion to
+the exact allowlist.
 
 ---
 
@@ -1529,7 +1651,7 @@ remain C-owned. The resident C controller keeps bounded global and ASN-scoped
 counters for real attempts, confirmed successes, unknown outcomes, distinct
 hosts tested, and distinct hosts with confirmed success. Provider state is
 capped at 128 provider/strategy entries and 512 recent host/strategy
-observations, expires after seven days, and is included in the 128 KiB tmpfs
+observations, expires after seven days, and is included in the 512 KiB tmpfs
 checkpoint. The PC replay analyzer reports provider coverage and confirmed
 success separately, without treating unknown as failure. Reliability and
 provider prediction hit rate remain unknown until trustworthy strategy-specific
@@ -1556,8 +1678,11 @@ exploration (immediate), unknown retry (30m), runner-up revalidation (24h),
 then quarantine retry with capped 1m/5m/30m/2h backoff. A confirmed successful
 probe clears that host's comparative quarantine. It observes the same network
 health gate and single active-probe limit as candidate selection. Deadlines
-and quarantine counters are persisted in `ADAPTIVE_STATE v7`, whose checkpoint
-remains capped tmpfs data and valid only for the current boot.
+and quarantine counters are persisted in `ADAPTIVE_STATE v8`, whose checkpoint
+remains capped tmpfs data and valid only for the current boot. Version 8 also
+persists independent active-probe cost sample counts and injected packet/byte
+sums; older checkpoints restore with no cost samples and cannot trigger
+cost-based tie-breaking.
 
 `adaptive_learning_schedule_next` is the shell query wrapper. It does not
 generate network traffic by itself. For menu item 25 option 3, an empty host
@@ -1579,6 +1704,18 @@ scheduler step fail closed. The sidecar exits when learning is disabled; the
 controller remains the source of task selection, while the shell runs bounded
 HTTPS controls and probes.
 
+The fork's C-owned telemetry v4 also counts successful Lua `rawsend` packet
+submissions and their L3 byte lengths against the active conntrack flow. The
+controller accepts v4 while preserving v2/v3 input compatibility; the PC replay
+analyzer carries these counts into each flow's progress record. This measures
+configured desync packet overhead, not remote delivery, CPU, or latency. The
+resident controller aggregates costs only from independent active-probe
+successes and checkpoints them with candidate statistics. Candidate trial and
+phase-9 canary ties use Pareto dominance only when both candidates have
+comparable success counts, no comparative failures, and at least three cost
+samples; a trade-off or missing telemetry leaves the established ordering in
+place.
+
 ---
 
 ## Phase 9 — Canary Production
@@ -1590,12 +1727,60 @@ generation snapshots, and legacy fallback for unmapped flows. The zator Lua
 adapter bypasses legacy rotation only for a mapped canary flow and retains
 existing locks.
 
-Still required before canary rollout: deploy the production `--adaptive-control`
-and `--adaptive-canary-profile` options; add a root-owned canary host allowlist;
-have the controller promote only a well-supported learning champion; persist
-and restore assignments across daemon restarts; and clear or roll back a host
-assignment on degraded evidence or network epoch change. No production config
-currently enables the canary flags.
+The controller core now accepts an opt-in canary profile, C control socket,
+and root-owned exact-host allowlist. On restart, nfqws2 refuses non-socket or
+foreign-owned control paths, probes an existing owned socket to preserve an
+active endpoint, and removes a confirmed stale socket only after rechecking its
+inode. This recovers from a crash that skipped normal socket cleanup without
+unlinking a live controller endpoint. It promotes only a candidate with at least
+three independent successful learning probes, no comparative failures, and
+either a strict active-success lead or the v4 Pareto-cost rule in the matching
+context. It clears in-memory
+assignments when the network epoch changes or degradation is confirmed.
+
+For host-local emergency rollback, the controller now consumes only fully
+attributed `production_canary` C `FLOW_END` records whose exact host, profile,
+strategy, generation, and network epoch still match the active C assignment.
+Three distinct TCP/443 flows within ten minutes, each with client payload, a
+ClientHello, server RST, and no server payload, clear that host's mapping and
+quarantine it for the current network epoch. Positive server payload resets the host's
+failure streak; timeouts and missing payload alone remain unknown. Assignment
+generation and rollback quarantine are reconciled through the bounded private
+tmpfs checkpoint across controller restarts. Broader rollout still requires
+live validation on OpenWrt and Keenetic. The bounded journal records the
+rollback's strategy generation and triggering flow id; `adaptive_replay.py`
+reports promotion, pending assignment, restoration, and rollback counts by host
+and network epoch.
+Controller output v7 also records the C-owned destination IP and port on every passive
+`FLOW_OUTCOME`; replay joins each rollback to its triggering flow and reports
+whether all three recorded evidence flow IDs match the assignment and TCP/443
+RST/payload facts. The same record carries the controller's monotonic
+observation times; replay verifies that the evidence fits the ten-minute
+window and each controller observation falls within the matching C flow's
+start/end interval, allowing up to two seconds for event delivery after the
+last packet timestamp. On Linux, the controller uses `CLOCK_BOOTTIME`, matching
+nfqws2's `CLOCK_BOOT_OR_UPTIME`, so the comparison remains valid across suspend.
+Replay marks the overall controller output incomplete if any rollback audit is
+unmatched or lacks the newer evidence IDs/timestamps; router acceptance requires
+`CONTROLLER_OUTPUT_STATUS.complete=true` and zero `rollback_audit_incomplete_count`.
+Production config remains unchanged unless an operator explicitly enables
+menu item 26 with a bounded host allowlist.
+
+The router acceptance procedure and per-platform evidence checklist are in
+[`docs/ADAPTIVE_ROUTER_VALIDATION.md`](docs/ADAPTIVE_ROUTER_VALIDATION.md).
+
+If the controller checkpoints a desired canary assignment but the C control socket
+does not acknowledge applying it, the journal emits `CANARY_SET_PENDING` with the
+epoch, success counts, and `control_ack_failed` reason. Replay reports this separately
+from confirmed promotions. Reconciliation may later confirm the assignment and emit
+`CANARY_RESTORED`; a failed re-application emits `CANARY_RESTORE_PENDING` and
+remains separate from an applied restore. Replay reports the final per-host
+pending assignment/restoration/reconciliation state. A failed C GET is reported once per
+host as `CANARY_RECONCILE_PENDING` while the C control endpoint is missing or
+unreachable. Loss of control marks the C map for a full allowlist clear before
+reconciliation resumes; confirmed checkpointed assignments are then restored
+only when network health permits. Pending records are never counted as applied
+promotions or restorations.
 
 Legacy fallback оставить.
 

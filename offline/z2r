@@ -3,7 +3,7 @@
 set -e
 
 INSTALL_DIR="${Z2R_INSTALL_DIR:-/opt}"
-LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh adaptive_context.sh adaptive_controller.sh"
 
 fail() {
     echo "Ошибка: $*" >&2
@@ -36,8 +36,21 @@ verify_bundle() {
     [ -s "$manifest" ] || fail "в архиве отсутствует MANIFEST.files"
     while read -r expected_size rel; do
         case "$rel" in
-            payload/*|vendor/*|zator-*.tar.gz|z2r|README.txt) ;;
+            payload/*|vendor/*|zator-*.tar.gz|adaptive/*|z2r|README.txt) ;;
             *) fail "некорректный путь в MANIFEST.files: $rel" ;;
+        esac
+        case "$rel" in
+            adaptive/adaptive-controller-aarch64-unknown-linux-musl|adaptive/adaptive-controller-aarch64-unknown-linux-musl.sha256|\
+            adaptive/adaptive-controller-armv6-unknown-linux-musleabi|adaptive/adaptive-controller-armv6-unknown-linux-musleabi.sha256|\
+            adaptive/adaptive-controller-i586-unknown-linux-musl|adaptive/adaptive-controller-i586-unknown-linux-musl.sha256|\
+            adaptive/adaptive-controller-x86_64-unknown-linux-musl|adaptive/adaptive-controller-x86_64-unknown-linux-musl.sha256|\
+            adaptive/adaptive-controller-mips-unknown-linux-muslsf|adaptive/adaptive-controller-mips-unknown-linux-muslsf.sha256|\
+            adaptive/adaptive-controller-mipsel-unknown-linux-muslsf|adaptive/adaptive-controller-mipsel-unknown-linux-muslsf.sha256|\
+            adaptive/adaptive-controller-mips64-unknown-linux-musl|adaptive/adaptive-controller-mips64-unknown-linux-musl.sha256|\
+            adaptive/adaptive-controller-mips64el-unknown-linux-musl|adaptive/adaptive-controller-mips64el-unknown-linux-musl.sha256|\
+            adaptive/adaptive-controller-powerpc-unknown-linux-musl|adaptive/adaptive-controller-powerpc-unknown-linux-musl.sha256|\
+            adaptive/adaptive-controller-riscv64-unknown-linux-musl|adaptive/adaptive-controller-riscv64-unknown-linux-musl.sha256) ;;
+            adaptive/*) fail "неподдерживаемый adaptive asset в MANIFEST.files: $rel" ;;
         esac
         case "$rel" in
             /*|../*|*/../*|*/..) fail "небезопасный путь в MANIFEST.files: $rel" ;;
@@ -127,6 +140,33 @@ else
     chmod +x "$INSTALL_DIR/z2r.sh"
     echo "Компоненты z2r установлены из архива."
     export Z2R_PROJECT_DIR="$PAYLOAD_DIR"
+fi
+
+if [ -d "$BUNDLE_DIR/adaptive" ]; then
+    controller_lib="$INSTALL_DIR/zator/z2r_lib/adaptive_controller.sh"
+    [ -f "$controller_lib" ] || fail "в offline zator отсутствует adaptive_controller.sh"
+    . "$controller_lib"
+    if target=$(adaptive_controller_target); then
+        name="adaptive-controller-$target"
+        [ -s "$BUNDLE_DIR/adaptive/$name" ] || fail "в offline bundle нет controller для $target"
+        controller_size=$(wc -c < "$BUNDLE_DIR/adaptive/$name" | tr -d '[:space:]') || \
+            fail "не удалось проверить размер Adaptive Controller: $target"
+        case "$controller_size" in ''|*[!0-9]*) fail "некорректный размер Adaptive Controller: $target" ;; esac
+        [ "$controller_size" -le 524288 ] || \
+            fail "Adaptive Controller превышает лимит 512 KiB: $target"
+        awk -v name="$name" 'NR == 1 && NF == 2 && length($1) == 64 &&
+            $1 !~ /[^0-9a-f]/ && $2 == name { valid = 1 }
+            END { exit !(NR == 1 && valid) }' "$BUNDLE_DIR/adaptive/$name.sha256" || \
+            fail "некорректный checksum manifest Adaptive Controller: $target"
+        (cd "$BUNDLE_DIR/adaptive" && sha256sum -c "$name.sha256") >/dev/null || \
+            fail "checksum offline Adaptive Controller не совпадает: $target"
+        mkdir -p "$INSTALL_DIR/zator/adaptive/bin"
+        cp -f "$BUNDLE_DIR/adaptive/$name" "$INSTALL_DIR/zator/adaptive/bin/$name"
+        chmod 755 "$INSTALL_DIR/zator/adaptive/bin/$name"
+        ln -sfn "$name" "$INSTALL_DIR/zator/adaptive/bin/adaptive-controller"
+    else
+        echo "Adaptive Controller пропущен: архитектура $(uname -m) не поддерживается." >&2
+    fi
 fi
 
 export Z2R_OFFLINE=1

@@ -29,10 +29,19 @@ run_daemon()
 	# $3 - daemon args
 	local DAEMONBASE="$(basename "$2")"
 	local PID= PIDFILE=$PIDDIR/${DAEMONBASE}_$1.pid
-	if [ "$DAEMONBASE" = nfqws2 ] &&
-		[ -f "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive-shadow.enabled" ] &&
-		"$2" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>'; then
-		set -- "$1" "$2" "$3 --adaptive-events=unix:/tmp/zator-adaptive/events.sock"
+	if [ "$DAEMONBASE" = nfqws2 ] && [ "$2" = "$ZAPRET_BASE/nfq2/nfqws2" ]; then
+		local adaptive_root="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache"
+		if { [ -f "$adaptive_root/adaptive-shadow.enabled" ] ||
+			[ -f "$adaptive_root/adaptive-learning.enabled" ] ||
+			[ -f "$adaptive_root/adaptive-canary.enabled" ]; } &&
+			"$2" --help 2>&1 | grep -q -- '--adaptive-events=<file|unix:path>'; then
+			set -- "$1" "$2" "$3 --adaptive-events=unix:/tmp/zator-adaptive/events.sock"
+		fi
+		if [ -f "$adaptive_root/adaptive-canary.enabled" ] &&
+			"$2" --help 2>&1 | grep -q -- '--adaptive-control=<unix_path>' &&
+			"$2" --help 2>&1 | grep -q -- '--adaptive-canary-profile=<profile>'; then
+			set -- "$1" "$2" "$3 --adaptive-control=/tmp/zator-adaptive/production-control.sock --adaptive-canary-profile=1"
+		fi
 	fi
 	echo "Starting daemon $1: $2 $3"
 

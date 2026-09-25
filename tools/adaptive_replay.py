@@ -11,28 +11,78 @@ failure vote without a trusted explicit block signature.
 
 import argparse
 from contextlib import ExitStack
+import ipaddress
 import json
 import sys
 from collections import defaultdict
 
 
-FIELDS_BY_VERSION = {"v1": 27, "v2": 28, "v3": 29}
+FIELDS_BY_VERSION = {"v1": 27, "v2": 28, "v3": 29, "v4": 31}
 COHORT_WINDOW_MS = 10_000
+
+
+def parse_u64(text):
+    """Parse one canonical unsigned decimal value from a C journal field."""
+    if not text or any(ch < "0" or ch > "9" for ch in text):
+        raise ValueError("expected unsigned decimal")
+    value = int(text)
+    if value > 0xffffffffffffffff:
+        raise ValueError("unsigned decimal exceeds uint64")
+    return value
 
 
 def replay_controller_output(stream):
     """Summarize resident-controller output, especially settled active probes."""
     probes = []
+    probe_begins = []
     comparative_failures = []
+    canary_events = []
+    flow_outcomes = []
+    integrity_events = []
     header_seen = False
+    header_version = None
+    header_flow_columns = None
+    output_limited = False
+    rollback_audit_incomplete_count = 0
     for line_no, raw in enumerate(stream, 1):
         line = raw.rstrip("\r\n")
         if line.startswith("# ADAPTIVE_CONTROLLER_OUTPUT "):
             header_seen = True
+            parts = line.split()
+            version_field = parts[2] if len(parts) > 2 else ""
+            version = version_field[:-1] if version_field.endswith(":") else ""
+            try:
+                flow_marker = parts.index("FLOW_OUTCOME")
+                probe_marker = parts.index("PROBE_OUTCOME", flow_marker + 1)
+                flow_columns = probe_marker - flow_marker
+                if flow_marker != 3 or flow_columns not in {39, 40, 41}:
+                    raise ValueError("invalid flow schema")
+            except (ValueError, IndexError):
+                flow_columns = None
+            if version not in {"v5", "v6", "v7"} or flow_columns is None:
+                integrity_events.append({"event": "UNSUPPORTED_CONTROLLER_HEADER",
+                                         "line": line_no, "version": version_field or "missing"})
+                header_version = None
+                header_flow_columns = None
+            else:
+                if (header_version and
+                        (header_version != version or header_flow_columns != flow_columns)):
+                    integrity_events.append({"event": "MIXED_CONTROLLER_HEADER_VERSION",
+                                             "line": line_no, "previous": header_version,
+                                             "current": version})
+                header_version = version
+                header_flow_columns = flow_columns
+            continue
+        if line.startswith("# OUTPUT_LIMIT"):
+            output_limited = True
             continue
         if not line or line.startswith("#"):
             continue
         cols = line.split("\t")
+        if cols[0] in {"TRACE_INCOMPLETE", "CONTROLLER_OVERFLOW", "INPUT_REJECTED",
+                       "CANARY_STATE_SAVE_FAILED"}:
+            integrity_events.append({"event": cols[0], "fields": cols[1:]})
+            continue
         if cols[0] == "PROBE_COMPARATIVE_FAILURE":
             if not header_seen:
                 raise ValueError(f"line {line_no}: unsupported comparative failure record")
@@ -40,12 +90,12 @@ def replay_controller_output(stream):
                 raise ValueError(f"line {line_no}: unsupported comparative failure record")
             try:
                 comparison = {
-                    "candidate_probe_id": int(cols[2]),
-                    "control_before_probe_id": int(cols[3]),
-                    "control_after_probe_id": int(cols[4]),
-                    "flow_id": int(cols[5]), "hostname": cols[6].lower(),
-                    "provider_key": cols[7], "strategy_id": int(cols[8]),
-                    "network_epoch": int(cols[9]),
+                    "candidate_probe_id": parse_u64(cols[2]),
+                    "control_before_probe_id": parse_u64(cols[3]),
+                    "control_after_probe_id": parse_u64(cols[4]),
+                    "flow_id": parse_u64(cols[5]), "hostname": cols[6].lower(),
+                    "provider_key": cols[7], "strategy_id": parse_u64(cols[8]),
+                    "network_epoch": parse_u64(cols[9]),
                 }
             except ValueError as exc:
                 raise ValueError(f"line {line_no}: invalid comparative failure value") from exc
@@ -53,7 +103,14 @@ def replay_controller_output(stream):
                     comparison["control_after_probe_id"], comparison["flow_id"],
                     comparison["strategy_id"]) <= 0 or
                     comparison["control_before_probe_id"] >= comparison["control_after_probe_id"] or
-                    not comparison["hostname"] or comparison["network_epoch"] < 0 or
+                    not comparison["control_before_probe_id"] < comparison["candidate_probe_id"] <
+                    comparison["control_after_probe_id"] or
+                    comparison["strategy_id"] >= 0xffffffff or comparison["network_epoch"] <= 0 or
+                    not 0 < len(comparison["hostname"]) <= 253 or
+                    comparison["hostname"].startswith(".") or comparison["hostname"].endswith(".") or
+                    ".." in comparison["hostname"] or
+                    any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789.-"
+                        for ch in comparison["hostname"]) or
                     not (comparison["provider_key"] in {"unknown", "global"} or
                          (comparison["provider_key"].startswith("asn:") and
                           comparison["provider_key"][4:].isdigit() and
@@ -62,7 +119,210 @@ def replay_controller_output(stream):
                 raise ValueError(f"line {line_no}: comparative failure outside allowed bounds")
             comparative_failures.append(comparison)
             continue
+        if cols[0] in {"CANARY_SET", "CANARY_SET_PENDING", "CANARY_RESTORED", "CANARY_RESTORE_PENDING", "CANARY_RECONCILE_PENDING", "CANARY_ROLLBACK", "CANARY_CLEAR"}:
+            if not header_seen:
+                raise ValueError(f"line {line_no}: unsupported canary event")
+            values = {}
+            for item in cols[1:]:
+                if "=" not in item:
+                    raise ValueError(f"line {line_no}: malformed canary event field")
+                key, value = item.split("=", 1)
+                if not key or key in values:
+                    raise ValueError(f"line {line_no}: duplicate canary event field")
+                values[key] = value
+            required = {
+                "CANARY_SET": {"profile", "host", "strategy", "active_successes", "runnerup", "epoch"},
+                "CANARY_SET_PENDING": {"profile", "host", "strategy", "active_successes", "runnerup", "epoch", "reason"},
+                "CANARY_RESTORED": {"profile", "host", "strategy", "epoch"},
+                "CANARY_RESTORE_PENDING": {"profile", "host", "strategy", "epoch", "reason"},
+                "CANARY_RECONCILE_PENDING": {"profile", "host", "strategy", "epoch", "reason"},
+                "CANARY_CLEAR": {"profile", "host", "strategy", "generation", "epoch", "reason"},
+                "CANARY_ROLLBACK": {"profile", "host", "strategy", "generation", "epoch",
+                                    "flow_id", "flows", "reason"},
+            }[cols[0]]
+            optional = (({"selection"} if cols[0] in {"CANARY_SET", "CANARY_SET_PENDING"} else set()) |
+                        ({"flow_ids", "evidence_ms", "rollback_ms"}
+                         if cols[0] == "CANARY_ROLLBACK" else set()))
+            if not required.issubset(values) or not set(values).issubset(required | optional):
+                raise ValueError(f"line {line_no}: unexpected canary event fields")
+            if cols[0] == "CANARY_ROLLBACK" and (set(values) & optional) not in (set(), optional):
+                raise ValueError(f"line {line_no}: incomplete canary rollback audit fields")
+            try:
+                event = {"event": cols[0], "profile_id": parse_u64(values["profile"]),
+                         "hostname": values["host"].lower(),
+                         "strategy_id": parse_u64(values["strategy"]),
+                         "network_epoch": parse_u64(values["epoch"])}
+                if cols[0] in {"CANARY_SET", "CANARY_SET_PENDING"}:
+                    event.update({"active_successes": parse_u64(values["active_successes"]),
+                                  "runnerup": parse_u64(values["runnerup"])})
+                    if "selection" in values:
+                        if values["selection"] not in {"active_success_lead", "lower_injection_cost"}:
+                            raise ValueError("unsupported canary selection reason")
+                        event["selection"] = values["selection"]
+                    if cols[0] == "CANARY_SET_PENDING":
+                        event["reason"] = values["reason"]
+                elif cols[0] in {"CANARY_RESTORE_PENDING", "CANARY_RECONCILE_PENDING"}:
+                    event["reason"] = values["reason"]
+                elif cols[0] == "CANARY_ROLLBACK":
+                    evidence_ids = values.get("flow_ids")
+                    evidence_ms = values.get("evidence_ms")
+                    event.update({"strategy_generation": parse_u64(values["generation"]),
+                                  "flow_id": parse_u64(values["flow_id"]),
+                                  "distinct_flows": parse_u64(values["flows"]),
+                                  "evidence_flow_ids_recorded": evidence_ids is not None,
+                                  "evidence_flow_ids": ([parse_u64(flow_id) for flow_id in
+                                                         evidence_ids.split(",")]
+                                                        if evidence_ids is not None else []),
+                                  "evidence_ms_recorded": evidence_ms is not None,
+                                  "evidence_ms": ([parse_u64(stamp) for stamp in evidence_ms.split(",")]
+                                                  if evidence_ms is not None else []),
+                                  "rollback_ms": parse_u64(values["rollback_ms"])
+                                                  if "rollback_ms" in values else None,
+                                  "reason": values["reason"]})
+                elif cols[0] == "CANARY_CLEAR":
+                    event.update({"strategy_generation": parse_u64(values["generation"]),
+                                  "reason": values["reason"]})
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"line {line_no}: invalid canary event value") from exc
+            host = event["hostname"]
+            strategy_id_valid = (0 <= event["strategy_id"] <= 0xffffffff if cols[0] in {"CANARY_CLEAR", "CANARY_RECONCILE_PENDING"}
+                                 else 0 < event["strategy_id"] <= 0xffffffff)
+            if (event["profile_id"] != 1 or not strategy_id_valid or
+                    not 0 < len(host) <= 253 or host.startswith(".") or host.endswith(".") or
+                    ".." in host or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789.-" for ch in host) or
+                    (event["network_epoch"] <= 0 and cols[0] not in {"CANARY_CLEAR", "CANARY_RECONCILE_PENDING"})):
+                raise ValueError(f"line {line_no}: canary event outside allowed bounds")
+            if cols[0] == "CANARY_CLEAR" and (
+                    event["strategy_id"] > 0xffffffff or
+                    (event["strategy_id"] == 0) != (event["reason"] == "controller_reconcile") or
+                    event["reason"] not in {"network_snapshot_unavailable", "network_epoch_changed", "network_degraded", "controller_reconcile"}):
+                raise ValueError(f"line {line_no}: invalid canary clear record")
+            if cols[0] == "CANARY_RESTORE_PENDING" and event["reason"] != "control_ack_failed":
+                raise ValueError(f"line {line_no}: invalid pending canary restore")
+            if cols[0] == "CANARY_RECONCILE_PENDING" and event["reason"] != "control_unavailable":
+                raise ValueError(f"line {line_no}: invalid pending canary reconciliation")
+            if cols[0] == "CANARY_ROLLBACK" and (
+                    event["strategy_generation"] <= 0 or event["flow_id"] <= 0 or
+                    event["distinct_flows"] != 3 or
+                    (event["evidence_flow_ids_recorded"] and
+                     (len(event["evidence_flow_ids"]) != event["distinct_flows"] or
+                      len(set(event["evidence_flow_ids"])) != event["distinct_flows"] or
+                      any(flow_id <= 0 for flow_id in event["evidence_flow_ids"]) or
+                      event["flow_id"] != event["evidence_flow_ids"][-1])) or
+                    (event["evidence_ms_recorded"] and
+                     (len(event["evidence_ms"]) != event["distinct_flows"] or
+                      any(stamp < 0 for stamp in event["evidence_ms"]) or
+                      event["evidence_ms"] != sorted(event["evidence_ms"]) or
+                      event["rollback_ms"] != event["evidence_ms"][-1] or
+                      event["evidence_ms"][-1] - event["evidence_ms"][0] > 600000)) or
+                    event["reason"] != "server_rst_before_payload"):
+                raise ValueError(f"line {line_no}: invalid canary rollback evidence")
+            if cols[0] == "CANARY_SET_PENDING" and (
+                    event["active_successes"] < 0 or event["runnerup"] < 0 or
+                    event["reason"] != "control_ack_failed"):
+                raise ValueError(f"line {line_no}: invalid pending canary assignment")
+            canary_events.append(event)
+            continue
+        if cols[0] == "FLOW_OUTCOME":
+            if not header_seen or len(cols) not in {39, 40, 41}:
+                raise ValueError(f"line {line_no}: unsupported FLOW_OUTCOME record")
+            if header_flow_columns is not None and len(cols) != header_flow_columns:
+                integrity_events.append({"event": "FLOW_SCHEMA_MISMATCH", "line": line_no,
+                                         "header_version": header_version,
+                                         "columns": len(cols),
+                                         "expected_columns": header_flow_columns})
+            try:
+                number = {index: parse_u64(cols[index]) for index in
+                          (1, 2, 3, 4, 10, 11, 12, 13, 14, 23, 24, 25, 26,
+                           33, 34, 35, 36, 38)}
+                if len(cols) >= 40:
+                    number[39] = parse_u64(cols[39])
+                epoch = None if cols[20] == "unknown" else parse_u64(cols[20])
+                if epoch == 0:
+                    raise ValueError("network epoch must be positive")
+                boolean_fields = cols[27:33]
+                if any(value not in {"0", "1"} for value in boolean_fields):
+                    raise ValueError("invalid flow boolean")
+                flow = {
+                    "event": "FLOW_OUTCOME", "flow_id": number[1],
+                    "profile_id": number[2], "strategy_id": number[3],
+                    "strategy_generation": number[4], "evidence": cols[5],
+                    "hostname": cols[6].lower(), "action": cols[9],
+                    "independent": number[10], "confidence_lcb95_milli": number[11],
+                    "rank": number[12], "candidate_count": number[13],
+                    "top_strategy": number[14], "quarantine": cols[15],
+                    "decision": cols[16], "scope": cols[17], "transport": cols[18],
+                    "ip_family": cols[19], "network_epoch": epoch,
+                    "network_health": cols[21], "network_health_reason": cols[22],
+                    "progress": {
+                        "client_packets": number[23], "server_packets": number[24],
+                        "client_bytes": number[25], "server_bytes": number[26],
+                        "server_seen": cols[27] == "1", "server_payload_seen": cols[28] == "1",
+                        "client_rst": cols[29] == "1", "server_rst": cols[30] == "1",
+                        "client_fin": cols[31] == "1", "server_fin": cols[32] == "1",
+                        "start_ms": number[33], "last_seen_ms": number[34],
+                        "clienthello_count": number[35],
+                        "clienthello_retransmissions": number[36],
+                    },
+                    "termination_reason": cols[37], "source_port": number[38],
+                    "dst_port": number[39] if len(cols) >= 40 else None,
+                    "dst_ip": cols[40] if len(cols) == 41 else None,
+                }
+            except ValueError as exc:
+                raise ValueError(f"line {line_no}: invalid FLOW_OUTCOME value") from exc
+            flags = cols[10:11] + cols[27:33]
+            if (flow["flow_id"] <= 0 or flow["profile_id"] <= 0 or
+                    not 0 <= flow["strategy_id"] <= 0xffffffff or
+                    flow["strategy_generation"] < 0 or flow["independent"] not in {0, 1} or
+                    (flow["hostname"] and
+                     (not 0 < len(flow["hostname"]) <= 253 or
+                      flow["hostname"].startswith(".") or flow["hostname"].endswith(".") or
+                      ".." in flow["hostname"] or
+                      any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789.-"
+                          for ch in flow["hostname"]))) or
+                    flow["ip_family"] not in {"ipv4", "ipv6", "unknown"} or
+                    flow["transport"] not in {"tcp", "udp", "quic", "unknown"} or
+                    flow["network_health"] not in {"UNKNOWN", "DEGRADED"} or
+                    flow["progress"]["last_seen_ms"] < flow["progress"]["start_ms"] or
+                    flow["progress"]["clienthello_retransmissions"] >
+                    flow["progress"]["clienthello_count"] or
+                    not 0 <= flow["source_port"] <= 65535 or
+                    (flow["dst_port"] is not None and not 0 <= flow["dst_port"] <= 65535)):
+                raise ValueError(f"line {line_no}: FLOW_OUTCOME outside allowed bounds")
+            if flow["dst_ip"] is not None and flow["dst_ip"]:
+                try:
+                    parsed_ip = ipaddress.ip_address(flow["dst_ip"])
+                except ValueError as exc:
+                    raise ValueError(f"line {line_no}: invalid FLOW_OUTCOME destination IP") from exc
+                if ((flow["ip_family"] == "ipv4" and parsed_ip.version != 4) or
+                        (flow["ip_family"] == "ipv6" and parsed_ip.version != 6) or
+                        flow["ip_family"] not in {"ipv4", "ipv6"}):
+                    raise ValueError(f"line {line_no}: destination IP family mismatch")
+            flow_outcomes.append(flow)
+            continue
+        if cols[0] == "PROBE_BEGIN":
+            if not header_seen or len(cols) != 7:
+                raise ValueError(f"line {line_no}: unsupported PROBE_BEGIN record")
+            try:
+                event = {"event": "PROBE_BEGIN", "probe_id": parse_u64(cols[1]),
+                         "hostname": cols[2].lower(), "source_port": parse_u64(cols[3]),
+                         "profile_id": parse_u64(cols[4]), "strategy_id": parse_u64(cols[5]),
+                         "strategy_generation": parse_u64(cols[6])}
+            except ValueError as exc:
+                raise ValueError(f"line {line_no}: invalid PROBE_BEGIN value") from exc
+            host = event["hostname"]
+            if (event["probe_id"] <= 0 or event["profile_id"] != 1 or
+                    not 0 < event["strategy_id"] <= 0xffffffff or
+                    event["strategy_generation"] <= 0 or
+                    not 62000 <= event["source_port"] <= 62015 or
+                    not 0 < len(host) <= 253 or host.startswith(".") or host.endswith(".") or
+                    ".." in host or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789.-" for ch in host)):
+                raise ValueError(f"line {line_no}: PROBE_BEGIN outside allowed bounds")
+            probe_begins.append(event)
+            continue
         if cols[0] != "PROBE_OUTCOME":
+            integrity_events.append({"event": "UNRECOGNIZED_RECORD",
+                                     "line": line_no, "record_type": cols[0]})
             continue
         if not header_seen:
             raise ValueError(f"line {line_no}: unsupported PROBE_OUTCOME record")
@@ -177,11 +437,22 @@ def replay_controller_output(stream):
         if (probe["outcome"] not in {"STRONG_SUCCESS", "UNKNOWN", "CONTROL_SUCCESS", "CONTROL_UNKNOWN"} or
                 probe["probe_id"] <= 0 or probe["profile_id"] <= 0 or
                 probe["strategy_id"] <= 0 or probe["strategy_generation"] <= 0 or
+                (probe["outcome"].startswith("CONTROL_") !=
+                 (probe["strategy_id"] == 0xffffffff)) or
                 not probe["hostname"] or not 62000 <= probe["source_port"] <= 62015 or
                 probe["curl_rc"] < 0 or not 0 <= probe["http_status"] <= 599 or
                 probe["elapsed_ms"] < 0 or probe["flow_id"] < 0 or
                 probe["network_epoch"] < 0 or context_flag not in {"0", "1"}):
             raise ValueError(f"line {line_no}: PROBE_OUTCOME value outside allowed bounds")
+        if cols[1] == "v5" and probe["outcome"] in {"STRONG_SUCCESS", "CONTROL_SUCCESS"}:
+            expected_reason = ("HTTP_RESPONSE_AND_C_FLOW" if probe["outcome"] == "STRONG_SUCCESS"
+                               else "NO_STRATEGY_HTTP_RESPONSE")
+            if (probe["reason"] != expected_reason or probe["curl_rc"] != 0 or
+                    not 100 <= probe["http_status"] <= 599 or probe["flow_id"] <= 0 or
+                    not probe["network_context_usable"] or not probe["flow_metrics_seen"] or
+                    probe["transport"] != "tcp" or
+                    probe["ip_family"] not in {"ipv4", "ipv6"}):
+                raise ValueError(f"line {line_no}: success lacks correlated HTTP and C evidence")
         metrics = probe["flow_metrics"]
         redirect_host = probe.get("redirect_host", "none")
         if redirect_host != "none" and not (
@@ -247,6 +518,74 @@ def replay_controller_output(stream):
             probe["curl_diagnostic"] = curl_diagnostics.get(probe["curl_rc"], "CURL_ERROR")
         probes.append(probe)
 
+    begins_by_id = defaultdict(list)
+    outcomes_by_id = defaultdict(list)
+    for event in probe_begins:
+        begins_by_id[event["probe_id"]].append(event)
+    for probe in probes:
+        outcomes_by_id[probe["probe_id"]].append(probe)
+    for probe_id, outcomes in outcomes_by_id.items():
+        if len(outcomes) > 1 and probe_id not in begins_by_id:
+            integrity_events.append({"event": "AMBIGUOUS_PROBE_JOURNAL_JOIN",
+                                     "probe_id": probe_id, "begin_records": 0,
+                                     "outcome_records": len(outcomes)})
+    for probe_id, begins in begins_by_id.items():
+        outcomes = outcomes_by_id.get(probe_id, [])
+        if len(begins) != 1 or len(outcomes) > 1:
+            integrity_events.append({"event": "AMBIGUOUS_PROBE_JOURNAL_JOIN",
+                                     "probe_id": probe_id,
+                                     "begin_records": len(begins),
+                                     "outcome_records": len(outcomes)})
+        elif not outcomes:
+            integrity_events.append({"event": "UNSETTLED_PROBE_BEGIN",
+                                     "probe_id": probe_id})
+        else:
+            begin, outcome = begins[0], outcomes[0]
+            if any(begin[key] != outcome[target] for key, target in (
+                    ("hostname", "hostname"), ("source_port", "source_port"),
+                    ("profile_id", "profile_id"), ("strategy_id", "strategy_id"),
+                    ("strategy_generation", "strategy_generation"))):
+                integrity_events.append({"event": "PROBE_ATTRIBUTION_MISMATCH",
+                                         "probe_id": probe_id})
+
+    for comparison in comparative_failures:
+        candidate_rows = outcomes_by_id.get(comparison["candidate_probe_id"], [])
+        before_rows = outcomes_by_id.get(comparison["control_before_probe_id"], [])
+        after_rows = outcomes_by_id.get(comparison["control_after_probe_id"], [])
+        status = "MATCHED"
+        if len(candidate_rows) != 1 or len(before_rows) != 1 or len(after_rows) != 1:
+            status = "PROBE_ROWS_MISSING_OR_AMBIGUOUS"
+        else:
+            candidate, before, after = candidate_rows[0], before_rows[0], after_rows[0]
+            candidate_matches = (
+                candidate["outcome"] == "UNKNOWN" and
+                candidate["flow_id"] == comparison["flow_id"] and
+                candidate["hostname"] == comparison["hostname"] and
+                candidate["profile_id"] == 1 and
+                candidate["strategy_id"] == comparison["strategy_id"] and
+                candidate["provider_key"] == comparison["provider_key"] and
+                candidate["network_epoch"] == comparison["network_epoch"] and
+                candidate["transport"] == "tcp" and
+                candidate["ip_family"] in {"ipv4", "ipv6"} and
+                candidate["network_context_usable"] and candidate["flow_metrics_seen"] and
+                candidate["flow_metrics"]["client_packets"] > 0)
+            controls_match = all(
+                control["outcome"] == "CONTROL_SUCCESS" and
+                control["strategy_id"] == 4294967295 and control["hostname"] == comparison["hostname"] and
+                control["profile_id"] == 1 and control["provider_key"] == comparison["provider_key"] and
+                control["network_epoch"] == comparison["network_epoch"] and
+                control["transport"] == "tcp" and
+                control["ip_family"] == candidate["ip_family"] and
+                control["network_context_usable"]
+                for control in (before, after))
+            if not candidate_matches or not controls_match:
+                status = "PROBE_FACTS_MISMATCH"
+        comparison["audit_status"] = status
+        if status != "MATCHED":
+            integrity_events.append({"event": "COMPARATIVE_FAILURE_AUDIT_INCOMPLETE",
+                                     "candidate_probe_id": comparison["candidate_probe_id"],
+                                     "status": status})
+
     groups = defaultdict(lambda: {"attempts": 0, "strong_success": 0,
                                   "unknown": 0, "elapsed_ms": []})
     host_groups = defaultdict(lambda: {"attempts": 0, "strong_success": 0,
@@ -259,6 +598,8 @@ def replay_controller_output(stream):
     control_groups = defaultdict(lambda: {"attempts": 0, "success": 0, "unknown": 0})
     comparative_by_provider_strategy = defaultdict(set)
     for failure in comparative_failures:
+        if failure.get("audit_status") != "MATCHED":
+            continue
         key = (failure["provider_key"], failure["strategy_id"])
         # The resident C prior is deduplicated by host/strategy. Keep replay
         # summaries on the same unit even when a host has multiple brackets.
@@ -267,9 +608,10 @@ def replay_controller_output(stream):
         print(json.dumps({
             "event": "PROBE_COMPARATIVE_FAILURE",
             "evidence": "BRACKETED_NO_STRATEGY_CONTROLS",
-            **failure, "failure_votes": 1,
+            **failure, "failure_votes": int(failure.get("audit_status") == "MATCHED"),
         }, separators=(",", ":")))
-    bracketed_probe_ids = {failure["candidate_probe_id"] for failure in comparative_failures}
+    bracketed_probe_ids = {failure["candidate_probe_id"] for failure in comparative_failures
+                           if failure.get("audit_status") == "MATCHED"}
     for probe in probes:
         if probe["reason"] == "KNOWN_BLOCK_REDIRECT":
             print(json.dumps({
@@ -394,6 +736,9 @@ def replay_controller_output(stream):
             host_stats["unknown"] += 1
         print(json.dumps({"event": "PROBE_OUTCOME", **probe}, separators=(",", ":")))
 
+    for event in probe_begins:
+        print(json.dumps(event, separators=(",", ":")))
+
     for key, stats in sorted(groups.items()):
         profile, host, transport, family, epoch, strategy = key
         elapsed = sorted(stats["elapsed_ms"])
@@ -472,6 +817,140 @@ def replay_controller_output(stream):
             "unknown": stats["unknown"], "failure_votes": 0,
         }, separators=(",", ":")))
 
+    canary_groups = defaultdict(lambda: {"promotions": 0, "pending_assignments": 0, "restores": 0,
+                                         "pending_restorations": 0,
+                                         "pending_reconciliations": 0,
+                                         "rollbacks": 0, "clears": 0, "rollback_strategies": set(),
+                                         "clear_reasons": set()})
+    canary_pending_state = defaultdict(lambda: {"assignment": False,
+                                                "restoration": False,
+                                                "reconciliation": False})
+    for event in canary_events:
+        key = (event["profile_id"], event["hostname"], event["network_epoch"])
+        stats = canary_groups[key]
+        pending = canary_pending_state[(event["profile_id"], event["hostname"])]
+        if event["event"] == "CANARY_SET":
+            stats["promotions"] += 1
+            pending["assignment"] = False
+            pending["restoration"] = False
+            pending["reconciliation"] = False
+        elif event["event"] == "CANARY_SET_PENDING":
+            stats["pending_assignments"] += 1
+            pending["assignment"] = True
+        elif event["event"] == "CANARY_RESTORED":
+            stats["restores"] += 1
+            pending["assignment"] = False
+            pending["restoration"] = False
+            pending["reconciliation"] = False
+        elif event["event"] == "CANARY_RESTORE_PENDING":
+            stats["pending_restorations"] += 1
+            pending["restoration"] = True
+        elif event["event"] == "CANARY_RECONCILE_PENDING":
+            stats["pending_reconciliations"] += 1
+            pending["reconciliation"] = True
+        elif event["event"] == "CANARY_CLEAR":
+            stats["clears"] += 1
+            stats["clear_reasons"].add(event["reason"])
+            pending["assignment"] = False
+            pending["restoration"] = False
+            pending["reconciliation"] = False
+        elif event["event"] == "CANARY_ROLLBACK":
+            stats["rollbacks"] += 1
+            stats["rollback_strategies"].add(event["strategy_id"])
+        else:
+            continue
+        print(json.dumps(event, separators=(",", ":")))
+    for (profile, host, epoch), stats in sorted(canary_groups.items()):
+        print(json.dumps({"event": "CANARY_HOST_SUMMARY", "profile_id": profile,
+                          "hostname": host, "network_epoch": epoch,
+                          "promotions": stats["promotions"],
+                          "pending_assignments": stats["pending_assignments"],
+                          "restores": stats["restores"],
+                          "pending_restorations": stats["pending_restorations"],
+                          "pending_reconciliations": stats["pending_reconciliations"],
+                          "clears": stats["clears"],
+                          "clear_reasons": sorted(stats["clear_reasons"]),
+                          "rollbacks": stats["rollbacks"],
+                          "rollback_strategies": sorted(stats["rollback_strategies"])},
+                         separators=(",", ":")))
+    for (profile, host), pending in sorted(canary_pending_state.items()):
+        print(json.dumps({"event": "CANARY_PENDING_STATUS", "profile_id": profile,
+                          "hostname": host, "assignment_pending": pending["assignment"],
+                          "restoration_pending": pending["restoration"],
+                          "reconciliation_pending": pending["reconciliation"],
+                          "clear": not any(pending.values())}, separators=(",", ":")))
+
+    flows_by_id = defaultdict(list)
+    for flow in flow_outcomes:
+        flows_by_id[flow["flow_id"]].append(flow)
+        print(json.dumps(flow, separators=(",", ":")))
+    for event in canary_events:
+        if event["event"] != "CANARY_ROLLBACK":
+            continue
+        audit = {"event": "CANARY_ROLLBACK_AUDIT", "hostname": event["hostname"],
+                 "network_epoch": event["network_epoch"], "trigger_flow_id": event["flow_id"],
+                 "evidence_flow_ids": event["evidence_flow_ids"],
+                 "evidence_ms": event["evidence_ms"], "rollback_ms": event["rollback_ms"]}
+        if not event["evidence_flow_ids_recorded"]:
+            audit["status"] = "EVIDENCE_FLOW_IDS_UNAVAILABLE_OLD_RECORD"
+            rollback_audit_incomplete_count += 1
+            print(json.dumps(audit, separators=(",", ":")))
+            continue
+        flow_statuses = []
+        for evidence_index, flow_id in enumerate(event["evidence_flow_ids"]):
+            matches = flows_by_id.get(flow_id, [])
+            if not matches:
+                status = "FLOW_NOT_IN_JOURNAL"
+            elif len(matches) != 1:
+                status = "AMBIGUOUS_FLOW_ID"
+            else:
+                flow = matches[0]
+                facts_match = (
+                    flow["profile_id"] == event["profile_id"] and
+                    flow["hostname"] == event["hostname"] and
+                    flow["strategy_id"] == event["strategy_id"] and
+                    flow["strategy_generation"] == event["strategy_generation"] and
+                    flow["network_epoch"] == event["network_epoch"] and
+                    flow["scope"] == "production_canary" and flow["transport"] == "tcp" and
+                    flow["dst_port"] == 443 and flow["progress"]["client_bytes"] > 0 and
+                    flow["progress"]["clienthello_count"] > 0 and
+                    flow["progress"]["server_rst"] and
+                    not flow["progress"]["server_payload_seen"])
+                if facts_match and event["evidence_ms_recorded"]:
+                    observed_ms = event["evidence_ms"][evidence_index]
+                    progress = flow["progress"]
+                    # nfqws2 timestamps the packet; the controller timestamps
+                    # receipt of FLOW_END. Allow bounded IPC/scheduling delay.
+                    time_match = (observed_ms + 1000 >= progress["start_ms"] and
+                                  observed_ms <= progress["last_seen_ms"] + 2000)
+                    status = "MATCHED" if time_match else "FLOW_TIME_MISMATCH"
+                else:
+                    status = "MATCHED" if facts_match else "FLOW_FACTS_MISMATCH"
+            flow_statuses.append({"flow_id": flow_id, "status": status})
+        audit["flows"] = flow_statuses
+        facts_matched = all(item["status"] == "MATCHED" for item in flow_statuses)
+        if not facts_matched:
+            audit["status"] = "INCOMPLETE"
+        elif not event["evidence_ms_recorded"]:
+            audit["status"] = "EVIDENCE_TIMING_UNAVAILABLE_OLD_RECORD"
+        else:
+            audit["status"] = "MATCHED"
+        if audit["status"] != "MATCHED":
+            rollback_audit_incomplete_count += 1
+        print(json.dumps(audit, separators=(",", ":")))
+
+    for event in integrity_events:
+        print(json.dumps(event, separators=(",", ":")))
+    print(json.dumps({
+        "event": "CONTROLLER_OUTPUT_STATUS",
+        "complete": (header_seen and not output_limited and not integrity_events and
+                      rollback_audit_incomplete_count == 0),
+        "header_present": header_seen,
+        "output_limited": output_limited,
+        "integrity_event_count": len(integrity_events),
+        "rollback_audit_incomplete_count": rollback_audit_incomplete_count,
+    }, separators=(",", ":")))
+
 
 def replay(stream):
     flows = {}
@@ -515,7 +994,14 @@ def replay(stream):
         expected_fields = FIELDS_BY_VERSION.get(version)
         if expected_fields is None or len(cols) != expected_fields:
             raise ValueError(f"line {line_no}: unsupported C telemetry version/field count")
-        if version == "v3":
+        if version == "v4":
+            (_, timestamp, event, flow_id, profile, strategy, generation, scope,
+             host, transport, family, dst_ip, dst_port, src_port, client_packets,
+             server_packets, client_bytes, server_bytes, server_seen, server_payload_seen,
+             client_rst, server_rst, client_fin, server_fin, start_ms, last_ms,
+             clienthello_count, clienthello_retransmissions, injected_packets,
+             injected_bytes, reason) = cols
+        elif version == "v3":
             (_, timestamp, event, flow_id, profile, strategy, generation, scope,
              host, transport, family, dst_ip, dst_port, src_port, client_packets,
              server_packets, client_bytes, server_bytes, server_seen, server_payload_seen,
@@ -544,6 +1030,8 @@ def replay(stream):
             profile_int = int(profile)
             generation_int = int(generation)
             src_port_int = int(src_port)
+            injected_packet_count = parse_u64(injected_packets) if version == "v4" else 0
+            injected_byte_count = parse_u64(injected_bytes) if version == "v4" else 0
         except ValueError as exc:
             raise ValueError(f"line {line_no}: invalid flow/profile/strategy/generation id") from exc
         if not 0 <= src_port_int <= 65535:
@@ -660,6 +1148,9 @@ def replay(stream):
                     "client_fin": client_fin == "1", "server_fin": server_fin == "1",
                     "clienthello_count": int(clienthello_count),
                     "clienthello_retransmissions": int(clienthello_retransmissions),
+                    "strategy_injected_packets": injected_packet_count,
+                    "strategy_injected_bytes": injected_byte_count,
+                    "strategy_injection_cost_observed": version == "v4",
                 },
                 "lifecycle": {"start_monotonic_ms": start_ms,
                               "last_seen_monotonic_ms": last_ms,
@@ -691,6 +1182,38 @@ def replay(stream):
 
     for outcome in outcomes:
         print(json.dumps(outcome, separators=(",", ":")))
+
+    injection_cost = defaultdict(lambda: {
+        "flow_count": 0, "flows_with_injection": 0,
+        "injected_packets": 0, "injected_bytes": 0,
+        "weak_success_flows": 0,
+    })
+    for outcome in outcomes:
+        progress = outcome.get("progress", {})
+        if (outcome.get("event") != "FLOW_OUTCOME" or
+                not outcome.get("attribution_usable") or
+                not progress.get("strategy_injection_cost_observed")):
+            continue
+        key = (outcome["hostname"], outcome["scope"], outcome["transport"],
+               outcome["ip_family"], outcome["strategy_id"])
+        summary = injection_cost[key]
+        summary["flow_count"] += 1
+        packets = progress["strategy_injected_packets"]
+        byte_count = progress["strategy_injected_bytes"]
+        if packets or byte_count:
+            summary["flows_with_injection"] += 1
+        summary["injected_packets"] += packets
+        summary["injected_bytes"] += byte_count
+        if outcome["evidence"] == "WEAK_SUCCESS":
+            summary["weak_success_flows"] += 1
+    for key, summary in sorted(injection_cost.items()):
+        hostname, scope, transport, family, strategy = key
+        print(json.dumps({
+            "event": "STRATEGY_COST_OBSERVATION", "hostname": hostname,
+            "scope": scope, "transport": transport, "ip_family": family,
+            "strategy_id": strategy, **summary,
+            "cost_source": "successful_local_rawsend_submissions",
+        }, separators=(",", ":")))
 
     if trace_limited or flows:
         print(json.dumps({
