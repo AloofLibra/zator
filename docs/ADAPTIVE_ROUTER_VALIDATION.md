@@ -25,6 +25,32 @@ hosts, but it changes production traffic for those hosts while enabled.
 - Keep a local console or another management path available while restarting
   zapret2.
 
+### Provide the controlled HTTPS endpoint
+
+`tools/adaptive_test_endpoint.py` is a developer-side Python helper for the
+controlled hostname; run it on the test server, never on the router. Point the
+test hostname's A record at that server and allow inbound TCP/443. Use a
+certificate valid for that exact hostname in HTTPS mode. First, serve healthy
+responses while collecting learning successes:
+
+```sh
+sudo python3 tools/adaptive_test_endpoint.py --mode https --bind 0.0.0.0 \
+  --port 443 --cert /path/fullchain.pem --key /path/privkey.pem
+```
+
+For the rollback exercise, stop the healthy endpoint and start RST mode:
+
+```sh
+sudo python3 tools/adaptive_test_endpoint.py --mode rst --bind 0.0.0.0 --port 443
+```
+
+RST mode reads one complete TLS handshake record, then closes that TCP socket
+with zero linger so the server sends RST without application payload. Its log
+records the peer and whether a handshake record arrived; it does not log packet
+payloads. Restore HTTPS mode after the three rollback flows. The helper handles
+IPv4 by default; pass an IPv6 bind address such as `::` when testing an AAAA-only
+hostname. Do not run the reset endpoint on a production hostname.
+
 ### Install the beta `nfqws2` binary for a controlled test
 
 The beta archive is a complete upstream tree, so do not unpack it over the
