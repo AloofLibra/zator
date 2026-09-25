@@ -108,14 +108,22 @@ journal.
 
    The returned strategy and generation must match subsequent new-flow
    telemetry.
-6. On the controlled RST endpoint, create three separate connections. Each
+6. On the test router, exercise crash recovery while the canary mapping is
+   active: terminate `nfqws2` without graceful shutdown, then let the platform
+   service restart it (start zapret2 manually on Keenetic if its init does not
+   supervise the daemon). The old C control socket must be replaced without
+   unlinking an active endpoint. Confirm new flow telemetry resumes and the
+   controller records `CANARY_RESTORED` for the same host/strategy with the
+   new C generation. This intentionally interrupts traffic; do not run it on
+   a production router.
+7. On the controlled RST endpoint, create three separate connections. Each
    must have ClientHello and client bytes, server RST, and no server payload.
    Confirm one `CANARY_ROLLBACK` record identifies profile, host, strategy,
    generation, epoch, and the triggering flow ID. The C host-map query must
    then report `no_host_strategy`; new connections must return to the legacy
    path. A timeout or a reset without these exact flow facts must not roll
    back.
-7. Disable Canary with menu item 26. Confirm C host mappings are cleared, the
+8. Disable Canary with menu item 26. Confirm C host mappings are cleared, the
    production-control socket option disappears after nfqws2 restart, and the
    learning/shadow controller remains running if either mode is still enabled.
 
