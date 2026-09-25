@@ -29,7 +29,7 @@ hosts, but it changes production traffic for those hosts while enabled.
 
 The beta archive is a complete upstream tree, so do not unpack it over the
 router installation. On a PC, extract only `binaries/linux-<target>/nfqws2`
-from [`v1.0.5.2-adaptive-beta.2`](https://github.com/AloofLibra/zapret2/releases/tag/v1.0.5.2-adaptive-beta.2),
+from [`v1.0.5.2-adaptive-beta.3`](https://github.com/AloofLibra/zapret2/releases/tag/v1.0.5.2-adaptive-beta.3),
 then copy that one file to `/tmp/nfqws2-adaptive` on the router. Select the
 archive directory from `uname -m`:
 
@@ -45,7 +45,7 @@ archive directory from `uname -m`:
 | `riscv64` | `linux-riscv64` |
 | `ppc`, `powerpc` | `linux-ppc` |
 
-Only use an exact matching target. In particular, beta.2's `linux-mips64`
+Only use an exact matching target. In particular, beta.3's `linux-mips64`
 binary is big-endian; it is not suitable for `mips64el`/`mips64le`. If the
 router architecture is not listed, do not substitute another archive binary.
 
@@ -61,7 +61,7 @@ OpenWrt or `/opt/etc/init.d/S90-zapret2` on Keenetic, and run:
 
 ```sh
 BIN=/opt/zapret2/nfq2/nfqws2
-cp -p "$BIN" /tmp/nfqws2.pre-beta2 || exit 1
+cp -p "$BIN" /tmp/nfqws2.pre-beta3 || exit 1
 cp /tmp/nfqws2-adaptive "$BIN.new" && chmod 755 "$BIN.new" && mv -f "$BIN.new" "$BIN" || exit 1
 ```
 
@@ -70,7 +70,7 @@ For rollback during the same router uptime, stop zapret2, then run:
 
 ```sh
 BIN=/opt/zapret2/nfq2/nfqws2
-cp /tmp/nfqws2.pre-beta2 "$BIN.new" && chmod 755 "$BIN.new" && mv -f "$BIN.new" "$BIN" || exit 1
+cp /tmp/nfqws2.pre-beta3 "$BIN.new" && chmod 755 "$BIN.new" && mv -f "$BIN.new" "$BIN" || exit 1
 ```
 
 Start the service again. The backup is in tmpfs and is lost on reboot; keep
