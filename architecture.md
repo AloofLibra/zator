@@ -970,11 +970,10 @@ The C telemetry privilege-drop fix is pushed to that branch at `b1a9504`
 (following `58671fb`). The MIPSel artifact is ELF32 little-endian MIPS R3000
 and contains both adaptive CLI options. Draft PR #1 remains closed without
 merge. The telemetry file sink checks write results and disables further trace
-writes after a short or failed record write. The fork beta
-`v1.0.5.2-adaptive-beta.1` was published as a prerelease with Linux, OpenWrt
-embedded, Windows, Android, and FreeBSD archives; CI run
-[`36021707984`](https://github.com/AloofLibra/zapret2/actions/runs/36021707984)
-passed all platform builds. A matching zator beta and rolling release were
+writes after a short or failed record write. Fork beta
+`v1.0.5.2-adaptive-beta.2` is published from commit `469c95d`; CI run
+[`36078517444`](https://github.com/AloofLibra/zapret2/actions/runs/36078517444)
+passed all Linux, OpenWrt embedded, Windows, Android, and FreeBSD builds. A matching zator beta and rolling release were
 published during the earlier PoC deployment; they are historical artifacts,
 not the delivery path for ongoing `develop` changes. Its CI run
 [`36023851594`](https://github.com/AloofLibra/zator/actions/runs/36023851594)
@@ -1460,8 +1459,8 @@ when either shadow or learning is enabled; previously their shadow-only guard
 made learning-only mode impossible. Menu item 24 remains the separate passive
 production shadow switch and does not change production strategy.
 
-**Deployment gate:** patched `nfqws2` binaries were built in the separate
-`AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.1`; the earlier zator
+**Deployment gate:** patched `nfqws2` binaries are available in the separate
+`AloofLibra/zapret2` prerelease `v1.0.5.2-adaptive-beta.2`; the earlier zator
 beta shipped controller executables for ten Linux targets. Ongoing zator
 changes are delivered through the `develop` branch and `z2r` update path,
 not by creating more zator releases. The normal zapret2 installer and carried-
