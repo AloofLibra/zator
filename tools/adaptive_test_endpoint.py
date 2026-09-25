@@ -11,6 +11,7 @@ import sys
 
 
 MAX_TLS_RECORD = 18432
+MAX_CLIENT_HELLO_BYTES = 65536
 MAX_HTTP_HEADERS = 16384
 READ_TIMEOUT_SECONDS = 8
 
@@ -46,22 +47,36 @@ class AdaptiveHandler(socketserver.BaseRequestHandler):
 
     def handle_rst(self):
         try:
-            header = recv_exact(self.request, 5)
-            if header is None:
-                self.log("closed before TLS record")
-                return
-            if header[0] != 22:
-                self.log("non-handshake record; reset")
-                return
-            record_size = struct.unpack("!H", header[3:5])[0]
-            if record_size == 0 or record_size > MAX_TLS_RECORD:
-                self.log("invalid TLS record length; reset")
-                return
-            record = recv_exact(self.request, record_size)
-            if record is None:
-                self.log("incomplete TLS handshake record; reset")
-                return
-            self.log("received TLS handshake record; sending RST")
+            handshake = bytearray()
+            while len(handshake) <= MAX_CLIENT_HELLO_BYTES:
+                header = recv_exact(self.request, 5)
+                if header is None:
+                    self.log("closed before complete ClientHello")
+                    return
+                if header[0] != 22:
+                    self.log("non-handshake TLS record; reset")
+                    return
+                record_size = struct.unpack("!H", header[3:5])[0]
+                if record_size == 0 or record_size > MAX_TLS_RECORD:
+                    self.log("invalid TLS record length; reset")
+                    return
+                record = recv_exact(self.request, record_size)
+                if record is None:
+                    self.log("incomplete TLS handshake record; reset")
+                    return
+                handshake.extend(record)
+                if len(handshake) >= 4:
+                    if handshake[0] != 1:
+                        self.log("first handshake message is not ClientHello; reset")
+                        return
+                    hello_size = int.from_bytes(handshake[1:4], "big")
+                    if hello_size > MAX_CLIENT_HELLO_BYTES - 4:
+                        self.log("ClientHello exceeds size limit; reset")
+                        return
+                    if len(handshake) >= hello_size + 4:
+                        self.log("received complete ClientHello; sending RST")
+                        return
+            self.log("ClientHello exceeds size limit; reset")
         except (OSError, TimeoutError) as exc:
             self.log("read failed: %s" % exc)
         finally:

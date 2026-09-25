@@ -44,12 +44,13 @@ For the rollback exercise, stop the healthy endpoint and start RST mode:
 sudo python3 tools/adaptive_test_endpoint.py --mode rst --bind 0.0.0.0 --port 443
 ```
 
-RST mode reads one complete TLS handshake record, then closes that TCP socket
-with zero linger so the server sends RST without application payload. Its log
-records the peer and whether a handshake record arrived; it does not log packet
-payloads. Restore HTTPS mode after the three rollback flows. The helper handles
-IPv4 by default; pass an IPv6 bind address such as `::` when testing an AAAA-only
-hostname. Do not run the reset endpoint on a production hostname.
+RST mode reads a complete ClientHello message (including across fragmented TLS
+handshake records), then closes that TCP socket with zero linger so the server
+sends RST without application payload. Its log records the peer and whether a
+complete ClientHello arrived; it does not log packet payloads. Restore HTTPS
+mode after the three rollback flows. The helper handles IPv4 by default; pass an
+IPv6 bind address such as `::` when testing an AAAA-only hostname. Do not run
+the reset endpoint on a production hostname.
 
 ### Install the beta `nfqws2` binary for a controlled test
 
