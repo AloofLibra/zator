@@ -45,6 +45,10 @@ archive directory from `uname -m`:
 | `riscv64` | `linux-riscv64` |
 | `ppc`, `powerpc` | `linux-ppc` |
 
+Only use an exact matching target. In particular, beta.2's `linux-mips64`
+binary is big-endian; it is not suitable for `mips64el`/`mips64le`. If the
+router architecture is not listed, do not substitute another archive binary.
+
 On the router, check the staged binary before stopping the service:
 
 ```sh
@@ -65,6 +69,7 @@ Start zapret2 and verify its service log before enabling shadow or learning.
 For rollback during the same router uptime, stop zapret2, then run:
 
 ```sh
+BIN=/opt/zapret2/nfq2/nfqws2
 cp /tmp/nfqws2.pre-beta2 "$BIN.new" && chmod 755 "$BIN.new" && mv -f "$BIN.new" "$BIN" || exit 1
 ```
 
