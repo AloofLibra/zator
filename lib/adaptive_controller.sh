@@ -37,27 +37,50 @@ adaptive_controller_asset_base() {
 # Explicit caller only. Runtime package is target-specific, statically linked,
 # bounded to 512 KiB and verified against the checksum in the selected zator branch.
 adaptive_controller_fetch_limited() {
-  local dest="$1" url="$2" max_bytes="$3" size
+  local dest="$1" url="$2" max_bytes="$3" size status_file attempt fetch_status
   case "$max_bytes" in ''|*[!0-9]*) return 2 ;; esac
   [ "$max_bytes" -gt 0 ] || return 2
-  rm -f "$dest"
-  if command -v curl >/dev/null 2>&1; then
-    # Close the pipe after max+1 bytes so an unbounded response cannot fill tmpfs.
-    curl -fsSL --connect-timeout 10 "$url" 2>/dev/null |
-      head -c "$((max_bytes + 1))" > "$dest"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -T 10 -O - "$url" 2>/dev/null |
-      head -c "$((max_bytes + 1))" > "$dest"
-  else
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     return 127
   fi
-  size="$(wc -c < "$dest" | awk '{print $1}')"
-  case "$size" in ''|*[!0-9]*) rm -f "$dest"; return 1 ;; esac
-  [ "$size" -gt 0 ] && [ "$size" -le "$max_bytes" ] || {
-    rm -f "$dest"
-    return 1
-  }
-  return 0
+  status_file="$dest.status.$$"
+  rm -f "$dest" "$status_file"
+  for attempt in 1 2 3; do
+    # Close the pipe after max+1 bytes so an unbounded response cannot fill tmpfs.
+    if command -v curl >/dev/null 2>&1; then
+      (
+        if curl -fsSL --connect-timeout 10 "$url" 2>/dev/null; then
+          printf '0' > "$status_file"
+        else
+          fetch_status=$?
+          printf '%s' "$fetch_status" > "$status_file"
+        fi
+      ) | head -c "$((max_bytes + 1))" > "$dest"
+    else
+      (
+        if wget -q -T 10 -O - "$url" 2>/dev/null; then
+          printf '0' > "$status_file"
+        else
+          fetch_status=$?
+          printf '%s' "$fetch_status" > "$status_file"
+        fi
+      ) | head -c "$((max_bytes + 1))" > "$dest"
+    fi
+    fetch_status="$(cat "$status_file" 2>/dev/null)"
+    size="$(wc -c < "$dest" | awk '{print $1}')"
+    case "$size" in ''|*[!0-9]*) size=0 ;; esac
+    if [ "$size" -gt "$max_bytes" ]; then
+      rm -f "$dest" "$status_file"
+      return 1
+    fi
+    if [ "$fetch_status" = 0 ] && [ "$size" -gt 0 ] && [ "$size" -le "$max_bytes" ]; then
+      rm -f "$status_file"
+      return 0
+    fi
+    rm -f "$dest" "$status_file"
+    [ "$attempt" -lt 3 ] && sleep 2
+  done
+  return 1
 }
 
 adaptive_controller_install() {
