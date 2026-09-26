@@ -207,6 +207,11 @@ grep -q '^winner_total=3$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценар�
 grep -q $'profile\t1\t4' "$Z2R_SUPERSWEEP_DIR/summary.tsv" || fail "сценарий 1: summary.tsv без profile 1 -> 4"
 grep -q $'profile\t3\t2' "$Z2R_SUPERSWEEP_DIR/summary.tsv" || fail "сценарий 1: summary.tsv без profile 3 -> 2"
 grep -q 'Применена стратегия 4' <<<"$out" || fail "сценарий 1: нет строки применения для профиля 1"
+grep -q 'сразу по завершении воркера' <<<"$out" || fail "сценарий 1: применение не помечено как немедленное"
+[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/applied.tsv" 2>/dev/null || echo 0)" = 4 ] \
+  || fail "сценарий 1: applied.tsv должен иметь 4 строки (по одной на воркер)"
+grep -q $'profile\t1\t4' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без profile 1 -> 4"
+grep -q $'profile\t3\t2' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без profile 3 -> 2"
 grep -q 'Применена стратегия 2 для профиля 3' <<<"$out" || fail "сценарий 1: нет строки применения для профиля 3"
 grep -q 'медуза\|meduza.io' <<<"$out" || fail "сценарий 1: в отчёте нет рекомендаций по доменам"
 grep -q 'Зелёные\|Рабочие' <<<"$out" || fail "сценарий 1: в отчёте нет списков рабочих стратегий"
@@ -387,5 +392,39 @@ p="$(printf '\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 
 [ "$p" = "15" ] || fail "сценарий 9: Enter должен давать 15, получено [$p]"
 p="$(printf '5\n20\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause (5/20) упал"
 [ "$p" = "20" ] || fail "сценарий 9: 5 должно отбрасываться (минимум 15), затем 20, получено [$p]"
+
+# == 10. отмена после применения профиля: применённое не откатывается ==
+# профильные воркеры завершаются раньше длинной РКН-карты: их лучшие уже
+# применены, и Ctrl+C на карте не должен их откатывать
+
+: > "$ORCH_LOCK_FILE"
+orch_locked_set 1 tls 3
+rm -rf "$Z2R_SUPERSWEEP_DIR"
+export MOCK_DELAY=0.05
+export MOCK_OK_P1="2 4" MOCK_OK_P2="3" MOCK_OK_P4="1 5"
+export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
+
+supersweep_run both 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel2.log" 2>&1 &
+RUN2_PID=$!
+# ждём: yt-воркер отработал и координатор применил его лучший лок,
+# и стартовал этап 2 карты (первые домены кроме эталона)
+n=0
+while [ "$n" -lt 400 ]; do
+  [ -f "$Z2R_SUPERSWEEP_DIR/applied.done.yt" ] \
+    && [ "$(awk -F'\t' '$2 != "meduza.io"' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" 2>/dev/null | wc -l)" -ge 1 ] \
+    && break
+  sleep 0.1 2>/dev/null || sleep 1
+  n=$((n + 1))
+done
+[ -f "$Z2R_SUPERSWEEP_DIR/applied.done.yt" ] || fail "сценарий 10: yt-воркер не успел завершиться до отмены"
+: > "$Z2R_SUPERSWEEP_DIR/cancel"
+rc2=0
+wait "$RUN2_PID" || rc2=$?
+[ "$rc2" = 1 ] || fail "сценарий 10: отменённый прогон должен вернуть 1, вернул $rc2"
+[ "$(lock_state 1 tls)" = 4 ] || fail "сценарий 10: применённый лок профиля 1 откатился ($(lock_state 1 tls))"
+[ "$(lock_state meduza.io tls)" = auto ] || fail "сценарий 10: доменные пробы должны откатиться ($(lock_state meduza.io tls))"
+grep -q 'оставлена применённая стратегия 4' "$TMP_DIR/cancel2.log" \
+  || fail "сценарий 10: нет сообщения об оставленной применённой стратегии"
+unset MOCK_DELAY
 
 echo "supersweep smoke ok"

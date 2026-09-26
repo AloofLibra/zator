@@ -205,7 +205,13 @@ _supersweep_worker_profile() {
             sleep "$pause_sec"
         fi
     done
-    trap - INT TERM
+    # traps stay installed until the subshell exits: a second INT from the
+    # parent kill must not kill the worker before best.<name> is written
+
+    # "interrupted" = the sweep did not run to completion (signal or the
+    # cancel file): partial results must not be applied by the coordinator
+    local ss_incomplete=0
+    [ "$s" -le "$max" ] && ss_incomplete=1
 
     # best selection mirrors orch_auto_sweep: fastest green by bytes/sec,
     # full (both TLS versions) preferred, warn fallback when no green exists
@@ -237,7 +243,7 @@ _supersweep_worker_profile() {
         printf 'n_ok=%s\n' "$n_ok"
         printf 'n_warn=%s\n' "$n_warn"
         printf 'n_fail=%s\n' "$n_fail"
-        printf 'interrupted=%s\n' "$ss_interrupted"
+        printf 'interrupted=%s\n' "$ss_incomplete"
     } > "${dir}/best.${name}"
     : > "${dir}/done.${name}"
 }
@@ -277,6 +283,31 @@ _supersweep_rkn_record() {
     printf '%s\n' "$token"
 }
 
+# winners from coverage.tsv: "ok_winner<TAB>ok_cover<TAB>total<TAB>warn_winner<TAB>warn_cover"
+# (ok winner = most green domains, ties by summed speed then lower number;
+# warn winner = same over partial single-TLS-version results, report-only)
+_supersweep_rkn_winners() {
+    local total="$1" file="$2"
+    awk -F'\t' -v total="$total" '
+        $4 == "ok"   { c[$3]++; sp[$3] += $6 }
+        $4 == "warn" { w[$3]++; wsp[$3] += $6 }
+        END {
+            bs = ""; bc = 0; bsp = 0
+            for (s in c) {
+                if (c[s] > bc || (c[s] == bc && sp[s] > bsp) || (c[s] == bc && sp[s] == bsp && (bs == "" || s+0 < bs+0))) {
+                    bs = s; bc = c[s]; bsp = sp[s]
+                }
+            }
+            ws = ""; wc = 0; wspd = 0
+            for (s in w) {
+                if (w[s] > wc || (w[s] == wc && wsp[s] > wspd) || (w[s] == wc && wsp[s] == wspd && (ws == "" || s+0 < ws+0))) {
+                    ws = s; wc = w[s]; wspd = wsp[s]
+                }
+            }
+            print bs "\t" bc "\t" total "\t" ws "\t" wc
+        }' "$file" 2>/dev/null
+}
+
 _supersweep_worker_rkn() {
     local name="$1" max="$2" par="$3" tls_pref="$4" pause_sec="$5"
     shift 5
@@ -311,10 +342,13 @@ _supersweep_worker_rkn() {
             sleep "$pause_sec"
         fi
     done
+    # capture stage-1 completion right here: the stage-2 loop below reuses $s
+    local stage1_complete=0
+    [ "$s" -gt "$max" ] && stage1_complete=1
 
     # stage 2: remaining domains, only strategies that cracked the reference;
     # youtube-green strategies first (correlation hint), youtube failures last
-    local s2_list=""
+    local s2_list="" stage2_complete=0
     if [ -n "$rest_domains" ] && [ -n "$passed" ]; then
         s2_list="$(printf '%s\n' $passed | awk -v ytfile="${dir}/progress.yt.tsv" '
             BEGIN {
@@ -371,8 +405,18 @@ skip"
                 sleep "$pause_sec"
             fi
         done
+        stage2_complete=1
+    else
+        # nothing to probe beyond the reference: the map is complete
+        stage2_complete=1
     fi
-    trap - INT TERM
+    # traps stay installed until the subshell exits: a second INT from the
+    # parent kill must not kill the worker before best.<name> is written
+
+    # "interrupted" = the map did not run to completion (signal or the
+    # cancel file): a partial map must not be applied by the coordinator
+    local ss_incomplete=0
+    { [ "$stage1_complete" = 0 ] || [ "$stage2_complete" = 0 ]; } && ss_incomplete=1
 
     # winner = strategy with the most green (ok) domains; ties broken by the
     # sum of download speeds, then by the lower strategy number. warn_winner
@@ -382,24 +426,7 @@ skip"
     local total=0
     for d in $domains; do total=$((total + 1)); done
     local winner_line
-    winner_line="$(awk -F'\t' -v total="$total" '
-        $4 == "ok"   { c[$3]++; sp[$3] += $6 }
-        $4 == "warn" { w[$3]++; wsp[$3] += $6 }
-        END {
-            bs = ""; bc = 0; bsp = 0
-            for (s in c) {
-                if (c[s] > bc || (c[s] == bc && sp[s] > bsp) || (c[s] == bc && sp[s] == bsp && (bs == "" || s+0 < bs+0))) {
-                    bs = s; bc = c[s]; bsp = sp[s]
-                }
-            }
-            ws = ""; wc = 0; wspd = 0
-            for (s in w) {
-                if (w[s] > wc || (w[s] == wc && wsp[s] > wspd) || (w[s] == wc && wsp[s] == wspd && (ws == "" || s+0 < ws+0))) {
-                    ws = s; wc = w[s]; wspd = wsp[s]
-                }
-            }
-            print bs "\t" bc "\t" total "\t" ws "\t" wc
-        }' "${dir}/coverage.tsv" 2>/dev/null)"
+    winner_line="$(_supersweep_rkn_winners "$total" "${dir}/coverage.tsv")"
     {
         printf 'winner=%s\n' "$(printf '%s' "$winner_line" | cut -f1)"
         printf 'winner_cover=%s\n' "$(printf '%s' "$winner_line" | cut -f2)"
@@ -407,12 +434,79 @@ skip"
         printf 'warn_winner=%s\n' "$(printf '%s' "$winner_line" | cut -f4)"
         printf 'warn_winner_cover=%s\n' "$(printf '%s' "$winner_line" | cut -f5)"
         printf 'reference=%s\n' "$ref"
-        printf 'interrupted=%s\n' "$ss_interrupted"
+        printf 'interrupted=%s\n' "$ss_incomplete"
     } > "${dir}/best.${name}"
     : > "${dir}/done.${name}"
 }
 
 # --- parent: coordinator + summary ----------------------------------------
+
+# settle a finished worker's result immediately: the user gets working
+# youtube/googlevideo/discord while the long rkn stage is still running.
+# writes the applied.done.<name> marker (strategy value | none | error) so
+# the summary and the cancel path know what is already settled
+_supersweep_settle_worker() {
+    local name="$1" pkey="$2" protos="$3" cfg="$4"
+    local dir="$Z2R_SUPERSWEEP_DIR"
+    local best best_short marker="none" old_udp_ports
+    if [ "$name" = rkn ]; then
+        best="$(_supersweep_kv_read "${dir}/best.rkn" winner)"
+        best_short="покрывает $(_supersweep_kv_read "${dir}/best.rkn" winner_cover)/$(_supersweep_kv_read "${dir}/best.rkn" winner_total) доменов"
+    else
+        best="$(_supersweep_kv_read "${dir}/best.${name}" best)"
+        best_short="$(_supersweep_kv_read "${dir}/best.${name}" best_short)"
+    fi
+    # an interrupted worker writes best/done too (graceful exit): its partial
+    # results must not be applied — a half-swept best is not a verdict
+    if [ "$(_supersweep_kv_read "${dir}/best.${name}" interrupted)" = 1 ]; then
+        if [ "$name" != rkn ]; then
+            _supersweep_restore_prev profile "$pkey"
+        fi
+        printf 'none\n' > "${dir}/applied.done.${name}"
+        return 0
+    fi
+    if [ -n "$best" ]; then
+        old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+        if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
+            marker="$best"
+            printf 'profile\t%s\t%s\n' "$pkey" "$best" >> "${dir}/applied.tsv"
+            if [ "$name" = rkn ]; then
+                echo -e "$(date '+%H:%M:%S') ${Fgreen}РКН завершён: применена стратегия ${best} для профиля 3${plain} (${best_short})"
+            else
+                echo -e "$(date '+%H:%M:%S') ${Fgreen}Профиль ${pkey}: воркер завершён — применена лучшая стратегия ${best}${plain} (${best_short})"
+            fi
+            profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"
+            telemetry_notify
+        else
+            marker="error"
+            echo -e "$(date '+%H:%M:%S') ${red}Профиль ${pkey}: не удалось применить стратегию ${best}.${plain}" >&2
+        fi
+    elif [ "$name" != rkn ]; then
+        # no best: return the profile to its pre-sweep lock right away
+        _supersweep_restore_prev profile "$pkey"
+    fi
+    printf '%s\n' "$marker" > "${dir}/applied.done.${name}"
+    return 0
+}
+
+# settle every finished-but-unsettled worker (skipped on cancel: an abort
+# must not introduce new changes). called from the coordinator loop and once
+# after it: the loop breaks the moment the last worker dies, before it could
+# process that worker's done marker (typically the rkn winner)
+_supersweep_settle_pass() {
+    local cfg="$1" dir="$Z2R_SUPERSWEEP_DIR" wname
+    for wname in yt gv ds rkn; do
+        [ -e "${dir}/done.${wname}" ] || continue
+        [ -e "${dir}/applied.done.${wname}" ] && continue
+        case "$wname" in
+            yt)  _supersweep_settle_worker yt  1 "tls http" "$cfg" ;;
+            gv)  _supersweep_settle_worker gv  2 "tls"       "$cfg" ;;
+            ds)  _supersweep_settle_worker ds  4 "tls"       "$cfg" ;;
+            rkn) _supersweep_settle_worker rkn 3 "tls"       "$cfg" ;;
+        esac
+    done
+    return 0
+}
 
 _supersweep_apply_cmd() {
     local f="$1" dir="$Z2R_SUPERSWEEP_DIR"
@@ -676,6 +770,9 @@ supersweep_run() {
             [ -e "$f" ] || continue
             _supersweep_apply_cmd "$f"
         done
+        # a finished worker goes live immediately (skip on cancel: an abort
+        # must not introduce new changes)
+        [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
         local alive_names=""
         kill -0 "$pid_yt" 2>/dev/null && alive_names="yt"
         kill -0 "$pid_gv" 2>/dev/null && alive_names="${alive_names} gv"
@@ -687,6 +784,9 @@ supersweep_run() {
     for pid in $wpids; do
         wait "$pid" 2>/dev/null || true
     done
+    # the loop breaks the moment the last worker dies: settle whatever it
+    # did not get to process (typically the rkn winner)
+    [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
     trap - INT
     if [ "$had_e" = 1 ]; then set -e; fi
 
@@ -709,20 +809,47 @@ supersweep_run() {
     best_gv="$(_supersweep_kv_read "${dir}/best.gv" best)"
     best_ds="$(_supersweep_kv_read "${dir}/best.ds" best)"
     winner="$(_supersweep_kv_read "${dir}/best.rkn" winner)"
+    # a worker killed mid-write (double interrupt in older builds) still
+    # leaves coverage.tsv — recompute the rkn winners from it so the report
+    # and the apply do not silently lose the collected map
+    local warn_winner="" rkn_fallback_line=""
+    if [ -z "$winner" ] && [ -s "${dir}/coverage.tsv" ] \
+        && [ -z "$(_supersweep_kv_read "${dir}/best.rkn" reference)" ]; then
+        rkn_fallback_line="$(_supersweep_rkn_winners "$(_supersweep_count_list "$domains")" "${dir}/coverage.tsv")"
+        winner="$(printf '%s' "$rkn_fallback_line" | cut -f1)"
+    fi
 
+    local settle_spec settle_wname settle_pkey settle_marker
     if [ "$cancelled" = 1 ]; then
         echo ""
         echo -e "${yellow}Прервано пользователем: возвращаю прежние стратегии...${plain}"
-        _supersweep_restore_prev
+        # profiles already settled mid-run keep their applied strategies:
+        # the user is already watching youtube / chatting on them
+        for settle_spec in "yt:1" "gv:2" "ds:4"; do
+            settle_wname="${settle_spec%%:*}"; settle_pkey="${settle_spec#*:}"
+            settle_marker=""; [ -f "${dir}/applied.done.${settle_wname}" ] && settle_marker="$(cat "${dir}/applied.done.${settle_wname}")"
+            case "$settle_marker" in
+                ''|none|error)
+                    _supersweep_restore_prev profile "$settle_pkey"
+                    ;;
+                *)
+                    echo -e "Профиль ${settle_pkey}: ${green}оставлена применённая стратегия ${settle_marker}${plain}."
+                    ;;
+            esac
+        done
+        # rkn was never settled on cancel: the reference domain and any
+        # stage-2 probes revert to their previous locks
+        _supersweep_restore_prev domain
         _supersweep_status_write cancelled "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
     else
-        # probe locks are temporary: domain rows always revert, a profile
-        # without a best falls back to its previous lock (the apply below
-        # overwrites the rows that do get a best)
+        # probe locks are temporary: domain rows always revert; profiles
+        # were settled by the coordinator as their workers finished, a
+        # crashed worker (no marker) falls back to its previous lock here
         _supersweep_restore_prev domain
-        [ -n "$best_yt" ] || _supersweep_restore_prev profile 1
-        [ -n "$best_gv" ] || _supersweep_restore_prev profile 2
-        [ -n "$best_ds" ] || _supersweep_restore_prev profile 4
+        for settle_spec in "yt:1" "gv:2" "ds:4"; do
+            settle_wname="${settle_spec%%:*}"; settle_pkey="${settle_spec#*:}"
+            [ -e "${dir}/applied.done.${settle_wname}" ] || _supersweep_restore_prev profile "$settle_pkey"
+        done
         _supersweep_status_write applying "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
     fi
 
@@ -742,7 +869,7 @@ supersweep_run() {
         printf 'profile\t3\t%s\n' "$winner"
     } > "${dir}/summary.tsv"
 
-    local wname pkey plabel protos greens fulls warns best best_short old_udp_ports
+    local wname pkey plabel protos greens fulls warns best best_short old_udp_ports marker
     for spec in "yt:1:YouTube:tls http" "gv:2:Googlevideo:tls" "ds:4:Discord:tls"; do
         wname="${spec%%:*}"; rest="${spec#*:}"
         pkey="${rest%%:*}"; rest="${rest#*:}"
@@ -757,30 +884,51 @@ supersweep_run() {
         [ -n "$greens" ] && echo -e "   Рабочие (зелёные): ${green}${greens}${plain}"
         [ -n "$warns" ] && echo -e "   Жёлтые: ${yellow}${warns}${plain}"
         if [ -n "$best" ] && [ "$cancelled" != 1 ]; then
-            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
-            if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
-                echo -e "   ${Fgreen}Применена стратегия ${best}${plain} (${best_short})"
-                applied_any=1
-                profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"
-            else
-                echo -e "   ${red}Не удалось сохранить стратегию ${best} для профиля ${pkey}.${plain}"
-            fi
+            marker=""; [ -f "${dir}/applied.done.${wname}" ] && marker="$(cat "${dir}/applied.done.${wname}")"
+            case "$marker" in
+                "$best")
+                    echo -e "   ${Fgreen}Применена стратегия ${best}${plain} (${best_short}) — сразу по завершении воркера"
+                    ;;
+                error)
+                    echo -e "   ${red}Не удалось применить стратегию ${best} для профиля ${pkey}.${plain}"
+                    ;;
+                *)
+                    # worker crashed before settling: apply now as a fallback
+                    old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+                    if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
+                        echo -e "   ${Fgreen}Применена стратегия ${best}${plain} (${best_short})"
+                        applied_any=1
+                        profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"
+                    else
+                        echo -e "   ${red}Не удалось сохранить стратегию ${best} для профиля ${pkey}.${plain}"
+                    fi
+                    ;;
+            esac
         elif [ -n "$best" ]; then
-            echo -e "   Кандидат был ${best} — не применён (прогон прерван)."
+            marker=""; [ -f "${dir}/applied.done.${wname}" ] && marker="$(cat "${dir}/applied.done.${wname}")"
+            if [ "$marker" = "$best" ]; then
+                echo -e "   ${Fgreen}Оставлена применённая стратегия ${best}${plain} (воркер успел завершиться до прерывания)."
+            else
+                echo -e "   Кандидат был ${best} — не применён (прогон прерван)."
+            fi
         else
             echo -e "   ${red}Рабочих стратегий не найдено.${plain}"
         fi
     done
 
     # rkn report: winner applied to profile 3, per-domain shown read-only
-    local cover totald warn_winner warn_cover ref_dom yt_greens corr
-    cover="$(_supersweep_kv_read "${dir}/best.rkn" winner_cover)"
+    local cover totald warn_cover ref_dom yt_greens corr
     totald=0
     for d in $domains; do totald=$((totald + 1)); done
+    ref_dom="${domains%% *}"
+    cover="$(_supersweep_kv_read "${dir}/best.rkn" winner_cover)"
     warn_winner="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner)"
     warn_cover="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner_cover)"
-    ref_dom="$(_supersweep_kv_read "${dir}/best.rkn" reference)"
-    [ -n "$ref_dom" ] || ref_dom="эталон"
+    if [ -n "$rkn_fallback_line" ]; then
+        [ -n "$cover" ] || cover="$(printf '%s' "$rkn_fallback_line" | cut -f2)"
+        [ -n "$warn_winner" ] || warn_winner="$(printf '%s' "$rkn_fallback_line" | cut -f4)"
+        [ -n "$warn_cover" ] || warn_cover="$(printf '%s' "$rkn_fallback_line" | cut -f5)"
+    fi
     echo -e " РКН (профиль 3, доменов в прогоне: ${totald}):"
     echo -e "   Щадящий режим: сначала эталон ${green}${ref_dom}${plain} по всем стратегиям, остальные домены — только стратегиями, которые пробили эталон."
     if [ -n "$winner" ]; then
@@ -789,16 +937,33 @@ supersweep_run() {
             | sort -k2,2nr -k1,1n | head -10 \
             | while read -r s cnt; do printf '     стратегия %s: %s\n' "$s" "$cnt"; done
         if [ "$cancelled" != 1 ]; then
-            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
-            if profile_state_set_and_apply 3 tls "$winner" "$cfg"; then
-                echo -e "   ${Fgreen}Применена стратегия ${winner} для профиля 3${plain} (покрывает ${cover}/${totald} доменов)"
-                applied_any=1
-                profile_strategy_restart_if_needed 3 "$cfg" "$old_udp_ports"
-            else
-                echo -e "   ${red}Не удалось сохранить стратегию ${winner} для профиля 3.${plain}"
-            fi
+            marker=""; [ -f "${dir}/applied.done.rkn" ] && marker="$(cat "${dir}/applied.done.rkn}")"
+            case "$marker" in
+                "$winner")
+                    echo -e "   ${Fgreen}Применена стратегия ${winner} для профиля 3${plain} (покрывает ${cover}/${totald} доменов) — сразу по завершении РКН-воркера"
+                    ;;
+                error)
+                    echo -e "   ${red}Не удалось применить стратегию ${winner} для профиля 3.${plain}"
+                    ;;
+                *)
+                    # worker crashed before settling: apply now as a fallback
+                    old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+                    if profile_state_set_and_apply 3 tls "$winner" "$cfg"; then
+                        echo -e "   ${Fgreen}Применена стратегия ${winner} для профиля 3${plain} (покрывает ${cover}/${totald} доменов)"
+                        applied_any=1
+                        profile_strategy_restart_if_needed 3 "$cfg" "$old_udp_ports"
+                    else
+                        echo -e "   ${red}Не удалось сохранить стратегию ${winner} для профиля 3.${plain}"
+                    fi
+                    ;;
+            esac
         else
-            echo -e "   Кандидат был ${winner} (${cover}/${totald}) — не применён (прогон прерван)."
+            marker=""; [ -f "${dir}/applied.done.rkn" ] && marker="$(cat "${dir}/applied.done.rkn}")"
+            if [ "$marker" = "$winner" ]; then
+                echo -e "   ${Fgreen}Оставлена применённая стратегия ${winner}${plain} (воркер успел завершиться до прерывания)."
+            else
+                echo -e "   Кандидат был ${winner} (${cover}/${totald}) — не применён (прогон прерван)."
+            fi
         fi
         echo -e "   Точечные локи доменов (зафиксировать можно в п.6 или пер-доменным автопроном):"
         awk -F'\t' '$4=="ok" {
