@@ -398,15 +398,18 @@ _supersweep_status_write() {
     } > "${dir}/status.tmp.$$" && mv -f "${dir}/status.tmp.$$" "${dir}/status"
 }
 
-# create the results tgz. plain "tar" can resolve to busybox tar without
-# create mode (entware quirk: /opt/usr/bin/tar shadows the installed GNU
-# tar in /opt/bin), so walk the candidates: explicit override first (also
-# used by smoke tests), then PATH tar, then known GNU tar locations
+# create the results archive the same way backup_create_core does: plain
+# uncompressed tar over a stable stage dir (results are final when this
+# runs). plain "tar" can still resolve to busybox tar without create mode
+# in non-login contexts (entware: /opt/usr/bin/tar shadows the GNU one in
+# /opt/bin; login shells and the interactive menu get GNU first), so walk
+# the candidates: explicit override first (also used by smoke tests), then
+# PATH tar, then known GNU tar locations
 _supersweep_tar_create() {
     local tgz="$1" dir="$2" t
     for t in "${Z2R_SUPERSWEEP_TAR:-}" tar /opt/bin/tar /opt/libexec/tar-gnu; do
         [ -n "$t" ] || continue
-        "$t" -czf "$tgz" -C "$dir" . >/dev/null 2>&1 && [ -s "$tgz" ] && return 0
+        "$t" -cf "$tgz" -C "$dir" . >/dev/null 2>&1 && [ -s "$tgz" ] && return 0
         rm -f "$tgz"
     done
     return 1
@@ -418,10 +421,11 @@ supersweep_results_archive() {
     local dir="$Z2R_SUPERSWEEP_DIR" arc tgz sent="no"
     [ -d "$dir" ] || return 1
     mkdir -p "$Z2R_SUPERSWEEP_ARCHIVE_DIR" 2>/dev/null || return 1
-    tgz="${Z2R_SUPERSWEEP_ARCHIVE_DIR}/supersweep-$(date +%Y%m%d-%H%M%S).tgz"
+    tgz="${Z2R_SUPERSWEEP_ARCHIVE_DIR}/supersweep-$(date +%Y%m%d-%H%M%S).tar"
     _supersweep_tar_create "$tgz" "$dir" || return 1
-    # rotate: keep the newest $Z2R_SUPERSWEEP_ARCHIVE_KEEP archives
-    ls -1t "${Z2R_SUPERSWEEP_ARCHIVE_DIR}"/supersweep-*.tgz 2>/dev/null \
+    # rotate: keep the newest $Z2R_SUPERSWEEP_ARCHIVE_KEEP archives (any
+    # extension — .tgz from older builds rotates out too)
+    ls -1t "${Z2R_SUPERSWEEP_ARCHIVE_DIR}"/supersweep-* 2>/dev/null \
         | tail -n +$((Z2R_SUPERSWEEP_ARCHIVE_KEEP + 1)) \
         | while IFS= read -r arc; do rm -f "$arc"; done
     if [ -n "$Z2R_SUPERSWEEP_STATS_URL" ]; then

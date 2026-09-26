@@ -194,11 +194,11 @@ grep -q 'медуза\|meduza.io' <<<"$out" || fail "сценарий 1: в от
 grep -q 'Зелёные\|Рабочие' <<<"$out" || fail "сценарий 1: в отчёте нет списков рабочих стратегий"
 
 # архив результатов (с prev.tsv внутри) появился
-archives="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz 2>/dev/null || true)"
+archives="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar 2>/dev/null || true)"
 [ -n "$archives" ] || fail "сценарий 1: архив результатов не создан"
 tgz="$(printf '%s\n' "$archives" | head -n1)"
 # список во временный файл: grep -q в трубе роняет tar по SIGPIPE (pipefail)
-tar -tzf "$tgz" > "$TMP_DIR/tarlist.txt" 2>/dev/null || fail "сценарий 1: архив не читается"
+tar -tf "$tgz" > "$TMP_DIR/tarlist.txt" 2>/dev/null || fail "сценарий 1: архив не читается"
 grep -q 'prev.tsv' "$TMP_DIR/tarlist.txt" || fail "сценарий 1: в архиве нет prev.tsv"
 grep -q 'coverage.tsv' "$TMP_DIR/tarlist.txt" || fail "сценарий 1: в архиве нет coverage.tsv"
 
@@ -239,16 +239,16 @@ wait "$RUN_PID" || rc=$?
 grep -q '^state=cancelled$' "$Z2R_SUPERSWEEP_DIR/status" || fail "сценарий 2: state != cancelled"
 grep -q 'откатлены\|возвращаю прежние' "$TMP_DIR/cancel.log" || fail "сценарий 2: нет сообщения об откате"
 # архив собирается и для отменённого прогона («что собралось и откатилось»)
-new_archives="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz 2>/dev/null | wc -l)"
+new_archives="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar 2>/dev/null | wc -l)"
 [ "$new_archives" -ge 2 ] || fail "сценарий 2: архив отменённого прогона не создан"
 
 # ротация архивов: KEEP=3, наделаем пустышек и проверим уборку
 for i in 1 2 3 4; do
-  : > "$Z2R_SUPERSWEEP_ARCHIVE_DIR/supersweep-2000010${i}-000000.tgz"
+  : > "$Z2R_SUPERSWEEP_ARCHIVE_DIR/supersweep-2000010${i}-000000.tar"
 done
-ls -1t "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz >/dev/null 2>&1
+ls -1t "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar >/dev/null 2>&1
 supersweep_results_archive >/dev/null || fail "сценарий 2: архиватор упал"
-[ "$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz | wc -l)" = 3 ] \
+[ "$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar | wc -l)" = 3 ] \
   || fail "сценарий 2: ротация архивов не держит лимит KEEP=3"
 
 # == 4. архив: PATH-tar без create (busybox) -> fallback на явный tar ==
@@ -264,30 +264,53 @@ echo "tar: invalid option -- 'c'" >&2
 exit 1
 TARMOCK
 chmod +x "$TMP_DIR/bin2/tar"
-before="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz 2>/dev/null | wc -l)"
+before="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar 2>/dev/null | wc -l)"
 # имя архива с точностью до секунды: гарантируем новое, а не перезапись
 sleep 1.1 2>/dev/null || sleep 2
 fb_out="$(PATH="$TMP_DIR/bin2:$PATH" Z2R_SUPERSWEEP_TAR="$REAL_TAR" supersweep_results_archive)" \
   || fail "сценарий 4: fallback-цепочка tar не сработала"
 fb_tgz="$(printf '%s' "$fb_out" | cut -f1)"
 [ -n "$fb_tgz" ] && [ -f "$fb_tgz" ] || fail "сценарий 4: fallback-архив не создан"
-after="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz 2>/dev/null | wc -l)"
+after="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar 2>/dev/null | wc -l)"
 [ "$after" = "$((before + 1))" ] || fail "сценарий 4: архив через fallback не добавлен (${before} -> ${after})"
-tar -tzf "$fb_tgz" > "$TMP_DIR/tarlist2.txt" 2>/dev/null || fail "сценарий 4: fallback-архив не читается"
+tar -tf "$fb_tgz" > "$TMP_DIR/tarlist2.txt" 2>/dev/null || fail "сценарий 4: fallback-архив не читается"
 # прогон перед этим был отменён рано: coverage мог не успеть появиться,
 # поэтому сверяем гарантированно существующие файлы прогона
 grep -q 'status' "$TMP_DIR/tarlist2.txt" || fail "сценарий 4: в fallback-архиве нет status"
 grep -q 'progress.yt.tsv' "$TMP_DIR/tarlist2.txt" || fail "сценарий 4: в fallback-архиве нет progress.yt.tsv"
 
-# == 5. диалог своих доменов: нормализация + добавление в TCP_Custom ==
+# == 5. свежий архив результатов едет в регулярном бэкапе ==
+# z2r_backup_state_files (lib/actions.sh) добавляет самый новый supersweep-*.tar
+# к списку файлов бэкапа рядом с locked.tsv; проверяем на извлечённой функции
+# (как webui_smoke гоняет функции z2r.sh) — без /opt и без всего actions.sh
+eval "$(sed -n '/^z2r_backup_state_files()/,/^}/p' "$REPO_DIR/lib/actions.sh")" \
+  || fail "сценарий 5: не удалось извлечь z2r_backup_state_files"
+ss_arc_dir="$ZATOR_ROOT/extra_strats/cache/orchestra/supersweep"
+mkdir -p "$ss_arc_dir"
+: > "$ss_arc_dir/supersweep-20000101-000000.tar"
+touch -t 202001010000 "$ss_arc_dir/supersweep-20000101-000000.tar"
+: > "$ss_arc_dir/supersweep-20000202-020202.tar"
+touch -t 202002020202 "$ss_arc_dir/supersweep-20000202-020202.tar"
+bl="$(z2r_backup_state_files)"
+grep -q '^extra_strats/cache/orchestra/locked.tsv$' <<<"$bl" || fail "сценарий 5: в списке бэкапа нет locked.tsv"
+grep -q '^extra_strats/cache/orchestra/supersweep/supersweep-20000202-020202\.tar$' <<<"$bl" \
+  || fail "сценарий 5: свежий supersweep-архив не попал в список бэкапа"
+[ "$(grep -c 'supersweep/' <<<"$bl")" = 1 ] \
+  || fail "сценарий 5: в списке бэкапа больше одного supersweep-архива (нужен только последний)"
+# без архивов список не меняется
+rm -rf "$ss_arc_dir"
+bl2="$(z2r_backup_state_files)"
+[ "$(grep -c 'supersweep' <<<"$bl2")" = 0 ] || fail "сценарий 5: без архивов supersweep-строки быть не должно"
+
+# == 6. диалог своих доменов: нормализация + добавление в TCP_Custom ==
 
 rm -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
 sel="$(printf 'mydom.ru https://bad domain-name.example\n' | supersweep_ask_own_domains "meduza.io")" || \
-  fail "сценарий 3: ask_own_domains упал"
-grep -q 'meduza.io' <<<"$sel" || fail "сценарий 3: потерян исходный домен"
-grep -q 'mydom.ru' <<<"$sel" || fail "сценарий 3: свой домен не добавлен в выбор"
-grep -q 'domain-name.example' <<<"$sel" || fail "сценарий 3: домен с дефисами не принят"
+  fail "сценарий 6: ask_own_domains упал"
+grep -q 'meduza.io' <<<"$sel" || fail "сценарий 6: потерян исходный домен"
+grep -q 'mydom.ru' <<<"$sel" || fail "сценарий 6: свой домен не добавлен в выбор"
+grep -q 'domain-name.example' <<<"$sel" || fail "сценарий 6: домен с дефисами не принят"
 [ "$(grep -c 'domain-name.example' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt")" = 1 ] \
-  || fail "сценарий 3: домен не записан в TCP_Custom.txt ровно один раз"
+  || fail "сценарий 6: домен не записан в TCP_Custom.txt ровно один раз"
 
 echo "supersweep smoke ok"

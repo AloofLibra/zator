@@ -1024,6 +1024,13 @@ extra_strats/cache/orchestra/locked.manual.tsv
 extra_strats/cache/orchestra/auto_locked.tsv
 extra_strats/cache/orchestra/blob_override.tsv
 EOF
+  # самый свежий архив результатов суперавтопрогона едет в бэкапе вместе с
+  # locked.tsv (только последний — историю ротация хранит в cache/supersweep)
+  local ss_dir ss_newest
+  ss_dir="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/orchestra/supersweep"
+  ss_newest="$(ls -1t "$ss_dir"/supersweep-*.tar 2>/dev/null | head -n1)"
+  [ -n "$ss_newest" ] && printf 'extra_strats/cache/orchestra/supersweep/%s\n' "$(basename "$ss_newest")"
+  return 0
 }
 
 backup_build_list_file() {
