@@ -305,12 +305,35 @@ bl2="$(z2r_backup_state_files)"
 # == 6. диалог своих доменов: нормализация + добавление в TCP_Custom ==
 
 rm -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
-sel="$(printf 'mydom.ru https://bad domain-name.example\n' | supersweep_ask_own_domains "meduza.io")" || \
+sel="$(printf 'mydom.ru https://bad domain-name.example\n' | supersweep_ask_own_domains "meduza.io" 2>/dev/null)" || \
   fail "сценарий 6: ask_own_domains упал"
-grep -q 'meduza.io' <<<"$sel" || fail "сценарий 6: потерян исходный домен"
-grep -q 'mydom.ru' <<<"$sel" || fail "сценарий 6: свой домен не добавлен в выбор"
-grep -q 'domain-name.example' <<<"$sel" || fail "сценарий 6: домен с дефисами не принят"
+[ "$sel" = "meduza.io mydom.ru domain-name.example" ] \
+  || fail "сценарий 6: stdout диалога обязан нести ТОЛЬКО домены, получено: [$sel]"
 [ "$(grep -c 'domain-name.example' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt")" = 1 ] \
   || fail "сценарий 6: домен не записан в TCP_Custom.txt ровно один раз"
+[ "$(grep -c '^bad$\|^mydom.ru$' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt")" = 1 ] \
+  || fail "сценарий 6: в TCP_Custom должен попасть только mydom.ru, а не bad"
+
+# == 7. контракт диалогов: stdout несёт ТОЛЬКО ответ, весь текст — в stderr ==
+# регрессия: заголовок «Домены РКН для карты покрытий» однажды попадал в
+# захваченный stdout и превращался в «домены» прогона (Invalid lock profile)
+
+d_all="$(printf '\n' | supersweep_ask_domains 2>/dev/null)" || fail "сценарий 7: ask_domains упал"
+[ "$d_all" = "meduza.io xhamster.com rutracker.org amnezia.org anidub.com turbobit.net www.chess.com" ] \
+  || fail "сценарий 7: Enter должен вернуть ровно 7 базовых доменов, получено: [$d_all]"
+d_sub="$(printf '1 3\n' | supersweep_ask_domains 2>/dev/null)" || fail "сценарий 7: ask_domains (1 3) упал"
+[ "$d_sub" = "meduza.io rutracker.org" ] \
+  || fail "сценарий 7: выбор 1 3 должен вернуть meduza.io rutracker.org, получено: [$d_sub]"
+d_zero_rc=0
+printf '0\n' | supersweep_ask_domains >/dev/null 2>&1 || d_zero_rc=$?
+[ "$d_zero_rc" != 0 ] || fail "сценарий 7: 0 должен отменять выбор доменов"
+
+# санитайзер движка: мусор отбрасывается с предупреждением, дублики схлопываются
+san="$(supersweep_sanitize_domains 'Домены meduza.io РКН https://xhamster.com/x 1. meduza.io' 2>/dev/null)" \
+  || fail "сценарий 7: sanitize упал"
+[ "$san" = "meduza.io xhamster.com" ] \
+  || fail "сценарий 7: санитайзер должен оставить meduza.io xhamster.com, получено: [$san]"
+san_warn="$(supersweep_sanitize_domains 'Домены meduza.io' 2>&1 >/dev/null)"
+printf '%s' "$san_warn" | grep -q 'Отброшены' || fail "сценарий 7: нет предупреждения об отброшенном мусоре"
 
 echo "supersweep smoke ok"

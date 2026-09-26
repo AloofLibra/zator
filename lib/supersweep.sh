@@ -439,6 +439,37 @@ supersweep_results_archive() {
     return 0
 }
 
+# a real probe hostname: at least one dot and one letter — tokens like "1"
+# or "bad" survive z2r_normalize_domain but are not hostnames
+_supersweep_domain_valid() {
+    case "$1" in
+        *.*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[a-z]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# normalize + dedupe the domain list; garbage tokens (dialog text, typos,
+# anything z2r_normalize_domain rejects) are dropped with a warning —
+# protects the engine from bad input on any surface (CLI capture, webui)
+supersweep_sanitize_domains() {
+    local dom clean out="" dropped=0
+    for dom in $1; do
+        clean="$(z2r_normalize_domain "$dom" 2>/dev/null)" || clean=""
+        if [ -n "$clean" ] && _supersweep_domain_valid "$clean"; then
+            case " $out " in *" $clean "*) ;; *) out="${out}${out:+ }${clean}" ;; esac
+        else
+            [ "$dropped" = 0 ] && echo -e "${yellow}Отброшены некорректные домены:${plain}" >&2
+            echo -e "  ${dom}" >&2
+            dropped=$((dropped + 1))
+        fi
+    done
+    printf '%s\n' "$out"
+}
+
 # core engine, no interactive input (menu wrapper asks the questions):
 #   supersweep_run <tls_pref> <pause_sec> <rkn_par> <domain...>
 # returns 0 when results were applied, 1 when cancelled/restored.
@@ -455,6 +486,13 @@ supersweep_run() {
     [ "$rkn_par" -ge 1 ] 2>/dev/null || rkn_par=1
     case "$tls_pref" in 12|13|both) ;; *) tls_pref="any" ;; esac
     case "${Z2R_SUPERSWEEP_SETTLE:-2}" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
+
+    # dialog leftovers / typos / webui input must not reach the workers
+    domains="$(supersweep_sanitize_domains "$domains")"
+    [ -n "$domains" ] || {
+        echo -e "${red}После проверки не осталось ни одного корректного домена РКН.${plain}"
+        return 1
+    }
 
     cfg="$(get_config_file)" || cfg=""
     max1="$(config_profile_max_strategy 1 "$cfg")"
@@ -733,18 +771,23 @@ _supersweep_count_list() {
 
 # --- menu dialog -----------------------------------------------------------
 
+# dialog helpers contract (same as orch_ask_sweep_pause/orch_ask_sweep_tls_pref):
+# ALL explanation text goes to stderr, stdout carries ONLY the answer —
+# callers capture stdout and feed it straight into the engine.
+
 supersweep_ask_domains() {
     # prints the selected space-separated domain list (empty = cancel)
     local defaults="$Z2R_SUPERSWEEP_RKN_DOMAINS"
-    local d i pick answer dom selected=""
-    echo -e "${cyan}--- Домены РКН для карты покрытий ---${plain}"
-    echo ""
+    local d i pick dom selected="" total=0
+    echo -e "${cyan}--- Домены РКН для карты покрытий ---" >&2
+    echo -e "Базовый набор сообщества; Enter — проверяются все.${plain}" >&2
+    echo "" >&2
     i=1
     for d in $defaults; do
-        echo -e "  ${Fcyan}${i}.${plain} ${green}${d}${plain}"
+        echo -e "  ${Fcyan}${i}.${plain} ${green}${d}${plain}" >&2
         i=$((i + 1))
     done
-    echo ""
+    echo "" >&2
     read -re -p "Номера через пробел (Enter - все, 0 - отмена): " pick
     [ "$pick" = "0" ] && return 1
     if [ -z "$pick" ] || [ "$pick" = "a" ] || [ "$pick" = "A" ] || [ "$pick" = "а" ] || [ "$pick" = "А" ]; then
@@ -757,17 +800,19 @@ supersweep_ask_domains() {
         i=$((i + 1))
     done
     if [ -z "$selected" ]; then
-        echo -e "${yellow}Не выбран ни один домен — берём весь список.${plain}"
+        echo -e "${yellow}Не выбран ни один домен — берём весь список.${plain}" >&2
         printf '%s\n' "$defaults"
         return 0
     fi
+    for d in $selected; do total=$((total + 1)); done
+    echo -e "Из базового набора выбрано ${green}${total}${plain}: ${green}${selected}${plain}" >&2
     printf '%s\n' "$selected"
 }
 
 supersweep_ask_own_domains() {
     # $1 = current selection (space separated); appends user domains,
     # adding unknown ones to TCP_Custom.txt so profile 3 picks them up
-    local selected="$1" raw dom clean added=0 skipped=0
+    local selected="$1" raw dom clean added=0 skipped=0 total=0
     read -re -p "Свои домены через пробел (Enter - пропустить): " raw
     [ -z "$raw" ] && { printf '%s\n' "$selected"; return 0; }
     raw="$(printf '%s' "$raw" | tr ',' ' ')"
@@ -775,8 +820,8 @@ supersweep_ask_own_domains() {
     rkn_list="${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_RKN_list.txt"
     custom_file="$(custom_rkn_file)"
     for dom in $raw; do
-        if ! clean="$(z2r_normalize_domain "$dom")"; then
-            echo -e "${yellow}Не распознан домен: ${dom} — пропущен.${plain}"
+        if ! clean="$(z2r_normalize_domain "$dom")" || ! _supersweep_domain_valid "$clean"; then
+            echo -e "${yellow}Не распознан домен: ${dom} — пропущен.${plain}" >&2
             skipped=$((skipped + 1))
             continue
         fi
@@ -787,11 +832,14 @@ supersweep_ask_own_domains() {
             :
         else
             domain_list_add "$custom_file" "$clean" "TCP_Custom" "Домен" 1
-            echo -e "${green}Домен ${clean} добавлен в TCP_Custom (обрабатывается профилем 3).${plain}"
+            echo -e "${green}Домен ${clean} добавлен в TCP_Custom (обрабатывается профилем 3).${plain}" >&2
             added=$((added + 1))
         fi
     done
-    [ "$skipped" -gt 0 ] && echo -e "${yellow}Пропущено нераспознанных: ${skipped}.${plain}"
+    [ "$skipped" -gt 0 ] && echo -e "${yellow}Пропущено нераспознанных: ${skipped}.${plain}" >&2
+    for dom in $selected; do total=$((total + 1)); done
+    echo -e "Всего доменов РКН в прогоне: ${green}${total}${plain}" >&2
+    echo -e "${green}${selected}${plain}" >&2
     printf '%s\n' "$selected"
 }
 
@@ -823,11 +871,15 @@ supersweep_ask_pause() {
 }
 
 supersweep_ask_rkn_par() {
-    # how many RKN domains to probe simultaneously
+    # how many RKN domains to probe simultaneously per batch; every selected
+    # domain is still checked each round — this only sets the batch size
     local par ndom=0 d
     for d in $1; do ndom=$((ndom + 1)); done
+    echo -e "Все выбранные домены проверяются на каждой стратегии — пакет лишь" >&2
+    echo -e "задаёт, сколько проверок идёт одновременно (больше = быстрее, но" >&2
+    echo -e "выше нагрузка на роутер и шумнее замеры скорости)." >&2
     while true; do
-        read -re -p "Доменов РКН проверять одновременно, 1-${ndom} (Enter - ${Z2R_SUPERSWEEP_RKN_PAR_DEFAULT}): " par || par=""
+        read -re -p "Доменов в одном пакете, 1-${ndom} (Enter - ${Z2R_SUPERSWEEP_RKN_PAR_DEFAULT}): " par || par=""
         [ -n "$par" ] || par="$Z2R_SUPERSWEEP_RKN_PAR_DEFAULT"
         case "$par" in
             0) return 1 ;;
@@ -868,6 +920,8 @@ supersweep_menu() {
     echo "(профиль 2) и Discord (профиль 4) параллельно + полная карта покрытий"
     echo "доменов РКН (профиль 3). Лучшие стратегии применяются автоматически,"
     echo "персональные локи доменов РКН только показываются."
+    echo "Базовый набор РКН — список сообщества (meduza.io, rutracker.org,"
+    echo "xhamster.com и др.); свои домены к нему только добавляются."
     echo ""
 
     domains="$(supersweep_ask_domains)" || { echo "Отмена."; return 0; }
@@ -895,6 +949,10 @@ supersweep_menu() {
     estr=$(( max1 * (Z2R_SUPERSWEEP_SETTLE + batches * 6 + pause) ))
     [ "$estr" -gt "$est" ] && est=$estr
 
+    echo ""
+    echo -e "Домены РКН в прогоне (${ndom}):"
+    echo -e "${green}$(printf '%s\n' $domains | tr '\n' ' ' | sed 's/ $//')${plain}"
+    echo -e "На каждой стратегии проверяются все ${ndom}; пакетами по ${par} ($(( (ndom + par - 1) / par )) пакета на стратегию)."
     echo ""
     echo -e "Прогон займёт ориентировочно до $(( (est + 59) / 60 )) мин. Во время прогона"
     echo -e "интернет может подтормаживать (стратегии переключаются на лету)."
