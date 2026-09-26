@@ -251,7 +251,35 @@ supersweep_results_archive >/dev/null || fail "сценарий 2: архива�
 [ "$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz | wc -l)" = 3 ] \
   || fail "сценарий 2: ротация архивов не держит лимит KEEP=3"
 
-# == 3. диалог своих доменов: нормализация + добавление в TCP_Custom ==
+# == 4. архив: PATH-tar без create (busybox) -> fallback на явный tar ==
+
+# лимит поднят: ротация не должна съедать сам проверяемый архив
+export Z2R_SUPERSWEEP_ARCHIVE_KEEP=10
+REAL_TAR="$(command -v tar)"
+mkdir -p "$TMP_DIR/bin2"
+cat > "$TMP_DIR/bin2/tar" <<'TARMOCK'
+#!/bin/sh
+# fake busybox tar: create mode is not compiled in
+echo "tar: invalid option -- 'c'" >&2
+exit 1
+TARMOCK
+chmod +x "$TMP_DIR/bin2/tar"
+before="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz 2>/dev/null | wc -l)"
+# имя архива с точностью до секунды: гарантируем новое, а не перезапись
+sleep 1.1 2>/dev/null || sleep 2
+fb_out="$(PATH="$TMP_DIR/bin2:$PATH" Z2R_SUPERSWEEP_TAR="$REAL_TAR" supersweep_results_archive)" \
+  || fail "сценарий 4: fallback-цепочка tar не сработала"
+fb_tgz="$(printf '%s' "$fb_out" | cut -f1)"
+[ -n "$fb_tgz" ] && [ -f "$fb_tgz" ] || fail "сценарий 4: fallback-архив не создан"
+after="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tgz 2>/dev/null | wc -l)"
+[ "$after" = "$((before + 1))" ] || fail "сценарий 4: архив через fallback не добавлен (${before} -> ${after})"
+tar -tzf "$fb_tgz" > "$TMP_DIR/tarlist2.txt" 2>/dev/null || fail "сценарий 4: fallback-архив не читается"
+# прогон перед этим был отменён рано: coverage мог не успеть появиться,
+# поэтому сверяем гарантированно существующие файлы прогона
+grep -q 'status' "$TMP_DIR/tarlist2.txt" || fail "сценарий 4: в fallback-архиве нет status"
+grep -q 'progress.yt.tsv' "$TMP_DIR/tarlist2.txt" || fail "сценарий 4: в fallback-архиве нет progress.yt.tsv"
+
+# == 5. диалог своих доменов: нормализация + добавление в TCP_Custom ==
 
 rm -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
 sel="$(printf 'mydom.ru https://bad domain-name.example\n' | supersweep_ask_own_domains "meduza.io")" || \

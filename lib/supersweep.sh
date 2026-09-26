@@ -398,6 +398,20 @@ _supersweep_status_write() {
     } > "${dir}/status.tmp.$$" && mv -f "${dir}/status.tmp.$$" "${dir}/status"
 }
 
+# create the results tgz. plain "tar" can resolve to busybox tar without
+# create mode (entware quirk: /opt/usr/bin/tar shadows the installed GNU
+# tar in /opt/bin), so walk the candidates: explicit override first (also
+# used by smoke tests), then PATH tar, then known GNU tar locations
+_supersweep_tar_create() {
+    local tgz="$1" dir="$2" t
+    for t in "${Z2R_SUPERSWEEP_TAR:-}" tar /opt/bin/tar /opt/libexec/tar-gnu; do
+        [ -n "$t" ] || continue
+        "$t" -czf "$tgz" -C "$dir" . >/dev/null 2>&1 && [ -s "$tgz" ] && return 0
+        rm -f "$tgz"
+    done
+    return 1
+}
+
 # archive everything the sweep collected (including the rolled-back previous
 # locks from prev.tsv) and push it to the stats endpoint when configured
 supersweep_results_archive() {
@@ -405,7 +419,7 @@ supersweep_results_archive() {
     [ -d "$dir" ] || return 1
     mkdir -p "$Z2R_SUPERSWEEP_ARCHIVE_DIR" 2>/dev/null || return 1
     tgz="${Z2R_SUPERSWEEP_ARCHIVE_DIR}/supersweep-$(date +%Y%m%d-%H%M%S).tgz"
-    tar -czf "$tgz" -C "$dir" . 2>/dev/null || { rm -f "$tgz"; return 1; }
+    _supersweep_tar_create "$tgz" "$dir" || return 1
     # rotate: keep the newest $Z2R_SUPERSWEEP_ARCHIVE_KEEP archives
     ls -1t "${Z2R_SUPERSWEEP_ARCHIVE_DIR}"/supersweep-*.tgz 2>/dev/null \
         | tail -n +$((Z2R_SUPERSWEEP_ARCHIVE_KEEP + 1)) \
