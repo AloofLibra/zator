@@ -242,7 +242,40 @@ _supersweep_worker_profile() {
     : > "${dir}/done.${name}"
 }
 
-# --- rkn worker: strategy-major matrix over the probe domains -------------
+# --- rkn worker: gentle two-stage matrix -----------------------------------
+# stage 1 probes only the reference domain (first of the list, meduza.io by
+# default) across all strategies; stage 2 re-probes the remaining domains
+# with the strategies that cracked the reference only. Request volume drops
+# from strategies x domains to strategies + |passed| x (domains-1), which is
+# much easier on the tspu rate heuristics. Stage-2 candidates are ordered by
+# the youtube worker results when available: a strategy green on youtube
+# tends to crack other hosts too, youtube failures go last.
+
+_supersweep_rkn_record() {
+    # $1 domain, $2 strategy, $3 engine out (3 lines), $4 tls_pref
+    # prints the console line to stderr and the verdict token (ok|warn|fail)
+    # on stdout — callers capture stdout, same contract as the ask_* dialogs
+    local d="$1" s="$2" out="$3" tls_pref="$4"
+    local v12 v13 dl short token dlsize dltime speed
+    v12="$(printf '%s\n' "$out" | sed -n 1p)"
+    v13="$(printf '%s\n' "$out" | sed -n 2p)"
+    dl="$(printf '%s\n' "$out" | sed -n 3p)"
+    short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+    token="${short%%|*}"; short="${short#*|}"
+    dlsize="-"; dltime="-"; speed=0
+    if [ "$dl" != "skip" ]; then
+        dlsize="$(z2r_tls_field "$dl" 3)"
+        dltime="$(z2r_tls_field "$dl" 4)"
+        speed="$(awk -v sz="$dlsize" -v t="$dltime" 'BEGIN{if (t ~ /^[0-9]+\.?[0-9]*$/ && t+0>0) printf "%.0f", sz/t; else print 0}')"
+    fi
+    case "$token" in ok|warn) ;; *) token="fail" ;; esac
+    _supersweep_print_line "RKN" "$d" "$s" "$token" "$v12" "$v13" "$short" >&2
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$d" "$s" "$token" "$dlsize" "$speed" \
+        >> "${Z2R_SUPERSWEEP_DIR}/coverage.tsv"
+    _supersweep_progress_row "$(date +%s)" "$d" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
+        >> "${Z2R_SUPERSWEEP_DIR}/progress.rkn.tsv"
+    printf '%s\n' "$token"
+}
 
 _supersweep_worker_rkn() {
     local name="$1" max="$2" par="$3" tls_pref="$4" pause_sec="$5"
@@ -250,80 +283,108 @@ _supersweep_worker_rkn() {
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tmpd="${dir}/wrkn"
-    local s d round=0 specs i j n out v12 v13 dl short token dlsize dltime speed
-    local pids pid2
+    local ref rest_domains s d round=0 specs token out
+    local pids pid2 n
     local ss_interrupted=0
     trap 'ss_interrupted=1' INT TERM
     set +e
     mkdir -p "$tmpd" 2>/dev/null
 
+    ref="${domains%% *}"
+    rest_domains=""
+    for d in $domains; do
+        [ "$d" = "$ref" ] || rest_domains="${rest_domains}${rest_domains:+ }${d}"
+    done
+
+    # stage 1: reference domain over all strategies
+    local passed=""
     for ((s=1; s<=max; s++)); do
         if [ "$ss_interrupted" = 1 ] || _supersweep_cancelled; then break; fi
         round=$((round + 1))
-        specs=""
-        for d in $domains; do
-            specs="${specs}domain|${d}|tls|${s}
-"
-        done
-        _supersweep_request_lock "$name" "$round" "$specs" || { ss_interrupted=1; break; }
+        _supersweep_request_lock "$name" "$round" "domain|${ref}|tls|${s}
+" || { ss_interrupted=1; break; }
         _supersweep_settle
-
-        # probe domains in batches of $par: per-domain locks are independent
-        # rows, same strategy this round, so parallel checks do not interfere
-        n=0
-        pids=""
-        for d in $domains; do
-            if [ $((n % par)) -eq 0 ] && [ "$n" -gt 0 ]; then
-                for pid2 in $pids; do wait "$pid2" 2>/dev/null || true; done
-                pids=""
-            fi
-            z2r_tls_check_target "https://${d}/" > "${tmpd}/r.${n}" 2>/dev/null </dev/null &
-            pids="${pids} $!"
-            n=$((n + 1))
-        done
-        # wait for explicit pids: bare wait spams on bash 5.3+ for reaped jobs
-        for pid2 in $pids; do wait "$pid2" 2>/dev/null || true; done
-        if [ "$ss_interrupted" = 1 ] || _supersweep_cancelled; then break; fi
-
-        n=0
-        for d in $domains; do
-            out="$(cat "${tmpd}/r.${n}" 2>/dev/null)"
-            n=$((n + 1))
-            [ -n "$out" ] || out="28|000|-|-|-
-28|000|-|-|-
-skip"
-            v12="$(printf '%s\n' "$out" | sed -n 1p)"
-            v13="$(printf '%s\n' "$out" | sed -n 2p)"
-            dl="$(printf '%s\n' "$out" | sed -n 3p)"
-            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-            token="${short%%|*}"; short="${short#*|}"
-            dlsize="-"; dltime="-"; speed=0
-            if [ "$dl" != "skip" ]; then
-                dlsize="$(z2r_tls_field "$dl" 3)"
-                dltime="$(z2r_tls_field "$dl" 4)"
-                speed="$(awk -v sz="$dlsize" -v t="$dltime" 'BEGIN{if (t ~ /^[0-9]+\.?[0-9]*$/ && t+0>0) printf "%.0f", sz/t; else print 0}')"
-            fi
-            case "$token" in ok|warn) ;; *) token="fail" ;; esac
-            _supersweep_print_line "RKN" "$d" "$s" "$token" "$v12" "$v13" "$short"
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$d" "$s" "$token" "$dlsize" "$speed" \
-                >> "${dir}/coverage.tsv"
-            _supersweep_progress_row "$(date +%s)" "$d" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
-                >> "${dir}/progress.${name}.tsv"
-        done
-
+        out="$(z2r_tls_check_target "https://${ref}/")"
+        token="$(_supersweep_rkn_record "$ref" "$s" "$out" "$tls_pref")"
+        case "$token" in ok|warn) passed="${passed}${passed:+ }${s}" ;; esac
         if [ "$s" -lt "$max" ] && [ "$pause_sec" -gt 0 ]; then
             sleep "$pause_sec"
         fi
     done
+
+    # stage 2: remaining domains, only strategies that cracked the reference;
+    # youtube-green strategies first (correlation hint), youtube failures last
+    local s2_list=""
+    if [ -n "$rest_domains" ] && [ -n "$passed" ]; then
+        s2_list="$(printf '%s\n' $passed | awk -v ytfile="${dir}/progress.yt.tsv" '
+            BEGIN {
+                while ((getline line < ytfile) > 0) {
+                    split(line, yf, "\t"); yt[yf[3]] = yf[4]
+                }
+                close(ytfile)
+            }
+            {
+                rank = 1
+                if (yt[$1] == "ok") rank = 0
+                else if (yt[$1] == "warn") rank = 1
+                else if (yt[$1] != "") rank = 2
+                printf "%d %d\n", rank, $1
+            }' 2>/dev/null | sort -k1,1n -k2,2n | awk '{printf "%s%s", sep, $2; sep = " "} END{printf "\n"}')"
+        for s in $s2_list; do
+            if [ "$ss_interrupted" = 1 ] || _supersweep_cancelled; then break; fi
+            round=$((round + 1))
+            specs=""
+            for d in $rest_domains; do
+                specs="${specs}domain|${d}|tls|${s}
+"
+            done
+            _supersweep_request_lock "$name" "$round" "$specs" || { ss_interrupted=1; break; }
+            _supersweep_settle
+
+            # probe domains in batches of $par: same strategy this round,
+            # per-domain locks are independent rows, so no interference
+            n=0
+            pids=""
+            for d in $rest_domains; do
+                if [ $((n % par)) -eq 0 ] && [ "$n" -gt 0 ]; then
+                    for pid2 in $pids; do wait "$pid2" 2>/dev/null || true; done
+                    pids=""
+                fi
+                z2r_tls_check_target "https://${d}/" > "${tmpd}/r.${n}" 2>/dev/null </dev/null &
+                pids="${pids} $!"
+                n=$((n + 1))
+            done
+            for pid2 in $pids; do wait "$pid2" 2>/dev/null || true; done
+            if [ "$ss_interrupted" = 1 ] || _supersweep_cancelled; then break; fi
+
+            n=0
+            for d in $rest_domains; do
+                out="$(cat "${tmpd}/r.${n}" 2>/dev/null)"
+                n=$((n + 1))
+                [ -n "$out" ] || out="28|000|-|-|-
+28|000|-|-|-
+skip"
+                _supersweep_rkn_record "$d" "$s" "$out" "$tls_pref" >/dev/null
+            done
+
+            if [ "$pause_sec" -gt 0 ]; then
+                sleep "$pause_sec"
+            fi
+        done
+    fi
     trap - INT TERM
 
-    # winner = strategy with the most green domains; ties broken by the sum
-    # of download speeds, then by the lower strategy number
+    # winner = strategy with the most green (ok) domains; ties broken by the
+    # sum of download speeds, then by the lower strategy number. warn_winner
+    # is the same metric over partial (single TLS version) results — it is
+    # reported but never auto-applied: an all-yellow run usually means the
+    # channel is degraded (tspu trigger), not that the strategy is good.
     local total=0
     for d in $domains; do total=$((total + 1)); done
     local winner_line
     winner_line="$(awk -F'\t' -v total="$total" '
-        $4 == "ok" { c[$3]++; sp[$3] += $6 }
+        $4 == "ok"   { c[$3]++; sp[$3] += $6 }
+        $4 == "warn" { w[$3]++; wsp[$3] += $6 }
         END {
             bs = ""; bc = 0; bsp = 0
             for (s in c) {
@@ -331,12 +392,21 @@ skip"
                     bs = s; bc = c[s]; bsp = sp[s]
                 }
             }
-            if (bs != "") print bs "\t" bc "\t" total
+            ws = ""; wc = 0; wspd = 0
+            for (s in w) {
+                if (w[s] > wc || (w[s] == wc && wsp[s] > wspd) || (w[s] == wc && wsp[s] == wspd && (ws == "" || s+0 < ws+0))) {
+                    ws = s; wc = w[s]; wspd = wsp[s]
+                }
+            }
+            print bs "\t" bc "\t" total "\t" ws "\t" wc
         }' "${dir}/coverage.tsv" 2>/dev/null)"
     {
         printf 'winner=%s\n' "$(printf '%s' "$winner_line" | cut -f1)"
         printf 'winner_cover=%s\n' "$(printf '%s' "$winner_line" | cut -f2)"
         printf 'winner_total=%s\n' "$(printf '%s' "$winner_line" | cut -f3)"
+        printf 'warn_winner=%s\n' "$(printf '%s' "$winner_line" | cut -f4)"
+        printf 'warn_winner_cover=%s\n' "$(printf '%s' "$winner_line" | cut -f5)"
+        printf 'reference=%s\n' "$ref"
         printf 'interrupted=%s\n' "$ss_interrupted"
     } > "${dir}/best.${name}"
     : > "${dir}/done.${name}"
@@ -540,16 +610,23 @@ supersweep_run() {
 
     local total_rkn=0
     for d in $domains; do total_rkn=$((total_rkn + 1)); done
-    local batches=$(( (total_rkn + rkn_par - 1) / rkn_par ))
+    local batches=$(( (total_rkn - 1 + rkn_par - 1) / rkn_par ))
+    [ "$batches" -lt 1 ] && batches=1
     local est1=$(( max1 * (Z2R_SUPERSWEEP_SETTLE + 6 + pause_sec) ))
     local est4=$(( max4 * (Z2R_SUPERSWEEP_SETTLE + 6 + pause_sec) ))
-    local estr=$(( max3 * (Z2R_SUPERSWEEP_SETTLE + batches * 6 + pause_sec) ))
+    # gentle rkn: full pass over the reference + ~30% of the rest (share of
+    # strategies that typically crack the reference)
+    local ref_full rest_full estr
+    ref_full=$(( max3 * (Z2R_SUPERSWEEP_SETTLE + 6 + pause_sec) ))
+    rest_full=$(( max3 * (Z2R_SUPERSWEEP_SETTLE + batches * 6 + pause_sec) ))
+    estr=$(( ref_full + rest_full * 30 / 100 ))
     local estmax=$est1
     [ "$est4" -gt "$estmax" ] && estmax=$est4
     [ "$estr" -gt "$estmax" ] && estmax=$estr
 
     echo -e "${cyan}Суперавтопрогон: профили 1 (YouTube), 2 (Googlevideo), 4 (Discord) параллельно + карта РКН по ${total_rkn} доменам (пакетами по ${rkn_par}).${plain}"
     echo -e "Стратегий: профиль 1 — ${max1}, профиль 2 — ${max2}, профиль 4 — ${max4}, РКН — ${max3}. Пауза ${pause_sec} сек, выдержка после лока ${Z2R_SUPERSWEEP_SETTLE} сек."
+    echo -e "РКН — щадящий двухэтапный прогон: сначала эталонный домен по всем стратегиям, остальные — только пробившими эталон."
     echo -e "Ориентировочно до $(( (estmax + 59) / 60 )) мин. Прогресс: ${dir}. Ctrl+C - прервать (прежние стратегии будут возвращены)."
     echo ""
 
@@ -696,10 +773,16 @@ supersweep_run() {
     done
 
     # rkn report: winner applied to profile 3, per-domain shown read-only
-    local cover totald
+    local cover totald warn_winner warn_cover ref_dom yt_greens corr
     cover="$(_supersweep_kv_read "${dir}/best.rkn" winner_cover)"
-    totald="$(_supersweep_kv_read "${dir}/best.rkn" winner_total)"
+    totald=0
+    for d in $domains; do totald=$((totald + 1)); done
+    warn_winner="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner)"
+    warn_cover="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner_cover)"
+    ref_dom="$(_supersweep_kv_read "${dir}/best.rkn" reference)"
+    [ -n "$ref_dom" ] || ref_dom="эталон"
     echo -e " РКН (профиль 3, доменов в прогоне: ${totald}):"
+    echo -e "   Щадящий режим: сначала эталон ${green}${ref_dom}${plain} по всем стратегиям, остальные домены — только стратегиями, которые пробили эталон."
     if [ -n "$winner" ]; then
         echo -e "   Покрытие по стратегиям (сколько доменов открыто):"
         awk -F'\t' '$4=="ok" {c[$3]++} END {for (s in c) print s, c[s]}' "${dir}/coverage.tsv" 2>/dev/null \
@@ -728,9 +811,25 @@ supersweep_run() {
             for (i = 0; i < n; i++) for (j = i+1; j < n; j++) if (keys[j] < keys[i]) { t = keys[i]; keys[i] = keys[j]; keys[j] = t }
             for (i = 0; i < n; i++) print "     " keys[i] ": стратегия " bs[keys[i]]
         }' "${dir}/coverage.tsv" 2>/dev/null
+    elif [ -n "$warn_winner" ]; then
+        echo -e "   ${red}Полностью зелёных стратегий нет.${plain} Частично открыты (одна версия TLS):"
+        awk -F'\t' '$4=="warn" {c[$3]++} END {for (s in c) print s, c[s]}' "${dir}/coverage.tsv" 2>/dev/null \
+            | sort -k2,2nr -k1,1n | head -5 \
+            | while read -r s cnt; do printf '     стратегия %s: %s домен(ов)\n' "$s" "$cnt"; done
+        echo -e "   Лучший частичный: стратегия ${yellow}${warn_winner}${plain} (${warn_cover}/${totald}) — ${yellow}не применён${plain}."
+        echo -e "   ${yellow}Сплошные жёлтые/красные результаты похожи на деградацию канала (возможно, сработала защита от частых переключений). Повторите прогон позже или с большей паузой.${plain}"
     else
-        echo -e "   ${red}Ни одна стратегия не открыла ни один домен РКН.${plain}"
+        echo -e "   ${red}Ни одна стратегия не открыла даже эталонный домен.${plain}"
     fi
+    # correlation hint: youtube-green strategies vs the reference passes
+    yt_greens="$(_supersweep_kv_read "${dir}/best.yt" greens)"
+    corr="$(awk -F'\t' -v ref="$ref_dom" -v g=" $yt_greens " '
+        $2 == ref && ($4 == "ok" || $4 == "warn") {
+            k++
+            if (index(g, " " $3 " ") > 0) m++
+        }
+        END { print (m+0) " " (k+0) }' "${dir}/coverage.tsv" 2>/dev/null)"
+    echo -e "   Корреляция с YouTube: из зелёных на YouTube стратегий эталон пробили ${corr%% *}; эталон пробит ${corr##* } стратегией(-ями)."
     echo "================================================"
 
     [ "$applied_any" = 1 ] && telemetry_notify
@@ -844,23 +943,23 @@ supersweep_ask_own_domains() {
 }
 
 supersweep_ask_pause() {
-    # same contract as orch_ask_sweep_pause, but the default is higher:
-    # the supersweep flips several locks in parallel, extra margin against
-    # tspu rate blocks is welcome
+    # same contract as orch_ask_sweep_pause, but the minimum is 15 seconds:
+    # the supersweep flips several locks in parallel and community feedback
+    # shows shorter pauses can trip the tspu rate heuristics
     local pause
     while true; do
-        read -re -p "Пауза между стратегиями. Минимум 3 сек (Enter - 5 сек, 0 - отмена): " pause || pause=""
+        read -re -p "Пауза между стратегиями. Минимум 15 сек, больше - щадяще для ТСПУ (Enter - 15 сек, 0 - отмена): " pause || pause=""
         if [ "$pause" = "0" ]; then
             return 0
         fi
-        [ -n "$pause" ] || pause=5
+        [ -n "$pause" ] || pause=15
         case "$pause" in
             *[!0-9]*)
-                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум 3).${plain}" >&2
+                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум 15).${plain}" >&2
                 ;;
             *)
-                if [ "$pause" -lt 3 ]; then
-                    echo -e "${yellow}Пауза не может быть меньше 3 секунд (введено ${pause}).${plain}" >&2
+                if [ "$pause" -lt 15 ]; then
+                    echo -e "${yellow}Пауза не может быть меньше 15 секунд (введено ${pause}).${plain}" >&2
                 else
                     echo "$pause"
                     return 0
@@ -917,11 +1016,14 @@ supersweep_menu() {
     clear -x
     echo -e "${cyan}--- Суперавтопрогон ---${plain}"
     echo "Одним запуском: подбор стратегий для YouTube (профиль 1), Googlevideo"
-    echo "(профиль 2) и Discord (профиль 4) параллельно + полная карта покрытий"
+    echo "(профиль 2) и Discord (профиль 4) параллельно + карта покрытий"
     echo "доменов РКН (профиль 3). Лучшие стратегии применяются автоматически,"
     echo "персональные локи доменов РКН только показываются."
     echo "Базовый набор РКН — список сообщества (meduza.io, rutracker.org,"
     echo "xhamster.com и др.); свои домены к нему только добавляются."
+    echo "РКН гоняется щадяще: сначала эталонный домен по всем стратегиям,"
+    echo "остальные — только стратегиями, пробившими эталон (меньше запросов,"
+    echo "ниже риск словить блок ТСПУ)."
     echo ""
 
     domains="$(supersweep_ask_domains)" || { echo "Отмена."; return 0; }
@@ -941,12 +1043,15 @@ supersweep_menu() {
 
     local ndom=0 d
     for d in $domains; do ndom=$((ndom + 1)); done
-    local max1 batches est
+    local max1 batches est estr ref_full rest_full
     max1="$(config_profile_max_strategy 1 "$cfg")"
     printf '%s' "$max1" | grep -Eq '^[1-9][0-9]*$' || max1=43
-    batches=$(( (ndom + par - 1) / par ))
+    batches=$(( (ndom - 1 + par - 1) / par ))
+    [ "$batches" -lt 1 ] && batches=1
     est=$(( max1 * (Z2R_SUPERSWEEP_SETTLE + 6 + pause) ))
-    estr=$(( max1 * (Z2R_SUPERSWEEP_SETTLE + batches * 6 + pause) ))
+    ref_full=$(( max1 * (Z2R_SUPERSWEEP_SETTLE + 6 + pause) ))
+    rest_full=$(( max1 * (Z2R_SUPERSWEEP_SETTLE + batches * 6 + pause) ))
+    estr=$(( ref_full + rest_full * 30 / 100 ))
     [ "$estr" -gt "$est" ] && est=$estr
 
     echo ""

@@ -34,6 +34,8 @@ for arg in "$@"; do
   [ "$arg" = "-I" ] && head=1
   case "$arg" in
     https://*) url="$arg" ;;
+    --tlsv1.3) ver=13 ;;
+    --tlsv1.2) ver=12 ;;
   esac
   prev="$arg"
 done
@@ -50,6 +52,7 @@ else
   strat="$(awk -F'\t' -v h="$host" '$1==h {if (NF>=3 && $2=="tls") print $3; else if (NF==2) print $2; exit}' "$ORCH_LOCK_FILE" 2>/dev/null)"
 fi
 ok=""
+tag=""
 if [ -n "$prof" ]; then
   eval "ok=\${MOCK_OK_P${prof}:-}"
 else
@@ -62,8 +65,18 @@ if [ -n "$strat" ]; then
     *" $strat "*) green=1 ;;
   esac
 fi
+# partial mode: tls 1.2 times out, tls 1.3 answers -> engine sees WARN
+half=0
+if [ -z "$prof" ] && [ -n "$tag" ]; then
+  eval "half=\${MOCK_HALF_${tag}:-0}"
+fi
 if [ "$head" = 1 ]; then
+  # partial mode: tls 1.2 times out even when the strategy is green
+  okhead=0
   if [ "$green" = 1 ]; then
+    if [ "$half" != 1 ] || [ "$ver" = 13 ]; then okhead=1; fi
+  fi
+  if [ "$okhead" = 1 ]; then
     [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"
     echo "0.800 192.0.2.10"
     exit 0
@@ -182,7 +195,12 @@ grep -q '^state=done$' "$Z2R_SUPERSWEEP_DIR/status" || fail "сценарий 1:
 [ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/progress.yt.tsv")" = 5 ] || fail "сценарий 1: progress.yt.tsv должен иметь 5 строк (по числу стратегий)"
 [ "$(awk -F'\t' 'NF!=9' "$Z2R_SUPERSWEEP_DIR/progress.yt.tsv" | wc -l)" = 0 ] \
   || fail "сценарий 1: строки progress.yt.tsv должны иметь 9 колонок"
-[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")" = 15 ] || fail "сценарий 1: coverage.tsv = 5 стратегий x 3 домена = 15 строк"
+# двухэтапный щадящий режим: полный проход только по эталону (meduza.io,
+# первый в списке), остальные домены — лишь стратегиями 1 и 2, пробившими
+# эталон: 5 строк эталона + 2 стратегии x 2 домена = 9 строк
+[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")" = 9 ] || fail "сценарий 1: coverage.tsv = 5 эталон + 4 этап-2 = 9 строк, а не $(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")"
+[ "$(awk -F'\t' '$2 != "meduza.io" && $3 > 2' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 0 ] \
+  || fail "сценарий 1: этап 2 не должен трогать домены мимо стратегий, пробивших эталон"
 grep -q '^winner=2$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 1: winner должен быть 2"
 grep -q '^winner_cover=3$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 1: winner_cover должен быть 3"
 grep -q '^winner_total=3$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 1: winner_total должен быть 3"
@@ -335,5 +353,39 @@ san="$(supersweep_sanitize_domains 'Домены meduza.io РКН https://xhamst
   || fail "сценарий 7: санитайзер должен оставить meduza.io xhamster.com, получено: [$san]"
 san_warn="$(supersweep_sanitize_domains 'Домены meduza.io' 2>&1 >/dev/null)"
 printf '%s' "$san_warn" | grep -q 'Отброшены' || fail "сценарий 7: нет предупреждения об отброшенном мусоре"
+
+# == 8. только жёлтые (частичный TLS 1.3): победителя нет, ничего не применяется ==
+# регрессия с живого прогона: сплошные WARN пропадали из отчёта («Ни одна
+# стратегия не открыла ни один домен»), а счётчик доменов печатался пустым
+
+: > "$ORCH_LOCK_FILE"
+orch_locked_set 3 tls 4
+export MOCK_OK_P1="" MOCK_OK_P2="" MOCK_OK_P4=""
+export MOCK_OK_meduza_io="1 2 3 4 5" MOCK_HALF_meduza_io=1
+rm -rf "$Z2R_SUPERSWEEP_DIR"
+out8="$(supersweep_run both 0 1 meduza.io 2>&1)" || {
+  printf '%s\n' "$out8" >&2
+  fail "сценарий 8: supersweep_run упал на только-жёлтом прогоне"
+}
+[ "$(lock_state 3 tls)" = 4 ] || fail "сценарий 8: профиль 3 не должен меняться без зелёных ($(lock_state 3 tls))"
+grep -q '^winner=$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 8: winner должен быть пуст"
+grep -q '^warn_winner=5$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 8: warn_winner должен быть 5 (самая быстрая жёлтая)"
+grep -q '^reference=meduza.io$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 8: reference должен быть meduza.io"
+grep -q 'Полностью зелёных стратегий нет' <<<"$out8" || fail "сценарий 8: нет сообщения об отсутствии зелёных"
+grep -q 'не применён' <<<"$out8" || fail "сценарий 8: жёлтый кандидат не помечен как неприменённый"
+grep -q 'деградацию канала' <<<"$out8" || fail "сценарий 8: нет подсказки о деградации канала"
+grep -q 'доменов в прогоне: 1' <<<"$out8" || fail "сценарий 8: счётчик доменов пуст/неверен"
+grep -q 'Корреляция с YouTube' <<<"$out8" || fail "сценарий 8: нет строки корреляции с YouTube"
+grep -q 'Щадящий режим' <<<"$out8" || fail "сценарий 8: нет пояснения двухэтапного режима"
+# все 5 строк карты — жёлтые
+[ "$(awk -F'\t' '$4=="warn"' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 5 ] \
+  || fail "сценарий 8: все 5 строк эталона должны быть warn"
+unset MOCK_HALF_meduza_io
+
+# == 9. пауза: минимум 15 секунд ==
+p="$(printf '\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause упал"
+[ "$p" = "15" ] || fail "сценарий 9: Enter должен давать 15, получено [$p]"
+p="$(printf '5\n20\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause (5/20) упал"
+[ "$p" = "20" ] || fail "сценарий 9: 5 должно отбрасываться (минимум 15), затем 20, получено [$p]"
 
 echo "supersweep smoke ok"
