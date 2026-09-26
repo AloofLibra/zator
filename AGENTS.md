@@ -92,7 +92,7 @@ Normal flow:
 - `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel single-attempt TLS 1.2/TLS 1.3 HEAD probes with `-L -k` + a Range download of up to 64KB when HEAD returns 2xx/3xx; classification by curl rc and HTTP code; any HTTP code including 4xx/5xx means the server answered → green ok, e.g. googlevideo root 404 is normal). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
 - `lib/premium.sh`: easter-egg and premium menu branches.
 - `lib/strategies.sh`: active strategy status, orchestra lock helpers, per-profile strategy trial flow, custom RKN domain handling.
-- `lib/supersweep.sh`: суперавтопрогон (п.12 подменю стратегий) — параллельный подбор стратегий профилей 1/2/4 (YouTube/Googlevideo/Discord) и полная карта покрытий RKN-доменов (профиль 3, пер-доменные локи на время прогона). Воркеры не пишут `locked.tsv` сами: локи запрашиваются файлами `cmd.<name>` и применяется их единственным писателем — родительским процессом (гонки awk+mv исключены). Прогресс в плоских файлах `$Z2R_SUPERSWEEP_DIR` (`/tmp/z2r-supersweep`: `status`, `workers.tsv`, `progress.<name>.tsv`, `coverage.tsv`, `best.<name>`, `summary.tsv`) — формат рассчитан на опрос веб-панелью без долгого CGI; отмена — `touch` файла `cancel` или `supersweep_cancel_running`. Лучшие стратегии применяются автоматически (`profile_state_set_and_apply`), пер-доменные рекомендации РКН только показываются; временные локи откатываются к прежним (`prev.tsv`). Результаты (включая откат) архивируются в `$ORCH_DIR/supersweep/` несжатым tar-ом в стиле `backup_create_core` (tar создаётся цепочкой кандидатов — PATH-тар в не-login контекстах может оказаться busybox без create, курьёз Entware: `/opt/usr/bin/tar` затеняет GNU `/opt/bin/tar`; override `Z2R_SUPERSWEEP_TAR`), самый свежий архив автоматически попадает в регулярные бэкапы (`z2r_backup_state_files` рядом с `locked.tsv`), история — с ротацией `Z2R_SUPERSWEEP_ARCHIVE_KEEP`; отправка на сервер статистики — `Z2R_SUPERSWEEP_STATS_URL` (endpoint в разработке). Курируемый набор доменов РКН — `Z2R_SUPERSWEEP_RKN_DOMAINS`; пользовательские домены добавляются в `TCP_Custom.txt`, если их нет в `TCP_RKN_list.txt`. Охраняется `tests/supersweep_smoke.sh`.
+- `lib/supersweep.sh`: super auto-sweep (item 12 of the strategies submenu): parallel strategy selection for profiles 1/2/4 (YouTube/Googlevideo/Discord) plus a full coverage map of RKN probe domains (profile 3; per-domain locks are temporary for the sweep). Workers never write `locked.tsv` themselves: locks are requested via `cmd.<name>` files and applied by the single-writer parent process (avoids awk+mv races). Progress lives in flat files under `$Z2R_SUPERSWEEP_DIR` (`/tmp/z2r-supersweep`: `status`, `workers.tsv`, `progress.<name>.tsv`, `coverage.tsv`, `best.<name>`, `summary.tsv`) — designed for webui polling without long-running CGI; cancellation is a `touch` of the `cancel` file or `supersweep_cancel_running`. Best strategies are applied automatically (`profile_state_set_and_apply`); per-domain RKN recommendations are only displayed; temporary locks roll back to previous values (`prev.tsv`). Results (including the rollback) are archived to `$ORCH_DIR/supersweep/` as an uncompressed tar in the `backup_create_core` style (tar is created through a candidate chain: in non-login contexts the PATH tar may be busybox without create — an Entware quirk where `/opt/usr/bin/tar` shadows the GNU one in `/opt/bin`; override with `Z2R_SUPERSWEEP_TAR`); the newest archive is automatically included in regular backups (`z2r_backup_state_files`, next to `locked.tsv`), history is rotated by `Z2R_SUPERSWEEP_ARCHIVE_KEEP`; upload to the stats server via `Z2R_SUPERSWEEP_STATS_URL` (endpoint pending). Curated RKN probe set: `Z2R_SUPERSWEEP_RKN_DOMAINS`; user domains are added to `TCP_Custom.txt` when missing from `TCP_RKN_list.txt`. Covered by `tests/supersweep_smoke.sh`.
 - `lib/submenus.sh`: menu wiring for strategies, provider, offload, and related actions.
 - `lib/actions.sh`: config reset, backup, firewall mode switch, UDP toggles, TLS blob switching, and other menu actions.
 - `lib/config.sh`: shared shell helpers for reading/editing `/opt/zapret2/config`, mode labels, profile strategy counts, TLS blob mode, and Keenetic WAN interface detection.
@@ -469,26 +469,29 @@ tls check smoke ok
 bash tests/supersweep_smoke.sh
 ```
 
-Тест суперавтопрогона (`lib/supersweep.sh`), тоже только во временной директории
-в `/tmp`, с моком `curl` в PATH:
+Super auto-sweep test (`lib/supersweep.sh`), also confined to a temporary
+directory in `/tmp`, with a mocked `curl` in PATH:
 
-- мок отвечает зелёным/красным в зависимости от РЕАЛЬНОГО текущего лока в
-  `locked.tsv` — сквозная проверка всего пути «воркер -> cmd-файл ->
-  координатор -> orch_locked_set -> движок z2r_tls_*»;
-- статический wiring: `Z2R_LIB_FILES` и source в `z2r.sh`, пункт 12 подменю
-  стратегий, guard'ы авторотации и запущенного nfqws2, запрет голого `wait`;
-- полный прогон на урезанном до 5 стратегий мок-конфиге: применение лучших
-  (профиль 1 — максимальный зелёный, 2/4 — свои, РКН — стратегия максимума
-  покрытия), откат пер-доменных проб к прежним локам, прогресс-файлы
-  (`status`/`workers.tsv`/`progress.*.tsv`/`coverage.tsv`/`best.*`/`summary.tsv`),
-  сводка с применёнными и рабочими стратегиями, архив с `prev.tsv`;
-- отмена по файлу `cancel` (как сделает веб-панель): rc=1, прежние локи
-  восстановлены, `state=cancelled`, архив отменённого прогона создан;
-- ротация архивов по `Z2R_SUPERSWEEP_ARCHIVE_KEEP`;
-- диалог своих доменов: нормализация ввода, добавление недостающих доменов
-  в `TCP_Custom.txt`.
+- the mock answers green/red depending on the REAL current lock in
+  `locked.tsv` — an end-to-end check of the whole path "worker -> cmd file ->
+  coordinator -> orch_locked_set -> z2r_tls_* engine";
+- static wiring: `Z2R_LIB_FILES` and the source line in `z2r.sh`, item 12 of
+  the strategies submenu, autorotation and running-nfqws2 guards, the
+  bare-`wait` ban;
+- full sweep on a mock config trimmed to 5 strategies: best-strategy apply
+  (profile 1 gets the fastest green, 2/4 their own, RKN the max-coverage
+  strategy), rollback of per-domain probes to their previous locks, progress
+  files (`status`/`workers.tsv`/`progress.*.tsv`/`coverage.tsv`/`best.*`/`summary.tsv`),
+  summary with applied and working strategies, archive containing `prev.tsv`;
+- cancellation via the `cancel` file (the way the webui will do it): rc=1,
+  previous locks restored, `state=cancelled`, archive of the cancelled run
+  created;
+- archive rotation by `Z2R_SUPERSWEEP_ARCHIVE_KEEP`, and the newest results
+  archive riding in regular backups (`z2r_backup_state_files`);
+- own-domains dialog: input normalization, adding missing domains to
+  `TCP_Custom.txt`.
 
-Успешный результат:
+Success output:
 
 ```text
 supersweep smoke ok
