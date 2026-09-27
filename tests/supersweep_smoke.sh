@@ -109,6 +109,11 @@ export ZATOR_ROOT="$TMP_DIR/zator"
 export Z2R_SUPERSWEEP_DIR="$TMP_DIR/supersweep"
 export Z2R_SUPERSWEEP_ARCHIVE_DIR="$TMP_DIR/archives"
 export Z2R_SUPERSWEEP_SETTLE=0
+# статистику не шлём (дефолтный URL теперь боевой сервер автора) и играем
+# телеметрию-заглушку для uuid в имени архива и meta.tsv
+export Z2R_SUPERSWEEP_STATS_URL=""
+export TELEMETRY_CFG="$TMP_DIR/telemetry.config"
+printf 'tel_enabled=1\ntel_uuid=deadbeef\n' > "$TELEMETRY_CFG"
 export Z2R_SWEEP_PAUSE=0
 export Z2R_SUPERSWEEP_ARCHIVE_KEEP=3
 mkdir -p "$ORCH" "$ROOT" "$ZATOR_ROOT/extra_strats"
@@ -172,7 +177,7 @@ orch_locked_set meduza.io tls 1
 export MOCK_OK_P1="2 4" MOCK_OK_P2="3" MOCK_OK_P4="1 5"
 export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
 
-out="$(supersweep_run both 0 2 meduza.io xhamster.com chess.com 2>&1)" || {
+out="$(supersweep_run both 0 0 2 meduza.io xhamster.com chess.com 2>&1)" || {
   printf '%s\n' "$out" >&2
   fail "сценарий 1: supersweep_run вернул ошибку"
 }
@@ -195,12 +200,10 @@ grep -q '^state=done$' "$Z2R_SUPERSWEEP_DIR/status" || fail "сценарий 1:
 [ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/progress.yt.tsv")" = 5 ] || fail "сценарий 1: progress.yt.tsv должен иметь 5 строк (по числу стратегий)"
 [ "$(awk -F'\t' 'NF!=9' "$Z2R_SUPERSWEEP_DIR/progress.yt.tsv" | wc -l)" = 0 ] \
   || fail "сценарий 1: строки progress.yt.tsv должны иметь 9 колонок"
-# двухэтапный щадящий режим: полный проход только по эталону (meduza.io,
-# первый в списке), остальные домены — лишь стратегиями 1 и 2, пробившими
-# эталон: 5 строк эталона + 2 стратегии x 2 домена = 9 строк
-[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")" = 9 ] || fail "сценарий 1: coverage.tsv = 5 эталон + 4 этап-2 = 9 строк, а не $(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")"
-[ "$(awk -F'\t' '$2 != "meduza.io" && $3 > 2' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 0 ] \
-  || fail "сценарий 1: этап 2 не должен трогать домены мимо стратегий, пробивших эталон"
+# полная матрица (рекомендация автора): каждая стратегия x каждый домен
+[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")" = 15 ] || fail "сценарий 1: coverage.tsv = 5 стратегий x 3 домена = 15 строк, а не $(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")"
+[ "$(awk -F'\t' '$3 >= 1 && $3 <= 5' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 15 ] \
+  || fail "сценарий 1: все стратегии 1-5 должны быть на всех доменах"
 grep -q '^winner=2$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 1: winner должен быть 2"
 grep -q '^winner_cover=3$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 1: winner_cover должен быть 3"
 grep -q '^winner_total=3$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 1: winner_total должен быть 3"
@@ -239,7 +242,7 @@ export MOCK_DELAY=0.2
 export MOCK_OK_P1="2 4 6" MOCK_OK_P2="3 7" MOCK_OK_P4="1 5"
 export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
 
-supersweep_run both 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel.log" 2>&1 &
+supersweep_run both 0 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel.log" 2>&1 &
 RUN_PID=$!
 # ждём первых результатов и отменяем внешним механизмом (как сделает веб-панель)
 n=0
@@ -368,7 +371,7 @@ orch_locked_set 3 tls 4
 export MOCK_OK_P1="" MOCK_OK_P2="" MOCK_OK_P4=""
 export MOCK_OK_meduza_io="1 2 3 4 5" MOCK_HALF_meduza_io=1
 rm -rf "$Z2R_SUPERSWEEP_DIR"
-out8="$(supersweep_run both 0 1 meduza.io 2>&1)" || {
+out8="$(supersweep_run both 0 0 1 meduza.io 2>&1)" || {
   printf '%s\n' "$out8" >&2
   fail "сценарий 8: supersweep_run упал на только-жёлтом прогоне"
 }
@@ -381,17 +384,34 @@ grep -q 'не применён' <<<"$out8" || fail "сценарий 8: жёлт
 grep -q 'деградацию канала' <<<"$out8" || fail "сценарий 8: нет подсказки о деградации канала"
 grep -q 'доменов в прогоне: 1' <<<"$out8" || fail "сценарий 8: счётчик доменов пуст/неверен"
 grep -q 'Корреляция с YouTube' <<<"$out8" || fail "сценарий 8: нет строки корреляции с YouTube"
-grep -q 'Щадящий режим' <<<"$out8" || fail "сценарий 8: нет пояснения двухэтапного режима"
+grep -q 'Каждая стратегия проверяется на всех выбранных доменах' <<<"$out8" || fail "сценарий 8: нет пояснения полной матрицы"
 # все 5 строк карты — жёлтые
 [ "$(awk -F'\t' '$4=="warn"' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 5 ] \
   || fail "сценарий 8: все 5 строк эталона должны быть warn"
 unset MOCK_HALF_meduza_io
 
-# == 9. пауза: минимум 15 секунд ==
+# == 9. пауза: минимум 15 сек (профили) и 30 сек (РКН) ==
 p="$(printf '\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause упал"
 [ "$p" = "15" ] || fail "сценарий 9: Enter должен давать 15, получено [$p]"
 p="$(printf '5\n20\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause (5/20) упал"
 [ "$p" = "20" ] || fail "сценарий 9: 5 должно отбрасываться (минимум 15), затем 20, получено [$p]"
+p="$(printf '\n' | supersweep_ask_rkn_pause 2>/dev/null)" || fail "сценарий 9: ask_rkn_pause упал"
+[ "$p" = "30" ] || fail "сценарий 9: Enter должен давать 30 для РКН, получено [$p]"
+p="$(printf '15\n45\n' | supersweep_ask_rkn_pause 2>/dev/null)" || fail "сценарий 9: ask_rkn_pause (15/45) упал"
+[ "$p" = "45" ] || fail "сценарий 9: 15 должно отбрасываться (минимум 30), затем 45, получено [$p]"
+
+# == 9a. имя архива и meta.tsv несут телеметрийный uuid + блобы ==
+# (архив сценария 1 уже создан: в нём лежит meta.tsv с uuid=deadbeef)
+arc9="$(ls -1t "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar 2>/dev/null | head -n1)"
+basename "$arc9" | grep -q -- '-deadbeef\.tar$' \
+  || fail "сценарий 9a: имя архива без uuid: $(basename "$arc9")"
+tar -tf "$arc9" > "$TMP_DIR/tarlist9.txt" 2>/dev/null || fail "сценарий 9a: архив не читается"
+grep -q 'meta.tsv' "$TMP_DIR/tarlist9.txt" || fail "сценарий 9a: в архиве нет meta.tsv"
+tar -xf "$arc9" -C "$TMP_DIR" ./meta.tsv 2>/dev/null || fail "сценарий 9a: meta.tsv не извлекается"
+grep -q $'^uuid\tdeadbeef$' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без uuid"
+grep -q $'^blob_global\t' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без blob_global"
+grep -q $'^provider\t' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без provider"
+rm -f "$TMP_DIR/meta.tsv"
 
 # == 10. отмена после применения профиля: применённое не откатывается ==
 # профильные воркеры завершаются раньше длинной РКН-карты: их лучшие уже
@@ -404,7 +424,7 @@ export MOCK_DELAY=0.05
 export MOCK_OK_P1="2 4" MOCK_OK_P2="3" MOCK_OK_P4="1 5"
 export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
 
-supersweep_run both 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel2.log" 2>&1 &
+supersweep_run both 0 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel2.log" 2>&1 &
 RUN2_PID=$!
 # ждём: yt-воркер отработал и координатор применил его лучший лок,
 # и стартовал этап 2 карты (первые домены кроме эталона)
