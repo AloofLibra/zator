@@ -964,7 +964,7 @@ supersweep_run() {
     done
 
     # rkn report: winner applied to profile 3, per-domain shown read-only
-    local cover totald warn_cover ref_dom yt_greens corr
+    local cover totald warn_cover ref_dom yt_greens corr rkn_ans
     totald=0
     for d in $domains; do totald=$((totald + 1)); done
     ref_dom="${domains%% *}"
@@ -1030,6 +1030,24 @@ supersweep_run() {
             | while read -r s cnt; do printf '     стратегия %s: %s домен(ов)\n' "$s" "$cnt"; done
         echo -e "   Лучший частичный: стратегия ${yellow}${warn_winner}${plain} (${warn_cover}/${totald}) — ${yellow}не применён${plain}."
         echo -e "   ${yellow}Сплошные жёлтые/красные результаты похожи на деградацию канала (возможно, сработала защита от частых переключений). Повторите прогон позже или с большей паузой.${plain}"
+        # explicit opt-in for the partial winner: never automatic (an
+        # all-yellow map is often the channel, not the strategy), and only
+        # in an interactive terminal — a webui run just sees the hint above
+        if [ "$cancelled" != 1 ] && [ -t 0 ]; then
+            read -re -p "   Применить частичную стратегию ${warn_winner} для профиля 3 (одна версия TLS)? 1 - да, Enter - нет: " rkn_ans || rkn_ans=""
+            if [ "$rkn_ans" = "1" ]; then
+                old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+                if profile_state_set_and_apply 3 tls "$warn_winner" "$cfg"; then
+                    printf 'profile\t3\t%s\n' "$warn_winner" >> "${dir}/applied.tsv"
+                    echo -e "   ${Fgreen}Применена частичная стратегия ${warn_winner} для профиля 3${plain} (${warn_cover}/${totald}, только одна версия TLS)."
+                    applied_any=1
+                    profile_strategy_restart_if_needed 3 "$cfg" "$old_udp_ports"
+                    telemetry_notify
+                else
+                    echo -e "   ${red}Не удалось применить стратегию ${warn_winner} для профиля 3.${plain}"
+                fi
+            fi
+        fi
     else
         echo -e "   ${red}Ни одна стратегия не открыла ни один домен.${plain}"
     fi
