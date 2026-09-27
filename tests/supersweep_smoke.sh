@@ -162,6 +162,11 @@ grep -q 'zapret2_running' "$REPO_DIR/lib/supersweep.sh" || fail "supersweep_menu
 if grep -nEq '^[[:space:]]*wait[[:space:]]*$' "$REPO_DIR/lib/supersweep.sh"; then
   fail "supersweep.sh: голый wait — ждать можно только по явным pid"
 fi
+# строка-продолжление текста без echo/команды — валидный синтаксис, но
+# падает в рантайме («command not found», ловили на живом роутере)
+if grep -nE '^[[:space:]]*"[^"]*"[[:space:]]*$' "$REPO_DIR/lib/supersweep.sh"; then
+  fail "supersweep.sh: голая строка в кавычках без команды — потерян echo?"
+fi
 
 # == 1. полный прогон: применение лучших + карта + восстановление доменов ==
 
