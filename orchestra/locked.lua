@@ -484,6 +484,25 @@ function desync_allow_nohost(desync)
   return allow_nohost == "1" or allow_nohost == 1 or allow_nohost == true
 end
 
+-- Хост прямо из payload текущего пакета: на первом ClientHello/HTTP-запросе
+-- соединения имени в conntrack может ещё не быть, а решение по доменному
+-- локу принимается именно на этом пакете.
+function z2r_hostname_from_payload(payload, l7)
+  if l7 == "http_req" then
+    return payload:match("\n[Hh][Oo][Ss][Tt]:[%s]*([^%s%c]+)")
+  end
+  local t = tls_dissect(payload)
+  if not (t and t.handshake and t.handshake[1] and t.handshake[1].dis and t.handshake[1].dis.ext) then return nil end
+  for _, e in ipairs(t.handshake[1].dis.ext) do
+    if e.type == 0 and e.dis and e.dis.list then
+      for _, n in ipairs(e.dis.list) do
+        if n.name and n.name ~= "" then return tostring(n.name) end
+      end
+    end
+  end
+  return nil
+end
+
 function desync_hostname(desync)
   if desync.hostname then return tostring(desync.hostname) end
   if desync.host then return tostring(desync.host) end
@@ -502,6 +521,14 @@ function desync_hostname(desync)
   if desync.arg and desync.arg.tls_sni then return tostring(desync.arg.tls_sni) end
   if desync.arg and desync.arg.server_name then return tostring(desync.arg.server_name) end
   if desync.arg and desync.arg.http_host then return tostring(desync.arg.http_host) end
+  local l7 = desync.l7payload
+  if l7 == "tls_client_hello" or l7 == "http_req" then
+    local payload = desync.reasm_data or (desync.dis and desync.dis.payload) or ""
+    if #payload > 8 then
+      local ok, name = pcall(z2r_hostname_from_payload, payload, l7)
+      if ok and name and name ~= "" then return name end
+    end
+  end
   return nil
 end
 
@@ -548,14 +575,18 @@ function circular_locked(ctx, desync)
 
   local proto = desync_proto(desync)
   local base_profile = desync_profile_key(desync)
-  local host
-  if allow_nohost_enabled then
-    host = desync_hostname(desync)
-    if host and host ~= "" then
-      host = host:gsub("%.$", "")
-      host = string.lower(host)
-      if host ~= "" then
+  -- Хост извлекается для любого профиля: доменные локи должны срабатывать на
+  -- первом пакете соединения независимо от allow_nohost (он управляет только
+  -- допуском потоков без хоста).
+  local host = desync_hostname(desync)
+  if host and host ~= "" then
+    host = host:gsub("%.$", "")
+    host = string.lower(host)
+    if host ~= "" then
+      if allow_nohost_enabled then
         DLOG("circular_locked: allow_nohost profile from host "..host)
+      else
+        DLOG("circular_locked: host "..host.." profile="..tostring(base_profile))
       end
     end
   end
