@@ -110,6 +110,7 @@ Normal flow:
 - `lua/combined-detector.lua`: combined quality/failure logic that uses orchestration state.
 - `lua/domain-grouping.lua`: grouping logic for related domains.
 - `lua/silent-drop-detector.lua`: silent-drop detection.
+- `lua/fake-adapt.lua`: startup adapter for the shipped default fake blob header, wired via `--lua-init` from `config.default` (deployed with the other lua modules by `circular_runtime_update_from_repo`).
 - `lua/rst-guard.lua`: runtime RST injection guard loaded from `config.default`.
 - `webui/`: static assets, CGI endpoints, and runner for the local WebUI on port `17682`. `index.html`/`app.js`/`styles.css` are build artifacts — the frontend sources live in `webui-src/` (Vue 3 + TypeScript, hash-router); rebuild with `cd webui-src && npm install && npm run build` (Vite emits exactly `app.js` + `styles.css` + `index.html` into `webui/` and stamps `?v=<sha256>` cache-busting). Dev: `npm run dev` proxies `/cgi-bin` to `webui/dev/fake_router_server.py`.
 

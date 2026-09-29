@@ -149,6 +149,24 @@ assert_contains "$CONTRACT_SRC" '`fake_mode`' "API_CONTRACT без fake_mode"
 assert_contains "$CONTRACT_SRC" '"profile_modes"' "API_CONTRACT без profile_modes"
 assert_contains "$CONTRACT_SRC" '"profile_snis"' "API_CONTRACT без profile_snis"
 
+# --- 2c. Адаптер дефолтного блоба в сборке (универсальный config.default) ---
+
+CONFIG_SRC="$(tr -d '\r' < "$REPO_DIR/config.default")"
+Z2R_SRC="$(tr -d '\r' < "$REPO_DIR/z2r.sh")"
+
+assert_contains "$CONFIG_SRC" '^--lua-init=@/opt/zator/lua/fake-adapt\.lua$' \
+  "config.default не подключает адаптер fake-adapt.lua"
+[ "$(grep -c '^--lua-init=@/opt/zator/lua/fake-adapt.lua$' "$REPO_DIR/config.default")" -eq 1 ] \
+  || fail "config.default: lua-init адаптера дублирован"
+assert_contains "$Z2R_SRC" 'FAKE_ADAPT_LUA="\$ZATOR_ROOT/lua/fake-adapt\.lua"' \
+  "z2r.sh нет переменной FAKE_ADAPT_LUA"
+assert_contains "$Z2R_SRC" 'z2r_download_project_file "\$FAKE_ADAPT_LUA" "lua/fake-adapt\.lua"' \
+  "z2r.sh не докачивает fake-adapt.lua"
+assert_contains "$Z2R_SRC" 'silent-drop-detector\.lua dns-clone\.lua fake-adapt\.lua strategy-validator\.sh' \
+  "миграция z2r.sh не переносит fake-adapt.lua"
+assert_contains "$Z2R_SRC" 's#/opt/zapret2/lua/fake-adapt\.lua#/opt/zator/lua/fake-adapt\.lua#g' \
+  "миграция z2r.sh не переписывает путь fake-adapt.lua"
+
 # --- 3. Хелперы mode_override_* ---------------------------------------------
 
 [ "$(mode_override_supported_profiles | tr '\n' ' ')" = "1 2 3 4 8 " ] \

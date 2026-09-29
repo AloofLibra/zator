@@ -338,7 +338,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua strategy-validator.sh; do
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua strategy-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -370,6 +370,7 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/combined-detector.lua#/opt/zator/lua/combined-detector.lua#g' \
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
       -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
+      -e 's#/opt/zapret2/lua/fake-adapt.lua#/opt/zator/lua/fake-adapt.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
       -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
       -e 's#/opt/zapret2/extra_strats#/opt/zator/extra_strats#g' \
@@ -610,6 +611,7 @@ RST_GUARD_LUA="$ZATOR_ROOT/lua/rst-guard.lua"
 CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
 DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
+FAKE_ADAPT_LUA="$ZATOR_ROOT/lua/fake-adapt.lua"
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
@@ -647,6 +649,7 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$CIRCULAR_DETECTOR_LUA" "lua/combined-detector.lua" || return 1
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
+  z2r_download_project_file "$FAKE_ADAPT_LUA" "lua/fake-adapt.lua" || return 1
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
