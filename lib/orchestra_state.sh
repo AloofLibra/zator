@@ -595,3 +595,52 @@ blob_override_clear() {
     && mv -f "$tmp" "$ORCH_BLOB_FILE" || { rm -f "$tmp"; return 1; }
   return 0
 }
+
+# --- per-profile SNI override (sni_override.tsv) ---
+# Единый источник «профиль -> SNI» для CLI-меню и WebUI. Подменяет арг
+# sni_first клон-стратегий перед исполнением (locked.lua, TTL-кэш 2с,
+# применяется без рестарта nfqws2). Нет строки = SNI из конфига стратегии.
+ORCH_SNI_FILE="${ORCH_SNI_FILE:-$ORCH_DIR/sni_override.tsv}"
+Z2R_SNI_PROFILES="${Z2R_SNI_PROFILES:-1 2 3 4 8}"
+
+sni_override_supported_profiles() {
+  printf '%s\n' $Z2R_SNI_PROFILES
+}
+
+sni_override_get() {
+  [ -f "$ORCH_SNI_FILE" ] || return 0
+  awk -F '\t' -v pr="$1" '$1==pr {print $2; exit}' "$ORCH_SNI_FILE"
+}
+
+# домен для невинного SNI: строчные буквы/цифры/точки/дефис, до 254 символов
+sni_override_valid() {
+  printf '%s' "$1" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?){0,4}$' \
+    && [ "${#1}" -le 254 ]
+}
+
+sni_override_set() {
+  local profile="$1" sni="$2" tmp
+  printf '%s' "$profile" | grep -Eq '^[0-9]+$' || return 2
+  sni_override_valid "$sni" || return 2
+  mkdir -p "$ORCH_DIR" || return 1
+  [ -f "$ORCH_SNI_FILE" ] || : > "$ORCH_SNI_FILE"
+  tmp="${ORCH_SNI_FILE}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v pr="$profile" -v nm="$sni" '
+    {if ($1==pr) {if (!seen) {print pr, nm; seen=1}; next} print}
+    END {if (!seen) print pr, nm}
+  ' "$ORCH_SNI_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_SNI_FILE" || {
+    rm -f "$tmp"
+    echo "Unable to update sni override file" >&2
+    return 1
+  }
+  return 0
+}
+
+sni_override_clear() {
+  local profile="$1" tmp
+  [ -f "$ORCH_SNI_FILE" ] || return 0
+  tmp="${ORCH_SNI_FILE}.tmp.$$"
+  awk -F '\t' -v pr="$profile" '{if ($1==pr) next; print}' "$ORCH_SNI_FILE" > "$tmp" \
+    && mv -f "$tmp" "$ORCH_SNI_FILE" || { rm -f "$tmp"; return 1; }
+  return 0
+}

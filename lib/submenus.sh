@@ -1548,6 +1548,8 @@ tls_blob_submenu() {
       fi
       i=$((i+1))
     done
+    submenu_item "$i" "SNI клон-стратегий — по профилям"
+    local sni_item=$i
     echo ""
     submenu_item "0" "Назад"
     echo ""
@@ -1559,6 +1561,9 @@ tls_blob_submenu() {
         ;;
       "0"|"")
         return
+        ;;
+      "$sni_item")
+        sni_submenu
         ;;
       *)
         if ui_is_number_in_range "$ans" 2 "$(( ${#profiles[@]} + 1 ))"; then
@@ -1572,8 +1577,123 @@ tls_blob_submenu() {
   done
 }
 
+# --- SNI клон-стратегий: невинное имя по профилю (sni_override.tsv) ---
+# Подменяет sni_first у клон-стратегий перед исполнением (locked.lua, ~2с,
+# без рестарта). Пусто = SNI из конфига стратегии.
+
+sni_preset_list() {
+  printf '%s\n' www.google.com vk.ru max.ru hcaptcha.com
+}
+
+sni_profile_pick() {
+  local profile="$1" title="$2" choice cur preset domain i
+  local presets=()
+  while IFS= read -r preset; do presets+=("$preset"); done < <(sni_preset_list)
+  local custom_idx=$(( ${#presets[@]} + 2 ))
+
+  while true; do
+    clear -x
+    cur="$(sni_override_get "$profile")"
+    echo -e "${cyan}--- Профиль $profile ($title): SNI клон-стратегий ---${plain}"
+    echo ""
+    if [ -n "$cur" ]; then
+      echo -e "${yellow}Сейчас: ${green}${cur}${plain}"
+    else
+      echo -e "${yellow}Сейчас: ${plain}${green}из конфига стратегии${plain}"
+    fi
+    echo ""
+    submenu_item "1" "Из конфига стратегии (сброс переопределения)"
+    i=2
+    for preset in "${presets[@]}"; do
+      submenu_item "$i" "$preset"
+      i=$((i+1))
+    done
+    submenu_item "$custom_idx" "Свой домен..."
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice
+    if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+      return
+    elif [ "$choice" = "1" ]; then
+      if sni_override_clear "$profile"; then
+        echo -e "${green}Сброшено: профиль $profile берёт SNI из конфига стратегии.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сбросить переопределение.${plain}"
+      fi
+      pause_enter
+    elif ui_is_number_in_range "$choice" 2 "$(( custom_idx - 1 ))"; then
+      preset="${presets[$((choice-2))]}"
+      if sni_override_set "$profile" "$preset"; then
+        echo -e "${green}Профиль $profile: клон-стратегии используют SNI ${preset}.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сохранить.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$custom_idx" ]; then
+      read -re -p "Домен (например, www.example.com): " domain
+      if [ -z "$domain" ]; then
+        :
+      elif sni_override_set "$profile" "$domain"; then
+        echo -e "${green}Профиль $profile: клон-стратегии используют SNI ${domain}.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}"
+      fi
+      pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+sni_submenu() {
+  local p ans i idx v
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(sni_override_supported_profiles)
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- SNI клон-стратегий (невинные имена) ---${plain}"
+    echo ""
+    echo -e "${yellow}Подменяется sni_first у клон-стратегий профиля; пусто = из конфига.${plain}"
+    echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(sni_override_get "${profiles[$idx]}")"
+      if [ -n "$v" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "из конфига" yellow
+      fi
+      i=$((i+1))
+    done
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      sni_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
 # --- Watchdog zapret2: включение/выключение (пункт 19-6) ---
-# Файлы докачиваются с репозитория при отсутствии (z2r_download_project_file),
+# Файлы докачиваются из репозитория при отсутствии (z2r_download_project_file),
 # поэтому в ветке они живут как исходники, а на роутере появляются по требованию.
 
 watchdog_entware_script() { printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog"; }

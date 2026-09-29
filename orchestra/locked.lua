@@ -19,6 +19,8 @@ local EXCLUDE_HOSTLISTS = {}
 local SUBSTRING_HOSTLISTS = {}
 local BLOB_OVERRIDE_PATH = LOCKED_DIR .. "/blob_override.tsv"
 local BLOB_OVERRIDES = {}
+local SNI_OVERRIDE_PATH = LOCKED_DIR .. "/sni_override.tsv"
+local SNI_OVERRIDES = {}
 
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -144,6 +146,30 @@ local function load_blob_override_file(path)
   f:close()
 end
 
+-- sni_override.tsv: «profile<TAB>домен» — per-profile SNI клон-стратегий.
+-- Подменяется арг sni_first у стратегии перед исполнением; пусто = из конфига.
+local function sni_override_parse_line(line)
+  if type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  if line == "" or string.match(line, "^%s*#") then return nil end
+  local fields = {}
+  for field in (line .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = trim(field) end
+  if #fields ~= 2 then return nil end
+  if not string.match(fields[1], "^%d+$")
+    or not string.match(fields[2], "^[%w%-%.]+$") then return nil end
+  return fields[1], string.lower(fields[2])
+end
+
+local function load_sni_override_file(path)
+  local f = io.open(path, "r")
+  if not f then return end
+  for line in f:lines() do
+    local profile, sni = sni_override_parse_line(line)
+    if profile then SNI_OVERRIDES[profile] = sni end
+  end
+  f:close()
+end
+
 local function load_locked_tables()
   local now = os.time()
   if now and (now - last_load) < cache_ttl then return end
@@ -163,6 +189,8 @@ local function load_locked_tables()
     load_scoped_locks()
     BLOB_OVERRIDES = {}
     load_blob_override_file(BLOB_OVERRIDE_PATH)
+    SNI_OVERRIDES = {}
+    load_sni_override_file(SNI_OVERRIDE_PATH)
   end
 end
 
@@ -532,35 +560,49 @@ function desync_hostname(desync)
   return nil
 end
 
--- Подмена per-profile TLS блоба на исполнении стратегии (blob_override.tsv).
--- Меняются только args blob/fake_blob со значением maxru|fake_default_tls; исходные
+-- Подмена per-profile TLS блоба на исполнении стратегии (blob_override.tsv)
+-- и per-profile SNI клон-стратегий (sni_override.tsv). Меняются только args
+-- blob/fake_blob со значением maxru|fake_default_tls и arg sni_first; исходные
 -- значения восстанавливаются — план может быть переисполнен (replay/desync_copy).
--- Имя должно быть объявлено в конфиге (--blob=ИМЯ:@...) или быть встроенным, иначе подмены нет.
+-- Имя блоба должно быть объявлено в конфиге (--blob=ИМЯ:@...) или быть встроенным,
+-- иначе подмены нет.
 function blob_override_execute(desync, verdict, instance, profile_key)
   local name = profile_key and BLOB_OVERRIDES[tostring(profile_key)]
-  if not name or not instance or not instance.arg then
+  local sni = profile_key and SNI_OVERRIDES[tostring(profile_key)]
+  if (not name and not sni) or not instance or not instance.arg then
     return plan_instance_execute(desync, verdict, instance)
   end
-  if not blob_exist(desync, name) then
+  if name and not blob_exist(desync, name) then
     DLOG("blob_override: '"..tostring(name).."' not declared, keeping config value profile="..tostring(profile_key))
-    return plan_instance_execute(desync, verdict, instance)
+    name = nil
   end
   local saved_blob = instance.arg.blob
   local saved_fake_blob = instance.arg.fake_blob
   local swapped = false
-  if saved_blob == "maxru" or saved_blob == "fake_default_tls" then
+  if name and (saved_blob == "maxru" or saved_blob == "fake_default_tls") then
     instance.arg.blob = name
     swapped = true
   end
-  if saved_fake_blob == "maxru" or saved_fake_blob == "fake_default_tls" then
+  if name and (saved_fake_blob == "maxru" or saved_fake_blob == "fake_default_tls") then
     instance.arg.fake_blob = name
     swapped = true
+  end
+  -- sni_first есть только у клон-стратегий: подмена не задевает остальные
+  local saved_sni = instance.arg.sni_first
+  local sni_swapped = false
+  if sni and saved_sni and saved_sni ~= "" and saved_sni ~= sni then
+    instance.arg.sni_first = sni
+    sni_swapped = true
   end
   local v = plan_instance_execute(desync, verdict, instance)
   if swapped then
     DLOG("blob_override: profile="..tostring(profile_key).." blob -> "..name)
     instance.arg.blob = saved_blob
     instance.arg.fake_blob = saved_fake_blob
+  end
+  if sni_swapped then
+    DLOG("blob_override: profile="..tostring(profile_key).." sni_first -> "..sni)
+    instance.arg.sni_first = saved_sni
   end
   return v
 end
