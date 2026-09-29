@@ -191,10 +191,11 @@ out="$(supersweep_run both 0 0 0 2 meduza.io xhamster.com chess.com 2>&1)" || {
 [ "$(lock_state 1 http)" = 4 ] || fail "сценарий 1: профиль 1/http должен получить 4"
 [ "$(lock_state 2 tls)" = 3 ] || fail "сценарий 1: профиль 2 должен получить стратегию 3"
 [ "$(lock_state 4 tls)" = 5 ] || fail "сценарий 1: профиль 4 должен получить стратегию 5"
-# пер-доменное применение: строка профиля 3 не трогается, каждый домен
-# получает свою зелёную стратегию (медуза: зелёные 1 и 2, у меньшего номера
-# выше скорость докачки в моке)
-[ "$(lock_state 3 tls)" = auto ] || fail "сценарий 1: профиль 3 не должен менять строку, а не $(lock_state 3 tls)"
+# пер-доменное применение + профильная строка максимума покрытия: каждый
+# домен получает свою зелёную стратегию, профиль 3 — победителя покрытия
+# (медуза: зелёные 1 и 2, у меньшего номера выше скорость докачки в моке;
+# стратегия 2 зелёная на всех трёх доменах)
+[ "$(lock_state 3 tls)" = 2 ] || fail "сценарий 1: профиль 3 должен получить max-coverage стратегию 2, а не $(lock_state 3 tls)"
 [ "$(lock_state meduza.io tls)" = 2 ] || fail "сценарий 1: meduza.io должен получить свой победитель 2 (быстрейший зелёный), а не $(lock_state meduza.io tls)"
 [ "$(lock_state xhamster.com tls)" = 2 ] || fail "сценарий 1: xhamster.com должен получить стратегию 2, а не $(lock_state xhamster.com tls)"
 [ "$(lock_state chess.com tls)" = 2 ] || fail "сценарий 1: chess.com должен получить стратегию 2, а не $(lock_state chess.com tls)"
@@ -220,12 +221,15 @@ grep -q 'воркер завершён' <<<"$out" || fail "сценарий 1: �
 grep -q 'РКН: домен meduza.io — применена стратегия 2' <<<"$out" || fail "сценарий 1: нет пер-доменного применения meduza"
 grep -q 'РКН: домен xhamster.com — применена стратегия 2' <<<"$out" || fail "сценарий 1: нет пер-доменного применения xhamster"
 grep -q 'Персональные стратегии применены' <<<"$out" || fail "сценарий 1: нет сводки пер-доменных применений"
-[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/applied.tsv" 2>/dev/null || echo 0)" = 6 ] \
-  || fail "сценарий 1: applied.tsv должен иметь 6 строк (3 профиля + 3 домена)"
+[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/applied.tsv" 2>/dev/null || echo 0)" = 7 ] \
+  || fail "сценарий 1: applied.tsv должен иметь 7 строк (3 профиля + профильная РКН + 3 домена)"
 grep -q $'profile\t1\t4' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без profile 1 -> 4"
+grep -q $'profile\t3\t2' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без profile 3 -> 2 (max-coverage)"
 grep -q $'domain	meduza.io	2' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без domain meduza.io -> 2"
 grep -q $'domain\txhamster.com\t2' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без domain xhamster.com -> 2"
 grep -q 'РКН: домен chess.com — применена стратегия 2' <<<"$out" || fail "сценарий 1: нет пер-доменного применения chess"
+grep -q 'Профиль 3 (РКН): применена стратегия 2' <<<"$out" || fail "сценарий 1: нет применения профильной стратегии РКН"
+grep -q 'Профильная стратегия РКН (дефолт всего списка): 2' <<<"$out" || fail "сценарий 1: сводка без профильной стратегии РКН"
 grep -q 'медуза\|meduza.io' <<<"$out" || fail "сценарий 1: в отчёте нет рекомендаций по доменам"
 grep -q 'Зелёные\|Рабочие' <<<"$out" || fail "сценарий 1: в отчёте нет списков рабочих стратегий"
 
@@ -272,6 +276,8 @@ wait "$RUN_PID" || rc=$?
 [ "$(lock_state 4 tls)" = auto ] || fail "сценарий 2: профиль 4 должен быть auto ($(lock_state 4 tls))"
 [ "$(lock_state meduza.io tls)" = auto ] || fail "сценарий 2: meduza.io должен быть auto ($(lock_state meduza.io tls))"
 [ "$(lock_state xhamster.com tls)" = auto ] || fail "сценарий 2: xhamster.com должен быть auto ($(lock_state xhamster.com tls))"
+# профиль 3 в отменённом прогоне не применялся и не менялся
+[ "$(lock_state 3 tls)" = auto ] || fail "сценарий 2: профиль 3 должен остаться auto ($(lock_state 3 tls))"
 grep -q '^state=cancelled$' "$Z2R_SUPERSWEEP_DIR/status" || fail "сценарий 2: state != cancelled"
 grep -q 'откатлены\|возвращаю прежние' "$TMP_DIR/cancel.log" || fail "сценарий 2: нет сообщения об откате"
 # архив собирается и для отменённого прогона («что собралось и откатилось»)
@@ -396,6 +402,8 @@ grep -q 'доменов в прогоне: 1' <<<"$out8" || fail "сценари
 # вне интерактивного терминала вопроса про применение частичной быть не должноgrep -q 'Применить частичную' <<<"$out8" && fail "сценарий 8: tty-вопрос применения частичной появился без терминала"
 grep -q 'Корреляция с YouTube' <<<"$out8" || fail "сценарий 8: нет строки корреляции с YouTube"
 grep -q 'полный проход стратегий на каждый' <<<"$out8" || fail "сценарий 8: нет пояснения пер-доменного прохода"
+grep -q 'Профильная стратегия РКН не менялась' <<<"$out8" || fail "сценарий 8: нет пояснения о незаменённой профильной РКН"
+grep -q 'Без персональной стратегии' <<<"$out8" || fail "сценарий 8: нет пометки домена без персональной стратегии"
 # все 5 строк карты — жёлтые
 [ "$(awk -F'\t' '$4=="warn"' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 5 ] \
   || fail "сценарий 8: все 5 строк эталона должны быть warn"
@@ -470,5 +478,51 @@ wait "$RUN2_PID" || rc2=$?
 grep -q 'оставлена применённая стратегия 4' "$TMP_DIR/cancel2.log" \
   || fail "сценарий 10: нет сообщения об оставленной применённой стратегии"
 unset MOCK_DELAY
+
+# == 11. свой домен подбора профиля 3: проверка по РКН-спискам ==
+
+grep -q 'rkn_trial_domain_pick' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 11: нет rkn_trial_domain_pick"
+grep -q 'rkn_trial_domain_pick' "$REPO_DIR/lib/submenus.sh" || fail "сценарий 11: подменю не зовёт rkn_trial_domain_pick"
+printf 'meduza.io\nexample.com\n' > "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt"
+: > "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
+
+# Enter — базовый домен
+RKN_TRIAL_DOMAIN=""
+rkn_trial_domain_pick </dev/null >/dev/null 2>&1 \
+  || fail "сценарий 11: Enter должен давать базовый домен"
+[ "$RKN_TRIAL_DOMAIN" = "meduza.io" ] || fail "сценарий 11: Enter -> базовый, получено [$RKN_TRIAL_DOMAIN]"
+
+# свой домен: нормализация регистра + родительский суффикс в списке
+# (stdin из файла, не пайпом: функция должна остаться в текущем шелле,
+# иначе глобал RKN_TRIAL_DOMAIN не дойдёт до ассерта)
+printf 'Sub.Example.COM\n' > "$TMP_DIR/in11.txt"
+rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
+  || fail "сценарий 11: свой домен (родитель в списке) должен проходить"
+[ "$RKN_TRIAL_DOMAIN" = "sub.example.com" ] || fail "сценарий 11: нет нормализации регистра [$RKN_TRIAL_DOMAIN]"
+
+# точное совпадение в списке
+printf 'example.com\n' > "$TMP_DIR/in11.txt"
+rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
+  || fail "сценарий 11: точное совпадение должно проходить"
+
+# домена нет + согласие на добавление -> пишется в TCP_Custom.txt
+printf 'fresh.ru\n1\n' > "$TMP_DIR/in11.txt"
+rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
+  || fail "сценарий 11: домен с добавлением должен проходить"
+[ "$RKN_TRIAL_DOMAIN" = "fresh.ru" ] || fail "сценарий 11: добавленный домен не выбран [$RKN_TRIAL_DOMAIN]"
+grep -Fxq 'fresh.ru' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" \
+  || fail "сценарий 11: fresh.ru не добавлен в TCP_Custom.txt"
+
+# домена нет + отказ -> отмена
+printf 'nope.ru\n\n' > "$TMP_DIR/in11.txt"
+if rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1; then
+  fail "сценарий 11: отказ от добавления должен отменять подбор"
+fi
+
+# мусорный ввод -> отмена
+printf 'bad domain!\n' > "$TMP_DIR/in11.txt"
+if rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1; then
+  fail "сценарий 11: некорректный домен должен отбрасываться"
+fi
 
 echo "supersweep smoke ok"

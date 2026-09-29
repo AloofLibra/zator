@@ -500,6 +500,22 @@ _supersweep_settle_worker() {
                     echo -e "$(date '+%H:%M:%S') ${Fgreen}РКН: домен ${dwin} — применена стратегия ${dstr}${plain}"
                 fi
             done
+        # профильная строка РКН: стратегия максимума покрытия — дефолт для
+        # всего списка (домены без персонального лока). Без этого свежая
+        # установка остаётся на стартовой стратегии, даже если та никогда
+        # не пробивается — список РКН мёртв при живых победителях.
+        if [ -n "$best" ]; then
+            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+            if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
+                printf 'profile\t%s\t%s\n' "$pkey" "$best" >> "${dir}/applied.tsv"
+                echo -e "$(date '+%H:%M:%S') ${Fgreen}Профиль ${pkey} (РКН): применена стратегия ${best}${plain} (${best_short})"
+                profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"
+            else
+                echo -e "$(date '+%H:%M:%S') ${red}Профиль ${pkey} (РКН): не удалось применить стратегию ${best}.${plain}" >&2
+            fi
+        else
+            echo -e "$(date '+%H:%M:%S') ${yellow}РКН: зелёного покрытия нет — профильная строка не менялась.${plain}" >&2
+        fi
         marker="domains"
         telemetry_notify
     elif [ -n "$best" ]; then
@@ -969,9 +985,15 @@ supersweep_run() {
                     ;;
             esac
         done
-        # rkn was never settled on cancel: the reference domain and any
-        # stage-2 probes revert to their previous locks
+        # rkn on cancel: probe domain rows revert; a settled rkn worker keeps
+        # its winners (per-domain + профильная строка максимума покрытия),
+        # an unsettled one reverts the profile row too
         _supersweep_restore_prev domain
+        if awk -F'\t' '$1 == "profile" && $2 == 3 { f = 1; exit } END { exit !f }' "${dir}/applied.tsv" 2>/dev/null; then
+            echo -e "Профиль 3 (РКН): ${green}оставлена применённая стратегия${plain}."
+        else
+            _supersweep_restore_prev profile 3
+        fi
         _supersweep_status_write cancelled "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
     else
         # probe locks are temporary: пробные доменные строки откатываются,
@@ -1054,7 +1076,8 @@ supersweep_run() {
         fi
     done
 
-    # rkn report: winner applied to profile 3, per-domain shown read-only
+    # rkn report: per-domain winners applied live, профильная строка 3 —
+    # стратегия максимума покрытия (дефолт списка), жёлтые — только опция
     local cover totald warn_cover ref_dom yt_greens corr rkn_ans
     totald=0
     for d in $domains; do totald=$((totald + 1)); done
@@ -1110,6 +1133,37 @@ supersweep_run() {
     if [ -z "$applied_dom" ] && [ -z "$warn_dom" ]; then
         echo -e "   ${red}Ни одна стратегия не открыла ни один домен.${plain}"
     fi
+    # профильная строка РКН (максимум покрытия) — дефолт всего списка
+    local rkn_prof no_win="" d_tab2
+    d_tab2="$(printf '\t')"
+    if [ "$cancelled" = 1 ]; then
+        echo -e "   Профильная стратегия РКН (весь список) не применялась — прогон прерван."
+    elif [ -n "$winner" ]; then
+        rkn_prof="$(awk -F'\t' '$1 == "profile" && $2 == 3 { print $3; exit }' "${dir}/applied.tsv" 2>/dev/null || true)"
+        if [ -z "$rkn_prof" ]; then
+            # settle не успел (воркер упал после записи best) — применяем сейчас
+            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+            if profile_state_set_and_apply 3 "tls" "$winner" "$cfg"; then
+                printf 'profile\t%s\t%s\n' 3 "$winner" >> "${dir}/applied.tsv"
+                rkn_prof="$winner"
+                applied_any=1
+                profile_strategy_restart_if_needed 3 "$cfg" "$old_udp_ports"
+            fi
+        fi
+        if [ -n "$rkn_prof" ]; then
+            echo -e "   ${Fgreen}Профильная стратегия РКН (дефолт всего списка): ${rkn_prof}${plain} — зелёная на ${cover} из ${totald} домен(ов)"
+        else
+            echo -e "   ${red}Не удалось применить профильную стратегию РКН (${winner}).${plain}"
+        fi
+    else
+        echo -e "   Профильная стратегия РКН не менялась: зелёного покрытия нет ни у одной стратегии."
+    fi
+    # домены без персонального победителя едут на профильной стратегии
+    for d in $domains; do
+        grep -q "^domain${d_tab2}${d}${d_tab2}" "${dir}/applied.tsv" 2>/dev/null \
+            || no_win="${no_win}${no_win:+ }${d}"
+    done
+    [ -n "$no_win" ] && echo -e "   Без персональной стратегии (едут на профильной): ${no_win}"
     # correlation hint: youtube-green strategies vs the reference passes.
     # an early cancel can leave no coverage.tsv at all — print plain zeros
     yt_greens="$(_supersweep_kv_read "${dir}/best.yt" greens)"

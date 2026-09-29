@@ -979,7 +979,9 @@ strategies_submenu() {
         orch_profile_try "2" "Профиль 2: TCP 443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
         ;;
       "3")
-        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://meduza.io"
+        if rkn_trial_domain_pick; then
+          orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://${RKN_TRIAL_DOMAIN}"
+        fi
         ;;
       "4")
         orch_profile_try "4" "Профиль 4: TCP 443 (Discord)" "tls" "https://discord.com/"

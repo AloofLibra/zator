@@ -1196,10 +1196,76 @@ Strats_Tryer() {
     "4")
       #вывод подсказки
       show_hint "RKN"
-      orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://meduza.io"
+      if rkn_trial_domain_pick; then
+        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://${RKN_TRIAL_DOMAIN}"
+      fi
       ;;
     *)
       manage_custom_rkn_domain "$mode_domain"
       ;;
   esac
+}
+
+# --- домен проверки для подбора профиля 3 (RKN) -----------------------------
+# Enter — базовый meduza.io; свой домен проверяется по РКН-спискам
+# (TCP_RKN_list.txt + TCP_Custom.txt; hostlist-семантика рантайма: сам домен
+# или родительский суффикс). Отсутствующего предлагаем добавить в
+# TCP_Custom.txt — тот же путь, что у суперавтопрогона. Результат —
+# в RKN_TRIAL_DOMAIN, rc!=0 = отмена подбора.
+
+RKN_TRIAL_DOMAIN_DEFAULT="meduza.io"
+
+rkn_list_has_domain() {
+    local domain="$1" f
+    for f in "${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_RKN_list.txt" \
+             "${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_Custom.txt"; do
+        [ -f "$f" ] || continue
+        if awk -v d="$domain" '
+            {
+                line = $0
+                sub(/\r$/, "", line)
+                gsub(/^[[:space:]]+/, "", line)
+                gsub(/[[:space:]]+$/, "", line)
+                if (line == "" || line ~ /^#/) next
+                if (line == d) { found = 1; exit }
+                dot = "." line
+                if (length(d) > length(dot) && substr(d, length(d) - length(dot) + 1) == dot) { found = 1; exit }
+            }
+            END { exit !found }
+        ' "$f" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+rkn_trial_domain_pick() {
+    local ans="" add_ans=""
+    echo -e "${cyan}--- Домен проверки профиля 3 (RKN) ---${plain}"
+    echo -e "Enter — ${RKN_TRIAL_DOMAIN_DEFAULT} (базовый) или введите свой домен."
+    echo -e "Свой домен должен быть в РКН-списках; если его там нет — предложу добавить в TCP_Custom.txt."
+    read -re -p "Домен: " ans || ans=""
+    if [ -z "$ans" ]; then
+        RKN_TRIAL_DOMAIN="$RKN_TRIAL_DOMAIN_DEFAULT"
+        return 0
+    fi
+    ans="$(z2r_normalize_domain "$ans" 2>/dev/null)" || {
+        echo -e "${red}Некорректный домен.${plain}"
+        pause_enter
+        return 1
+    }
+    if rkn_list_has_domain "$ans"; then
+        echo -e "${green}Домен ${ans} найден в РКН-списках.${plain}"
+        RKN_TRIAL_DOMAIN="$ans"
+        return 0
+    fi
+    echo -e "${yellow}Домена ${ans} нет в РКН-списках — профиль 3 не будет его обрабатывать.${plain}"
+    read -re -p "Добавить в TCP_Custom.txt? (1 - да, Enter - отмена подбора): " add_ans || add_ans=""
+    if [ "$add_ans" = "1" ]; then
+        domain_list_add "$(custom_rkn_file)" "$ans" "РКН-список (TCP_Custom.txt)" "Домен"
+        RKN_TRIAL_DOMAIN="$ans"
+        return 0
+    fi
+    echo "Отменено."
+    return 1
 }
