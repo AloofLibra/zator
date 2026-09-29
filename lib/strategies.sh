@@ -1241,16 +1241,22 @@ rkn_list_has_domain() {
 
 rkn_trial_domain_pick() {
     local ans="" add_ans=""
+    clear -x
     echo -e "${cyan}--- Домен проверки профиля 3 (RKN) ---${plain}"
-    echo -e "Enter — ${RKN_TRIAL_DOMAIN_DEFAULT} (базовый) или введите свой домен."
+    echo -e "Enter — ${RKN_TRIAL_DOMAIN_DEFAULT} (базовый), свой домен или ссылка"
+    echo -e "(схема, порт и путь отбрасываются), 0 — отмена."
     echo -e "Свой домен должен быть в РКН-списках; если его там нет — предложу добавить в TCP_Custom.txt."
     read -re -p "Домен: " ans || ans=""
+    if [ "$ans" = "0" ]; then
+        echo "Отменено."
+        return 1
+    fi
     if [ -z "$ans" ]; then
         RKN_TRIAL_DOMAIN="$RKN_TRIAL_DOMAIN_DEFAULT"
         return 0
     fi
     ans="$(z2r_normalize_domain "$ans" 2>/dev/null)" || {
-        echo -e "${red}Некорректный домен.${plain}"
+        echo -e "${red}Не удалось распознать домен. Пример: example.com или https://site.ru/path${plain}"
         pause_enter
         return 1
     }
@@ -1260,7 +1266,7 @@ rkn_trial_domain_pick() {
         return 0
     fi
     echo -e "${yellow}Домена ${ans} нет в РКН-списках — профиль 3 не будет его обрабатывать.${plain}"
-    read -re -p "Добавить в TCP_Custom.txt? (1 - да, Enter - отмена подбора): " add_ans || add_ans=""
+    read -re -p "Добавить в TCP_Custom.txt и продолжить? (1 - да, 0/Enter - отмена): " add_ans || add_ans=""
     if [ "$add_ans" = "1" ]; then
         domain_list_add "$(custom_rkn_file)" "$ans" "РКН-список (TCP_Custom.txt)" "Домен"
         RKN_TRIAL_DOMAIN="$ans"

@@ -1643,15 +1643,21 @@ sni_profile_pick() {
       fi
       pause_enter
     elif [ "$choice" = "$custom_idx" ]; then
-      read -re -p "Домен (например, www.example.com): " domain
-      if [ -z "$domain" ]; then
+      read -re -p "Домен или ссылка (например, www.example.com или https://site.ru/x), 0 - отмена: " domain
+      if [ "$domain" = "0" ]; then
         :
-      elif sni_override_set "$profile" "$domain"; then
-        echo -e "${green}Профиль $profile: клон-стратегии используют SNI ${domain}.${plain}"
-        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
-        telemetry_notify
-      else
-        echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}"
+      elif [ -n "$domain" ]; then
+        # хитрый ввод (схема/порт/путь/регистр/крайние точки) приводится к домену
+        domain="$(z2r_normalize_domain "$domain" 2>/dev/null)" || domain=""
+        if [ -z "$domain" ]; then
+          echo -e "${red}Не удалось распознать домен. Пример: www.example.com или https://site.ru/path${plain}"
+        elif sni_override_set "$profile" "$domain"; then
+          echo -e "${green}Профиль $profile: клон-стратегии используют SNI ${domain}.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}"
+        fi
       fi
       pause_enter
     else

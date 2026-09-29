@@ -479,12 +479,21 @@ grep -q 'оставлена применённая стратегия 4' "$TMP_D
   || fail "сценарий 10: нет сообщения об оставленной применённой стратегии"
 unset MOCK_DELAY
 
-# == 11. свой домен подбора профиля 3: проверка по РКН-спискам ==
+# == 11. свой домен подбора профиля 3: 0-выход, хитрые URL, списки ==
 
 grep -q 'rkn_trial_domain_pick' "$REPO_DIR/lib/strategies.sh" || fail "сценарий 11: нет rkn_trial_domain_pick"
 grep -q 'rkn_trial_domain_pick' "$REPO_DIR/lib/submenus.sh" || fail "сценарий 11: подменю не зовёт rkn_trial_domain_pick"
+# принцип меню: 0 = выход; экран очищается перед диалогом
+grep -q 'clear -x' <(sed -n "$(grep -n '^rkn_trial_domain_pick' "$REPO_DIR/lib/strategies.sh" | cut -d: -f1),+30p" "$REPO_DIR/lib/strategies.sh") \
+  || fail "сценарий 11: диалог не очищает экран"
 printf 'meduza.io\nexample.com\n' > "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt"
 : > "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
+
+# 0 — отмена (принцип всех меню)
+printf '0\n' > "$TMP_DIR/in11.txt"
+if rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1; then
+  fail "сценарий 11: 0 должен отменять подбор"
+fi
 
 # Enter — базовый домен
 RKN_TRIAL_DOMAIN=""
@@ -492,31 +501,36 @@ rkn_trial_domain_pick </dev/null >/dev/null 2>&1 \
   || fail "сценарий 11: Enter должен давать базовый домен"
 [ "$RKN_TRIAL_DOMAIN" = "meduza.io" ] || fail "сценарий 11: Enter -> базовый, получено [$RKN_TRIAL_DOMAIN]"
 
-# свой домен: нормализация регистра + родительский суффикс в списке
+# хитрый URL: схема/путь/регистр + родительский суффикс в списке
 # (stdin из файла, не пайпом: функция должна остаться в текущем шелле,
 # иначе глобал RKN_TRIAL_DOMAIN не дойдёт до ассерта)
-printf 'Sub.Example.COM\n' > "$TMP_DIR/in11.txt"
+printf 'https://Sub.Example.COM/watch?v=dQw4w9WgXcQ\n' > "$TMP_DIR/in11.txt"
 rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
-  || fail "сценарий 11: свой домен (родитель в списке) должен проходить"
-[ "$RKN_TRIAL_DOMAIN" = "sub.example.com" ] || fail "сценарий 11: нет нормализации регистра [$RKN_TRIAL_DOMAIN]"
+  || fail "сценарий 11: URL с схемой/путём (родитель в списке) должен проходить"
+[ "$RKN_TRIAL_DOMAIN" = "sub.example.com" ] || fail "сценарий 11: URL не нормализован [$RKN_TRIAL_DOMAIN]"
 
-# точное совпадение в списке
-printf 'example.com\n' > "$TMP_DIR/in11.txt"
+# хитрый URL с портом, точное совпадение после нормализации
+printf 'HTTP://example.com:443/some/path\n' > "$TMP_DIR/in11.txt"
 rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
-  || fail "сценарий 11: точное совпадение должно проходить"
+  || fail "сценарий 11: URL с портом (точное совпадение) должен проходить"
+[ "$RKN_TRIAL_DOMAIN" = "example.com" ] || fail "сценарий 11: порт не срезан [$RKN_TRIAL_DOMAIN]"
 
-# домена нет + согласие на добавление -> пишется в TCP_Custom.txt
-printf 'fresh.ru\n1\n' > "$TMP_DIR/in11.txt"
+# домена нет + согласие на добавление (хитрый ввод) -> пишется в TCP_Custom.txt
+printf '  https://Fresh.ru:443/x  \n1\n' > "$TMP_DIR/in11.txt"
 rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
   || fail "сценарий 11: домен с добавлением должен проходить"
 [ "$RKN_TRIAL_DOMAIN" = "fresh.ru" ] || fail "сценарий 11: добавленный домен не выбран [$RKN_TRIAL_DOMAIN]"
 grep -Fxq 'fresh.ru' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" \
   || fail "сценарий 11: fresh.ru не добавлен в TCP_Custom.txt"
 
-# домена нет + отказ -> отмена
+# домена нет + отказ (0 и Enter) -> отмена
+printf 'nope.ru\n0\n' > "$TMP_DIR/in11.txt"
+if rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1; then
+  fail "сценарий 11: отказ (0) от добавления должен отменять подбор"
+fi
 printf 'nope.ru\n\n' > "$TMP_DIR/in11.txt"
 if rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1; then
-  fail "сценарий 11: отказ от добавления должен отменять подбор"
+  fail "сценарий 11: отказ (Enter) от добавления должен отменять подбор"
 fi
 
 # мусорный ввод -> отмена

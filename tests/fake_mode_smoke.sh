@@ -167,6 +167,28 @@ assert_contains "$Z2R_SRC" 'silent-drop-detector\.lua dns-clone\.lua fake-adapt\
 assert_contains "$Z2R_SRC" 's#/opt/zapret2/lua/fake-adapt\.lua#/opt/zator/lua/fake-adapt\.lua#g' \
   "миграция z2r.sh не переписывает путь fake-adapt.lua"
 
+# --- 2d. SNI клона: свой домен принимает хитрые URL (нормализация как в диалоге) ---
+
+bash -n "$REPO_DIR/lib/strategies.sh" || fail "bash -n: lib/strategies.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/strategies.sh"
+awk '/Домен или ссылка/,/pause_enter/' "$REPO_DIR/lib/submenus.sh" | grep -q 'z2r_normalize_domain' \
+  || fail "sni_profile_pick не нормализует свой домен (хитрые URL)"
+awk '/Домен или ссылка/,/pause_enter/' "$REPO_DIR/lib/submenus.sh" | grep -q '"\$domain" = "0"' \
+  || fail "sni_profile_pick: нет отмены по 0"
+for probe in 'https://VK.ru/watch?v=1' 'HTTP://Max.ru:443/path' '  www.Example.COM.  ' 'https://user@hcaptcha.com/x'; do
+  d="$(z2r_normalize_domain "$probe")" \
+    || fail "нормализация не осилила: $probe"
+  sni_override_valid "$d" \
+    || fail "после нормализации домен невалиден для SNI: $probe -> $d"
+done
+[ "$(z2r_normalize_domain 'https://VK.ru/watch?v=1')" = "vk.ru" ] \
+  || fail "URL не приводится к домену"
+sni_override_set 1 "$(z2r_normalize_domain 'https://VK.ru/watch?v=1')" \
+  || fail "sni_override_set не принял нормализованный домен"
+[ "$(sni_override_get 1)" = "vk.ru" ] || fail "sni_override: сохранился не домен"
+sni_override_clear 1
+
 # --- 3. Хелперы mode_override_* ---------------------------------------------
 
 [ "$(mode_override_supported_profiles | tr '\n' ' ')" = "1 2 3 4 8 " ] \
