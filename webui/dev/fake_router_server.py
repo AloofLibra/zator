@@ -1596,6 +1596,10 @@ class FakeRouterState:
         self.blob_override_file = os.path.join(self.orch_dir, "blob_override.tsv")
         # per-profile TLS blob: profile -> имя (z2r_prof_N | fake_default_tls)
         self.blob_overrides = {}
+        # режим фейков (mode_override.tsv): profile -> clone|classic (нет = classic)
+        self.mode_overrides = {}
+        # SNI клона (sni_override.tsv): profile -> домен ("" = дефолт)
+        self.sni_overrides = {}
         for f in (self.lock_file, self.lock_manual_file):
             open(f, "w", encoding="utf-8").close()
 
@@ -1947,6 +1951,8 @@ class FakeRouterState:
             "current_blob": current_blob,
             "available_blobs": available_blobs,
             "profile_blobs": self.build_tls_blob_profile_blobs(),
+            "profile_modes": self.build_fake_mode_modes(),
+            "profile_snis": self.build_fake_mode_snis(),
         }
 
     def build_tls_blob_profile_blobs(self):
@@ -1959,6 +1965,26 @@ class FakeRouterState:
             else:
                 out[p] = name
         return out
+
+    def build_fake_mode_modes(self):
+        """mode_override_get() — profile_modes для GET-ответов (нет строки = classic)."""
+        return {p: self.mode_overrides.get(p, "classic") for p in BLOB_PROFILE_IDS}
+
+    def build_fake_mode_snis(self):
+        """sni_override_get() — profile_snis для GET-ответов ("" = дефолт www.google.com)."""
+        return {p: self.sni_overrides.get(p, "") for p in BLOB_PROFILE_IDS}
+
+    def apply_fake_mode(self, profile, value):
+        """api_fake_mode_set() — _lib.sh. Рестарта нет: рантайм-переключение."""
+        if profile not in BLOB_PROFILE_IDS:
+            raise ValueError("Некорректный профиль: {0}".format(profile))
+        if value == "classic":
+            self.mode_overrides.pop(profile, None)
+            return {"ok": True, "restarted": False, "restart_required": False}
+        if value == "clone":
+            self.mode_overrides[profile] = "clone"
+            return {"ok": True, "restarted": False, "restart_required": False}
+        raise ValueError("Некорректное значение режима: {0}".format(value))
 
     def apply_tls_blob_profile(self, profile, value):
         """api_tls_blob_profile_set() — _lib.sh."""
@@ -3065,6 +3091,18 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                         result = self.state.apply_tls_blob_profile(profile, blob)
                         self._log("POST {0} | tls_blob_profile={1} value={2}".format(
                             parsed.path, profile, blob))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "fake_mode":
+                profile = params.get("profile", "")
+                value = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_fake_mode(profile, value)
+                        self._log("POST {0} | fake_mode={1} value={2}".format(
+                            parsed.path, profile, value))
                         self._send_json(result)
                 except ValueError as e:
                     self._send_error_json(400, str(e))

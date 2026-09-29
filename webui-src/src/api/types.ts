@@ -72,6 +72,10 @@ export interface TlsBlobSettings {
   available_blobs?: string[]
   // «профиль -> значение»: "" = как глобальный, fake_default_tls | файл слота
   profile_blobs?: Record<string, string>
+  // «профиль -> режим фейков»: classic | clone (нет строки = classic)
+  profile_modes?: Record<string, string>
+  // «профиль -> SNI клона»: "" = невинный дефолт (www.google.com)
+  profile_snis?: Record<string, string>
 }
 
 export interface WgBlobSettings {

@@ -103,6 +103,39 @@ async function submitProfile(id: string) {
     showToast((error as Error).message, 'error')
   }
 }
+
+// --- Режим фейков по профилям (mode_override.tsv): классика / клоны ---
+const modeSelected = reactive<Record<string, string>>({})
+
+function savedMode(id: string): string {
+  return settings.value?.profile_modes?.[id] || 'classic'
+}
+
+function sniDisplay(id: string): string {
+  const sni = settings.value?.profile_snis?.[id] || ''
+  return sni ? sni : 'www.google.com (дефолт)'
+}
+
+watch(settings, () => {
+  for (const p of PROFILE_ITEMS) modeSelected[p.id] = savedMode(p.id)
+}, { immediate: true })
+
+function modeSubmitDisabled(id: string): boolean {
+  return busyActive.value || (modeSelected[id] ?? 'classic') === savedMode(id)
+}
+
+async function submitMode(id: string) {
+  const value = modeSelected[id] ?? 'classic'
+  try {
+    await withBusy(`fake-mode-${id}`, async () => {
+      await applySetting.fake_mode(id, value)
+      showToast('Режим фейков применён без рестарта (до 2 секунд).')
+      await refreshTlsBlobSettings()
+    })
+  } catch (error) {
+    showToast((error as Error).message, 'error')
+  }
+}
 </script>
 
 <template>
@@ -160,6 +193,31 @@ async function submitProfile(id: string) {
             :class="{ 'is-busy': busyButton === `tls-blob-profile-${p.id}` }"
             :disabled="profileSubmitDisabled(p.id)"
             @click="submitProfile(p.id)">Применить</button>
+        </div>
+      </template>
+    </form>
+
+    <form id="fake-mode-form" class="settings-form" @submit.prevent>
+      <h3>Режим фейков</h3>
+      <p class="panel-desc">
+        Клоны: блоб стратегии (maxru|fake_default_tls) строится из ClientHello пользователя
+        с невинным SNI. Классика: штатные блобы конфига, как прописано.
+        Меняется на лету, без перезапуска zapret2.
+      </p>
+      <template v-for="p in PROFILE_ITEMS" :key="p.id">
+        <label>
+          <span>{{ p.title }}</span>
+          <select :id="`fake-mode-${p.id}`" v-model="modeSelected[p.id]" :disabled="busyActive">
+            <option value="classic">Классика — блобы конфига</option>
+            <option value="clone">Клоны — ClientHello пользователя</option>
+          </select>
+          <div class="form-hint">SNI клона: <code>{{ sniDisplay(p.id) }}</code></div>
+        </label>
+        <div class="card-actions">
+          <button type="button" class="primary"
+            :class="{ 'is-busy': busyButton === `fake-mode-${p.id}` }"
+            :disabled="modeSubmitDisabled(p.id)"
+            @click="submitMode(p.id)">Применить</button>
         </div>
       </template>
     </form>

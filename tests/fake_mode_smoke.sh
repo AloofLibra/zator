@@ -50,9 +50,15 @@ source "$REPO_DIR/lib/ui.sh"
 
 # --- 0. Синтаксис -----------------------------------------------------------
 
-for f in lib/orchestra_state.sh lib/actions.sh lib/submenus.sh; do
+for f in lib/orchestra_state.sh lib/actions.sh lib/submenus.sh \
+  webui/cgi-bin/_lib.sh webui/cgi-bin/settings.cgi; do
   bash -n "$REPO_DIR/$f" || fail "bash -n: $f"
 done
+python -c 'import ast,sys; ast.parse(open(sys.argv[1],encoding="utf-8").read())' \
+  "$REPO_DIR/webui/dev/fake_router_server.py" 2>/dev/null \
+  || python3 -c 'import ast,sys; ast.parse(open(sys.argv[1],encoding="utf-8").read())' \
+    "$REPO_DIR/webui/dev/fake_router_server.py" \
+  || fail "python: fake_router_server.py"
 
 # --- 1. Статический wiring locked.lua ---------------------------------------
 
@@ -109,6 +115,39 @@ z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/mode_
 z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/sni_override.tsv' \
   || fail "z2r_backup_state_files не бэкапит sni_override.tsv"
 assert_contains "$AGENTS_SRC" 'mode_override\.tsv' "AGENTS.md не упоминает mode_override.tsv"
+
+# --- 2b. Статический wiring WebUI --------------------------------------------
+
+LIB_SH_SRC="$(tr -d '\r' < "$REPO_DIR/webui/cgi-bin/_lib.sh")"
+SETTINGS_CGI_SRC="$(tr -d '\r' < "$REPO_DIR/webui/cgi-bin/settings.cgi")"
+FAKE_SRV_SRC="$(tr -d '\r' < "$REPO_DIR/webui/dev/fake_router_server.py")"
+CONTRACT_SRC="$(tr -d '\r' < "$REPO_DIR/webui/dev/API_CONTRACT.md")"
+WEBUI_SRC_ALL="$(find "$REPO_DIR/webui-src/src" -type f \( -name '*.vue' -o -name '*.ts' \) -exec cat {} + | tr -d '\r')"
+
+assert_contains "$LIB_SH_SRC" '^api_fake_mode_set\(\)' "_lib.sh нет api_fake_mode_set"
+assert_contains "$LIB_SH_SRC" '^api_fake_mode_modes_json\(\)' "_lib.sh нет билдера режимов"
+assert_contains "$LIB_SH_SRC" '^api_fake_mode_snis_json\(\)' "_lib.sh нет билдера SNI"
+assert_contains "$LIB_SH_SRC" 'mode_override_supported_profiles' "api не валидирует профиль"
+assert_contains "$LIB_SH_SRC" 'mode_override_clear "\$profile"' "classic не сбрасывает строку"
+assert_contains "$LIB_SH_SRC" 'mode_override_set "\$profile" clone' "clone не пишет строку"
+assert_contains "$LIB_SH_SRC" '"profile_modes"' "GET/state не отдаёт profile_modes"
+assert_contains "$LIB_SH_SRC" '"profile_snis"' "GET/state не отдаёт profile_snis"
+assert_contains "$SETTINGS_CGI_SRC" 'fake_mode\)' "settings.cgi не знает fake_mode"
+
+assert_contains "$WEBUI_SRC_ALL" 'fake-mode-form' "webui-src нет формы fake-mode-form"
+assert_contains "$WEBUI_SRC_ALL" 'fake-mode-\$\{p\.id\}' "webui-src нет селектов по профилям"
+assert_contains "$WEBUI_SRC_ALL" 'profile_modes' "webui-src не читает profile_modes"
+assert_contains "$WEBUI_SRC_ALL" 'profile_snis' "webui-src не читает profile_snis"
+assert_contains "$WEBUI_SRC_ALL" "setting: 'fake_mode'" "webui-src не зовёт fake_mode"
+
+assert_contains "$FAKE_SRV_SRC" 'def apply_fake_mode' "fake_router_server нет apply_fake_mode"
+assert_contains "$FAKE_SRV_SRC" '"profile_modes"' "fake_router_server не отдаёт profile_modes"
+assert_contains "$FAKE_SRV_SRC" '"profile_snis"' "fake_router_server не отдаёт profile_snis"
+assert_contains "$FAKE_SRV_SRC" 'setting == "fake_mode"' "fake_router_server POST не знает fake_mode"
+
+assert_contains "$CONTRACT_SRC" '`fake_mode`' "API_CONTRACT без fake_mode"
+assert_contains "$CONTRACT_SRC" '"profile_modes"' "API_CONTRACT без profile_modes"
+assert_contains "$CONTRACT_SRC" '"profile_snis"' "API_CONTRACT без profile_snis"
 
 # --- 3. Хелперы mode_override_* ---------------------------------------------
 
