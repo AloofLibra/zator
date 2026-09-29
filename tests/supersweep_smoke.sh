@@ -17,7 +17,7 @@ fail() {
 }
 
 TMP_DIR="$(mktemp -d /tmp/zator-supersweep.XXXXXX)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'test "${SMOKE_KEEP:-0}" = 1 || rm -rf "$TMP_DIR"' EXIT
 mkdir -p "$TMP_DIR/bin"
 
 # --- мок curl: стратегия берётся из живого lock-файла ----------------------
@@ -182,7 +182,7 @@ orch_locked_set meduza.io tls 1
 export MOCK_OK_P1="2 4" MOCK_OK_P2="3" MOCK_OK_P4="1 5"
 export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
 
-out="$(supersweep_run both 0 0 2 meduza.io xhamster.com chess.com 2>&1)" || {
+out="$(supersweep_run both 0 0 0 2 meduza.io xhamster.com chess.com 2>&1)" || {
   printf '%s\n' "$out" >&2
   fail "сценарий 1: supersweep_run вернул ошибку"
 }
@@ -191,12 +191,13 @@ out="$(supersweep_run both 0 0 2 meduza.io xhamster.com chess.com 2>&1)" || {
 [ "$(lock_state 1 http)" = 4 ] || fail "сценарий 1: профиль 1/http должен получить 4"
 [ "$(lock_state 2 tls)" = 3 ] || fail "сценарий 1: профиль 2 должен получить стратегию 3"
 [ "$(lock_state 4 tls)" = 5 ] || fail "сценарий 1: профиль 4 должен получить стратегию 5"
-[ "$(lock_state 3 tls)" = 2 ] || fail "сценарий 1: профиль 3 должен получить стратегию 2 (макс. покрытие), а не $(lock_state 3 tls)"
-# пер-доменные пробы временные: meduza возвращается к прежнему локу 1,
-# xhamster/chess (не имели лока) возвращаются к auto
-[ "$(lock_state meduza.io tls)" = 1 ] || fail "сценарий 1: meduza.io должен вернуться к локу 1, а не $(lock_state meduza.io tls)"
-[ "$(lock_state xhamster.com tls)" = auto ] || fail "сценарий 1: xhamster.com должен быть auto после отката, а не $(lock_state xhamster.com tls)"
-[ "$(lock_state chess.com tls)" = auto ] || fail "сценарий 1: chess.com должен быть auto после отката"
+# пер-доменное применение: строка профиля 3 не трогается, каждый домен
+# получает свою зелёную стратегию (медуза: зелёные 1 и 2, у меньшего номера
+# выше скорость докачки в моке)
+[ "$(lock_state 3 tls)" = auto ] || fail "сценарий 1: профиль 3 не должен менять строку, а не $(lock_state 3 tls)"
+[ "$(lock_state meduza.io tls)" = 2 ] || fail "сценарий 1: meduza.io должен получить свой победитель 2 (быстрейший зелёный), а не $(lock_state meduza.io tls)"
+[ "$(lock_state xhamster.com tls)" = 2 ] || fail "сценарий 1: xhamster.com должен получить стратегию 2, а не $(lock_state xhamster.com tls)"
+[ "$(lock_state chess.com tls)" = 2 ] || fail "сценарий 1: chess.com должен получить стратегию 2, а не $(lock_state chess.com tls)"
 
 # прогресс-файлы для веб-панели
 [ -f "$Z2R_SUPERSWEEP_DIR/status" ] || fail "сценарий 1: нет status-файла"
@@ -215,12 +216,16 @@ grep -q '^winner_total=3$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценар�
 grep -q $'profile\t1\t4' "$Z2R_SUPERSWEEP_DIR/summary.tsv" || fail "сценарий 1: summary.tsv без profile 1 -> 4"
 grep -q $'profile\t3\t2' "$Z2R_SUPERSWEEP_DIR/summary.tsv" || fail "сценарий 1: summary.tsv без profile 3 -> 2"
 grep -q 'Применена стратегия 4' <<<"$out" || fail "сценарий 1: нет строки применения для профиля 1"
-grep -q 'сразу по завершении воркера' <<<"$out" || fail "сценарий 1: применение не помечено как немедленное"
-[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/applied.tsv" 2>/dev/null || echo 0)" = 4 ] \
-  || fail "сценарий 1: applied.tsv должен иметь 4 строки (по одной на воркер)"
+grep -q 'воркер завершён' <<<"$out" || fail "сценарий 1: применение не помечено как немедленное"
+grep -q 'РКН: домен meduza.io — применена стратегия 2' <<<"$out" || fail "сценарий 1: нет пер-доменного применения meduza"
+grep -q 'РКН: домен xhamster.com — применена стратегия 2' <<<"$out" || fail "сценарий 1: нет пер-доменного применения xhamster"
+grep -q 'Персональные стратегии применены' <<<"$out" || fail "сценарий 1: нет сводки пер-доменных применений"
+[ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/applied.tsv" 2>/dev/null || echo 0)" = 6 ] \
+  || fail "сценарий 1: applied.tsv должен иметь 6 строк (3 профиля + 3 домена)"
 grep -q $'profile\t1\t4' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без profile 1 -> 4"
-grep -q $'profile\t3\t2' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без profile 3 -> 2"
-grep -q 'Применена стратегия 2 для профиля 3' <<<"$out" || fail "сценарий 1: нет строки применения для профиля 3"
+grep -q $'domain	meduza.io	2' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без domain meduza.io -> 2"
+grep -q $'domain\txhamster.com\t2' "$Z2R_SUPERSWEEP_DIR/applied.tsv" || fail "сценарий 1: applied.tsv без domain xhamster.com -> 2"
+grep -q 'РКН: домен chess.com — применена стратегия 2' <<<"$out" || fail "сценарий 1: нет пер-доменного применения chess"
 grep -q 'медуза\|meduza.io' <<<"$out" || fail "сценарий 1: в отчёте нет рекомендаций по доменам"
 grep -q 'Зелёные\|Рабочие' <<<"$out" || fail "сценарий 1: в отчёте нет списков рабочих стратегий"
 
@@ -247,7 +252,7 @@ export MOCK_DELAY=0.2
 export MOCK_OK_P1="2 4 6" MOCK_OK_P2="3 7" MOCK_OK_P4="1 5"
 export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
 
-supersweep_run both 0 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel.log" 2>&1 &
+supersweep_run both 0 0 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel.log" 2>&1 &
 RUN_PID=$!
 # ждём первых результатов и отменяем внешним механизмом (как сделает веб-панель)
 n=0
@@ -376,7 +381,7 @@ orch_locked_set 3 tls 4
 export MOCK_OK_P1="" MOCK_OK_P2="" MOCK_OK_P4=""
 export MOCK_OK_meduza_io="1 2 3 4 5" MOCK_HALF_meduza_io=1
 rm -rf "$Z2R_SUPERSWEEP_DIR"
-out8="$(supersweep_run both 0 0 1 meduza.io </dev/null 2>&1)" || {
+out8="$(supersweep_run both 0 0 0 1 meduza.io </dev/null 2>&1)" || {
   printf '%s\n' "$out8" >&2
   fail "сценарий 8: supersweep_run упал на только-жёлтом прогоне"
 }
@@ -384,26 +389,39 @@ out8="$(supersweep_run both 0 0 1 meduza.io </dev/null 2>&1)" || {
 grep -q '^winner=$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 8: winner должен быть пуст"
 grep -q '^warn_winner=5$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 8: warn_winner должен быть 5 (самая быстрая жёлтая)"
 grep -q '^reference=meduza.io$' "$Z2R_SUPERSWEEP_DIR/best.rkn" || fail "сценарий 8: reference должен быть meduza.io"
-grep -q 'Полностью зелёных стратегий нет' <<<"$out8" || fail "сценарий 8: нет сообщения об отсутствии зелёных"
-grep -q 'не применён' <<<"$out8" || fail "сценарий 8: жёлтый кандидат не помечен как неприменённый"
+grep -q 'Зелёных пер-доменных результатов нет' <<<"$out8" || fail "сценарий 8: нет сообщения об отсутствии зелёных"
+grep -q 'не применялись' <<<"$out8" || fail "сценарий 8: жёлтые не помечены как неприменённые"
 grep -q 'деградацию канала' <<<"$out8" || fail "сценарий 8: нет подсказки о деградации канала"
 grep -q 'доменов в прогоне: 1' <<<"$out8" || fail "сценарий 8: счётчик доменов пуст/неверен"
 # вне интерактивного терминала вопроса про применение частичной быть не должноgrep -q 'Применить частичную' <<<"$out8" && fail "сценарий 8: tty-вопрос применения частичной появился без терминала"
 grep -q 'Корреляция с YouTube' <<<"$out8" || fail "сценарий 8: нет строки корреляции с YouTube"
-grep -q 'Каждая стратегия проверяется на всех выбранных доменах' <<<"$out8" || fail "сценарий 8: нет пояснения полной матрицы"
+grep -q 'полный проход стратегий на каждый' <<<"$out8" || fail "сценарий 8: нет пояснения пер-доменного прохода"
 # все 5 строк карты — жёлтые
 [ "$(awk -F'\t' '$4=="warn"' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 5 ] \
   || fail "сценарий 8: все 5 строк эталона должны быть warn"
 unset MOCK_HALF_meduza_io
 
 # == 9. пауза: минимум 15 сек (профили) и 30 сек (РКН) ==
-p="$(printf '\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause упал"
-[ "$p" = "15" ] || fail "сценарий 9: Enter должен давать 15, получено [$p]"
-p="$(printf '5\n20\n' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause (5/20) упал"
-[ "$p" = "20" ] || fail "сценарий 9: 5 должно отбрасываться (минимум 15), затем 20, получено [$p]"
-p="$(printf '\n' | supersweep_ask_rkn_pause 2>/dev/null)" || fail "сценарий 9: ask_rkn_pause упал"
-[ "$p" = "30" ] || fail "сценарий 9: Enter должен давать 30 для РКН, получено [$p]"
-p="$(printf '15\n45\n' | supersweep_ask_rkn_pause 2>/dev/null)" || fail "сценарий 9: ask_rkn_pause (15/45) упал"
+p="$(printf '
+' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause упал"
+[ "$p" = "5" ] || fail "сценарий 9: Enter должен давать 5, получено [$p]"
+p="$(printf '3
+20
+' | supersweep_ask_pause 2>/dev/null)" || fail "сценарий 9: ask_pause (3/20) упал"
+[ "$p" = "20" ] || fail "сценарий 9: 3 должно отбрасываться (минимум 5), затем 20, получено [$p]"
+p="$(printf '
+' | supersweep_ask_ds_pause 2>/dev/null)" || fail "сценарий 9: ask_ds_pause упал"
+[ "$p" = "15" ] || fail "сценарий 9: Enter должен давать 15 для Discord, получено [$p]"
+p="$(printf '5
+25
+' | supersweep_ask_ds_pause 2>/dev/null)" || fail "сценарий 9: ask_ds_pause (5/25) упал"
+[ "$p" = "25" ] || fail "сценарий 9: 5 должно отбрасываться (минимум 15), затем 25, получено [$p]"
+p="$(printf '
+' | supersweep_ask_rkn_pause 2>/dev/null)" || fail "сценарий 9: ask_rkn_pause упал"
+[ "$p" = "60" ] || fail "сценарий 9: Enter должен давать 60 для РКН, получено [$p]"
+p="$(printf '15
+45
+' | supersweep_ask_rkn_pause 2>/dev/null)" || fail "сценарий 9: ask_rkn_pause (15/45) упал"
 [ "$p" = "45" ] || fail "сценарий 9: 15 должно отбрасываться (минимум 30), затем 45, получено [$p]"
 
 # == 9a. имя архива и meta.tsv несут телеметрийный uuid + блобы ==
@@ -430,7 +448,7 @@ export MOCK_DELAY=0.05
 export MOCK_OK_P1="2 4" MOCK_OK_P2="3" MOCK_OK_P4="1 5"
 export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
 
-supersweep_run both 0 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel2.log" 2>&1 &
+supersweep_run both 0 0 0 1 meduza.io xhamster.com chess.com >"$TMP_DIR/cancel2.log" 2>&1 &
 RUN2_PID=$!
 # ждём: yt-воркер отработал и координатор применил его лучший лок,
 # и стартовал этап 2 карты (первые домены кроме эталона)

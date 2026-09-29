@@ -149,10 +149,15 @@ z2r_tls_poll_sleep() {
 }
 
 z2r_tls_check_target() {
-    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0
+    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0 tls_gap
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
     z2r_tls_probe_version "$url" 12 >"$tmp/v12" 2>/dev/null </dev/null &
     p12=$!
+    # Z2R_TLS_PROBE_GAP: интервал между пробами TLS 1.2 и 1.3 — одновременные
+    # попытки обеих версий на одну цель читаются ТСПУ как сканер
+    tls_gap="${Z2R_TLS_PROBE_GAP:-0}"
+    case "$tls_gap" in ''|*[!0-9]*) tls_gap=0 ;; esac
+    [ "$tls_gap" -gt 0 ] && sleep "$tls_gap"
     z2r_tls_probe_version "$url" 13 >"$tmp/v13" 2>/dev/null </dev/null &
     p13=$!
 
