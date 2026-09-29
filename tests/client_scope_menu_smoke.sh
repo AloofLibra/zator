@@ -375,10 +375,12 @@ mark:7
 EOF
 [ "$CLIENT_SCOPE_ASK_MARK" = "mark:7" ] || fail 'ask_mark result'
 # Статика: пункты 11/12 ушли из меню стратегий, удаление клиента — в гейте.
+# Слот 12 занят Суперавтопрогоном (feat/super-sweep) — ищем именно старую
+# метку переключателя клиента, а не любой пункт 12.
 if grep -q 'submenu_item "11" "Client scopes' lib/submenus.sh; then
   fail 'menu 1 should not show client scopes item 11 anymore'
 fi
-if grep -q 'submenu_item "12"' lib/submenus.sh; then
+if grep -q 'submenu_item "12" "Клиент стратегий' lib/submenus.sh; then
   fail 'menu 1 should not show client switch item 12 anymore'
 fi
 grep -q 'Удалить клиента' lib/submenus.sh || fail 'gate picker must offer client removal'

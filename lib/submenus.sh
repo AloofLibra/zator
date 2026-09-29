@@ -1550,6 +1550,9 @@ tls_blob_submenu() {
     done
     submenu_item "$i" "SNI клон-стратегий — по профилям"
     local sni_item=$i
+    i=$((i+1))
+    submenu_item "$i" "Режим фейков — классика/клоны по профилям"
+    local mode_item=$i
     echo ""
     submenu_item "0" "Назад"
     echo ""
@@ -1564,6 +1567,9 @@ tls_blob_submenu() {
         ;;
       "$sni_item")
         sni_submenu
+        ;;
+      "$mode_item")
+        fake_mode_submenu
         ;;
       *)
         if ui_is_number_in_range "$ans" 2 "$(( ${#profiles[@]} + 1 ))"; then
@@ -1686,6 +1692,131 @@ sni_submenu() {
     elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
       idx=$((ans-1))
       sni_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+# --- Режим фейков: классика / клоны по профилям (mode_override.tsv) ---
+# clone — блоб стратегии (maxru|fake_default_tls) строится в рантайме из
+# ClientHello пользователя, SNI клона — из меню SNI или невинный дефолт;
+# classic — штатные блобы конфига (текущее поведение). Меняется на лету.
+
+fake_mode_sni_display() {
+  local sni
+  sni="$(sni_override_get "$1")"
+  if [ -n "$sni" ]; then echo "$sni"; else echo "www.google.com (дефолт)"; fi
+}
+
+fake_mode_profile_pick() {
+  local profile="$1" title="$2" choice cur
+
+  while true; do
+    clear -x
+    cur="$(mode_override_get "$profile")"
+    echo -e "${cyan}--- Профиль $profile ($title): режим фейков ---${plain}"
+    echo ""
+    if [ "$cur" = "clone" ]; then
+      echo -e "${yellow}Сейчас: ${green}клоны (ClientHello пользователя)${plain}"
+    else
+      echo -e "${yellow}Сейчас: ${green}классика (штатные блобы конфига)${plain}"
+    fi
+    echo -e "${yellow}SNI клона: ${plain}${green}$(fake_mode_sni_display "$profile")${plain}${yellow} — меняется в меню SNI${plain}"
+    echo ""
+    submenu_item "1" "Классика — штатные блобы конфига (сброс режима)"
+    submenu_item "2" "Клоны — ClientHello пользователя с невинным SNI"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice
+    case "$choice" in
+      "0"|"")
+        return
+        ;;
+      "1")
+        if mode_override_clear "$profile"; then
+          echo -e "${green}Сброшено: профиль $profile вернулся к классике.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сбросить режим.${plain}"
+        fi
+        pause_enter
+        ;;
+      "2")
+        if mode_override_set "$profile" clone; then
+          echo -e "${green}Профиль $profile: клоны ClientHello пользователя с невинным SNI.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сохранить режим.${plain}"
+        fi
+        pause_enter
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
+fake_mode_submenu() {
+  local p ans i idx v
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(mode_override_supported_profiles)
+  local all_clone=$(( ${#profiles[@]} + 1 ))
+  local all_classic=$(( ${#profiles[@]} + 2 ))
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Режим фейков: классика / клоны ---${plain}"
+    echo ""
+    echo -e "${yellow}Клоны: блоб стратегии (maxru|fake_default_tls) строится из${plain}"
+    echo -e "${yellow}ClientHello пользователя, SNI — невинный (меню SNI рядом).${plain}"
+    echo -e "${yellow}Классика: штатные блобы конфига, как прописано.${plain}"
+    echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(mode_override_get "${profiles[$idx]}")"
+      if [ "$v" = "clone" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "клоны" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "классика" yellow
+      fi
+      i=$((i+1))
+    done
+    submenu_item "$all_clone" "Клоны — включить для всех профилей"
+    submenu_item "$all_classic" "Классика — включить для всех профилей"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      fake_mode_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
+    elif [ "$ans" = "$all_clone" ]; then
+      for p in "${profiles[@]}"; do
+        mode_override_set "$p" clone || echo -e "${red}Не удалось включить клоны для профиля $p.${plain}"
+      done
+      echo -e "${green}Клоны включены для всех профилей.${plain}"
+      echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+      telemetry_notify
+      pause_enter
+    elif [ "$ans" = "$all_classic" ]; then
+      for p in "${profiles[@]}"; do
+        mode_override_clear "$p" || echo -e "${red}Не удалось сбросить режим профиля $p.${plain}"
+      done
+      echo -e "${green}Классика включена для всех профилей.${plain}"
+      echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+      telemetry_notify
+      pause_enter
     else
       ui_invalid_input
     fi

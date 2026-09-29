@@ -21,6 +21,9 @@ local BLOB_OVERRIDE_PATH = LOCKED_DIR .. "/blob_override.tsv"
 local BLOB_OVERRIDES = {}
 local SNI_OVERRIDE_PATH = LOCKED_DIR .. "/sni_override.tsv"
 local SNI_OVERRIDES = {}
+-- mode_override.tsv: «profile<TAB>clone|classic» — режим фейков профиля.
+local MODE_OVERRIDE_PATH = LOCKED_DIR .. "/mode_override.tsv"
+local MODE_OVERRIDES = {}
 
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -170,6 +173,31 @@ local function load_sni_override_file(path)
   f:close()
 end
 
+-- mode_override.tsv: «profile<TAB>clone|classic» — режим фейков профиля.
+-- classic (или нет строки) — штатные блобы стратегии из конфига; clone —
+-- блоб инстанса строится в рантайме из ClientHello пользователя.
+local function mode_override_parse_line(line)
+  if type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  if line == "" or string.match(line, "^%s*#") then return nil end
+  local fields = {}
+  for field in (line .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = trim(field) end
+  if #fields ~= 2 then return nil end
+  if not string.match(fields[1], "^%d+$") then return nil end
+  if fields[2] ~= "clone" and fields[2] ~= "classic" then return nil end
+  return fields[1], fields[2]
+end
+
+local function load_mode_override_file(path)
+  local f = io.open(path, "r")
+  if not f then return end
+  for line in f:lines() do
+    local profile, mode = mode_override_parse_line(line)
+    if profile then MODE_OVERRIDES[profile] = mode end
+  end
+  f:close()
+end
+
 local function load_locked_tables()
   local now = os.time()
   if now and (now - last_load) < cache_ttl then return end
@@ -191,6 +219,8 @@ local function load_locked_tables()
     load_blob_override_file(BLOB_OVERRIDE_PATH)
     SNI_OVERRIDES = {}
     load_sni_override_file(SNI_OVERRIDE_PATH)
+    MODE_OVERRIDES = {}
+    load_mode_override_file(MODE_OVERRIDE_PATH)
   end
 end
 
@@ -242,6 +272,15 @@ function locked_load_blob_override_for_tests(lines)
   for _, line in ipairs(lines or {}) do
     local profile, name = blob_override_parse_line(line)
     if profile then BLOB_OVERRIDES[profile] = name end
+  end
+end
+
+-- Тестовый сеттер режима фейков (мимо файла, как blob/sni аналоги).
+function locked_load_mode_override_for_tests(lines)
+  MODE_OVERRIDES = {}
+  for _, line in ipairs(lines or {}) do
+    local profile, mode = mode_override_parse_line(line)
+    if profile then MODE_OVERRIDES[profile] = mode end
   end
 end
 
@@ -560,31 +599,60 @@ function desync_hostname(desync)
   return nil
 end
 
--- Подмена per-profile TLS блоба на исполнении стратегии (blob_override.tsv)
--- и per-profile SNI клон-стратегий (sni_override.tsv). Меняются только args
--- blob/fake_blob со значением maxru|fake_default_tls и arg sni_first; исходные
--- значения восстанавливаются — план может быть переисполнен (replay/desync_copy).
--- Имя блоба должно быть объявлено в конфиге (--blob=ИМЯ:@...) или быть встроенным,
--- иначе подмены нет.
+-- Клон ClientHello пользователя для режима clone (mode_override.tsv):
+-- фингерпринт — от текущего пакета (версия записи, сьюты, GREASE, расширения
+-- наследуются сами), все имена SNI заменяются на невинные. Настоящий SNI
+-- юзера в фейке не оставляем. Строится только на ClientHello; провал = nil.
+local Z2R_CLONE_FIELD = "z2r_mode_clone"
+local Z2R_CLONE_SNI_DEFAULT = "www.google.com"
+
+local function fake_mode_user_clone(desync, sni)
+  if desync.l7payload ~= "tls_client_hello" then return nil end
+  local payload = desync.reasm_data or (desync.dis and desync.dis.payload)
+  if type(payload) ~= "string" or #payload == 0 then return nil end
+  local ok, clone = pcall(tls_client_hello_mod, payload, {
+    sni_del = true,
+    sni_first = (sni and sni ~= "") and sni or Z2R_CLONE_SNI_DEFAULT,
+    sni_snt_new = 0,
+  })
+  if ok and type(clone) == "string" and #clone > 0 then return clone end
+  return nil
+end
+
+-- Подмена per-profile TLS блоба на исполнении стратегии (blob_override.tsv),
+-- режим фейков профиля (mode_override.tsv) и per-profile SNI клон-стратегий
+-- (sni_override.tsv). Порядок: режим (clone строит клон CH юзера) -> блоб-
+-- override -> sni_first. Меняются только args blob/fake_blob со значением
+-- maxru|fake_default_tls и arg sni_first; исходные значения восстанавливаются —
+-- план может быть переисполнен (replay/desync_copy). Имя блоба должно быть
+-- объявлено в конфиге (--blob=ИМЯ:@...) или быть встроенным, иначе подмены нет.
 function blob_override_execute(desync, verdict, instance, profile_key)
+  local mode = profile_key and MODE_OVERRIDES[tostring(profile_key)]
   local name = profile_key and BLOB_OVERRIDES[tostring(profile_key)]
   local sni = profile_key and SNI_OVERRIDES[tostring(profile_key)]
-  if (not name and not sni) or not instance or not instance.arg then
+  if (not mode and not name and not sni) or not instance or not instance.arg then
     return plan_instance_execute(desync, verdict, instance)
   end
   if name and not blob_exist(desync, name) then
     DLOG("blob_override: '"..tostring(name).."' not declared, keeping config value profile="..tostring(profile_key))
     name = nil
   end
+  -- режим clone: клон CH юзера выигрывает у блоба-override; провал клона
+  -- (не CH-пакет, dissect/reconstruct не удался) = штатный путь ниже
+  local clone_data = mode == "clone" and fake_mode_user_clone(desync, sni) or nil
+  local target = clone_data and Z2R_CLONE_FIELD or name
+  if clone_data then
+    desync[Z2R_CLONE_FIELD] = clone_data
+  end
   local saved_blob = instance.arg.blob
   local saved_fake_blob = instance.arg.fake_blob
   local swapped = false
-  if name and (saved_blob == "maxru" or saved_blob == "fake_default_tls") then
-    instance.arg.blob = name
+  if target and (saved_blob == "maxru" or saved_blob == "fake_default_tls") then
+    instance.arg.blob = target
     swapped = true
   end
-  if name and (saved_fake_blob == "maxru" or saved_fake_blob == "fake_default_tls") then
-    instance.arg.fake_blob = name
+  if target and (saved_fake_blob == "maxru" or saved_fake_blob == "fake_default_tls") then
+    instance.arg.fake_blob = target
     swapped = true
   end
   -- sni_first есть только у клон-стратегий: подмена не задевает остальные
@@ -596,7 +664,11 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   end
   local v = plan_instance_execute(desync, verdict, instance)
   if swapped then
-    DLOG("blob_override: profile="..tostring(profile_key).." blob -> "..name)
+    if clone_data then
+      DLOG("fake_mode: profile="..tostring(profile_key).." user clone -> "..target)
+    else
+      DLOG("blob_override: profile="..tostring(profile_key).." blob -> "..name)
+    end
     instance.arg.blob = saved_blob
     instance.arg.fake_blob = saved_fake_blob
   end

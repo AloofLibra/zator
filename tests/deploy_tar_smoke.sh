@@ -489,7 +489,15 @@ TMP_FREE_KB=100 OPT_FREE_KB=100000 PATH="$WORK/bin:$PATH" deploy_space_mode_sele
 ok "выбор режима A/B/C по df"
 
 printf 'user-domain-2.example\n' > "$ZATOR_ROOT/lists/netrogat.txt"
-TMP_FREE_KB=100 OPT_FREE_KB=13000 PATH="$WORK/bin:$PATH" deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 \
+# OPT_FREE_KB не хардкодим: пороги need/B зависят от фактического размера
+# архива, захардкоженное значение хрупко к росту дерева. Даём ровно enough
+# для need (+300КБ запаса) — всегда меньше порога B (архив + need).
+c_unpacked_kb=$(( $(gzip -l "$DIST/zator-full.tar.gz" | awk 'NR==2 {print $2}') / 1024 + 1 ))
+c_archive_kb=$(( ($(wc -c < "$DIST/zator-full.tar.gz") + 1023) / 1024 ))
+c_free_kb=$(( c_unpacked_kb + DEPLOY_MARGIN_KB + DEPLOY_SLACK_KB + 300 ))
+[ "$c_free_kb" -lt "$(( c_archive_kb + c_unpacked_kb + DEPLOY_MARGIN_KB + DEPLOY_SLACK_KB ))" ] \
+  || fail "мок df: запас 300КБ не помещается между порогами C и B — уменьшите запас"
+TMP_FREE_KB=100 OPT_FREE_KB="$c_free_kb" PATH="$WORK/bin:$PATH" deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 \
   || fail "deploy_from_tar (C) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "режим C: z2r_lib не на месте"
 [ ! -d "$ZATOR_ROOT.old.$$" ] || fail "старый каталог не убран"

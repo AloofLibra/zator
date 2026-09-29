@@ -1023,6 +1023,8 @@ extra_strats/cache/orchestra/locked.tsv
 extra_strats/cache/orchestra/locked.manual.tsv
 extra_strats/cache/orchestra/auto_locked.tsv
 extra_strats/cache/orchestra/blob_override.tsv
+extra_strats/cache/orchestra/sni_override.tsv
+extra_strats/cache/orchestra/mode_override.tsv
 EOF
   # самый свежий архив результатов суперавтопрогона едет в бэкапе вместе с
   # locked.tsv (только последний — историю ротация хранит в cache/supersweep)

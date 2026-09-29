@@ -644,3 +644,52 @@ sni_override_clear() {
     && mv -f "$tmp" "$ORCH_SNI_FILE" || { rm -f "$tmp"; return 1; }
   return 0
 }
+
+# --- per-profile режим фейков (mode_override.tsv) ---
+# Единый источник «профиль -> clone|classic» для CLI-меню и WebUI. classic
+# (нет строки) — штатные блобы стратегии из конфига; clone — блоб
+# maxru|fake_default_tls в рантайме строится из ClientHello пользователя,
+# SNI клона — из sni_override.tsv или невинный дефолт (locked.lua, TTL-кэш 2с,
+# применяется без рестарта nfqws2).
+ORCH_MODE_FILE="${ORCH_MODE_FILE:-$ORCH_DIR/mode_override.tsv}"
+Z2R_MODE_PROFILES="${Z2R_MODE_PROFILES:-1 2 3 4 8}"
+
+mode_override_supported_profiles() {
+  printf '%s\n' $Z2R_MODE_PROFILES
+}
+
+mode_override_get() {
+  [ -f "$ORCH_MODE_FILE" ] || return 0
+  awk -F '\t' -v pr="$1" '$1==pr {print $2; exit}' "$ORCH_MODE_FILE"
+}
+
+mode_override_valid() {
+  [ "$1" = "clone" ] || [ "$1" = "classic" ]
+}
+
+mode_override_set() {
+  local profile="$1" mode="$2" tmp
+  printf '%s' "$profile" | grep -Eq '^[0-9]+$' || return 2
+  mode_override_valid "$mode" || return 2
+  mkdir -p "$ORCH_DIR" || return 1
+  [ -f "$ORCH_MODE_FILE" ] || : > "$ORCH_MODE_FILE"
+  tmp="${ORCH_MODE_FILE}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v pr="$profile" -v nm="$mode" '
+    {if ($1==pr) {if (!seen) {print pr, nm; seen=1}; next} print}
+    END {if (!seen) print pr, nm}
+  ' "$ORCH_MODE_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_MODE_FILE" || {
+    rm -f "$tmp"
+    echo "Unable to update mode override file" >&2
+    return 1
+  }
+  return 0
+}
+
+mode_override_clear() {
+  local profile="$1" tmp
+  [ -f "$ORCH_MODE_FILE" ] || return 0
+  tmp="${ORCH_MODE_FILE}.tmp.$$"
+  awk -F '\t' -v pr="$profile" '{if ($1==pr) next; print}' "$ORCH_MODE_FILE" > "$tmp" \
+    && mv -f "$tmp" "$ORCH_MODE_FILE" || { rm -f "$tmp"; return 1; }
+  return 0
+}
