@@ -996,6 +996,16 @@ case "$mode" in
     echo "Name:   rutracker.org"
     echo "Address: 104.21.32.39"
     ;;
+  refips)
+    echo "Server:         8.8.8.8"
+    echo "Address:        8.8.8.8#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rutracker.org"
+    echo "Address: 104.16.4.81"
+    echo "Name:   rutracker.org"
+    echo "Address: 104.16.3.81"
+    ;;
   nxdomain)
     echo "Server:         8.8.8.8"
     echo "Address:        8.8.8.8#53"
@@ -1049,6 +1059,16 @@ MOCKN
   rc=0; out="$(Z2R_DNS_DOH_TIMEOUT=3 z2r_dns_spoof_gate 2>&1)" || rc=$?
   [ "$rc" = 0 ] || fail "сценарий 19: чистый DNS должен давать rc=0 ($rc)"
   grep -q 'DNS чист' <<<"$out" || fail "сценарий 19: нет вердикта DNS чист"
+
+  # регрессия с живого сервера: эталон из НЕСКОЛЬКИХ адресов (sort -u даёт
+  # колонку с переводами строк) при полном совпадении с прямым ответом не
+  # должен считаться подменой
+  export MOCK19_8888_JSON='{"Status":0,"Answer":[{"type":1,"data":"104.16.3.81"},{"type":1,"data":"104.16.4.81"}]}'
+  export MOCK19_NS=refips
+  rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || fail "сценарий 19: многоадресный эталон при совпадении не должен останавливать (rc=$rc)"
+  grep -q 'DNS чист' <<<"$out" || fail "сценарий 19: нет вердикта DNS чист для многоадресного эталона"
+  unset MOCK19_8888_JSON
 
   # гейт: NXDOMAIN = подтверждённая подмена, стоп + подсказки
   export MOCK19_NS=nxdomain

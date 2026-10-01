@@ -822,22 +822,27 @@ z2r_doh_a_lookup() {
 # Эталонный резолв по каскаду DoH. Печатает строку "источник|адреса"
 # (пустой источник = все резолверы недоступны). Источник возвращается в
 # stdout, а не глобалькой: вызов из $(...) субшелл, присваивание наружу
-# не доходит.
+# не доходит. Адреса — в одну строку через пробел: sort -u отдаёт колонку
+# с переводами строк, и сравнение по пробелам в гейте тогда ложно видит
+# подмену даже при полном совпадении.
 z2r_doh_reference() {
     local domain="$1" raw ips
     raw="$(curl -s -A "$Z2R_CURL_UA" --max-time "${Z2R_DNS_DOH_TIMEOUT:-6}" \
         "https://dns.google/resolve?name=${domain}&type=A" 2>/dev/null)"
     if [ -n "$raw" ]; then
-        ips="$(printf '%s\n' "$raw" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u)"
+        ips="$(printf '%s\n' "$raw" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u | tr '\n' ' ')"
+        ips="${ips% }"
         [ -n "$ips" ] && { printf 'Google DoH (dns.google)|%s\n' "$ips"; return 0; }
     fi
     raw="$(curl -sk -A "$Z2R_CURL_UA" --max-time "${Z2R_DNS_DOH_TIMEOUT:-6}" \
         "https://8.8.8.8/resolve?name=${domain}&type=A" 2>/dev/null)"
     if [ -n "$raw" ]; then
-        ips="$(printf '%s\n' "$raw" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u)"
+        ips="$(printf '%s\n' "$raw" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u | tr '\n' ' ')"
+        ips="${ips% }"
         [ -n "$ips" ] && { printf 'Google DoH (8.8.8.8)|%s\n' "$ips"; return 0; }
     fi
-    ips="$(z2r_doh_a_lookup "$domain")"
+    ips="$(z2r_doh_a_lookup "$domain" | sort -u | tr '\n' ' ')"
+    ips="${ips% }"
     if [ -n "$ips" ]; then
         printf 'quad9 DoH (dns.quad9.net, wire)|%s\n' "$ips"
         return 0
