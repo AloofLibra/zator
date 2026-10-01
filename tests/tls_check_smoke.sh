@@ -1039,6 +1039,31 @@ case "$mode" in
     echo "Name:   t.example"
     echo "Address: 5.6.7.8"
     ;;
+  sysrk)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rutracker.org"
+    echo "Address: 104.21.32.39"
+    echo "Name:   rutracker.org"
+    echo "Address: 172.67.182.196"
+    ;;
+  sys9)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rutracker.org"
+    echo "Address: 9.9.9.9"
+    ;;
+  sysnx)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "** server can't find rutracker.org: NXDOMAIN"
+    ;;
+  syssilent) : ;;
 esac
 exit 0
 MOCKN
@@ -1064,51 +1089,57 @@ MOCKN
     || fail "сценарий 19: источник эталона не 8.8.8.8: [$refline]"
   unset MOCK19_8888_JSON
 
-  # гейт: чисто (прямые ответы = известные адреса рутрекера)
-  export MOCK19_NS=clean
+  # гейт: чисто — системный резолвер (дефолт sys: 1.2.3.4) совпадает с quad9-эталоном
+  unset MOCK19_SYS
   rc=0; out="$(Z2R_DNS_DOH_TIMEOUT=3 z2r_dns_spoof_gate 2>&1)" || rc=$?
   [ "$rc" = 0 ] || fail "сценарий 19: чистый DNS должен давать rc=0 ($rc)"
   grep -q 'DNS чист' <<<"$out" || fail "сценарий 19: нет вердикта DNS чист"
+  grep -q 'Системный DNS' <<<"$out" || fail "сценарий 19: гейт не показывает системный резолвер"
 
-  # регрессия с живого сервера: эталон из НЕСКОЛЬКИХ адресов (sort -u даёт
-  # колонку с переводами строк) при полном совпадении с прямым ответом не
-  # должен считаться подменой
-  export MOCK19_8888_JSON='{"Status":0,"Answer":[{"type":1,"data":"104.16.3.81"},{"type":1,"data":"104.16.4.81"}]}'
-  export MOCK19_NS=refips
+  # гейт: DoH недоступны -> резервный эталон UDP 8.8.8.8, системные ответы
+  # совпадают с ним (известные адреса рутрекера)
+  export Z2R_DNS_DOH_URL="https://doh.invalid/dns-query"
+  export MOCK19_NS=clean MOCK19_SYS=sysrk
   rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
-  [ "$rc" = 0 ] || fail "сценарий 19: многоадресный эталон при совпадении не должен останавливать (rc=$rc)"
-  grep -q 'DNS чист' <<<"$out" || fail "сценарий 19: нет вердикта DNS чист для многоадресного эталона"
-  unset MOCK19_8888_JSON
+  [ "$rc" = 0 ] || fail "сценарий 19: UDP-эталон при совпадении не должен останавливать (rc=$rc)"
+  grep -q 'UDP 8.8.8.8' <<<"$out" || fail "сценарий 19: нет пометки резервного UDP-эталона"
 
-  # гейт: NXDOMAIN = подтверждённая подмена, стоп + подсказки
-  export MOCK19_NS=nxdomain
+  # гейт: все эталоны мертвы (DoH + UDP), системные ответы = известные адреса
+  export MOCK19_NS=silent
   rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
-  [ "$rc" = 2 ] || fail "сценарий 19: NXDOMAIN должен останавливать (rc=2, got $rc)"
+  [ "$rc" = 0 ] || fail "сценарий 19: известные адреса без эталона должны давать rc=0 ($rc)"
+  export Z2R_DNS_DOH_URL="https://dns.quad9.net/dns-query"
+
+  # гейт: системный NXDOMAIN = сломанный/подменённый роутерный DNS, стоп
+  export MOCK19_SYS=sysnx
+  rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
+  [ "$rc" = 2 ] || fail "сценарий 19: системный NXDOMAIN должен останавливать (rc=2, got $rc)"
   grep -q 'ОСТАНОВЛЕН' <<<"$out" || fail "сценарий 19: нет сообщения об остановке"
   grep -q 'Профиль 10' <<<"$out" || fail "сценарий 19: в подсказках нет профиля 10"
   grep -q 'модели вашего роутера' <<<"$out" || fail "сценарий 19: в подсказках нет смены DNS"
 
-  # гейт: заглушка при живом quad9-эталоне = подмена, стоп
-  export MOCK19_NS=stub
+  # гейт: системные адреса мимо живого quad9-эталона = заглушка, стоп
+  export MOCK19_SYS=sys9
   rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
-  [ "$rc" = 2 ] || fail "сценарий 19: заглушка с эталоном должна останавливать (rc=2, got $rc)"
+  [ "$rc" = 2 ] || fail "сценарий 19: заглушка на системном DNS должна останавливать (rc=2, got $rc)"
   grep -q 'заглушку' <<<"$out" || fail "сценарий 19: нет пояснения про заглушку"
 
-  # гейт: все DoH недоступны + адреса вне известных = неопределимо, НЕ стоп
+  # гейт: все эталоны мертвы + системные адреса вне известных = неопределимо
   export Z2R_DNS_DOH_URL="https://doh.invalid/dns-query"
+  export MOCK19_NS=silent
   rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
   [ "$rc" = 1 ] || fail "сценарий 19: без эталона нельзя останавливать (rc=1, got $rc)"
   grep -q 'Продолжаю' <<<"$out" || fail "сценарий 19: нет продолжения без эталона"
   export Z2R_DNS_DOH_URL="https://dns.quad9.net/dns-query"
 
-  # гейт: 8.8.8.8 молчит = не подмена, НЕ стоп
-  export MOCK19_NS=silent
+  # гейт: системный DNS молчит = не подтверждённая подмена, НЕ стоп
+  export MOCK19_SYS=syssilent
   rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
-  [ "$rc" = 1 ] || fail "сценарий 19: молчащий 8.8.8.8 не должен останавливать (rc=1, got $rc)"
-  grep -q 'не подмена' <<<"$out" || fail "сценарий 19: нет пояснения не-подмены"
+  [ "$rc" = 1 ] || fail "сценарий 19: молчащий системный DNS не должен останавливать (rc=1, got $rc)"
+  grep -q 'не подтверждённая подмена' <<<"$out" || fail "сценарий 19: нет пояснения не-подмены"
+  unset MOCK19_SYS MOCK19_NS
 
   # check_dns (пункт 01): фоллбек до quad9, система отдаёт тот же адрес
-  export MOCK19_NS=clean
   rc=0; out="$(check_dns t.example 2>&1)" || rc=$?
   [ "$rc" = 0 ] || fail "сценарий 19: чистый check_dns должен давать rc=0 ($rc)"
   grep -q 'quad9' <<<"$out" || fail "сценарий 19: check_dns не показывает источник quad9"
