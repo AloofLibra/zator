@@ -115,6 +115,8 @@ export Z2R_SUPERSWEEP_STATS_URL=""
 export TELEMETRY_CFG="$TMP_DIR/telemetry.config"
 printf 'tel_enabled=1\ntel_uuid=deadbeef\n' > "$TELEMETRY_CFG"
 export Z2R_SWEEP_PAUSE=0
+# зелёный ускоритель в тестах выключен: паузы остаются нулевыми
+export Z2R_SUPERSWEEP_GREEN_PAUSE=0
 export Z2R_SUPERSWEEP_ARCHIVE_KEEP=3
 mkdir -p "$ORCH" "$ROOT" "$ZATOR_ROOT/extra_strats"
 : > "$ORCH_LOCK_FILE"
@@ -361,11 +363,11 @@ sel="$(printf 'mydom.ru https://bad domain-name.example\n' | supersweep_ask_own_
 # захваченный stdout и превращался в «домены» прогона (Invalid lock profile)
 
 d_all="$(printf '\n' | supersweep_ask_domains 2>/dev/null)" || fail "сценарий 7: ask_domains упал"
-[ "$d_all" = "meduza.io xhamster.com rutracker.org amnezia.org anidub.com turbobit.net www.chess.com" ] \
-  || fail "сценарий 7: Enter должен вернуть ровно 7 базовых доменов, получено: [$d_all]"
+[ "$d_all" = "xhamster.com anidub.com amnezia.org" ] \
+  || fail "сценарий 7: Enter должен вернуть дефолтный набор автора (3 домена), получено: [$d_all]"
 d_sub="$(printf '1 3\n' | supersweep_ask_domains 2>/dev/null)" || fail "сценарий 7: ask_domains (1 3) упал"
-[ "$d_sub" = "meduza.io rutracker.org" ] \
-  || fail "сценарий 7: выбор 1 3 должен вернуть meduza.io rutracker.org, получено: [$d_sub]"
+[ "$d_sub" = "xhamster.com amnezia.org" ] \
+  || fail "сценарий 7: выбор 1 3 должен вернуть xhamster.com amnezia.org, получено: [$d_sub]"
 d_zero_rc=0
 printf '0\n' | supersweep_ask_domains >/dev/null 2>&1 || d_zero_rc=$?
 [ "$d_zero_rc" != 0 ] || fail "сценарий 7: 0 должен отменять выбор доменов"
@@ -538,5 +540,37 @@ printf 'bad domain!\n' > "$TMP_DIR/in11.txt"
 if rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1; then
   fail "сценарий 11: некорректный домен должен отбрасываться"
 fi
+
+# == 12. дефолтный набор РКН автора + пауза без эскалации + зелёный ускоритель ==
+
+# эскалации паузы больше нет
+grep -q 'red_streak\|GENTLE' "$REPO_DIR/lib/supersweep.sh" \
+  && fail "сценарий 12: остатки эскалации паузы (gentle) в supersweep.sh"
+grep -q 'Z2R_SUPERSWEEP_GREEN_PAUSE' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "сценарий 12: нет зелёного ускорителя паузы"
+grep -q 'z2r_tls_code_ok' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "сценарий 12: ускоритель не проверяет обе версии TLS"
+# жёсткого лимита доменов нет: только дефолтный набор
+grep -q 'RKN_DOMAINS_MAX\|supersweep_cap_domains' "$REPO_DIR/lib/supersweep.sh" \
+  && fail "сценарий 12: остался хвост жёсткого лимита доменов"
+
+# дефолтный набор автора: три домена, без meduza (она — дефолт ручного подбора)
+d="$(printf '\n' | supersweep_ask_domains 2>/dev/null)"
+[ "$d" = "xhamster.com anidub.com amnezia.org" ] \
+  || fail "сценарий 12: Enter должен давать дефолтный набор автора [$d]"
+
+# выбор подмножества
+d="$(printf '1 3\n' | supersweep_ask_domains 2>/dev/null)"
+[ "$d" = "xhamster.com amnezia.org" ] || fail "сценарий 12: выбор подмножества сломан [$d]"
+
+# диалог: 0 = отмена
+printf '0\n' | supersweep_ask_domains 2>/dev/null | grep -q . \
+  && fail "сценарий 12: 0 в диалоге доменов должен отменять (пустой вывод)"
+
+# свои домены дописываются свободно (без ограничений количества)
+: > "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
+d="$(printf 'fresh1.ru fresh2.ru\n' | supersweep_ask_own_domains 'a.com b.com c.com' 2>/dev/null)"
+[ "$d" = "a.com b.com c.com fresh1.ru fresh2.ru" ] \
+  || fail "сценарий 12: свои домены должны дописываться свободно [$d]"
 
 echo "supersweep smoke ok"

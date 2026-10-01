@@ -27,7 +27,7 @@ Z2R_SUPERSWEEP_ARCHIVE_KEEP="${Z2R_SUPERSWEEP_ARCHIVE_KEEP:-10}"
 Z2R_SUPERSWEEP_RKN_PAR_DEFAULT="${Z2R_SUPERSWEEP_RKN_PAR_DEFAULT:-2}"
 # curated RKN probe set: every domain ships in TCP_RKN_list.txt already,
 # per-domain locks apply out of the box (no TCP_Custom changes needed).
-Z2R_SUPERSWEEP_RKN_DOMAINS="${Z2R_SUPERSWEEP_RKN_DOMAINS:-meduza.io xhamster.com rutracker.org amnezia.org anidub.com turbobit.net www.chess.com}"
+Z2R_SUPERSWEEP_RKN_DOMAINS="${Z2R_SUPERSWEEP_RKN_DOMAINS:-xhamster.com anidub.com amnezia.org}"
 
 # fallback palette for standalone runs (colors are defined globally in z2r.sh)
 [ -z "${plain:-}" ] && plain='\033[0m'
@@ -388,10 +388,10 @@ _supersweep_worker_rkn() {
     [ -n "$s_list" ] || s_list="$(for ((s=1; s<=max; s++)); do printf '%s ' "$s"; done)"
 
     # последовательный пер-доменный проход: каждый домен получает полный
-    # круг стратегий до перехода к следующему (доменные локи реально работают
-    # в рантайме). Частые переключения на нескольких доменах сразу — типичный
+    # круг стратегий до перехода к следующему (доменные локи реально работают в
+    # рантайме). Частые переключения на нескольких доменах сразу — типичный
     # триггер rate-эвристики ТСПУ, поэтому по одному.
-    local dtot=0 dnum=0 dom_first=1 red_streak=0 peff
+    local dtot=0 dnum=0 dom_first=1 peff
     for d in $domains; do dtot=$((dtot + 1)); done
     for d in $domains; do
         [ "$ss_interrupted" = 1 ] && break
@@ -399,7 +399,6 @@ _supersweep_worker_rkn() {
         [ "$dom_first" = 1 ] || _supersweep_sleep "$pause_sec"
         dom_first=0
         dnum=$((dnum + 1))
-        red_streak=0
         echo -e "$(date '+%H:%M:%S') ${cyan}РКН: домен ${d} (${dnum}/${dtot}) — полный проход стратегий${plain}" >&2
         for s in $s_list; do
             [ "$ss_interrupted" = 1 ] && break
@@ -414,14 +413,16 @@ _supersweep_worker_rkn() {
 28|000|-|-|-
 skip"
             token="$(_supersweep_rkn_record "$d" "$s" "$out" "$tls_pref")"
-            # gentle: серия сплошных неудач выглядит как реакция ТСПУ на
-            # частые переключения — пауза растёт (до 4x), канал остывает
-            case "$token" in ok|warn) red_streak=0 ;; *) red_streak=$((red_streak + 1)) ;; esac
+            # пауза до следующей проверки: обе версии TLS зелёные = не
+            # спалили — можно короткую (Z2R_SUPERSWEEP_GREEN_PAUSE, 0 = выкл);
+            # иначе ровно та, что задал пользователь. Эскалации нет: длинные
+            # простои карту не улучшают, только растягивают прогон.
             peff="$pause_sec"
-            if [ "$red_streak" -ge "${Z2R_SUPERSWEEP_GENTLE_STREAK:-3}" ]; then
-                peff=$(( pause_sec * 2 ))
-                [ "$peff" -gt "$(( pause_sec * 4 ))" ] && peff=$(( pause_sec * 4 ))
-                echo -e "$(date '+%H:%M:%S') ${yellow}РКН: ${red_streak} неудач подряд — пауза увеличена до ${peff} сек (похоже на реакцию ТСПУ).${plain}" >&2
+            if [ "$token" = ok ] \
+                && z2r_tls_code_ok "$(z2r_tls_field "$(printf '%s\n' "$out" | sed -n 1p)" 2)" \
+                && z2r_tls_code_ok "$(z2r_tls_field "$(printf '%s\n' "$out" | sed -n 2p)" 2)"; then
+                peff="${Z2R_SUPERSWEEP_GREEN_PAUSE:-5}"
+                case "$peff" in ''|*[!0-9]*) peff=5 ;; esac
             fi
             [ "$peff" -gt 0 ] && _supersweep_sleep "$peff"
         done
@@ -1232,7 +1233,8 @@ supersweep_ask_domains() {
     local defaults="$Z2R_SUPERSWEEP_RKN_DOMAINS"
     local d i pick dom selected="" total=0
     echo -e "${cyan}--- Домены РКН для карты покрытий ---" >&2
-    echo -e "Базовый набор сообщества; Enter — проверяются все.${plain}" >&2
+    echo -e "Базовый набор автора (по умолчанию все три); свои домены" >&2
+    echo -e "дописываются на следующем шаге — количество не ограничено.${plain}" >&2
     echo "" >&2
     i=1
     for d in $defaults; do
@@ -1425,10 +1427,12 @@ supersweep_menu() {
     echo "(профиль 3) по одному домену за раз. Между фазами и доменами —"
     echo "паузы: частые параллельные переключения триггерят ТСПУ."
     echo "Лучшие стратегии применяются автоматически сразу по завершении"
-    echo "воркера/домена; РКН получает персональные строки доменов."
-    echo "Базовый набор РКН — список сообщества (meduza.io, rutracker.org,"
-    echo "xhamster.com и др.); свои домены к нему только добавляются."
-    echo "При серии неудач подряд пауза автоматически растёт (gentle-режим)."
+    echo "воркера/домена; РКН получает персональные строки доменов и профильную"
+    echo "стратегию максимума покрытия."
+    echo "Базовый набор РКН автора — xhamster.com, anidub.com, amnezia.org"
+    echo "(meduza.io и так стоит дефолтом у ручного подбора профиля 3); свои"
+    echo "домены дописываются без ограничений. Если обе версии TLS отвечают"
+    echo "зелёным, следующая проверка идёт уже через 5 секунд."
     echo ""
 
     domains="$(supersweep_ask_domains)" || { echo "Отмена."; return 0; }
@@ -1475,6 +1479,16 @@ supersweep_menu() {
     echo -e "интернет может подтормаживать (стратегии переключаются на лету)."
     read -re -p "Enter - старт, 0 - отмена: " answer
     [ "$answer" = "0" ] && { echo "Отмена."; return 0; }
+
+    # пред-проверка подмены DNS (просьба автора): спуф делает все проверки
+    # прогона ложными. Останавливаем ТОЛЬКО подтверждённую подмену; молчащий
+    # 8.8.8.8 или недоступные DoH — не стоп, только предупреждение.
+    gate_rc=0
+    z2r_dns_spoof_gate "${domains%% *}" || gate_rc=$?
+    if [ "$gate_rc" = 2 ]; then
+        pause_enter
+        return 0
+    fi
 
     supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains
     pause_enter

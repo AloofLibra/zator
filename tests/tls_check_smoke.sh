@@ -941,4 +941,157 @@ grep -q '`check` | `list=custom_rkn&domain`' "$REPO_DIR/webui/dev/API_CONTRACT.m
 cat "$fake" | python -c "import sys, ast; ast.parse(sys.stdin.read())" \
   || fail "сценарий 16: синтаксис fake_router_server.py"
 
+
+# == 19. DNS перед прогоном: каскад DoH-эталона и гейт подмены ==
+(
+  export COUNTER_DIR="$TMP_DIR/counter19"
+  mkdir -p "$COUNTER_DIR" "$TMP_DIR/bin19"
+
+  # hexdump на стенде CI может отсутствовать (на роутерах BusyBox/Entware он
+  # есть); шим повторяет формат hexdump -v -e: один десятичный байт на строку
+  if ! command -v hexdump >/dev/null 2>&1; then
+    cat > "$TMP_DIR/bin19/hexdump" <<'MOCKH'
+#!/bin/sh
+od -An -v -t d1 | awk '{for (i = 1; i <= NF; i++) print $i}'
+MOCKH
+    chmod +x "$TMP_DIR/bin19/hexdump"
+  fi
+
+  # мок curl: dns.google и 8.8.8.8 (JSON DoH) управляются env, quad9 отдаёт
+  # wire-ответ c A 1.2.3.4 (заголовок + вопрос t.example + ответ c0 0c)
+  cat > "$TMP_DIR/bin19/curl" <<'MOCKC'
+#!/bin/sh
+url=""
+for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
+case "$url" in
+  https://dns.google/*)
+    [ -n "$MOCK19_GOOGLE_JSON" ] && printf '%s' "$MOCK19_GOOGLE_JSON"
+    exit 0 ;;
+  https://8.8.8.8/*)
+    [ -n "$MOCK19_8888_JSON" ] && printf '%s' "$MOCK19_8888_JSON"
+    exit 0 ;;
+  https://dns.quad9.net/*)
+    cat >/dev/null
+    printf '\000\000\201\200\000\001\000\001\000\000\000\000\001t\007example\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\001\002\003\004'
+    exit 0 ;;
+esac
+exit 1
+MOCKC
+  chmod +x "$TMP_DIR/bin19/curl"
+
+  # мок nslookup: с сервером 8.8.8.8 (гейт) — режимы MOCK19_NS; без сервера
+  # (системный вызов check_dns) — режим sys (адрес совпадает с эталоном quad9)
+  cat > "$TMP_DIR/bin19/nslookup" <<'MOCKN'
+#!/bin/sh
+mode="sys"
+[ "$2" = "8.8.8.8" ] && mode="${MOCK19_NS:-clean}"
+case "$mode" in
+  clean)
+    echo "Server:         8.8.8.8"
+    echo "Address:        8.8.8.8#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rutracker.org"
+    echo "Address: 172.67.182.196"
+    echo "Name:   rutracker.org"
+    echo "Address: 104.21.32.39"
+    ;;
+  nxdomain)
+    echo "Server:         8.8.8.8"
+    echo "Address:        8.8.8.8#53"
+    echo ""
+    echo "** server can't find rutracker.org: NXDOMAIN"
+    ;;
+  stub)
+    echo "Server:         8.8.8.8"
+    echo "Address:        8.8.8.8#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rutracker.org"
+    echo "Address: 9.9.9.9"
+    ;;
+  silent) : ;;
+  sys)
+    echo "Server:         127.0.0.1"
+    echo "Address:        127.0.0.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   t.example"
+    echo "Address: 1.2.3.4"
+    ;;
+esac
+exit 0
+MOCKN
+  chmod +x "$TMP_DIR/bin19/nslookup"
+
+  export PATH="$TMP_DIR/bin19:$PATH"
+  export TMPDIR="$TMP_DIR"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/webui/cgi-bin/_lib.sh"
+
+  # каскад эталона: все JSON-DoH недоступны -> quad9 wire
+  unset MOCK19_GOOGLE_JSON MOCK19_8888_JSON
+  refline="$(z2r_doh_reference t.example)"
+  [ "${refline#*|}" = "1.2.3.4" ] || fail "сценарий 19: quad9 wire-фоллбек не сработал: [$refline]"
+  [ "${refline%%|*}" = "quad9 DoH (dns.quad9.net, wire)" ] \
+    || fail "сценарий 19: источник эталона не quad9: [$refline]"
+
+  # каскад: dns.google мёртв, 8.8.8.8 JSON живой -> берётся он
+  export MOCK19_8888_JSON='{"Status":0,"Answer":[{"type":1,"data":"5.6.7.8"}]}'
+  refline="$(z2r_doh_reference t.example)"
+  [ "${refline#*|}" = "5.6.7.8" ] || fail "сценарий 19: 8.8.8.8 JSON не подхватился: [$refline]"
+  [ "${refline%%|*}" = "Google DoH (8.8.8.8)" ] \
+    || fail "сценарий 19: источник эталона не 8.8.8.8: [$refline]"
+  unset MOCK19_8888_JSON
+
+  # гейт: чисто (прямые ответы = известные адреса рутрекера)
+  export MOCK19_NS=clean
+  rc=0; out="$(Z2R_DNS_DOH_TIMEOUT=3 z2r_dns_spoof_gate 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || fail "сценарий 19: чистый DNS должен давать rc=0 ($rc)"
+  grep -q 'DNS чист' <<<"$out" || fail "сценарий 19: нет вердикта DNS чист"
+
+  # гейт: NXDOMAIN = подтверждённая подмена, стоп + подсказки
+  export MOCK19_NS=nxdomain
+  rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
+  [ "$rc" = 2 ] || fail "сценарий 19: NXDOMAIN должен останавливать (rc=2, got $rc)"
+  grep -q 'ОСТАНОВЛЕН' <<<"$out" || fail "сценарий 19: нет сообщения об остановке"
+  grep -q 'Профиль 10' <<<"$out" || fail "сценарий 19: в подсказках нет профиля 10"
+  grep -q 'модели вашего роутера' <<<"$out" || fail "сценарий 19: в подсказках нет смены DNS"
+
+  # гейт: заглушка при живом quad9-эталоне = подмена, стоп
+  export MOCK19_NS=stub
+  rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
+  [ "$rc" = 2 ] || fail "сценарий 19: заглушка с эталоном должна останавливать (rc=2, got $rc)"
+  grep -q 'заглушку' <<<"$out" || fail "сценарий 19: нет пояснения про заглушку"
+
+  # гейт: все DoH недоступны + адреса вне известных = неопределимо, НЕ стоп
+  export Z2R_DNS_DOH_URL="https://doh.invalid/dns-query"
+  rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
+  [ "$rc" = 1 ] || fail "сценарий 19: без эталона нельзя останавливать (rc=1, got $rc)"
+  grep -q 'Продолжаю' <<<"$out" || fail "сценарий 19: нет продолжения без эталона"
+  export Z2R_DNS_DOH_URL="https://dns.quad9.net/dns-query"
+
+  # гейт: 8.8.8.8 молчит = не подмена, НЕ стоп
+  export MOCK19_NS=silent
+  rc=0; out="$(z2r_dns_spoof_gate 2>&1)" || rc=$?
+  [ "$rc" = 1 ] || fail "сценарий 19: молчащий 8.8.8.8 не должен останавливать (rc=1, got $rc)"
+  grep -q 'не подмена' <<<"$out" || fail "сценарий 19: нет пояснения не-подмены"
+
+  # check_dns (пункт 01): фоллбек до quad9, система отдаёт тот же адрес
+  export MOCK19_NS=clean
+  rc=0; out="$(check_dns t.example 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || fail "сценарий 19: чистый check_dns должен давать rc=0 ($rc)"
+  grep -q 'quad9' <<<"$out" || fail "сценарий 19: check_dns не показывает источник quad9"
+
+  unset MOCK19_GOOGLE_JSON MOCK19_8888_JSON MOCK19_NS
+)
+
+# статика: гейт вызывается перед суперавтопрогоном и останавливает только подмену
+grep -q 'z2r_dns_spoof_gate' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "сценарий 19: суперавтопрогон без DNS-гейта"
+grep -q 'gate_rc' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "сценарий 19: гейт не различает коды возврата"
+grep -q 'check_dns' "$REPO_DIR/lib/netcheck.sh" \
+  || fail "сценарий 19: пропала check_dns (пункт 01)"
+
 echo "tls check smoke ok"
