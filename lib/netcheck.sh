@@ -984,11 +984,16 @@ check_dns() {
     MATCH_IPS=""
     MATCH_COUNT=0
 
+    # DOH_IPS теперь одна строка через пробел (нормализация каскада) —
+    # grep -Fxq «целая строка == IP» больше не матчит; ищем по границам
+    # слов, как в z2r_dns_spoof_gate
     for ip in $NS_IPS; do
-        if echo "$DOH_IPS" | grep -Fxq "$ip"; then
-            MATCH_IPS="$MATCH_IPS $ip"
-            MATCH_COUNT=$((MATCH_COUNT + 1))
-        fi
+        case " $DOH_IPS " in
+            *" $ip "*)
+                MATCH_IPS="$MATCH_IPS $ip"
+                MATCH_COUNT=$((MATCH_COUNT + 1))
+                ;;
+        esac
     done
 
     DOH_COUNT=$(echo "$DOH_IPS" | wc -w | tr -d ' ')

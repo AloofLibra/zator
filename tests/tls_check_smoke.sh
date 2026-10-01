@@ -983,7 +983,7 @@ MOCKC
   # (системный вызов check_dns) — режим sys (адрес совпадает с эталоном quad9)
   cat > "$TMP_DIR/bin19/nslookup" <<'MOCKN'
 #!/bin/sh
-mode="sys"
+mode="${MOCK19_SYS:-sys}"
 [ "$2" = "8.8.8.8" ] && mode="${MOCK19_NS:-clean}"
 case "$mode" in
   clean)
@@ -1028,6 +1028,16 @@ case "$mode" in
     echo "Non-authoritative answer:"
     echo "Name:   t.example"
     echo "Address: 1.2.3.4"
+    ;;
+  sys2)
+    echo "Server:         127.0.0.1"
+    echo "Address:        127.0.0.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   t.example"
+    echo "Address: 1.2.3.4"
+    echo "Name:   t.example"
+    echo "Address: 5.6.7.8"
     ;;
 esac
 exit 0
@@ -1102,6 +1112,16 @@ MOCKN
   rc=0; out="$(check_dns t.example 2>&1)" || rc=$?
   [ "$rc" = 0 ] || fail "сценарий 19: чистый check_dns должен давать rc=0 ($rc)"
   grep -q 'quad9' <<<"$out" || fail "сценарий 19: check_dns не показывает источник quad9"
+
+  # регрессия с живого сервера: эталон из НЕСКОЛЬКИХ адресов (одна строка
+  # после нормализации каскада) при совпадении с системным nslookup не
+  # должен считаться подменой — grep -Fxq по целой строке тут не матчит
+  export MOCK19_8888_JSON='{"Status":0,"Answer":[{"type":1,"data":"1.2.3.4"},{"type":1,"data":"5.6.7.8"}]}'
+  export MOCK19_SYS=sys2
+  rc=0; out="$(check_dns t.example 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || fail "сценарий 19: многоадресный эталон должен давать rc=0 ($rc)"
+  grep -q 'ВСЁ ЧИСТО' <<<"$out" || fail "сценарий 19: полного совпадения нет при равных списках"
+  unset MOCK19_8888_JSON MOCK19_SYS
 
   unset MOCK19_GOOGLE_JSON MOCK19_8888_JSON MOCK19_NS
 )
