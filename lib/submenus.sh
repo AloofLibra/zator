@@ -1753,15 +1753,12 @@ fake_mode_profile_pick() {
         pause_enter
         ;;
       "2")
-        # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): клоны Discord не
-        # открывают — голос идёт по UDP, TCP-часть не ими. Функционал не
-        # режем: предупреждение + явное согласие. Снять — убрать эту ветку.
+        # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): клоны некорректно
+        # работают с Discord. Функционал не режем: предупреждение + явное
+        # согласие. Снять — убрать эту ветку.
         if [ "$profile" = "4" ] && [ "$cur" != "clone" ]; then
           echo ""
-          echo -e "${yellow}Внимание: для Discord (профиль 4) режим клонов не даст результата.${plain}"
-          echo -e "${yellow}Клоны строятся из ClientHello TLS — подменяют фейки TCP-стратегий,${plain}"
-          echo -e "${yellow}но Discord так не открывается: голос идёт по UDP, TCP-шлюзы${plain}"
-          echo -e "${yellow}блокируются не по SNI.${plain}"
+          echo -e "${yellow}Внимание: клоны не корректно работают с Discord.${plain}"
           echo -e "Рабочую стратегию Discord подбирает суперавтопрогон или перебор п.4."
           dsc=""
           read -re -p "Всё равно включить клоны? 1 - да, Enter - нет: " dsc || dsc=""
@@ -1829,13 +1826,12 @@ fake_mode_submenu() {
       fake_mode_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
     elif [ "$ans" = "$all_clone" ]; then
       # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): Discord не включаем
-      # молча — клоны его не открывают (см. fake_mode_profile_pick).
+      # молча — клоны некорректно работают с Discord (см. fake_mode_profile_pick).
       # Отказ = клоны всем, кроме Discord; согласие = как раньше, всем.
       dsc_skip=0
       if [ "$(mode_override_get 4)" != "clone" ]; then
         echo ""
-        echo -e "${yellow}Внимание: для Discord (профиль 4) режим клонов не даст результата${plain}"
-        echo -e "${yellow}(голос — UDP, TCP-часть блокируется не по SNI).${plain}"
+        echo -e "${yellow}Внимание: клоны не корректно работают с Discord.${plain}"
         dsc=""
         read -re -p "Включить клоны и для Discord? 1 - да, Enter - нет (остальным включим): " dsc || dsc=""
         [ "$dsc" = "1" ] || dsc_skip=1
