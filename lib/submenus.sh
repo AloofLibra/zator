@@ -1718,7 +1718,7 @@ fake_mode_sni_display() {
 }
 
 fake_mode_profile_pick() {
-  local profile="$1" title="$2" choice cur
+  local profile="$1" title="$2" choice cur dsc
 
   while true; do
     clear -x
@@ -1753,6 +1753,24 @@ fake_mode_profile_pick() {
         pause_enter
         ;;
       "2")
+        # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): клоны Discord не
+        # открывают — голос идёт по UDP, TCP-часть не ими. Функционал не
+        # режем: предупреждение + явное согласие. Снять — убрать эту ветку.
+        if [ "$profile" = "4" ] && [ "$cur" != "clone" ]; then
+          echo ""
+          echo -e "${yellow}Внимание: для Discord (профиль 4) режим клонов не даст результата.${plain}"
+          echo -e "${yellow}Клоны строятся из ClientHello TLS — подменяют фейки TCP-стратегий,${plain}"
+          echo -e "${yellow}но Discord так не открывается: голос идёт по UDP, TCP-шлюзы${plain}"
+          echo -e "${yellow}блокируются не по SNI.${plain}"
+          echo -e "Рабочую стратегию Discord подбирает суперавтопрогон или перебор п.4."
+          dsc=""
+          read -re -p "Всё равно включить клоны? 1 - да, Enter - нет: " dsc || dsc=""
+          if [ "$dsc" != "1" ]; then
+            echo "Отмена — режим не менялся."
+            pause_enter
+            continue
+          fi
+        fi
         if mode_override_set "$profile" clone; then
           echo -e "${green}Профиль $profile: клоны ClientHello пользователя с невинным SNI.${plain}"
           echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
@@ -1770,7 +1788,7 @@ fake_mode_profile_pick() {
 }
 
 fake_mode_submenu() {
-  local p ans i idx v
+  local p ans i idx v dsc dsc_skip
   local profiles=() titles=()
   while read -r p; do
     profiles+=("$p")
@@ -1810,10 +1828,27 @@ fake_mode_submenu() {
       idx=$((ans-1))
       fake_mode_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
     elif [ "$ans" = "$all_clone" ]; then
+      # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): Discord не включаем
+      # молча — клоны его не открывают (см. fake_mode_profile_pick).
+      # Отказ = клоны всем, кроме Discord; согласие = как раньше, всем.
+      dsc_skip=0
+      if [ "$(mode_override_get 4)" != "clone" ]; then
+        echo ""
+        echo -e "${yellow}Внимание: для Discord (профиль 4) режим клонов не даст результата${plain}"
+        echo -e "${yellow}(голос — UDP, TCP-часть блокируется не по SNI).${plain}"
+        dsc=""
+        read -re -p "Включить клоны и для Discord? 1 - да, Enter - нет (остальным включим): " dsc || dsc=""
+        [ "$dsc" = "1" ] || dsc_skip=1
+      fi
       for p in "${profiles[@]}"; do
+        if [ "$dsc_skip" = 1 ] && [ "$p" = "4" ]; then continue; fi
         mode_override_set "$p" clone || echo -e "${red}Не удалось включить клоны для профиля $p.${plain}"
       done
-      echo -e "${green}Клоны включены для всех профилей.${plain}"
+      if [ "$dsc_skip" = 1 ]; then
+        echo -e "${green}Клоны включены для всех профилей, кроме Discord (4) — там осталась классика.${plain}"
+      else
+        echo -e "${green}Клоны включены для всех профилей.${plain}"
+      fi
       echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
       telemetry_notify
       pause_enter

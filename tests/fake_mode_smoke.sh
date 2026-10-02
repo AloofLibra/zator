@@ -245,4 +245,58 @@ grep -q -- "--blob=z2r_prof_1:@/opt/zator/files/fake/tls_clienthello_max_ru.bin"
   || fail "конфиг повреждён (слот z2r_prof_1)"
 mode_override_clear 4
 
+# --- 5. Временный гейт: клоны Discord включаются только явным согласием -----
+# Клоны (ClientHello TLS) Discord не открывают: голос идёт по UDP, TCP-часть
+# блокируется не по SNI. Функционал не режем: классика->клоны на профиле 4
+# требует явного «1», массовое «Клоны всем» по отказу включает всем, кроме 4.
+
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/submenus.sh"
+clear() { :; }
+pause_enter() { :; }
+telemetry_notify() { :; }
+# цветовые глобали диалогов: в z2r.sh их задаёт шапка, под set -u теста
+# они должны существовать явно (грабля прошлых сессий)
+plain="" red="" green="" yellow="" cyan="" Fgreen="" Fcyan="" Fyellow=""
+export plain red green yellow cyan Fgreen Fcyan Fyellow
+
+fm_cleanup_modes() {
+  local pp
+  for pp in 1 2 3 4 8; do mode_override_clear "$pp" 2>/dev/null || true; done
+}
+
+# одиночный экран: отказ (Enter на подтверждении) — режим не меняется
+rc5=0
+out5="$(printf '2\n\n0\n' | fake_mode_profile_pick 4 "Discord" 2>&1)" || rc5=$?
+[ "$rc5" = 0 ] || fail "сценарий 5: диалог профиля 4 упал при отказе"
+assert_contains "$out5" "не даст результата" "сценарий 5: нет предупреждения про Discord"
+[ -z "$(mode_override_get 4)" ] || fail "сценарий 5: отказ должен оставить классику"
+
+# одиночный экран: настаивание (1) — клоны включаются
+out5="$(printf '2\n1\n0\n' | fake_mode_profile_pick 4 "Discord" 2>&1)"
+assert_contains "$out5" "Профиль 4: клоны" "сценарий 5: подтверждённые клоны не применились"
+[ "$(mode_override_get 4)" = "clone" ] || fail "сценарий 5: clone не записан после подтверждения"
+fm_cleanup_modes
+
+# другие профили переключаются без предупреждения
+out5="$(printf '2\n0\n' | fake_mode_profile_pick 1 "YouTube" 2>&1)"
+assert_contains "$out5" "Профиль 1: клоны" "сценарий 5: профиль 1 должен переключиться молча"
+if grep -q "не даст результата" <<<"$out5"; then
+  fail "сценарий 5: предупреждение про Discord показано не для Discord"
+fi
+[ "$(mode_override_get 1)" = "clone" ] || fail "сценарий 5: профиль 1 не переключился"
+fm_cleanup_modes
+
+# массовое «Клоны всем» (пункт 6 при 5 профилях): отказ -> всем, кроме 4
+out5="$(printf '6\n\n0\n' | fake_mode_submenu 2>&1)"
+assert_contains "$out5" "кроме Discord" "сценарий 5: массовое включение не сообщило про пропуск Discord"
+[ "$(mode_override_get 1)" = "clone" ] || fail "сценарий 5: массовое включение не задело профиль 1"
+[ "$(mode_override_get 8)" = "clone" ] || fail "сценарий 5: массовое включение не задело профиль 8"
+[ -z "$(mode_override_get 4)" ] || fail "сценарий 5: массовое включение не должно трогать Discord без согласия"
+
+# массовое «Клоны всем» с согласием -> включая Discord
+out5="$(printf '6\n1\n0\n' | fake_mode_submenu 2>&1)"
+[ "$(mode_override_get 4)" = "clone" ] || fail "сценарий 5: согласие должно включить клоны и для Discord"
+fm_cleanup_modes
+
 echo "fake mode smoke ok"
