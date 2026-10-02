@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh supersweep.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
@@ -438,6 +438,11 @@ source "$LIB_DIR/premium.sh"
 # Логика стратегий: статус, lock-файлы, быстрый подбор
 # Функции: get_current_strategies_info, orch_profile_try, Strats_Tryer
 source "$LIB_DIR/strategies.sh"
+
+# Суперавтопрогон: параллельный подбор стратегий профилей 1/2/4 + карта
+# покрытий доменов РКН, прогресс в /tmp/z2r-supersweep (для CLI и Web-панели)
+# Функции: supersweep_run, supersweep_menu, supersweep_cancel_running
+source "$LIB_DIR/supersweep.sh"
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu

@@ -92,6 +92,7 @@ Normal flow:
 - `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel single-attempt TLS 1.2/TLS 1.3 HEAD probes with `-L -k` + a Range download of up to 64KB when HEAD returns 2xx/3xx; classification by curl rc and HTTP code; any HTTP code including 4xx/5xx means the server answered → green ok, e.g. googlevideo root 404 is normal). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
 - `lib/premium.sh`: easter-egg and premium menu branches.
 - `lib/strategies.sh`: active strategy status, orchestra lock helpers, per-profile strategy trial flow, custom RKN domain handling.
+- `lib/supersweep.sh`: super auto-sweep (item 12 of the strategies submenu): parallel strategy selection for profiles 1/2/4 (YouTube/Googlevideo/Discord) plus a full coverage map of RKN probe domains (profile 3): every strategy round probes ALL user-selected domains (upstream author's request — a single reference domain can be dead on its own, rutracker and meduza die regularly), strategies ordered youtube-green first (live-log convenience), per-domain locks are temporary for the sweep and roll back afterwards. Workers never write `locked.tsv` themselves: locks are requested via `cmd.<name>` files and applied by the single-writer parent process (avoids awk+mv races). Progress lives in flat files under `$Z2R_SUPERSWEEP_DIR` (`/tmp/z2r-supersweep`: `status`, `workers.tsv`, `progress.<name>.tsv`, `coverage.tsv`, `best.<name>`, `summary.tsv`) — designed for webui polling without long-running CGI; cancellation is a `touch` of the `cancel` file or `supersweep_cancel_running`. Each worker's best is applied the moment that worker finishes (`_supersweep_settle_worker`, recorded in `applied.tsv`/`applied.done.<name>`): the user gets working youtube/googlevideo/discord while the long rkn map is still running; partial results of interrupted workers are never applied (the `interrupted=` flag in `best.<name>`), a later cancel keeps already-applied profiles and only restores the rest; per-domain RKN recommendations are only displayed; temporary locks roll back to previous values (`prev.tsv`); a warn-only (single TLS version) run reports the best partial coverage and, in an interactive terminal only, offers an explicit one-key opt-in to apply the warn winner (never automatic — an all-yellow sweep usually means a degraded channel, not a good strategy); if the rkn worker dies before writing `best.rkn` (double interrupt in older builds), the winners are recomputed from `coverage.tsv`. The pause dialogs have separate minimums: 15 seconds for profile workers and a dedicated 30-second minimum for the rkn map (community feedback: shorter pauses can trip tspu rate heuristics; the author asked for rarer but fuller rkn probing). Results (including the rollback) are archived to `$ORCH_DIR/supersweep/` as an uncompressed tar in the `backup_create_core` style (tar is created through a candidate chain: in non-login contexts the PATH tar may be busybox without create — an Entware quirk where `/opt/usr/bin/tar` shadows the GNU one in `/opt/bin`; override with `Z2R_SUPERSWEEP_TAR`); the newest archive is automatically included in regular backups (`z2r_backup_state_files`, next to `locked.tsv`), history is rotated by `Z2R_SUPERSWEEP_ARCHIVE_KEEP`; upload to the stats server via `Z2R_SUPERSWEEP_STATS_URL` (default: the author's redis endpoint `https://alooflibra.fun/z4r/supersweep`; an explicitly exported empty value disables; consent reuses the telemetry `tel_enabled` switch); the archive name carries the telemetry uuid (`supersweep-<ts>-<uuid>.tar`) and every archive contains `meta.tsv` — `uuid`, `provider`, `created`, `zapret2`, plus `blob_global` and effective `blob_<profile>` rows mirroring the blob fields of `send_stats`. Curated RKN probe set: `Z2R_SUPERSWEEP_RKN_DOMAINS`; user domains are added to `TCP_Custom.txt` when missing from `TCP_RKN_list.txt`. Dialog helpers follow the `orch_ask_*` contract — stdout carries ONLY the answer, all text goes to stderr (the menu captures stdout); `supersweep_run` additionally sanitizes the domain list (`supersweep_sanitize_domains`) so garbage from any surface cannot reach the workers. Covered by `tests/supersweep_smoke.sh`.
 - `lib/submenus.sh`: menu wiring for strategies, provider, offload, and related actions.
 - `lib/actions.sh`: config reset, backup, firewall mode switch, UDP toggles, TLS blob switching, and other menu actions.
 - `lib/config.sh`: shared shell helpers for reading/editing `/opt/zapret2/config`, mode labels, profile strategy counts, TLS blob mode, and Keenetic WAN interface detection.
@@ -462,6 +463,38 @@ bash tests/tls_check_smoke.sh
 
 ```text
 tls check smoke ok
+```
+
+```bash
+bash tests/supersweep_smoke.sh
+```
+
+Super auto-sweep test (`lib/supersweep.sh`), also confined to a temporary
+directory in `/tmp`, with a mocked `curl` in PATH:
+
+- the mock answers green/red depending on the REAL current lock in
+  `locked.tsv` — an end-to-end check of the whole path "worker -> cmd file ->
+  coordinator -> orch_locked_set -> z2r_tls_* engine";
+- static wiring: `Z2R_LIB_FILES` and the source line in `z2r.sh`, item 12 of
+  the strategies submenu, autorotation and running-nfqws2 guards, the
+  bare-`wait` ban;
+- full sweep on a mock config trimmed to 5 strategies: best-strategy apply
+  (profile 1 gets the fastest green, 2/4 their own, RKN the max-coverage
+  strategy), rollback of per-domain probes to their previous locks, progress
+  files (`status`/`workers.tsv`/`progress.*.tsv`/`coverage.tsv`/`best.*`/`summary.tsv`),
+  summary with applied and working strategies, archive containing `prev.tsv`;
+- cancellation via the `cancel` file (the way the webui will do it): rc=1,
+  previous locks restored, `state=cancelled`, archive of the cancelled run
+  created;
+- archive rotation by `Z2R_SUPERSWEEP_ARCHIVE_KEEP`, and the newest results
+  archive riding in regular backups (`z2r_backup_state_files`);
+- own-domains dialog: input normalization, adding missing domains to
+  `TCP_Custom.txt`.
+
+Success output:
+
+```text
+supersweep smoke ok
 ```
 
 ## Local Inspection Notes
