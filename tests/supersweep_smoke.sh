@@ -169,6 +169,18 @@ fi
 if grep -nE '^[[:space:]]*"[^"]*"[[:space:]]*$' "$REPO_DIR/lib/supersweep.sh"; then
   fail "supersweep.sh: голая строка в кавычках без команды — потерян echo?"
 fi
+# гейт подмены DNS сверяет ЭТАЛОННЫЙ домен (rutracker.org), а не первый
+# пользовательский — набор доменов меняется, эталон нет (регрессия 2026-10)
+grep -q 'z2r_dns_spoof_gate "${Z2R_DNS_REF_DOMAIN:-rutracker.org}"' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "гейт DNS должен вызываться по эталонному домену, а не по первому пользовательскому"
+# отмена прогона не роняет меню: вызов защищён от возврата 1 под глобальным
+# set -e z2r.sh, повторный Ctrl+C в сводке/паузе глушится trap'ом
+grep -q 'supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || ss_run_rc=$?' \
+  "$REPO_DIR/lib/supersweep.sh" || fail "вызов supersweep_run не защищён от возврата 1 (set -e)"
+grep -q "trap ':' INT" "$REPO_DIR/lib/supersweep.sh" || fail "нет глушения INT после прерывания прогона"
+grep -q '_supersweep_estimate_total' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "нет единой формулы оценки времени (меню и шапка считают одним кодом)"
+grep -q 'pacing.tsv' "$REPO_DIR/lib/supersweep.sh" || fail "нет pacing-файла фактических пауз воркеров"
 
 # == 1. полный прогон: применение лучших + карта + восстановление доменов ==
 
@@ -178,6 +190,8 @@ fi
 # прежние локи: профиль 1 = 3, meduza = 1 (остальных нет)
 orch_locked_set 1 tls 3
 orch_locked_set meduza.io tls 1
+# режим фейков профиля 4 в клонах: должен попасть в meta.tsv архива (mode_4)
+mode_override_set 4 clone
 
 # зелёные стратегии: у профилей и доменов разные наборы; скорость докачки
 # растёт с номером стратегии (2.6 - 0.1*N) — «лучшая» = максимальный зелёный
@@ -234,6 +248,16 @@ grep -q 'Профиль 3 (РКН): применена стратегия 2' <<<
 grep -q 'Профильная стратегия РКН (дефолт всего списка): 2' <<<"$out" || fail "сценарий 1: сводка без профильной стратегии РКН"
 grep -q 'медуза\|meduza.io' <<<"$out" || fail "сценарий 1: в отчёте нет рекомендаций по доменам"
 grep -q 'Зелёные\|Рабочие' <<<"$out" || fail "сценарий 1: в отчёте нет списков рабочих стратегий"
+# pacing-файл: фактические паузы воркеров. Пауза 0 + ускоритель выключен
+# (GREEN_PAUSE=0 = обычная пауза) -> все нули; yt пишет по строке на каждую
+# стратегию, кроме последней
+[ -f "$Z2R_SUPERSWEEP_DIR/pacing.tsv" ] || fail "сценарий 1: нет pacing.tsv"
+[ "$(awk -F'\t' '$1=="yt"' "$Z2R_SUPERSWEEP_DIR/pacing.tsv" | wc -l)" = 4 ] \
+  || fail "сценарий 1: yt-воркер должен записать 4 паузы (все стратегии, кроме последней)"
+[ "$(awk -F'\t' '$1=="yt" && $3!="0"' "$Z2R_SUPERSWEEP_DIR/pacing.tsv" | wc -l)" = 0 ] \
+  || fail "сценарий 1: при паузе 0 и выключенном ускорителе все паузы должны быть 0"
+[ "$(awk -F'\t' '$1=="rkn"' "$Z2R_SUPERSWEEP_DIR/pacing.tsv" | wc -l)" = 15 ] \
+  || fail "сценарий 1: rkn-воркер должен записать 15 пауз (5 стратегий x 3 домена)"
 
 # архив результатов (с prev.tsv внутри) появился
 archives="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar 2>/dev/null || true)"
@@ -282,9 +306,14 @@ wait "$RUN_PID" || rc=$?
 [ "$(lock_state 3 tls)" = auto ] || fail "сценарий 2: профиль 3 должен остаться auto ($(lock_state 3 tls))"
 grep -q '^state=cancelled$' "$Z2R_SUPERSWEEP_DIR/status" || fail "сценарий 2: state != cancelled"
 grep -q 'откатлены\|возвращаю прежние' "$TMP_DIR/cancel.log" || fail "сценарий 2: нет сообщения об откате"
-# архив собирается и для отменённого прогона («что собралось и откатилось»)
+# пустой прерванный прогон НЕ архивируется и НЕ отправляется (регрессия:
+# «Архив отправлен на сервер статистики» уходил даже при пустой сводке и
+# полном откате)
+grep -q 'ничего не отправлено' "$TMP_DIR/cancel.log" \
+  || fail "сценарий 2: пустой прерванный прогон должен сообщить об отсутствии отправки"
 new_archives="$(ls -1 "$Z2R_SUPERSWEEP_ARCHIVE_DIR"/supersweep-*.tar 2>/dev/null | wc -l)"
-[ "$new_archives" -ge 2 ] || fail "сценарий 2: архив отменённого прогона не создан"
+[ "$new_archives" = 1 ] \
+  || fail "сценарий 2: пустой прерванный прогон не должен создавать архив (архивов: $new_archives)"
 
 # ротация архивов: KEEP=3, наделаем пустышек и проверим уборку
 for i in 1 2 3 4; do
@@ -445,6 +474,10 @@ tar -xf "$arc9" -C "$TMP_DIR" ./meta.tsv 2>/dev/null || fail "сценарий 9
 grep -q $'^uuid\tdeadbeef$' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без uuid"
 grep -q $'^blob_global\t' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без blob_global"
 grep -q $'^provider\t' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без provider"
+# режим фейков по профилям: clone из mode_override.tsv, отсутствие строки = classic
+grep -q $'^mode_4\tclone$' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без mode_4=clone"
+grep -q $'^mode_1\tclassic$' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без mode_1=classic (нет строки = classic)"
+grep -q $'^mode_8\tclassic$' "$TMP_DIR/meta.tsv" || fail "сценарий 9a: meta.tsv без mode_8"
 rm -f "$TMP_DIR/meta.tsv"
 
 # == 10. отмена после применения профиля: применённое не откатывается ==
@@ -479,6 +512,9 @@ wait "$RUN2_PID" || rc2=$?
 [ "$(lock_state meduza.io tls)" = auto ] || fail "сценарий 10: доменные пробы должны откатиться ($(lock_state meduza.io tls))"
 grep -q 'оставлена применённая стратегия 4' "$TMP_DIR/cancel2.log" \
   || fail "сценарий 10: нет сообщения об оставленной применённой стратегии"
+# частичный, но заполненный прогон архивируется (в отличие от пустого — сц.2)
+grep -q 'Архив результатов' "$TMP_DIR/cancel2.log" \
+  || fail "сценарий 10: заполненный прерванный прогон должен архивироваться"
 unset MOCK_DELAY
 
 # == 11. свой домен подбора профиля 3: 0-выход, хитрые URL, списки ==
@@ -572,5 +608,59 @@ printf '0\n' | supersweep_ask_domains 2>/dev/null | grep -q . \
 d="$(printf 'fresh1.ru fresh2.ru\n' | supersweep_ask_own_domains 'a.com b.com c.com' 2>/dev/null)"
 [ "$d" = "a.com b.com c.com fresh1.ru fresh2.ru" ] \
   || fail "сценарий 12: свои домены должны дописываться свободно [$d]"
+
+# == 13. отменённый прогон не роняет меню под set -e; паузы воркеров ==
+# Регрессия с боевого прогона: supersweep_run возвращал 1 при отмене, а
+# глобальный set -e z2r.sh убивал скрипт сразу после сводки — пользователь
+# выпадал в шелл. Меню обязано пережить отменённый прогон и вернуться.
+
+rm -rf "$Z2R_SUPERSWEEP_DIR"
+rm -f "$TMP_DIR/gate13.args"
+printf '\n\n\n\n\n\n\n' > "$TMP_DIR/in13.txt"
+export MOCK_DELAY=0.2
+export MOCK_OK_P1="1 3"
+(
+  set -e
+  clear() { :; }
+  zapret2_running() { return 0; }
+  menu_config_snapshot() { return 0; }
+  telemetry_notify() { :; }
+  pause_enter() { :; }
+  z2r_dns_spoof_gate() { printf '%s\n' "$*" >> "$TMP_DIR/gate13.args"; echo "тест: гейт пройден"; return 0; }
+  Z2R_SUPERSWEEP_GREEN_PAUSE=2
+  export Z2R_SUPERSWEEP_GREEN_PAUSE
+  Z2R_SUPERSWEEP_SETTLE=2
+  export Z2R_SUPERSWEEP_SETTLE
+  supersweep_menu < "$TMP_DIR/in13.txt"
+  echo MENU_ALIVE
+) > "$TMP_DIR/menu13.log" 2>&1 &
+M13_PID=$!
+n=0
+while [ "$n" -lt 400 ]; do
+  [ "$(awk -F'\t' '$1=="yt"' "$Z2R_SUPERSWEEP_DIR/pacing.tsv" 2>/dev/null | wc -l)" -ge 2 ] && break
+  sleep 0.1 2>/dev/null || sleep 1
+  n=$((n + 1))
+done
+[ "$(awk -F'\t' '$1=="yt"' "$Z2R_SUPERSWEEP_DIR/pacing.tsv" 2>/dev/null | wc -l)" -ge 2 ] \
+  || fail "сценарий 13: прогон не дошёл до второй паузы"
+supersweep_cancel_running || fail "сценарий 13: не создан cancel-файл"
+rc13=0
+wait "$M13_PID" || rc13=$?
+[ "$rc13" = 0 ] || { cat "$TMP_DIR/menu13.log" >&2; fail "сценарий 13: меню не пережило отменённый прогон под set -e (rc=$rc13)"; }
+grep -q 'MENU_ALIVE' "$TMP_DIR/menu13.log" || fail "сценарий 13: меню не вернулось после отмены"
+grep -q 'Прервано пользователем' "$TMP_DIR/menu13.log" || fail "сценарий 13: нет сообщения о прерывании"
+# пустой прерванный прогон пропускает архивацию и отправку (виден и из меню)
+grep -q 'ничего не отправлено' "$TMP_DIR/menu13.log" \
+  || fail "сценарий 13: пустой прерванный прогон должен пропустить отправку статистики"
+# гейт перед прогоном зовётся по ЭТАЛОННОМУ домену, а не по первому выбранному
+grep -q 'rutracker.org' "$TMP_DIR/gate13.args" \
+  || fail "сценарий 13: гейт получил не эталонный домен: $(cat "$TMP_DIR/gate13.args")"
+# паузы воркера: зелёная стратегия -> ускоритель (2с), красная -> фазовая
+# пауза минус выдержка (5 - 2 = 3с); выдержка входит в паузу
+[ "$(awk -F'\t' '$1=="yt" && $2=="1" {print $3}' "$Z2R_SUPERSWEEP_DIR/pacing.tsv")" = "2" ] \
+  || fail "сценарий 13: зелёная стратегия должна дать паузу ускорителя 2с"
+[ "$(awk -F'\t' '$1=="yt" && $2=="2" {print $3}' "$Z2R_SUPERSWEEP_DIR/pacing.tsv")" = "3" ] \
+  || fail "сценарий 13: красная стратегия должна дать паузу 5с минус выдержка 2с = 3с"
+unset MOCK_DELAY MOCK_OK_P1
 
 echo "supersweep smoke ok"
