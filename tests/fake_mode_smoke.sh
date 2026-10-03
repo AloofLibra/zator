@@ -258,6 +258,30 @@ sni_override_set 1 "$(z2r_normalize_domain 'https://VK.ru/watch?v=1')" \
 [ "$(sni_override_get 1)" = "vk.ru" ] || fail "sni_override: сохранился не домен"
 sni_override_clear 1
 
+# Порядок пунктов SNI и соответствие номера сохраняемому значению.
+(
+  source <(printf '%s\n' "$SUBMENUS_SRC")
+  cyan= plain= yellow= green= red=
+  clear() { :; }
+  pause_enter() { :; }
+  telemetry_notify() { :; }
+  submenu_item() { printf '%s: %s\n' "$1" "$2"; }
+  [ "$(sni_preset_list | tr '\n' ' ')" = '300.ya.ru www.google.com max.ru hcaptcha.com ' ] \
+    || fail "неверный порядок SNI-пресетов"
+  choices=(300.ya.ru www.google.com max.ru hcaptcha.com)
+  for i in 1 2 3 4; do
+    sni_profile_pick 1 "test" < <(printf '%s\n' "$i" 0) > "$TMP_DIR/sni-menu.log"
+    [ "$(sni_override_get 1)" = "${choices[$((i-1))]}" ] \
+      || fail "пункт SNI $i сохранил неверный домен"
+  done
+  grep -q '^1: 300.ya.ru$' "$TMP_DIR/sni-menu.log" || fail "300.ya.ru не на первом месте"
+  grep -q '^5: Из конфига стратегии (сброс переопределения)$' "$TMP_DIR/sni-menu.log" \
+    || fail "сброс SNI не на пятом месте"
+  grep -q '^6: Свой домен' "$TMP_DIR/sni-menu.log" || fail "свой домен не на шестом месте"
+  sni_profile_pick 1 "test" < <(printf '%s\n' 5 0) > "$TMP_DIR/sni-menu.log"
+  [ -z "$(sni_override_get 1)" ] || fail "пункт 5 не сбросил SNI"
+) || fail "меню SNI"
+
 # --- 3. Хелперы mode_override_* ---------------------------------------------
 
 [ "$(mode_override_supported_profiles | tr '\n' ' ')" = "1 2 3 4 8 " ] \

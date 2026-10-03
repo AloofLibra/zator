@@ -1596,13 +1596,14 @@ tls_blob_submenu() {
 # без рестарта). Пусто = SNI из конфига стратегии.
 
 sni_preset_list() {
-  printf '%s\n' www.google.com vk.ru max.ru hcaptcha.com
+  printf '%s\n' 300.ya.ru www.google.com max.ru hcaptcha.com
 }
 
 sni_profile_pick() {
   local profile="$1" title="$2" choice cur preset domain i
   local presets=()
   while IFS= read -r preset; do presets+=("$preset"); done < <(sni_preset_list)
+  local reset_idx=$(( ${#presets[@]} + 1 ))
   local custom_idx=$(( ${#presets[@]} + 2 ))
 
   while true; do
@@ -1616,12 +1617,12 @@ sni_profile_pick() {
       echo -e "${yellow}Сейчас: ${plain}${green}из конфига стратегии${plain}"
     fi
     echo ""
-    submenu_item "1" "Из конфига стратегии (сброс переопределения)"
-    i=2
+    i=1
     for preset in "${presets[@]}"; do
       submenu_item "$i" "$preset"
       i=$((i+1))
     done
+    submenu_item "$reset_idx" "Из конфига стратегии (сброс переопределения)"
     submenu_item "$custom_idx" "Свой домен..."
     submenu_item "0" "Назад"
     echo ""
@@ -1629,7 +1630,7 @@ sni_profile_pick() {
     read -re -p "Ваш выбор: " choice
     if [ "$choice" = "0" ] || [ -z "$choice" ]; then
       return
-    elif [ "$choice" = "1" ]; then
+    elif [ "$choice" = "$reset_idx" ]; then
       if sni_override_clear "$profile"; then
         echo -e "${green}Сброшено: профиль $profile берёт SNI из конфига стратегии.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
@@ -1638,8 +1639,8 @@ sni_profile_pick() {
         echo -e "${red}Не удалось сбросить переопределение.${plain}"
       fi
       pause_enter
-    elif ui_is_number_in_range "$choice" 2 "$(( custom_idx - 1 ))"; then
-      preset="${presets[$((choice-2))]}"
+    elif ui_is_number_in_range "$choice" 1 "${#presets[@]}"; then
+      preset="${presets[$((choice-1))]}"
       if sni_override_set "$profile" "$preset"; then
         echo -e "${green}Профиль $profile: клон-стратегии используют SNI ${preset}.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
