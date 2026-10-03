@@ -657,6 +657,8 @@ local Z2R_CAP_FIELD = "z2r_blob_cap"
 
 -- Лимит клона профиля: clonesize.tsv[profile], нет строки = 1200.
 local function z2r_clone_limit_for(profile_key)
+  -- Явный диагностический режим полного клона; обычные профили ограничены 1200.
+  if tonumber(_G.Z2R_CLONE_MAX_SIZE) == 0 then return 0 end
   local v = profile_key and CLONE_SIZES[tostring(profile_key)]
   if type(v) == "number" and v >= 64 and v <= Z2R_TLS_FAKE_LIMIT_MAX then return v end
   return Z2R_TLS_FAKE_LIMIT_MAX
@@ -818,40 +820,85 @@ local function z2r_clone_rerandomize(clone)
   return clone
 end
 
-local function fake_mode_user_clone(desync, sni, profile_key, whole_only, instance_func)
+-- FULL -> PARTIAL: кеш принадлежит соединению, а не объекту desync.
+-- Лимит участвует в ключе, как SNI; тип отправляющей стратегии его не меняет.
+local function z2r_cached_clienthello(desync, options, key, slot, limit)
   if desync.l7payload ~= "tls_client_hello" then return nil end
-  local payload = desync.reasm_data or (desync.dis and desync.dis.payload)
-  if type(payload) ~= "string" or #payload == 0 then return nil end
-  local ok, clone = pcall(tls_client_hello_mod, payload, {
-    sni_del = true,
-    sni_first = (sni and sni ~= "") and sni or Z2R_CLONE_SNI_DEFAULT,
-    sni_snt_new = 0,
-  })
+  key = key .. "\tmax_size=" .. limit
+  if desync.track and not desync.track.lua_state then desync.track.lua_state = {} end
+  local state = desync.track and desync.track.lua_state or desync
+  local cached = state[slot]
+  local function complete(payload)
+    return type(payload) == "string" and #payload >= 9
+      and payload:byte(1) == 22 and payload:byte(6) == 1
+      and tls_record_full(payload)
+  end
+  local payload = desync.reasm_data
+  if not complete(payload) then payload = desync.dis and desync.dis.payload end
+  local seq = desync.dis and desync.dis.tcp and desync.dis.tcp.th_seq
+  local start_seq = type(seq) == "number" and
+    (seq - (desync.reasm_offset or 0)) % 4294967296 or nil
+  if cached and cached.key ~= key then state[slot] = nil; cached = nil end
+  if not complete(payload) then
+    if not cached or start_seq == nil or start_seq ~= cached.start_seq
+      or type(payload) ~= "string" or #payload < 9
+      or payload:byte(1) ~= 22 or payload:byte(6) ~= 1 then return nil end
+    if payload ~= cached.source:sub(1, #payload) then state[slot] = nil; return nil end
+    DLOG("fake_mode: complete clone reused on partial replay")
+    return cached.data
+  end
+  if cached and cached.source == payload and cached.start_seq == start_seq then return cached.data end
+  state[slot] = nil
+  local ok, clone = pcall(tls_client_hello_mod, payload, options)
   if not (ok and type(clone) == "string" and #clone > 0) then return nil end
-  -- Лимит размера клона (clonesize.tsv, нет строки = 1200). Клону больше
-  -- лимита резка разрешена ТОЛЬКО на цельно-фейковых инстансах (func "fake":
-  -- фейк уходит целиком; живой тест 03.10: большой гейтвей-поток жив, клон
-  -- 522Б). На зеркалящих (multisplit/fakeddisorder/fakemultisplit/... — фейк
-  -- или данные режутся по сегментам реального пакета) резаный клон большого
-  -- CH валит поток при любой резке — там клон живёт только целым, иначе
-  -- откат на штатный блоб конфига (это же поведение — у владельской
-  -- стратегии 7). Резка — с точечной операцией на key_share: PQ-записи
-  -- вычищаются, классические остаются (CH без key_share ТСПУ режет).
-  local limit = z2r_clone_limit_for(profile_key)
-  if #clone > limit then
-    if whole_only then
-      DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, whole-only for "..tostring(instance_func)..", keeping config blob profile="..tostring(profile_key))
-      return nil
-    end
+  -- Лимит применяется ко всем клонам независимо от типа стратегии.
+  -- Сокращаем структуру TLS, не настоящий пакет; провал резки = штатный fallback.
+  if limit > 0 and #clone > limit then
     local cut = z2r_clone_semantic_cut(clone, limit)
     if not cut then
-      DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, cut failed, keeping config blob profile="..tostring(profile_key))
+      DLOG("fake_mode: clone "..#clone.."B over limit "..limit.."B, cut failed, keeping config blob profile="..key)
       return nil
     end
-    DLOG("fake_mode: clone cut "..#clone.."->"..#cut.."B (limit "..limit.."B) profile="..tostring(profile_key))
+    DLOG("fake_mode: clone cut "..#clone.."->"..#cut.."B (limit "..limit.."B) profile="..key)
     clone = cut
   end
-  return z2r_clone_rerandomize(clone)
+  if clone:sub(1, 3) == string.char(22, 3, 1) then
+    clone = clone:sub(1, 2) .. string.char(3) .. clone:sub(4)
+  end
+  clone = z2r_clone_rerandomize(clone)
+  state[slot] = { key = key, start_seq = start_seq, source = payload, data = clone }
+  return clone
+end
+
+local function fake_mode_user_clone(desync, sni, profile_key)
+  local name = (sni and sni ~= "") and sni or Z2R_CLONE_SNI_DEFAULT
+  return z2r_cached_clienthello(desync, {
+    sni_del = true, sni_first = name, sni_snt_new = 0,
+  }, tostring(profile_key) .. "\t" .. name, "z2r_full_clone",
+    z2r_clone_limit_for(profile_key))
+end
+
+-- Native/ECH clone имеет отдельный слот, общий лимит и защиту ретрансляций.
+function tls_client_hello_clone(ctx, desync)
+  if not desync.dis.tcp then
+    if not desync.dis.icmp then instance_cutoff_shim(ctx, desync) end
+    return
+  end
+  direction_cutoff_opposite(ctx, desync)
+  if not direction_check(desync) then return end
+  if not desync.arg.blob then error("tls_client_hello_clone: 'blob' arg required") end
+  local parts = {}
+  for _, field in ipairs({"blob", "sni_snt", "sni_snt_new", "sni_del_ext", "sni_del", "sni_first", "sni_last"}) do
+    local value = tostring(desync.arg[field])
+    parts[#parts + 1] = field .. "=" .. #value .. ":" .. value
+  end
+  local profile = desync.profile_n or desync_profile_key(desync)
+  local clone = z2r_cached_clienthello(desync, desync.arg,
+    table.concat(parts, "|"), "z2r_explicit_full_clone", z2r_clone_limit_for(profile))
+  desync[desync.arg.blob] = clone
+  if not clone and desync.arg.fallback then
+    desync[desync.arg.blob] = blob(desync, desync.arg.fallback)
+  end
 end
 
 -- Какой arg инстанса несёт фейк-блоб: fake() держит фейк в blob=,
@@ -885,13 +932,13 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   end
   -- режим clone: клон CH юзера выигрывает у блоба-override; провал клона
   -- (не CH-пакет, dissect/reconstruct не удался) = штатный путь ниже.
-  -- Резка oversize-клона разрешена только цельно-фейковым инстансам
-  -- (func "fake"); зеркалящие (multisplit/fakeddisorder/...) получают клон
-  -- только целым — живой тест 03.10, второй раунд.
+  -- Превышение лимита сокращает клон и на зеркалящих стратегиях.
   local clone_data = mode == "clone"
-    and fake_mode_user_clone(desync, sni, profile_key, instance.func ~= "fake", instance.func)
+    and fake_mode_user_clone(desync, sni, profile_key)
     or nil
   local target = clone_data and Z2R_CLONE_FIELD or name
+  local saved_clone = desync[Z2R_CLONE_FIELD]
+  local saved_cap = desync[Z2R_CAP_FIELD]
   if clone_data then
     desync[Z2R_CLONE_FIELD] = clone_data
   end
@@ -934,24 +981,32 @@ function blob_override_execute(desync, verdict, instance, profile_key)
     instance.arg.sni_first = sni
     sni_swapped = true
   end
-  local v = plan_instance_execute(desync, verdict, instance)
+  local ok, v = pcall(plan_instance_execute, desync, verdict, instance)
   if swapped then
     if clone_data then
       DLOG("fake_mode: profile="..tostring(profile_key).." user clone -> "..target)
     else
       DLOG("blob_override: profile="..tostring(profile_key).." blob -> "..name)
     end
-    instance.arg.blob = saved_blob
-    instance.arg.fake_blob = saved_fake_blob
+
   end
   if cap_arg then
     DLOG("blob_cap: profile="..tostring(profile_key).." "..cap_arg.."="..tostring(cap_saved).." "..cap_old.."->"..#desync[Z2R_CAP_FIELD].."B")
-    instance.arg[cap_arg] = cap_saved
+
   end
   if sni_swapped then
     DLOG("blob_override: profile="..tostring(profile_key).." sni_first -> "..sni)
     instance.arg.sni_first = saved_sni
   end
+  -- Сначала снимаем cap, затем подмену alias: иначе cap_saved возвращает
+  -- временное имя профиля вместо исходного blob даже без исключения.
+  if swapped or cap_arg then
+    instance.arg.blob = saved_blob
+    instance.arg.fake_blob = saved_fake_blob
+  end
+  desync[Z2R_CLONE_FIELD] = saved_clone
+  desync[Z2R_CAP_FIELD] = saved_cap
+  if not ok then error(v, 0) end
   return v
 end
 

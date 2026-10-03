@@ -129,11 +129,10 @@ assert_contains "$LOCKED_LUA_SRC" 'Z2R_KEY_SHARE_CLASSIC' "нет белого �
 assert_contains "$LOCKED_LUA_SRC" 'local saved = z2r_clone_key_share_drop_pq\(tdis\)' \
   "pq-резка key_share не первый шаг согласованной резки"
 assert_contains "$LOCKED_LUA_SRC" 'z2r_clone_rerandomize' "клон не перерандомизируется (копия random реального CH — демаскировка)"
-# правило пары (живой тест 03.10, два раунда): резаный клон живёт только на
-# цельно-фейковых инстансах (func "fake"); зеркалящим — целым или никак
-assert_contains "$LOCKED_LUA_SRC" 'instance\.func ~= "fake"' \
-  "резка клона не ограничена цельно-фейковыми инстансами (зеркалящие валят большой поток)"
-assert_contains "$LOCKED_LUA_SRC" 'whole-only for ' "нет лога отката зеркалящего инстанса на штатный блоб"
+# Лимит клона общий для всех стратегий; откат только при провале построения/резки.
+if grep -Eq 'whole_only|whole-only for |instance\.func ~= "fake"' <<<"$LOCKED_LUA_SRC"; then
+  fail "тип отправляющей стратегии не должен запрещать сокращение клона"
+fi
 assert_contains "$LOCKED_LUA_SRC" 'z2r_clone_semantic_cut' "нет согласованной резки клона"
 assert_contains "$LOCKED_LUA_SRC" 'z2r_tls_record_cut' "нет сырой резки TLS-рекордов"
 assert_contains "$LOCKED_LUA_SRC" 'string\.char\(math\.floor\(space / 256\)\)' \

@@ -71,10 +71,13 @@ A cut clone only survives on WHOLE-FAKE instances:
   big CH kills the flow under EVERY cut variant tested (natural,
   semantic, pq + re-randomized). The app hangs at splash.
 
-`blob_override_execute` therefore allows oversize cutting only for
-`func == "fake"`; mirror instances get the clone whole or fall back to
-the config blob. Small-CH clones (whole, ≤ limit) pass everywhere, so
-mirror strategies still serve clones for small handshakes.
+These are findings from the upstream author's live tests, not a restriction
+enforced by this branch. At the owner's request, `blob_override_execute`
+allows structural clone shortening for ALL sending strategies, including
+mirror instances. A config-blob fallback is used only when a valid clone
+cannot be built within the size limit, not because the strategy mirrors
+fake pieces. Successful shortening alone does not prove application startup
+for every strategy; verify the actual application separately.
 
 Live confirmations on Discord profile:
 - strategy 25 + clones: app starts, 5+ established flows, owner-confirmed UI;
