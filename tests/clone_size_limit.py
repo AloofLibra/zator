@@ -168,5 +168,83 @@ Z2R_CLONE_MAX_SIZE=nil
 blob_override_execute(mode,0,instance,'4')
 assert(seen==compact, 'restoring default limit did not rebuild compact clone')
 print('PASS diagnostic opt-out and cache invalidation when size limit changes')
+locked_load_clone_size_for_tests({'3\t512'})
+local native_instance={func='tls_client_hello_clone',arg={
+  blob='profile_clone',sni_del=true,sni_first='www.google.com',sni_snt_new=0}}
+function plan_instance_execute(d,v,i)
+  local saved=d.arg
+  d.arg=i.arg
+  tls_client_hello_clone(nil,d)
+  d.arg=saved
+  return v
+end
+local routed_source=hello(600,false)
+local routed={profile_n=8,track={lua_state={}},l7payload='tls_client_hello',
+  reasm_data=routed_source,dis={tcp={th_seq=1000},payload=routed_source}}
+assert(#expected_clone(routed_source)>512 and #expected_clone(routed_source)<=1200)
+blob_override_execute(routed,0,native_instance,'3')
+assert(routed.profile_clone and #routed.profile_clone<=512,
+  'native clone ignored the routed logical profile size limit')
+assert(routed.z2r_clone_profile_key==nil, 'logical profile leaked after execution')
+locked_load_clone_size_for_tests({})
+print('PASS native producer uses routed logical profile size limit')
+local other_args={blob='other_clone',sni_del=true,sni_first='www.example.com',sni_snt_new=0}
+local shared={lua_state={}}
+local multi={arg=args,track=shared,l7payload='tls_client_hello',reasm_data=source,
+  dis={tcp={th_seq=1000},payload=source}}
+tls_client_hello_clone(nil,multi)
+local first=multi.test_clone
+multi.arg=other_args
+tls_client_hello_clone(nil,multi)
+local second=multi.other_clone
+assert(first and second and first~=second, 'two producer fixtures must create distinct clones')
+multi.reasm_data=nil
+multi.dis.payload=source:sub(1,1388)
+multi.arg=args
+tls_client_hello_clone(nil,multi)
+assert(multi.test_clone==first, 'producer B evicted producer A on partial replay')
+multi.arg=other_args
+tls_client_hello_clone(nil,multi)
+assert(multi.other_clone==second, 'producer A evicted producer B on partial replay')
+print('PASS multiple native producers preserve independent partial-replay caches')
+routed.z2r_clone_profile_key='outer-profile'
+function plan_instance_execute(d,v,i)
+  assert(d.z2r_clone_profile_key=='3', 'logical profile missing inside executor')
+  error('PROFILE_EXEC_SENTINEL')
+end
+local ok,err=pcall(blob_override_execute,routed,0,native_instance,'3')
+assert(not ok and tostring(err):find('PROFILE_EXEC_SENTINEL',1,true))
+assert(routed.z2r_clone_profile_key=='outer-profile', 'exception leaked logical profile')
+print('PASS logical profile restored after native executor exception')
+_G.cap_test_blob=expected_clone(hello(padding_bytes+1,false))
+assert(#cap_test_blob==1201, 'global-cap fixture must exceed the wire limit')
+locked_load_blob_override_for_tests({'3\tcap_test_blob'})
+local sni_overrides
+for n=1,100 do
+  local key,value=debug.getupvalue(blob_override_execute,n)
+  if not key then break end
+  if key=='SNI_OVERRIDES' then sni_overrides=value; break end
+end
+assert(sni_overrides, 'missing SNI override table')
+sni_overrides['3']='innocent.example'
+for _,func in ipairs({'fake','fakemultisplit','fakemultidisorder'}) do
+  local cap_instance={func=func,arg={blob='maxru',fake_blob='fake_default_tls',sni_first='original.example'}}
+  local cap_desync={z2r_mode_clone='saved-clone',z2r_blob_cap='saved-cap',z2r_clone_profile_key='outer-profile'}
+  function plan_instance_execute(d,v,i)
+    local cap_arg=func=='fake' and 'blob' or 'fake_blob'
+    assert(i.arg[cap_arg]=='z2r_blob_cap', 'test did not activate global cap')
+    assert(#d.z2r_blob_cap<=1200 and d.z2r_blob_cap~='saved-cap')
+    assert(i.arg.sni_first=='innocent.example')
+    assert(d.z2r_clone_profile_key=='3')
+    error('CAP_EXEC_SENTINEL')
+  end
+  local ok,err=pcall(blob_override_execute,cap_desync,0,cap_instance,'3')
+  assert(not ok and tostring(err):find('CAP_EXEC_SENTINEL',1,true), 'cap executor error not propagated: '..tostring(err))
+  assert(cap_instance.arg.blob=='maxru' and cap_instance.arg.fake_blob=='fake_default_tls')
+  assert(cap_instance.arg.sni_first=='original.example', 'exception leaked SNI override')
+  assert(cap_desync.z2r_mode_clone=='saved-clone' and cap_desync.z2r_blob_cap=='saved-cap')
+  assert(cap_desync.z2r_clone_profile_key=='outer-profile', 'cap exception leaked profile')
+end
+print('PASS blob override, global cap, SNI and temporary fields restored after executor errors')
 ''')
 print('clone size limit regression ok')

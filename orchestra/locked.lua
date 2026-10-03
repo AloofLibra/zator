@@ -822,11 +822,18 @@ end
 
 -- FULL -> PARTIAL: кеш принадлежит соединению, а не объекту desync.
 -- Лимит участвует в ключе, как SNI; тип отправляющей стратегии его не меняет.
-local function z2r_cached_clienthello(desync, options, key, slot, limit)
+local function z2r_cached_clienthello(desync, options, key, slot, limit, per_key)
   if desync.l7payload ~= "tls_client_hello" then return nil end
   key = key .. "\tmax_size=" .. limit
   if desync.track and not desync.track.lua_state then desync.track.lua_state = {} end
   local state = desync.track and desync.track.lua_state or desync
+  -- В одном плане может быть несколько native-производителей с разными
+  -- blob/SNI. Их FULL-клоны должны одновременно переживать PARTIAL replay.
+  if per_key then
+    if type(state[slot]) ~= "table" then state[slot] = {} end
+    state = state[slot]
+    slot = key
+  end
   local cached = state[slot]
   local function complete(payload)
     return type(payload) == "string" and #payload >= 9
@@ -892,9 +899,9 @@ function tls_client_hello_clone(ctx, desync)
     local value = tostring(desync.arg[field])
     parts[#parts + 1] = field .. "=" .. #value .. ":" .. value
   end
-  local profile = desync.profile_n or desync_profile_key(desync)
+  local profile = desync.z2r_clone_profile_key or desync.profile_n or desync_profile_key(desync)
   local clone = z2r_cached_clienthello(desync, desync.arg,
-    table.concat(parts, "|"), "z2r_explicit_full_clone", z2r_clone_limit_for(profile))
+    table.concat(parts, "|"), "z2r_explicit_full_clone", z2r_clone_limit_for(profile), true)
   desync[desync.arg.blob] = clone
   if not clone and desync.arg.fallback then
     desync[desync.arg.blob] = blob(desync, desync.arg.fallback)
@@ -923,7 +930,8 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   local name = profile_key and BLOB_OVERRIDES[tostring(profile_key)]
   local sni = profile_key and SNI_OVERRIDES[tostring(profile_key)]
   local fake_arg = (instance and instance.arg and z2r_fake_blob_arg(instance.func)) or nil
-  if (not mode and not name and not sni and not fake_arg) or not instance or not instance.arg then
+  local native_clone = instance and instance.func == "tls_client_hello_clone"
+  if (not mode and not name and not sni and not fake_arg and not native_clone) or not instance or not instance.arg then
     return plan_instance_execute(desync, verdict, instance)
   end
   if name and not blob_exist(desync, name) then
@@ -981,7 +989,12 @@ function blob_override_execute(desync, verdict, instance, profile_key)
     instance.arg.sni_first = sni
     sni_swapped = true
   end
+  -- profile_n — физический профиль nfqws2; после маршрутизации нужен
+  -- логический ключ circular_locked. arg заменяется исполнителем инстанса.
+  local saved_profile = desync.z2r_clone_profile_key
+  desync.z2r_clone_profile_key = profile_key or saved_profile
   local ok, v = pcall(plan_instance_execute, desync, verdict, instance)
+  desync.z2r_clone_profile_key = saved_profile
   if swapped then
     if clone_data then
       DLOG("fake_mode: profile="..tostring(profile_key).." user clone -> "..target)
