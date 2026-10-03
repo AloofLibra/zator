@@ -76,6 +76,8 @@ export interface TlsBlobSettings {
   profile_modes?: Record<string, string>
   // «профиль -> SNI клона»: "" = невинный дефолт (www.google.com)
   profile_snis?: Record<string, string>
+  // «профиль -> лимит клонов в байтах»: "" = без ограничения (граница ТСПУ 1200)
+  profile_sizes?: Record<string, string>
 }
 
 export interface WgBlobSettings {

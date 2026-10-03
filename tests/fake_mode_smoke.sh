@@ -100,6 +100,33 @@ assert_contains "$LOCKED_LUA_SRC" 'blob_override_execute\(desync, verdict, insta
 assert_contains "$LOCKED_LUA_SRC" 'instance\.arg\.sni_first = saved_sni' \
   "sni_first не восстанавливается"
 
+# --- 1b. Лимит клонов (clonesize.tsv) + кап TLS-фейков 1200 ------------------
+
+assert_contains "$LOCKED_LUA_SRC" 'clonesize\.tsv' "locked.lua не читает clonesize.tsv"
+assert_contains "$LOCKED_LUA_SRC" 'function clone_size_parse_line' "locked.lua нет парсера лимита клонов"
+assert_contains "$LOCKED_LUA_SRC" 'load_clone_size_file\(CLONESIZE_PATH\)' \
+  "load_locked_tables не перезагружает лимиты клонов"
+assert_contains "$LOCKED_LUA_SRC" 'size < 64 or size > 1200' \
+  "парсер лимита принимает значения вне 64..1200"
+assert_contains "$LOCKED_LUA_SRC" 'function locked_load_clone_size_for_tests' "нет тестового сеттера лимитов"
+# кап TLS-фейков: только fake/fakemultisplit/fakemultidisorder, не-TLS не трогаем
+assert_contains "$LOCKED_LUA_SRC" 'Z2R_TLS_FAKE_LIMIT_MAX = 1200' "нет верхней границы ТСПУ 1200"
+assert_contains "$LOCKED_LUA_SRC" 'func == "fake" then return "blob"' "кап не знает fake()"
+assert_contains "$LOCKED_LUA_SRC" 'func == "fakemultisplit" or func == "fakemultidisorder" then return "fake_blob"' \
+  "кап не знает fake_blob-методы"
+assert_contains "$LOCKED_LUA_SRC" 'fname ~= Z2R_CLONE_FIELD' "кап режет уже порезанный клон"
+# согласованная резка: группы расширений, сохранение SNI/versions/sig_algs
+assert_contains "$LOCKED_LUA_SRC" '\[51\] = true, \[10\] = true, \[11\] = true' \
+  "key_share/supported_groups/ec_point_formats не согласованы в одну группу"
+assert_contains "$LOCKED_LUA_SRC" '\[0xfe0d\] = true' "ECH не вырезается группой"
+assert_contains "$LOCKED_LUA_SRC" '\[45\] = true, \[41\] = true, \[42\] = true' \
+  "psk_key_exchange_modes/pre_shared_key/early_data не согласованы"
+assert_contains "$LOCKED_LUA_SRC" 'z2r_clone_semantic_cut' "нет согласованной резки клона"
+assert_contains "$LOCKED_LUA_SRC" 'z2r_tls_record_cut' "нет сырой резки TLS-рекордов"
+assert_contains "$LOCKED_LUA_SRC" 'string\.char\(math\.floor\(space / 256\)\)' \
+  "сырая резка не чинит длину последнего рекорда"assert_contains "$LOCKED_LUA_SRC" 'keeping config blob profile=' \
+  "провал резки клона не откатывается на штатный блоб"
+
 # --- 2. Статический wiring меню и бэкапов -----------------------------------
 
 assert_contains "$SUBMENUS_SRC" '^fake_mode_submenu\(\)' "нет подменю fake_mode_submenu"
@@ -109,12 +136,24 @@ assert_contains "$SUBMENUS_SRC" 'mode_override_set "\$p" clone' "нет вклю
 assert_contains "$SUBMENUS_SRC" 'mode_override_clear "\$p"' "нет сброса режима всем профилям"
 assert_contains "$SUBMENUS_SRC" 'fake_mode_submenu' "tls_blob_submenu не открывает подменю режима"
 assert_contains "$SUBMENUS_SRC" 'sni_override_get "\$1"' "экран режима не показывает SNI клона"
+# размер клонов: подменю рядом с режимом, лимит виден в экране режима
+assert_contains "$SUBMENUS_SRC" '^clone_size_submenu\(\)' "нет подменю clone_size_submenu"
+assert_contains "$SUBMENUS_SRC" '^clone_size_profile_pick\(\)' "нет экрана профиля clone_size_profile_pick"
+assert_contains "$SUBMENUS_SRC" 'clone_size_supported_profiles' "подменю лимитов не строится по профилям"
+assert_contains "$SUBMENUS_SRC" 'clone_size_submenu' "tls_blob_submenu не открывает подменю лимитов"
+assert_contains "$SUBMENUS_SRC" 'clone_size_display "\$profile"' "экран режима не показывает лимит клона"
 
 z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/mode_override.tsv' \
   || fail "z2r_backup_state_files не бэкапит mode_override.tsv"
 z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/sni_override.tsv' \
   || fail "z2r_backup_state_files не бэкапит sni_override.tsv"
+z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/clonesize.tsv' \
+  || fail "z2r_backup_state_files не бэкапит clonesize.tsv"
 assert_contains "$AGENTS_SRC" 'mode_override\.tsv' "AGENTS.md не упоминает mode_override.tsv"
+
+SUPERSSWEEP_SRC="$(tr -d '\r' < "$REPO_DIR/lib/supersweep.sh")"
+assert_contains "$SUPERSSWEEP_SRC" 'size_%s\\t%s' "meta.tsv суперавтопрогона не пишет size_<profile>"
+assert_contains "$SUPERSSWEEP_SRC" 'clone_size_get' "meta.tsv не читает clone_size_get"
 
 # --- 2b. Статический wiring WebUI --------------------------------------------
 
@@ -132,22 +171,37 @@ assert_contains "$LIB_SH_SRC" 'mode_override_clear "\$profile"' "classic не с
 assert_contains "$LIB_SH_SRC" 'mode_override_set "\$profile" clone' "clone не пишет строку"
 assert_contains "$LIB_SH_SRC" '"profile_modes"' "GET/state не отдаёт profile_modes"
 assert_contains "$LIB_SH_SRC" '"profile_snis"' "GET/state не отдаёт profile_snis"
+assert_contains "$LIB_SH_SRC" '"profile_sizes"' "GET/state не отдаёт profile_sizes"
+assert_contains "$LIB_SH_SRC" '^api_clone_size_set\(\)' "_lib.sh нет api_clone_size_set"
+assert_contains "$LIB_SH_SRC" '^api_clone_size_sizes_json\(\)' "_lib.sh нет билдера лимитов"
+assert_contains "$LIB_SH_SRC" 'clone_size_valid "\$value"' "api не валидирует размер 64..1200"
+assert_contains "$LIB_SH_SRC" 'clone_size_clear "\$profile"' "сброс лимита не удаляет строку"
 assert_contains "$SETTINGS_CGI_SRC" 'fake_mode\)' "settings.cgi не знает fake_mode"
+assert_contains "$SETTINGS_CGI_SRC" 'clone_size\)' "settings.cgi не знает clone_size"
 
 assert_contains "$WEBUI_SRC_ALL" 'fake-mode-form' "webui-src нет формы fake-mode-form"
 assert_contains "$WEBUI_SRC_ALL" 'fake-mode-\$\{p\.id\}' "webui-src нет селектов по профилям"
 assert_contains "$WEBUI_SRC_ALL" 'profile_modes' "webui-src не читает profile_modes"
 assert_contains "$WEBUI_SRC_ALL" 'profile_snis' "webui-src не читает profile_snis"
+assert_contains "$WEBUI_SRC_ALL" 'profile_sizes' "webui-src не читает profile_sizes"
 assert_contains "$WEBUI_SRC_ALL" "setting: 'fake_mode'" "webui-src не зовёт fake_mode"
+assert_contains "$WEBUI_SRC_ALL" 'clone-size-form' "webui-src нет формы clone-size-form"
+assert_contains "$WEBUI_SRC_ALL" 'clone-size-\$\{p\.id\}' "webui-src нет селектов лимитов"
+assert_contains "$WEBUI_SRC_ALL" "setting: 'clone_size'" "webui-src не зовёт clone_size"
 
 assert_contains "$FAKE_SRV_SRC" 'def apply_fake_mode' "fake_router_server нет apply_fake_mode"
 assert_contains "$FAKE_SRV_SRC" '"profile_modes"' "fake_router_server не отдаёт profile_modes"
 assert_contains "$FAKE_SRV_SRC" '"profile_snis"' "fake_router_server не отдаёт profile_snis"
+assert_contains "$FAKE_SRV_SRC" '"profile_sizes"' "fake_router_server не отдаёт profile_sizes"
+assert_contains "$FAKE_SRV_SRC" 'def apply_clone_size' "fake_router_server нет apply_clone_size"
 assert_contains "$FAKE_SRV_SRC" 'setting == "fake_mode"' "fake_router_server POST не знает fake_mode"
+assert_contains "$FAKE_SRV_SRC" 'setting == "clone_size"' "fake_router_server POST не знает clone_size"
 
 assert_contains "$CONTRACT_SRC" '`fake_mode`' "API_CONTRACT без fake_mode"
 assert_contains "$CONTRACT_SRC" '"profile_modes"' "API_CONTRACT без profile_modes"
 assert_contains "$CONTRACT_SRC" '"profile_snis"' "API_CONTRACT без profile_snis"
+assert_contains "$CONTRACT_SRC" '`clone_size`' "API_CONTRACT без clone_size"
+assert_contains "$CONTRACT_SRC" '"profile_sizes"' "API_CONTRACT без profile_sizes"
 
 # --- 2c. Адаптер дефолтного блоба в сборке (универсальный config.default) ---
 
@@ -193,7 +247,6 @@ sni_override_clear 1
 
 [ "$(mode_override_supported_profiles | tr '\n' ' ')" = "1 2 3 4 8 " ] \
   || fail "mode_override_supported_profiles != '1 2 3 4 8'"
-
 [ -z "$(mode_override_get 1)" ] || fail "нет строки = пусто (classic)"
 
 mode_override_set 1 clone || fail "mode_override_set не пишет строку"
@@ -234,11 +287,37 @@ fi
 
 ls "$ORCH_DIR" | grep -q '\.tmp\.' && fail "остались .tmp файлы после upsert"
 
-# --- 4. Инвариант: режим не меняет конфиг ------------------------------------
+# --- 3b. Хелперы clone_size_* -------------------------------------------------
+
+[ "$(clone_size_supported_profiles | tr '\n' ' ')" = "1 2 3 4 8 " ] \
+  || fail "clone_size_supported_profiles != '1 2 3 4 8'"
+
+[ -z "$(clone_size_get 1)" ] || fail "нет строки = пусто (без ограничения)"
+
+if clone_size_set 1 1201 2>/dev/null; then fail "set принял размер > 1200"; fi
+if clone_size_set 1 63 2>/dev/null; then fail "set принял размер < 64"; fi
+if clone_size_set 1 abc 2>/dev/null; then fail "set принял нечисловой размер"; fi
+if clone_size_set abc 512 2>/dev/null; then fail "set принял нечисловой профиль"; fi
+clone_size_set 1 964 || fail "set не пишет строку"
+[ "$(clone_size_get 1)" = "964" ] || fail "get не читает строку"
+clone_size_set 1 512 || fail "set не перезаписал"
+[ "$(awk 'END {print NR}' "$ORCH_CLONESIZE_FILE")" = "1" ] || fail "upsert оставил дубль"
+clone_size_set 4 1200 || fail "set профиль 4"
+clone_size_clear 1 || fail "clear"
+[ -z "$(clone_size_get 1)" ] || fail "clear не удалил строку"
+[ "$(clone_size_get 4)" = "1200" ] || fail "clear задел чужую строку"
+clone_size_clear 4
+clone_size_valid 64 || fail "valid: 64 должен проходить"
+clone_size_valid 1200 || fail "valid: 1200 должен проходить"
+if clone_size_valid 0 2>/dev/null; then fail "valid: 0 не должен проходить"; fi
+
+# --- 4. Инвариант: режим/лимиты не меняют конфиг --------------------------------
 
 mode_override_set 1 clone
 mode_override_set 4 clone
 mode_override_clear 1
+clone_size_set 2 512
+clone_size_clear 2
 [ "$(md5sum "$CFG" | cut -d' ' -f1)" = "$cfg_before" ] \
   || fail "mode_override_* изменил живой конфиг (режим обязан быть рантайм-only)"
 grep -q -- "--blob=z2r_prof_1:@/opt/zator/files/fake/tls_clienthello_max_ru.bin" "$CFG" \

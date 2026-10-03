@@ -61,6 +61,9 @@ case "${REQUEST_METHOD:-GET}" in
       fake_mode)
         api_fake_mode_set
         ;;
+      clone_size)
+        api_clone_size_set
+        ;;
       wg_blob)
         api_wg_blob_set
         ;;

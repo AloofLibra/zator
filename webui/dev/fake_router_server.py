@@ -1600,6 +1600,8 @@ class FakeRouterState:
         self.mode_overrides = {}
         # SNI клона (sni_override.tsv): profile -> домен ("" = дефолт)
         self.sni_overrides = {}
+        # лимит клонов (clonesize.tsv): profile -> байты ("" = без ограничения)
+        self.clone_sizes = {}
         for f in (self.lock_file, self.lock_manual_file):
             open(f, "w", encoding="utf-8").close()
 
@@ -1953,6 +1955,7 @@ class FakeRouterState:
             "profile_blobs": self.build_tls_blob_profile_blobs(),
             "profile_modes": self.build_fake_mode_modes(),
             "profile_snis": self.build_fake_mode_snis(),
+            "profile_sizes": self.build_clone_size_sizes(),
         }
 
     def build_tls_blob_profile_blobs(self):
@@ -1973,6 +1976,22 @@ class FakeRouterState:
     def build_fake_mode_snis(self):
         """sni_override_get() — profile_snis для GET-ответов ("" = дефолт www.google.com)."""
         return {p: self.sni_overrides.get(p, "") for p in BLOB_PROFILE_IDS}
+
+    def build_clone_size_sizes(self):
+        """clone_size_get() — profile_sizes для GET-ответов ("" = без ограничения)."""
+        return {p: self.clone_sizes.get(p, "") for p in BLOB_PROFILE_IDS}
+
+    def apply_clone_size(self, profile, value):
+        """api_clone_size_set() — _lib.sh. Рестарта нет: рантайм-переключение."""
+        if profile not in BLOB_PROFILE_IDS:
+            raise ValueError("Некорректный профиль: {0}".format(profile))
+        if value in ("", "global"):
+            self.clone_sizes.pop(profile, None)
+            return {"ok": True, "restarted": False, "restart_required": False}
+        if not re.match(r"^[0-9]+$", str(value)) or not 64 <= int(value) <= 1200:
+            raise ValueError("Некорректный размер: целое число 64..1200")
+        self.clone_sizes[profile] = str(int(value))
+        return {"ok": True, "restarted": False, "restart_required": False}
 
     def apply_fake_mode(self, profile, value):
         """api_fake_mode_set() — _lib.sh. Рестарта нет: рантайм-переключение."""
@@ -3102,6 +3121,18 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     with self.state.lock:
                         result = self.state.apply_fake_mode(profile, value)
                         self._log("POST {0} | fake_mode={1} value={2}".format(
+                            parsed.path, profile, value))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "clone_size":
+                profile = params.get("profile", "")
+                value = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_clone_size(profile, value)
+                        self._log("POST {0} | clone_size={1} value={2}".format(
                             parsed.path, profile, value))
                         self._send_json(result)
                 except ValueError as e:

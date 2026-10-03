@@ -646,9 +646,10 @@ api_state() {
   while read -r _pb; do
     profile_blobs_json="${profile_blobs_json}${profile_blobs_json:+,}\"${_pb}\":\"$(json_escape "$(blob_override_get "$_pb" "${ZAPRET2_ROOT:-/opt/zapret2}/config")")\""
   done < <(blob_override_supported_profiles)
-  local profile_modes_json profile_snis_json
+  local profile_modes_json profile_snis_json profile_sizes_json
   profile_modes_json="$(api_fake_mode_modes_json)"
   profile_snis_json="$(api_fake_mode_snis_json)"
+  profile_sizes_json="$(api_clone_size_sizes_json)"
   ports_split "$MENU_PORTS_TCP_FULL" "80"
   local tcp_full="$MENU_PORTS_TCP_FULL" tcp_user="$_PORTS_USER" tcp_base="$_PORTS_BASE"
   ports_split "$MENU_PORTS_UDP_FULL" "443"
@@ -720,7 +721,7 @@ api_state() {
     version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
   fi
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -894,7 +895,8 @@ api_tls_blob_get() {
     \"available_blobs\":[$available_blobs],
     \"profile_blobs\":{$(api_tls_blob_profile_blobs_json)},
     \"profile_modes\":{$(api_fake_mode_modes_json)},
-    \"profile_snis\":{$(api_fake_mode_snis_json)}
+    \"profile_snis\":{$(api_fake_mode_snis_json)},
+    \"profile_sizes\":{$(api_clone_size_sizes_json)}
   }"
 }
 
@@ -1026,6 +1028,40 @@ api_fake_mode_set() {
       send_error "400 Bad Request" "Некорректное значение режима: $value"
       ;;
   esac
+
+  telemetry_notify
+  send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+}
+
+# --- Размер клонов по профилям (clonesize.tsv) ------------------------------
+# Максимальный размер клон-пакета профиля в режиме клонов; "" = без
+# пользовательского лимита (границу ТСПУ 1200 Б держит locked.lua).
+# Применяется без рестарта (TTL-кэш locked.lua ~2с).
+
+# JSON-объект «профиль -> лимит байт» ("" = без ограничения) для GET-ответов.
+api_clone_size_sizes_json() {
+  local out="" p
+  while read -r p; do
+    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(clone_size_get "$p")")\""
+  done < <(clone_size_supported_profiles)
+  printf '%s' "$out"
+}
+
+# value = "" | "global" (сброс строки) | число 64..1200. Рестарта нет.
+api_clone_size_set() {
+  local profile="${PARAM_PROFILE:-}" value="${PARAM_VALUE:-}"
+  local supported=0 p
+
+  while read -r p; do [ "$p" = "$profile" ] && supported=1; done < <(clone_size_supported_profiles)
+  [ "$supported" = 1 ] || send_error "400 Bad Request" "Некорректный профиль: $profile"
+
+  if [ -z "$value" ] || [ "$value" = "global" ]; then
+    clone_size_clear "$profile" || send_error "500 Internal Server Error" "Не удалось сбросить ограничение"
+  elif clone_size_valid "$value"; then
+    clone_size_set "$profile" "$value" || send_error "500 Internal Server Error" "Не удалось сохранить ограничение"
+  else
+    send_error "400 Bad Request" "Некорректный размер: целое число 64..1200"
+  fi
 
   telemetry_notify
   send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"

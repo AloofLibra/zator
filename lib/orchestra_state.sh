@@ -693,3 +693,63 @@ mode_override_clear() {
     && mv -f "$tmp" "$ORCH_MODE_FILE" || { rm -f "$tmp"; return 1; }
   return 0
 }
+
+# --- per-profile лимит размера клон-пакетов (clonesize.tsv) ---
+# Четвёртый sibling рядом с blob/sni/mode override: «profile<TAB>байты»,
+# нет строки = без пользовательского лимита (действует верхняя граница
+# ТСПУ 1200 — её резать обязан любой TLS-фейк). Файл читает locked.lua
+# (TTL-кэш 2с, применяется без рестарта nfqws2); резка клона — согласованная,
+# группами расширений; резать не смогли — клоны профиля откатываются на
+# штатный блоб конфига (отравленный фейк хуже отсутствия).
+ORCH_CLONESIZE_FILE="${ORCH_CLONESIZE_FILE:-$ORCH_DIR/clonesize.tsv}"
+Z2R_CLONE_SIZE_PROFILES="${Z2R_CLONE_SIZE_PROFILES:-1 2 3 4 8}"
+Z2R_CLONE_SIZE_MIN="${Z2R_CLONE_SIZE_MIN:-196}"
+Z2R_CLONE_SIZE_MAX="${Z2R_CLONE_SIZE_MAX:-1200}"
+# пресеты меню: без ограничения / верхняя граница ТСПУ / консервативные
+Z2R_CLONE_SIZE_PRESETS="${Z2R_CLONE_SIZE_PRESETS:-1200 964 512 196}"
+
+clone_size_supported_profiles() {
+  printf '%s\n' $Z2R_CLONE_SIZE_PROFILES
+}
+
+clone_size_presets() {
+  printf '%s\n' $Z2R_CLONE_SIZE_PRESETS
+}
+
+clone_size_get() {
+  [ -f "$ORCH_CLONESIZE_FILE" ] || return 0
+  awk -F '\t' -v pr="$1" '$1==pr {print $2; exit}' "$ORCH_CLONESIZE_FILE"
+}
+
+clone_size_valid() {
+  # 64..1200 (ниже 64 настоящий CH не бывает, выше 1200 всё равно режет ТСПУ)
+  printf '%s' "$1" | grep -Eq '^[0-9]+$' || return 1
+  [ "$1" -ge 64 ] && [ "$1" -le 1200 ]
+}
+
+clone_size_set() {
+  local profile="$1" size="$2" tmp
+  printf '%s' "$profile" | grep -Eq '^[0-9]+$' || return 2
+  clone_size_valid "$size" || return 2
+  mkdir -p "$ORCH_DIR" || return 1
+  [ -f "$ORCH_CLONESIZE_FILE" ] || : > "$ORCH_CLONESIZE_FILE"
+  tmp="${ORCH_CLONESIZE_FILE}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v pr="$profile" -v nm="$size" '
+    {if ($1==pr) {if (!seen) {print pr, nm; seen=1}; next} print}
+    END {if (!seen) print pr, nm}
+  ' "$ORCH_CLONESIZE_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_CLONESIZE_FILE" || {
+    rm -f "$tmp"
+    echo "Unable to update clone size file" >&2
+    return 1
+  }
+  return 0
+}
+
+clone_size_clear() {
+  local profile="$1" tmp
+  [ -f "$ORCH_CLONESIZE_FILE" ] || return 0
+  tmp="${ORCH_CLONESIZE_FILE}.tmp.$$"
+  awk -F '\t' -v pr="$profile" '{if ($1==pr) next; print}' "$ORCH_CLONESIZE_FILE" > "$tmp" \
+    && mv -f "$tmp" "$ORCH_CLONESIZE_FILE" || { rm -f "$tmp"; return 1; }
+  return 0
+}

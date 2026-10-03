@@ -24,6 +24,9 @@ local SNI_OVERRIDES = {}
 -- mode_override.tsv: «profile<TAB>clone|classic» — режим фейков профиля.
 local MODE_OVERRIDE_PATH = LOCKED_DIR .. "/mode_override.tsv"
 local MODE_OVERRIDES = {}
+-- clonesize.tsv: «profile<TAB>байты» — максимальный размер клон-пакета профиля.
+local CLONESIZE_PATH = LOCKED_DIR .. "/clonesize.tsv"
+local CLONE_SIZES = {}
 
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -198,6 +201,34 @@ local function load_mode_override_file(path)
   f:close()
 end
 
+-- clonesize.tsv: «profile<TAB>байты» — максимальный размер клон-пакета
+-- профиля в режиме clone. Нет строки = без пользовательского ограничения
+-- (действует верхняя граница ТСПУ 1200 — Z2R_TLS_FAKE_LIMIT_MAX ниже).
+local function clone_size_parse_line(line)
+  if type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  if line == "" or string.match(line, "^%s*#") then return nil end
+  local fields = {}
+  for field in (line .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = trim(field) end
+  if #fields ~= 2 then return nil end
+  if not string.match(fields[1], "^%d+$") then return nil end
+  local size = tonumber(fields[2])
+  -- нижняя граница: реальный ClientHello меньше ~64 байт не бывает; выше
+  -- 1200 ограничивать смысла нет — там всё равно режет ТСПУ
+  if not size or size < 64 or size > 1200 or size % 1 ~= 0 then return nil end
+  return fields[1], size
+end
+
+local function load_clone_size_file(path)
+  local f = io.open(path, "r")
+  if not f then return end
+  for line in f:lines() do
+    local profile, size = clone_size_parse_line(line)
+    if profile then CLONE_SIZES[profile] = size end
+  end
+  f:close()
+end
+
 local function load_locked_tables()
   local now = os.time()
   if now and (now - last_load) < cache_ttl then return end
@@ -221,6 +252,8 @@ local function load_locked_tables()
     load_sni_override_file(SNI_OVERRIDE_PATH)
     MODE_OVERRIDES = {}
     load_mode_override_file(MODE_OVERRIDE_PATH)
+    CLONE_SIZES = {}
+    load_clone_size_file(CLONESIZE_PATH)
   end
 end
 
@@ -281,6 +314,15 @@ function locked_load_mode_override_for_tests(lines)
   for _, line in ipairs(lines or {}) do
     local profile, mode = mode_override_parse_line(line)
     if profile then MODE_OVERRIDES[profile] = mode end
+  end
+end
+
+-- Тестовый сеттер лимитов клонов (мимо файла, как sibling-аналоги).
+function locked_load_clone_size_for_tests(lines)
+  CLONE_SIZES = {}
+  for _, line in ipairs(lines or {}) do
+    local profile, size = clone_size_parse_line(line)
+    if profile then CLONE_SIZES[profile] = size end
   end
 end
 
@@ -606,7 +648,121 @@ end
 local Z2R_CLONE_FIELD = "z2r_mode_clone"
 local Z2R_CLONE_SNI_DEFAULT = "www.google.com"
 
-local function fake_mode_user_clone(desync, sni)
+-- Авторское правило (живой ТСПУ 03.10): TLS-фейк больше 1200 байт рубится
+-- ТСПУ вместе с потоком. Верхняя граница для ЛЮБОГО TLS-фейка — клон, блоб
+-- или конфиг-клон. Не-TLS фейки (QUIC/Discord UDP/STUN) не трогаем.
+local Z2R_TLS_FAKE_LIMIT_MAX = 1200
+-- Рантайм-поле с порезанным фейк-блобом (по образцу Z2R_CLONE_FIELD).
+local Z2R_CAP_FIELD = "z2r_blob_cap"
+
+-- Лимит клона профиля: clonesize.tsv[profile], нет строки = 1200.
+local function z2r_clone_limit_for(profile_key)
+  local v = profile_key and CLONE_SIZES[tostring(profile_key)]
+  if type(v) == "number" and v >= 64 and v <= Z2R_TLS_FAKE_LIMIT_MAX then return v end
+  return Z2R_TLS_FAKE_LIMIT_MAX
+end
+
+-- GREASE-типы расширений: 0x?a?a (0x0a0a..0xfafa, шаг 0x1010 в nibble-арифметике).
+local function z2r_is_grease_ext(t)
+  return t >= 0x0a0a and t <= 0xfafa and (t - 0x0a0a) % 0x1010 == 0
+end
+
+-- Группы согласованного удаления расширений клона (по приоритету из живого
+-- эксперимента 03.10). Удаляются ТОЛЬКО группами: пары вида
+-- signature_algorithms без supported_groups / pre_shared_key не последним
+-- расширением ТСПУ режет. SNI (инжектированный), supported_versions (43),
+-- signature_algorithms (13), renegotiation_info (0xff01) не удаляются никогда.
+local Z2R_CLONE_CUT_GROUPS = {
+  { t = { [0xfe0d] = true } },                            -- ECH: фейку не нужен
+  { t = { [51] = true, [10] = true, [11] = true } },      -- key_share + supported_groups + ec_point_formats
+  { t = { [21] = true } },                                -- padding
+  { grease = true },                                      -- GREASE-расширения
+  { t = { [35] = true } },                                -- session_ticket
+  { t = { [16] = true } },                                -- ALPN
+  { t = { [45] = true, [41] = true, [42] = true } },      -- psk_key_exchange_modes + pre_shared_key + early_data
+}
+
+-- Согласованная резка ClientHello до <= limit: расширения снимаются группами
+-- из Z2R_CLONE_CUT_GROUPS, пока оценка размера не войдёт в лимит; затем один
+-- tls_reconstruct. Не CH / не влезли минимальным набором — nil (фейк не шлём:
+-- отравленный фейк хуже отсутствия, см. эксперимент 03.10).
+local function z2r_clone_semantic_cut(clone, limit)
+  if type(clone) ~= "string" or #clone <= limit then return nil end
+  local ok, tdis = pcall(tls_dissect, clone)
+  if not (ok and type(tdis) == "table" and tdis.handshake
+      and tdis.handshake[1] and tdis.handshake[1].dis
+      and type(tdis.handshake[1].dis.ext) == "table") then
+    return nil
+  end
+  local ext = tdis.handshake[1].dis.ext
+  local saved = 0
+  for _, group in ipairs(Z2R_CLONE_CUT_GROUPS) do
+    local removed = 0
+    for i = #ext, 1, -1 do
+      local etype = ext[i] and ext[i].type
+      local hit = false
+      if etype then
+        if group.grease then
+          hit = z2r_is_grease_ext(etype)
+        elseif group.t then
+          hit = group.t[etype] and true or false
+        end
+      end
+      if hit then
+        removed = removed + 4 + #tostring(ext[i].data or "")
+        table.remove(ext, i)
+      end
+    end
+    if removed > 0 then
+      saved = saved + removed
+      if #clone - saved <= limit then
+        local ok2, cut = pcall(tls_reconstruct, tdis)
+        if ok2 and type(cut) == "string" and #cut > 0 and #cut <= limit then return cut end
+        return nil
+      end
+    end
+  end
+  return nil
+end
+
+-- Сырая резка цепочки TLS-рекордов до <= limit: рекорды целиком помещаются,
+-- последний режется с починкой длины рекорда (валидность структуры на проводе
+-- подтверждена экспериментом 03.10: раздутый нулями рекорд с починкой длины
+-- ТСПУ пропускает). Не TLS (первый байт не 20-23, битая длина) — nil.
+local function z2r_tls_record_cut(data, limit)
+  if type(data) ~= "string" or #data <= limit then return nil end
+  local out, off = "", 1
+  while #data - off + 1 >= 5 do
+    local rtype = string.byte(data, off)
+    local rlen = string.byte(data, off + 3) * 256 + string.byte(data, off + 4)
+    if rtype < 20 or rtype > 23 or #data - off + 1 < 5 + rlen then return nil end
+    if off - 1 + 5 + rlen <= limit then
+      out = out .. string.sub(data, off, off + 4 + rlen)
+      if off - 1 + 5 + rlen == limit then return out end
+      off = off + 5 + rlen
+    else
+      local space = limit - (off - 1) - 5
+      if space < 1 then break end
+      -- длину последнего (порезанного) рекорда переписываем на фактическую:
+      -- рекорд с хвостом чужих байт невалиден, с честной длиной — валиден
+      -- (A/B на проде 03.10: раздутый рекорд с починенной длиной ТСПУ прошёл)
+      out = out .. string.char(rtype) .. string.sub(data, off + 1, off + 2)
+        .. string.char(math.floor(space / 256)) .. string.char(space % 256)
+        .. string.sub(data, off + 5, off + 4 + space)
+      return out
+    end
+  end
+  return (#out > 0 and #out <= limit) and out or nil
+end
+
+-- Кап TLS-фейка: CH режется согласованно, прочие TLS-рекорды — сырой резкой,
+-- не-TLS возвращается как есть (nil = резать не потребовалось/нечем).
+local function z2r_tls_fake_cap(data, limit)
+  if type(data) ~= "string" or #data <= limit then return nil end
+  return z2r_clone_semantic_cut(data, limit) or z2r_tls_record_cut(data, limit)
+end
+
+local function fake_mode_user_clone(desync, sni, profile_key)
   if desync.l7payload ~= "tls_client_hello" then return nil end
   local payload = desync.reasm_data or (desync.dis and desync.dis.payload)
   if type(payload) ~= "string" or #payload == 0 then return nil end
@@ -615,7 +771,30 @@ local function fake_mode_user_clone(desync, sni)
     sni_first = (sni and sni ~= "") and sni or Z2R_CLONE_SNI_DEFAULT,
     sni_snt_new = 0,
   })
-  if ok and type(clone) == "string" and #clone > 0 then return clone end
+  if not (ok and type(clone) == "string" and #clone > 0) then return nil end
+  -- Лимит размера клона (clonesize.tsv, нет строки = 1200): согласованная
+  -- резка группами расширений. Резать не смогли — фейк не шлём, провал =
+  -- штатный путь (блоб конфига).
+  local limit = z2r_clone_limit_for(profile_key)
+  if #clone > limit then
+    local cut = z2r_clone_semantic_cut(clone, limit)
+    if not cut then
+      DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, cut failed, keeping config blob profile="..tostring(profile_key))
+      return nil
+    end
+    DLOG("fake_mode: clone cut "..#clone.."->"..#cut.."B (limit "..limit.."B) profile="..tostring(profile_key))
+    clone = cut
+  end
+  return clone
+end
+
+-- Какой arg инстанса несёт фейк-блоб: fake() держит фейк в blob=,
+-- fakemultisplit/fakemultidisorder — в fake_blob=. У остальных (multisplit,
+-- hostfakesplit, tls_client_hello_clone) blob= — реальный payload или имя
+-- поля: резать нельзя.
+local function z2r_fake_blob_arg(func)
+  if func == "fake" then return "blob" end
+  if func == "fakemultisplit" or func == "fakemultidisorder" then return "fake_blob" end
   return nil
 end
 
@@ -630,7 +809,8 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   local mode = profile_key and MODE_OVERRIDES[tostring(profile_key)]
   local name = profile_key and BLOB_OVERRIDES[tostring(profile_key)]
   local sni = profile_key and SNI_OVERRIDES[tostring(profile_key)]
-  if (not mode and not name and not sni) or not instance or not instance.arg then
+  local fake_arg = (instance and instance.arg and z2r_fake_blob_arg(instance.func)) or nil
+  if (not mode and not name and not sni and not fake_arg) or not instance or not instance.arg then
     return plan_instance_execute(desync, verdict, instance)
   end
   if name and not blob_exist(desync, name) then
@@ -639,7 +819,7 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   end
   -- режим clone: клон CH юзера выигрывает у блоба-override; провал клона
   -- (не CH-пакет, dissect/reconstruct не удался) = штатный путь ниже
-  local clone_data = mode == "clone" and fake_mode_user_clone(desync, sni) or nil
+  local clone_data = mode == "clone" and fake_mode_user_clone(desync, sni, profile_key) or nil
   local target = clone_data and Z2R_CLONE_FIELD or name
   if clone_data then
     desync[Z2R_CLONE_FIELD] = clone_data
@@ -654,6 +834,27 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   if target and (saved_fake_blob == "maxru" or saved_fake_blob == "fake_default_tls") then
     instance.arg.fake_blob = target
     swapped = true
+  end
+  -- Авторское правило: любой TLS-фейк <= 1200. Резолвим итоговое имя блоба
+  -- после подмен (клон режима clone уже порезан по лимиту профиля — не трогаем),
+  -- порезанное кладём в Z2R_CAP_FIELD и подставляем его имя. Не-TLS фейки
+  -- (QUIC/Discord UDP/STUN/rdp) z2r_tls_fake_cap не трогает.
+  local cap_arg, cap_saved, cap_old
+  if fake_arg then
+    local fname = instance.arg[fake_arg]
+    if fname and fname ~= Z2R_CLONE_FIELD then
+      local okb, bdata = pcall(blob, desync, fname)
+      if okb and type(bdata) == "string" then
+        local capped = z2r_tls_fake_cap(bdata, Z2R_TLS_FAKE_LIMIT_MAX)
+        if capped then
+          cap_old = #bdata
+          cap_saved = fname
+          cap_arg = fake_arg
+          desync[Z2R_CAP_FIELD] = capped
+          instance.arg[fake_arg] = Z2R_CAP_FIELD
+        end
+      end
+    end
   end
   -- sni_first есть только у клон-стратегий: подмена не задевает остальные
   local saved_sni = instance.arg.sni_first
@@ -671,6 +872,10 @@ function blob_override_execute(desync, verdict, instance, profile_key)
     end
     instance.arg.blob = saved_blob
     instance.arg.fake_blob = saved_fake_blob
+  end
+  if cap_arg then
+    DLOG("blob_cap: profile="..tostring(profile_key).." "..cap_arg.."="..tostring(cap_saved).." "..cap_old.."->"..#desync[Z2R_CAP_FIELD].."B")
+    instance.arg[cap_arg] = cap_saved
   end
   if sni_swapped then
     DLOG("blob_override: profile="..tostring(profile_key).." sni_first -> "..sni)

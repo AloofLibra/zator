@@ -399,6 +399,10 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
   "profile_snis": {                   // SNI клона по профилям (sni_override.tsv)
     "1": "",                          // "" = невинный дефолт www.google.com
     "3": "vk.ru"                      // меняется в CLI-меню (п.16 -> SNI)
+  },
+  "profile_sizes": {                  // лимит клонов по профилям (clonesize.tsv)
+    "1": "",                          // "" = без ограничения (граница ТСПУ 1200 Б)
+    "4": "964"                        // клоны профиля режутся до «не больше N Б»
   }
 }
 ```
@@ -488,6 +492,7 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 | `tls_blob` | `fake_default_tls` \| `tls_*.bin` \| `custom_tls.bin` | смена TLS-блоба: `fake_default_tls` — вернуться на встроенный (декларация `--blob=maxru:@...` сохраняется для обратного переключения); файл — активировать внешний (`fake_default_tls`→`maxru` в ссылках стратегий + замена пути, path-agnostic `zapret2\|zator`) |
 | `tls_blob_profile` | `profile=1\|2\|3\|4\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена) |
 | `fake_mode` | `profile=1\|2\|3\|4\|8&value=classic\|clone` | режим фейков профиля (mode_override.tsv): `classic` — сброс строки (штатные блобы конфига), `clone` — блоб `maxru\|fake_default_tls` строится в рантайме из ClientHello пользователя с невинным SNI (sni_override.tsv или www.google.com). Без рестарта, TTL-кэш locked.lua ~2с |
+| `clone_size` | `profile=1\|2\|3\|4\|8&value=""\|global\|<64..1200>` | лимит клон-пакетов профиля (clonesize.tsv): `""`/`global` — сброс (без ограничения, границу ТСПУ 1200 Б держит locked.lua), число — клоны режутся до «не больше N Б» согласованными группами расширений; резать не смогли — штатный блоб конфига. Без рестарта, TTL-кэш locked.lua ~2с |
 | `wg_blob` | `value=<wg_initial_fake_*>` | замена `--blob=fakewgblob:@.../<файл>` |
 | `wg_repeats` | `value=<2..99>` | замена `blob=fakewgblob:repeats=N` |
 | `wg_state` | `value=0\|1` | вкл/выкл стратегии WG (`--skip` перед `--filter-l7=wireguard`) |
@@ -516,6 +521,7 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 // wg_blob/wg_repeats/wg_state принимают restart=0 — отложить рестарт (форма WG
 // меняет до трёх настроек одним сабмитом и рестартит один раз, последним запросом)
 // fake_mode:       { "ok": true, "restarted": false, "restart_required": false } — рестарта нет
+// clone_size:      { "ok": true, "restarted": false, "restart_required": false } — рестарта нет
 // tls_blob_profile: { "ok": true, "restarted": true|false, "restart_required": true|false }
 // — restart_required=false: применено через TTL-кэш locked.lua (~2с), рестарта нет;
 // restart_required=true: сменён файл слота z2r_prof_N, выполнен авто-рестарт

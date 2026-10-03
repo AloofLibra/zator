@@ -719,6 +719,16 @@ _supersweep_meta_write() {
                 printf 'mode_%s\t%s\n' "$p" "$m"
             done < <(mode_override_supported_profiles)
         fi
+        # лимит размера клонов по профилям (clonesize.tsv): рядом с mode_*,
+        # пустая строка = без пользовательского лимита (верхняя граница 1200)
+        if type clone_size_get >/dev/null 2>&1 \
+            && type clone_size_supported_profiles >/dev/null 2>&1; then
+            while read -r p; do
+                [ -n "$p" ] || continue
+                s="$(clone_size_get "$p" 2>/dev/null)"
+                [ -n "$s" ] && printf 'size_%s\t%s\n' "$p" "$s"
+            done < <(clone_size_supported_profiles)
+        fi
     } > "${dir}/meta.tsv" 2>/dev/null
     return 0
 }

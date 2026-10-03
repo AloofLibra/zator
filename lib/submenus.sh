@@ -1555,23 +1555,29 @@ tls_blob_submenu() {
     i=$((i+1))
     submenu_item "$i" "Режим фейков — классика/клоны по профилям"
     local mode_item=$i
+    i=$((i+1))
+    submenu_item "$i" "Размер клонов — максимальный размер по профилям"
+    local size_item=$i
     echo ""
     submenu_item "0" "Назад"
     echo ""
 
     read -re -p "Ваш выбор: " ans
     case "$ans" in
-      "1")
-        menu_action_set_tls_blob
-        ;;
       "0"|"")
         return
+        ;;
+      "1")
+        menu_action_set_tls_blob
         ;;
       "$sni_item")
         sni_submenu
         ;;
       "$mode_item")
         fake_mode_submenu
+        ;;
+      "$size_item")
+        clone_size_submenu
         ;;
       *)
         if ui_is_number_in_range "$ans" 2 "$(( ${#profiles[@]} + 1 ))"; then
@@ -1731,6 +1737,7 @@ fake_mode_profile_pick() {
       echo -e "${yellow}Сейчас: ${green}классика (штатные блобы конфига)${plain}"
     fi
     echo -e "${yellow}SNI клона: ${plain}${green}$(fake_mode_sni_display "$profile")${plain}${yellow} — меняется в меню SNI${plain}"
+    echo -e "${yellow}Лимит клона: ${plain}${green}$(clone_size_display "$profile")${plain}${yellow} — меняется в меню «Размер клонов»${plain}"
     echo ""
     submenu_item "1" "Классика — штатные блобы конфига (сброс режима)"
     submenu_item "2" "Клоны — ClientHello пользователя с невинным SNI"
@@ -1856,6 +1863,147 @@ fake_mode_submenu() {
       echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
       telemetry_notify
       pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+# --- Размер клон-пакетов по профилям (clonesize.tsv) ---
+# Максимальный размер клон-пакета в режиме клонов; нет строки = без
+# пользовательского ограничения. Верхняя граница ТСПУ 1200 Б держится
+# системой всегда (режется любой TLS-фейк). Резка согласованная — контракт
+# «не больше лимита», точный размер недостижим (резка идёт группами
+# расширений). Меняется на лету, рестарт не нужен.
+
+clone_size_display() {
+  local v
+  v="$(clone_size_get "$1")"
+  if [ -n "$v" ]; then
+    echo "${v} Б"
+  else
+    echo "без ограничения"
+  fi
+}
+
+clone_size_small_warn() {
+  if [ "$1" -lt 300 ] 2>/dev/null; then
+    echo -e "${yellow}Внимание: при лимите ниже ~300 Б большие ClientHello${plain}"
+    echo -e "${yellow}не влезут — клоны таких потоков откатятся на штатный блоб конфига.${plain}"
+  fi
+}
+
+clone_size_profile_pick() {
+  local profile="$1" title="$2" choice cur preset size i
+  local presets=()
+  while IFS= read -r preset; do presets+=("$preset"); done < <(clone_size_presets)
+  local custom_idx=$(( ${#presets[@]} + 2 ))
+
+  while true; do
+    clear -x
+    cur="$(clone_size_get "$profile")"
+    echo -e "${cyan}--- Профиль $profile ($title): максимальный размер клон-пакетов ---${plain}"
+    echo ""
+    if [ -n "$cur" ]; then
+      echo -e "${yellow}Сейчас: ${green}${cur} Б${plain}"
+    else
+      echo -e "${yellow}Сейчас: ${plain}${green}без ограничения${plain}"
+    fi
+    echo ""
+    submenu_item "1" "Без ограничения (сброс; границу ТСПУ 1200 Б держит система)"
+    i=2
+    for preset in "${presets[@]}"; do
+      submenu_item "$i" "Клоны не больше ${preset} Б"
+      i=$((i+1))
+    done
+    submenu_item "$custom_idx" "Свой размер (64..1200 Б)..."
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice
+    if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+      return
+    elif [ "$choice" = "1" ]; then
+      if clone_size_clear "$profile"; then
+        echo -e "${green}Сброшено: клоны профиля $profile без пользовательского ограничения.${plain}"
+        echo -e "${yellow}Границу ТСПУ 1200 Б система держит всегда. Применится сам в течение ~2 секунд.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сбросить ограничение.${plain}"
+      fi
+      pause_enter
+    elif ui_is_number_in_range "$choice" 2 "$(( custom_idx - 1 ))"; then
+      preset="${presets[$((choice-2))]}"
+      if clone_size_set "$profile" "$preset"; then
+        echo -e "${green}Профиль $profile: клон-пакеты не больше ${preset} Б.${plain}"
+        echo -e "${yellow}Размер получается «не больше» — резка идёт согласованными группами расширений.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        clone_size_small_warn "$preset"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сохранить ограничение.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$custom_idx" ]; then
+      read -re -p "Размер в байтах (64..1200), 0 - отмена: " size
+      if [ "$size" = "0" ]; then
+        :
+      elif [ -n "$size" ] && clone_size_valid "$size"; then
+        if clone_size_set "$profile" "$size"; then
+          echo -e "${green}Профиль $profile: клон-пакеты не больше ${size} Б.${plain}"
+          echo -e "${yellow}Размер получается «не больше» — резка идёт согласованными группами расширений.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          clone_size_small_warn "$size"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сохранить ограничение.${plain}"
+        fi
+      else
+        echo -e "${red}Некорректный размер: целое число 64..1200 (байты).${plain}"
+      fi
+      pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+clone_size_submenu() {
+  local p ans i idx v
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(clone_size_supported_profiles)
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Размер клон-пакетов (лимит байт по профилям) ---${plain}"
+    echo ""
+    echo -e "${yellow}Действует в режиме клонов: клоны режутся до «не больше N Б»${plain}"
+    echo -e "${yellow}согласованными группами расширений; откатить не смогли — штатный блоб.${plain}"
+    echo -e "${yellow}Нет строки = без ограничения. Границу ТСПУ 1200 Б держит система.${plain}"
+    echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(clone_size_get "${profiles[$idx]}")"
+      if [ -n "$v" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "${v} Б" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "без ограничения" yellow
+      fi
+      i=$((i+1))
+    done
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      clone_size_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
     else
       ui_invalid_input
     fi
