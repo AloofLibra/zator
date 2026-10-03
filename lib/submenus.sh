@@ -1889,8 +1889,12 @@ clone_size_display() {
 clone_size_small_warn() {
   if [ "$1" -lt 300 ] 2>/dev/null; then
     echo -e "${yellow}Внимание: при лимите ниже ~300 Б большие ClientHello${plain}"
-    echo -e "${yellow}не влезут — клоны таких потоков откатятся на штатный блоб конфига.${plain}"
+    echo -e "${yellow}не влезут даже после резки — клоны таких потоков откатятся на штатный блоб.${plain}"
   fi
+  echo -e "${yellow}Подсказка: на стратегиях, где фейк шлётся кусками вместе с реальным${plain}"
+  echo -e "${yellow}CH (multisplit/fakeddisorder с блобом), резаный клон большого потока${plain}"
+  echo -e "${yellow}может валить поток — для клонов лучше цельно-фейковые стратегии${plain}"
+  echo -e "${yellow}(fake + repeats, сплит реального без блоба).${plain}"
 }
 
 clone_size_profile_pick() {
@@ -1936,7 +1940,8 @@ clone_size_profile_pick() {
       preset="${presets[$((choice-2))]}"
       if clone_size_set "$profile" "$preset"; then
         echo -e "${green}Профиль $profile: клон-пакеты не больше ${preset} Б.${plain}"
-        echo -e "${yellow}Клоны больше лимита не отправляются: для таких потоков работает штатный блоб конфига.${plain}"
+        echo -e "${yellow}Клоны больше лимита режутся согласованно (без post-quantum key_share);${plain}"
+        echo -e "${yellow}не влезло — штатный блоб конфига.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
         clone_size_small_warn "$preset"
         telemetry_notify
@@ -1951,7 +1956,8 @@ clone_size_profile_pick() {
       elif [ -n "$size" ] && clone_size_valid "$size"; then
         if clone_size_set "$profile" "$size"; then
           echo -e "${green}Профиль $profile: клон-пакеты не больше ${size} Б.${plain}"
-          echo -e "${yellow}Клоны больше лимита не отправляются: для таких потоков работает штатный блоб конфига.${plain}"
+          echo -e "${yellow}Клоны больше лимита режутся согласованно (без post-quantum key_share);${plain}"
+        echo -e "${yellow}не влезло — штатный блоб конфига.${plain}"
           echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
           clone_size_small_warn "$size"
           telemetry_notify

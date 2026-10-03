@@ -121,14 +121,21 @@ assert_contains "$LOCKED_LUA_SRC" '\[51\] = true, \[10\] = true, \[11\] = true' 
 assert_contains "$LOCKED_LUA_SRC" '\[0xfe0d\] = true' "ECH не вырезается группой"
 assert_contains "$LOCKED_LUA_SRC" '\[45\] = true, \[41\] = true, \[42\] = true' \
   "psk_key_exchange_modes/pre_shared_key/early_data не согласованы"
+# резка клона: сначала точечная операция на key_share — PQ-записи вычищаются,
+# классические остаются (CH без key_share не существует у браузеров и ТСПУ
+# режет: исход первой версии резки, живой тест 03.10), затем группы расширений
+assert_contains "$LOCKED_LUA_SRC" 'z2r_clone_key_share_drop_pq' "нет точечной резки key_share"
+assert_contains "$LOCKED_LUA_SRC" 'Z2R_KEY_SHARE_CLASSIC' "нет белого списка классических записей key_share"
+assert_contains "$LOCKED_LUA_SRC" 'local saved = z2r_clone_key_share_drop_pq\(tdis\)' \
+  "pq-резка key_share не первый шаг согласованной резки"
 assert_contains "$LOCKED_LUA_SRC" 'z2r_clone_semantic_cut' "нет согласованной резки клона"
 assert_contains "$LOCKED_LUA_SRC" 'z2r_tls_record_cut' "нет сырой резки TLS-рекордов"
 assert_contains "$LOCKED_LUA_SRC" 'string\.char\(math\.floor\(space / 256\)\)' \
   "сырая резка не чинит длину последнего рекорда"
-# клон живёт только целым: не влез в лимит — штатный блоб (резаный клон ТСПУ
-# режет вместе с потоком, живой тест 03.10)
-assert_contains "$LOCKED_LUA_SRC" 'using config blob profile=' \
-  "превышение лимита клона не откатывается на штатный блоб"
+# не влезли даже минимальным набором — откат на штатный блоб конфига
+assert_contains "$LOCKED_LUA_SRC" 'cut failed, keeping config blob profile=' \
+  "провал резки клона не откатывается на штатный блоб"
+assert_contains "$LOCKED_LUA_SRC" 'clone cut "' "резка клона не логируется"
 
 # --- 2. Статический wiring меню и бэкапов -----------------------------------
 

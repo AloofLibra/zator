@@ -682,10 +682,45 @@ local Z2R_CLONE_CUT_GROUPS = {
   { t = { [45] = true, [41] = true, [42] = true } },      -- psk_key_exchange_modes + pre_shared_key + early_data
 }
 
--- Согласованная резка ClientHello до <= limit: расширения снимаются группами
--- из Z2R_CLONE_CUT_GROUPS, пока оценка размера не войдёт в лимит; затем один
--- tls_reconstruct. Не CH / не влезли минимальным набором — nil (фейк не шлём:
--- отравленный фейк хуже отсутствия, см. эксперимент 03.10).
+-- Классические (не post-quantum) записи key_share: secp256r1/secp384r1/
+-- secp521r1/x25519. PQ-гибриды (X25519MLKEM768 = 0x11EC, X25519Kyber768 =
+-- 0x6399 и пр.) все >= 0x0100, кривые — ниже.
+local Z2R_KEY_SHARE_CLASSIC = { [0x001d] = true, [0x0017] = true, [0x0018] = true, [0x0019] = true }
+
+-- Post-quantum записи из key_share (~1216 Б за X25519MLKEM768). CH БЕЗ
+-- key_share не существует у браузеров — ТСПУ такие режет (эксперимент 03.10:
+-- согласованная резка, убравшая key_share целиком, валит большой поток),
+-- а key_share из одной x25519 — обычный клиент до pq-эры. Удаляем только
+-- PQ-записи, классические остаются: клон pq-CH (~1812Б) превращается в
+-- согласованный CH «старого браузера» (~595Б) без снятия расширений.
+-- Возвращает сэкономленное (0 = нечего было убирать/нечего оставить).
+local function z2r_clone_key_share_drop_pq(tdis)
+  local ext = tdis.handshake[1].dis.ext
+  for i = 1, #ext do
+    local e = ext[i]
+    if e and e.type == 51 and e.dis and type(e.dis.list) == "table" and #e.dis.list > 1 then
+      local keep, saved = {}, 0
+      for _, ks in ipairs(e.dis.list) do
+        if ks.group and Z2R_KEY_SHARE_CLASSIC[ks.group] then
+          keep[#keep + 1] = { group = ks.group, kex = ks.kex }
+        else
+          saved = saved + 4 + #(ks.kex or "")
+        end
+      end
+      if saved > 0 and #keep > 0 then
+        e.dis.list = keep
+        return saved
+      end
+    end
+  end
+  return 0
+end
+
+-- Согласованная резка ClientHello до <= limit: сначала точечная операция на
+-- key_share (PQ-записи — главный источник размера), затем расширения снимаются
+-- группами из Z2R_CLONE_CUT_GROUPS, пока оценка размера не войдёт в лимит;
+-- затем один tls_reconstruct. Не CH / не влезли минимальным набором — nil
+-- (фейк не шлём: отравленный фейк хуже отсутствия, см. эксперимент 03.10).
 local function z2r_clone_semantic_cut(clone, limit)
   if type(clone) ~= "string" or #clone <= limit then return nil end
   local ok, tdis = pcall(tls_dissect, clone)
@@ -695,7 +730,12 @@ local function z2r_clone_semantic_cut(clone, limit)
     return nil
   end
   local ext = tdis.handshake[1].dis.ext
-  local saved = 0
+  local saved = z2r_clone_key_share_drop_pq(tdis)
+  if #clone - saved <= limit then
+    local ok2, cut = pcall(tls_reconstruct, tdis)
+    if ok2 and type(cut) == "string" and #cut > 0 and #cut <= limit then return cut end
+    return nil
+  end
   for _, group in ipairs(Z2R_CLONE_CUT_GROUPS) do
     local removed = 0
     for i = #ext, 1, -1 do
@@ -762,6 +802,22 @@ local function z2r_tls_fake_cap(data, limit)
   return z2r_clone_semantic_cut(data, limit) or z2r_tls_record_cut(data, limit)
 end
 
+-- Клон — точная копия random/session_id реального CH: в одном потоке ТСПУ
+-- видит два CH с одним random и разными SNI (фейк google + настоящий discord)
+-- — очевидная подделка. Пересобираем клон со свежим random и session_id той
+-- же длины (отпечаток формы сохраняется, значения — нет).
+local function z2r_clone_rerandomize(clone)
+  local ok, tdis = pcall(tls_dissect, clone)
+  if not (ok and type(tdis) == "table" and tdis.handshake
+      and tdis.handshake[1] and tdis.handshake[1].dis) then return clone end
+  local d = tdis.handshake[1].dis
+  d.random = brandom(32)
+  d.session_id = brandom(#(d.session_id or ""))
+  local ok2, out = pcall(tls_reconstruct, tdis)
+  if ok2 and type(out) == "string" and #out > 0 then return out end
+  return clone
+end
+
 local function fake_mode_user_clone(desync, sni, profile_key)
   if desync.l7payload ~= "tls_client_hello" then return nil end
   local payload = desync.reasm_data or (desync.dis and desync.dis.payload)
@@ -772,19 +828,22 @@ local function fake_mode_user_clone(desync, sni, profile_key)
     sni_snt_new = 0,
   })
   if not (ok and type(clone) == "string" and #clone > 0) then return nil end
-  -- Лимит размера клона (clonesize.tsv, нет строки = 1200). Резать НЕ режем:
-  -- живой тест 03.10 показал, что ЛЮБОЙ резаный клон большого CH валит поток
-  -- (куски фейка сверх длины клона добиваются нулями — record с нулевым
-  -- хвостом невалиден, ТСПУ молча режет весь поток; согласованная резка
-  -- группами расширений того же исхода). Клон живёт только целым, поэтому
-  -- не влез в лимит — откат на штатный блоб конфига (он на больших потоках
-  -- проверен классикой).
+  -- Лимит размера клона (clonesize.tsv, нет строки = 1200). Резка — с точечной
+  -- операцией на key_share: PQ-записи вычищаются, классические остаются
+  -- (см. z2r_clone_key_share_drop_pq: CH без key_share ТСПУ режет — исход
+  -- первой версии резки; key_share из одной x25519 — норма до pq-эры).
+  -- Не влезли даже минимальным набором — откат на штатный блоб конфига.
   local limit = z2r_clone_limit_for(profile_key)
   if #clone > limit then
-    DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, using config blob profile="..tostring(profile_key))
-    return nil
+    local cut = z2r_clone_semantic_cut(clone, limit)
+    if not cut then
+      DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, cut failed, keeping config blob profile="..tostring(profile_key))
+      return nil
+    end
+    DLOG("fake_mode: clone cut "..#clone.."->"..#cut.."B (limit "..limit.."B) profile="..tostring(profile_key))
+    clone = cut
   end
-  return clone
+  return z2r_clone_rerandomize(clone)
 end
 
 -- Какой arg инстанса несёт фейк-блоб: fake() держит фейк в blob=,
