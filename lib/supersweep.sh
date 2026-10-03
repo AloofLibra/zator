@@ -1,35 +1,19 @@
-# Super auto-sweep (суперавтопрогон): one command picks working strategies
-# for profiles 1 (YouTube), 2 (Googlevideo), 4 (Discord) in parallel and
-# builds a full coverage map of RKN probe domains (profile 3 strategy space,
-# per-domain locks are temporary during the sweep).
-#
-# Design notes:
-# - profile locks live in different locked.tsv rows, so profile workers never
-#   conflict: they can flip strategies truly in parallel;
-# - only the parent process writes locked.tsv (single writer): workers send
-#   lock requests via cmd.<name> files and wait for the applied.<name> marker
-#   (parallel awk+mv writes to the same lock file would race);
-# - progress is mirrored into plain files under $Z2R_SUPERSWEEP_DIR so a
-#   future WebUI can poll them instead of holding a long CGI request;
-# - results (including rolled-back previous locks) are archived and can be
-#   pushed to a stats endpoint via Z2R_SUPERSWEEP_STATS_URL.
+# Суперавтопрогон: профили 1/2/4 по очереди, затем полная карта РКН.
+# Локи пишет только родитель (cmd.<name>); прогресс — файлы для WebUI.
+# Результаты и прежние локи архивируются, отправка статистики опциональна.
 
 Z2R_SUPERSWEEP_DIR="${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}"
-# seconds to wait after a lock write: nfqws2 lua re-reads locked.tsv with a
-# 2s TTL cache, probes must not start under the previous strategy.
+# После записи лока ждём TTL кеша Lua (2 с), чтобы не проверить прежнюю стратегию.
 Z2R_SUPERSWEEP_SETTLE="${Z2R_SUPERSWEEP_SETTLE:-2}"
 Z2R_SUPERSWEEP_ARCHIVE_DIR="${Z2R_SUPERSWEEP_ARCHIVE_DIR:-${ORCH_DIR:-/opt/zator/extra_strats/cache/orchestra}/supersweep}"
-# stats endpoint by the upstream author (redis backend); an explicitly
-# exported empty value disables the upload. consent reuses the main
-# telemetry switch (tel_enabled) — same uuid, same opt-out
+# Сервер автора; пустой URL отключает отправку, согласие и UUID общие с телеметрией (tel_enabled).
 Z2R_SUPERSWEEP_STATS_URL="${Z2R_SUPERSWEEP_STATS_URL-https://alooflibra.fun/z4r/supersweep}"
 Z2R_SUPERSWEEP_ARCHIVE_KEEP="${Z2R_SUPERSWEEP_ARCHIVE_KEEP:-10}"
 Z2R_SUPERSWEEP_RKN_PAR_DEFAULT="${Z2R_SUPERSWEEP_RKN_PAR_DEFAULT:-2}"
-# curated RKN probe set: every domain ships in TCP_RKN_list.txt already,
-# per-domain locks apply out of the box (no TCP_Custom changes needed).
+# Базовые домены уже в TCP_RKN_list.txt; добавление в TCP_Custom не требуется.
 Z2R_SUPERSWEEP_RKN_DOMAINS="${Z2R_SUPERSWEEP_RKN_DOMAINS:-xhamster.com anidub.com amnezia.org}"
 
-# fallback palette for standalone runs (colors are defined globally in z2r.sh)
+# Цвета для standalone-запуска; в меню их задаёт z2r.sh.
 [ -z "${plain:-}" ] && plain='\033[0m'
 [ -z "${red:-}" ] && red='\033[0;31m'
 [ -z "${green:-}" ] && green='\033[0;32m'
@@ -43,8 +27,7 @@ supersweep_dir() {
     printf '%s\n' "$Z2R_SUPERSWEEP_DIR"
 }
 
-# external cancel: touch "$Z2R_SUPERSWEEP_DIR/cancel" — running workers stop
-# at the next safe point, the parent restores previous locks.
+# Отмена: touch "$Z2R_SUPERSWEEP_DIR/cancel"; воркеры остановятся на безопасном шаге, откат — в родителе.
 supersweep_cancel_running() {
     [ -d "$Z2R_SUPERSWEEP_DIR" ] || return 1
     : > "$Z2R_SUPERSWEEP_DIR/cancel"
@@ -83,8 +66,7 @@ _supersweep_phase_pause() {
     return 0
 }
 
-# лучший пер-доменный результат из coverage.tsv: ok важнее warn, дальше
-# скорость скачивания, дальше меньший номер стратегии; rank: 0=ok 1=warn
+# Победитель домена: ok > warn > fail, затем скорость и меньший номер; rank 0=ok, 1=warn.
 _supersweep_rkn_domain_winners() {
     awk -F'\t' '
         {
@@ -102,11 +84,10 @@ _supersweep_rkn_domain_winners() {
         }' "$1" 2>/dev/null
 }
 
-# --- worker -> parent lock protocol --------------------------------------
-# worker writes cmd.<name> (tmp + mv, first line "r|<round>", then spec lines
-# "profile|<prof>|<proto>|<strategy>" / "domain|<dom>|<proto|<strategy>"),
-# parent applies every line via orch_locked_set (single writer) and moves the
-# file to applied.<name>; the worker waits for its round marker.
+# --- Команды воркер → родитель (единственный писатель локов) ---
+# cmd.<name> публикуется через tmp+mv: r|<round>, затем
+# profile|<prof>|<proto>|<strategy> или domain|<dom>|<proto>|<strategy>.
+# После orch_locked_set родитель переименовывает файл в applied.<name> — ACK раунда.
 
 _supersweep_request_lock() {
     local name="$1" round="$2" specs="$3" dir="$Z2R_SUPERSWEEP_DIR"
@@ -123,8 +104,7 @@ _supersweep_request_lock() {
     return 1
 }
 
-# --- shared per-strategy line rendering (same visual language as the
-# single-profile sweep: badges per TLS version + short verdict) ---
+# --- Вывод стратегии: бейджи TLS и краткий вердикт ---
 
 _supersweep_badge() {
     local label="$1" raw="$2" badge btxt bst
@@ -146,8 +126,7 @@ _supersweep_verdict_color() {
     esac
 }
 
-# one progress row for progress.<name>.tsv (webui-friendly plain TSV):
-# epoch, target, strategy, token, tls12 state, tls13 state, dl bytes, dl time, short
+# progress.<name>.tsv: epoch, target, strategy, token, tls12, tls13, dl bytes, dl time, short.
 _supersweep_progress_row() {
     local epoch="$1" target="$2" strat="$3" token="$4" v12="$5" v13="$6" dl="$7" short="$8"
     local st12 st13 dlbytes dltime
@@ -182,18 +161,17 @@ _supersweep_print_line() {
     fi
 }
 
-# --- profile worker: sweeps strategies 1..max for one profile -------------
+# --- Профильный воркер: стратегии 1..max ---
 
 _supersweep_worker_profile() {
     local name="$1" tag="$2" profile="$3" proto_list="$4" url="$5" max="$6"
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tls_pref="$7" pause_sec="$8"
     local s p round=0 out v12 v13 dl short token specs
-    local ok_list="" warn_list="" full_list="" ok_stats="" full_stats="" warn_stats=""
+    local ok_list="" warn_list="" full_list="" ok_stats="" warn_stats=""
     local n_ok=0 n_warn=0 n_fail=0
-    local ss_interrupted=0 peff psleep settle_v g
-    # выдержка после лока (settle) входит в паузу: интервал между
-    # проверками = пауза + время самой проверки
+    local ss_interrupted=0 psleep settle_v g
+    # Settle входит в паузу; интервал проверок = пауза + время пробы.
     settle_v="${Z2R_SUPERSWEEP_SETTLE:-2}"
     case "$settle_v" in ''|*[!0-9]*) settle_v=2 ;; esac
     trap 'ss_interrupted=1' INT TERM
@@ -229,9 +207,6 @@ _supersweep_worker_profile() {
                 fi
                 if [ "$dl" != "skip" ] && printf '%s' "$dltime" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
                     ok_stats="${ok_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
-                    if [ "$q12" = 1 ] && [ "$q13" = 1 ]; then
-                        full_stats="${full_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
-                    fi
                 fi
                 ;;
             warn)
@@ -250,12 +225,7 @@ _supersweep_worker_profile() {
             >> "${dir}/progress.${name}.tsv"
 
         if [ "$s" -lt "$max" ]; then
-            # пауза до следующей проверки: выдержка после лока входит в неё
-            # (интервал между строками = пауза + время проверки), а при
-            # зелёных ОБЕИХ версиях TLS — короткая (Z2R_SUPERSWEEP_GREEN_PAUSE,
-            # 0 = ускоритель выключен, обычная пауза фазы). Тот же механизм,
-            # что и в РКН-воркере: ускорение после успеха работает во всех
-            # фазах, включая долгий Discord.
+            # Обе TLS зелёные → GREEN_PAUSE (0 отключает), в том числе для Discord.
             psleep="$pause_sec"
             if [ "$psleep" -gt "$settle_v" ]; then
                 psleep=$((psleep - settle_v))
@@ -271,16 +241,13 @@ _supersweep_worker_profile() {
             [ "$psleep" -gt 0 ] && _supersweep_sleep "$psleep"
         fi
     done
-    # traps stay installed until the subshell exits: a second INT from the
-    # parent kill must not kill the worker before best.<name> is written
+    # До записи best.<name> сохраняем traps против повторного INT.
+    # interrupted помечает неполный проход: родитель не должен применять его результат.
 
-    # "interrupted" = the sweep did not run to completion (signal or the
-    # cancel file): partial results must not be applied by the coordinator
     local ss_incomplete=0
     [ "$s" -le "$max" ] && ss_incomplete=1
 
-    # best selection mirrors orch_auto_sweep: fastest green by bytes/sec,
-    # full (both TLS versions) preferred, warn fallback when no green exists
+    # Самая быстрая зелёная; без докачки — первая; без зелёных — жёлтая.
     local best="" best_short="" best_kind="" win
     if [ -n "$ok_stats" ]; then
         win="$(printf '%s' "$ok_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
@@ -314,9 +281,8 @@ _supersweep_worker_profile() {
     : > "${dir}/done.${name}"
 }
 
-# winners from coverage.tsv: "ok_winner<TAB>ok_cover<TAB>total<TAB>warn_winner<TAB>warn_cover"
-# (ok winner = most green domains, ties by summed speed then lower number;
-# warn winner = same over partial single-TLS-version results, report-only)
+# TSV: ok_winner, ok_cover, total, warn_winner, warn_cover.
+# Рейтинг: покрытие → сумма скоростей → меньший номер. Warn только для отчёта.
 _supersweep_rkn_winners() {
     local total="$1" file="$2"
     awk -F'\t' -v total="$total" '
@@ -339,20 +305,12 @@ _supersweep_rkn_winners() {
         }' "$file" 2>/dev/null
 }
 
-# --- rkn worker: full matrix over all selected domains ---------------------
-# upstream author's request: every strategy round probes ALL user-selected
-# domains — a single reference domain can be dead on its own (rutracker and
-# meduza die regularly), so gating on one host loses the whole map. the
-# price is more requests, compensated by a larger dedicated rkn pause
-# (see supersweep_ask_rkn_pause). strategies are still ordered by the
-# youtube worker results when available: a strategy green on youtube tends
-# to crack other hosts too, youtube failures go last — nicer live logs and
-# an early signal while the map builds.
+# --- РКН: все стратегии каждого домена; YouTube-зелёные первыми ---
+# Один эталонный домен может быть мёртв — остальные нельзя пропускать.
 
 _supersweep_rkn_record() {
-    # $1 domain, $2 strategy, $3 engine out (3 lines), $4 tls_pref
-    # prints the console line to stderr and the verdict token (ok|warn|fail)
-    # on stdout — callers capture stdout, same contract as the ask_* dialogs
+    # Аргументы: domain, strategy, engine out (3 строки), tls_pref.
+    # stdout: ok|warn|fail; stderr: строка для консоли.
     local d="$1" s="$2" out="$3" tls_pref="$4"
     local v12 v13 dl short token dlsize dltime speed
     v12="$(printf '%s\n' "$out" | sed -n 1p)"
@@ -381,8 +339,7 @@ _supersweep_worker_rkn() {
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tmpd="${dir}/wrkn"
-    local ref d round=0 specs token out s
-    local pids pid2 n
+    local ref d round=0 token out s
     local ss_interrupted=0
     trap 'ss_interrupted=1' INT TERM
     set +e
@@ -390,8 +347,7 @@ _supersweep_worker_rkn() {
 
     ref="${domains%% *}"
 
-    # youtube-correlated strategy order (report-only convenience: every
-    # strategy is probed anyway, greens just come first in the live log)
+    # Порядок по результатам YouTube меняет только очередность, не набор стратегий.
     local s_list=""
     s_list="$(for ((s=1; s<=max; s++)); do printf '%s\n' "$s"; done | awk -v ytfile="${dir}/progress.yt.tsv" '
         BEGIN {
@@ -409,12 +365,8 @@ _supersweep_worker_rkn() {
         }' 2>/dev/null | sort -k1,1n -k2,2n | awk '{printf "%s%s", sep, $2; sep = " "} END{printf "\n"}')"
     [ -n "$s_list" ] || s_list="$(for ((s=1; s<=max; s++)); do printf '%s ' "$s"; done)"
 
-    # последовательный пер-доменный проход: каждый домен получает полный
-    # круг стратегий до перехода к следующему (доменные локи реально работают в
-    # рантайме). Частые переключения на нескольких доменах сразу — типичный
-    # триггер rate-эвристики ТСПУ, поэтому по одному.
-    local dtot=0 dnum=0 dom_first=1 peff g
-    for d in $domains; do dtot=$((dtot + 1)); done
+    # Полный последовательный проход каждого домена против rate-эвристик ТСПУ.
+    local dtot="$(_supersweep_count_list "$domains")" dnum=0 dom_first=1 peff g
     for d in $domains; do
         [ "$ss_interrupted" = 1 ] && break
         _supersweep_cancelled && break
@@ -435,45 +387,31 @@ _supersweep_worker_rkn() {
 28|000|-|-|-
 skip"
             token="$(_supersweep_rkn_record "$d" "$s" "$out" "$tls_pref")"
-            # пауза до следующей проверки: обе версии TLS зелёные = не
-            # спалили — можно короткую (Z2R_SUPERSWEEP_GREEN_PAUSE, 0 = выкл);
-            # иначе ровно та, что задал пользователь. Эскалации нет: длинные
-            # простои карту не улучшают, только растягивают прогон.
+            # Обе TLS зелёные → GREEN_PAUSE (0 отключает), иначе пауза пользователя без эскалации.
             peff="$pause_sec"
             if [ "$token" = ok ] \
                 && z2r_tls_code_ok "$(z2r_tls_field "$(printf '%s\n' "$out" | sed -n 1p)" 2)" \
                 && z2r_tls_code_ok "$(z2r_tls_field "$(printf '%s\n' "$out" | sed -n 2p)" 2)"; then
                 g="${Z2R_SUPERSWEEP_GREEN_PAUSE:-5}"
                 case "$g" in ''|*[!0-9]*) g=5 ;; esac
-                # 0 = ускоритель выключен: обычная пауза фазы
                 if [ "$g" -gt 0 ]; then peff="$g"; fi
             fi
             printf '%s\t%s\t%s\t%s\n' "rkn" "$s" "$peff" >> "${dir}/pacing.tsv"
             [ "$peff" -gt 0 ] && _supersweep_sleep "$peff"
         done
     done
-    # traps stay installed until the subshell exits: a second INT from the
-    # parent kill must not kill the worker before best.<name> is written
+    # До best.<name> сохраняем traps против повторного INT; неполную карту не применять.
+    # После for s остаётся последним номером; завершение проверяем по coverage.tsv.
 
-    # "interrupted" = the map did not run to completion (signal or the
-    # cancel file): a partial map must not be applied by the coordinator.
-    # after a natural for-list completion s equals the last strategy, so
-    # count the recorded rounds instead
     local ss_incomplete=0 probed=0 need=0
     for d in $s_list; do need=$((need + 1)); done
     probed="$(cut -f3 "${dir}/coverage.tsv" 2>/dev/null | sort -u | wc -l | tr -d '[:space:]')"
     [ -n "$probed" ] || probed=0
     [ "$probed" -lt "$need" ] && ss_incomplete=1
 
-    # winner = strategy with the most green (ok) domains; ties broken by the
-    # sum of download speeds, then by the lower strategy number. warn_winner
-    # is the same metric over partial (single TLS version) results — it is
-    # reported but never auto-applied: an all-yellow run usually means the
-    # channel is degraded (tspu trigger), not that the strategy is good.
-    local total=0
-    for d in $domains; do total=$((total + 1)); done
+    # Warn только для отчёта: сплошной жёлтый может означать деградацию канала.
     local winner_line
-    winner_line="$(_supersweep_rkn_winners "$total" "${dir}/coverage.tsv")"
+    winner_line="$(_supersweep_rkn_winners "$dtot" "${dir}/coverage.tsv")"
     {
         printf 'winner=%s\n' "$(printf '%s' "$winner_line" | cut -f1)"
         printf 'winner_cover=%s\n' "$(printf '%s' "$winner_line" | cut -f2)"
@@ -486,12 +424,10 @@ skip"
     : > "${dir}/done.${name}"
 }
 
-# --- parent: coordinator + summary ----------------------------------------
+# --- Родитель: применение результатов и сводка ---
+# Применяем завершённые профили сразу, не дожидаясь РКН.
+# applied.done.<name>: стратегия | none | error; для РКН — domains.
 
-# settle a finished worker's result immediately: the user gets working
-# youtube/googlevideo/discord while the long rkn stage is still running.
-# writes the applied.done.<name> marker (strategy value | none | error) so
-# the summary and the cancel path know what is already settled
 _supersweep_settle_worker() {
     local name="$1" pkey="$2" protos="$3" cfg="$4"
     local dir="$Z2R_SUPERSWEEP_DIR"
@@ -503,8 +439,7 @@ _supersweep_settle_worker() {
         best="$(_supersweep_kv_read "${dir}/best.${name}" best)"
         best_short="$(_supersweep_kv_read "${dir}/best.${name}" best_short)"
     fi
-    # an interrupted worker writes best/done too (graceful exit): its partial
-    # results must not be applied — a half-swept best is not a verdict
+    # best/done пишутся и при отмене; interrupted запрещает применение частичного результата.
     if [ "$(_supersweep_kv_read "${dir}/best.${name}" interrupted)" = 1 ]; then
         if [ "$name" != rkn ]; then
             _supersweep_restore_prev profile "$pkey"
@@ -513,10 +448,8 @@ _supersweep_settle_worker() {
         return 0
     fi
     if [ "$name" = rkn ]; then
-        # пер-доменное применение: доменные строки реально работают в
-        # рантайме, каждый домен сразу получает свою зелёную стратегию.
-        # Жёлтые (одна версия TLS) — только через явный вопрос в сводке.
-        local dw_line dwin dstr drank
+        # Зелёные доменные победители — сразу; жёлтые — только по согласию в сводке.
+        local dwin dstr drank
         _supersweep_rkn_domain_winners "${dir}/coverage.tsv" \
             | while IFS="$(printf '\t')" read -r dwin dstr drank; do
                 [ -n "$dwin" ] || continue
@@ -526,48 +459,42 @@ _supersweep_settle_worker() {
                     echo -e "$(date '+%H:%M:%S') ${Fgreen}РКН: домен ${dwin} — применена стратегия ${dstr}${plain}"
                 fi
             done
-        # профильная строка РКН: стратегия максимума покрытия — дефолт для
-        # всего списка (домены без персонального лока). Без этого свежая
-        # установка остаётся на стартовой стратегии, даже если та никогда
-        # не пробивается — список РКН мёртв при живых победителях.
-        if [ -n "$best" ]; then
-            old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
-            if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
-                printf 'profile\t%s\t%s\n' "$pkey" "$best" >> "${dir}/applied.tsv"
-                echo -e "$(date '+%H:%M:%S') ${Fgreen}Профиль ${pkey} (РКН): применена стратегия ${best}${plain} (${best_short})"
-                profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"
-            else
-                echo -e "$(date '+%H:%M:%S') ${red}Профиль ${pkey} (РКН): не удалось применить стратегию ${best}.${plain}" >&2
-            fi
-        else
-            echo -e "$(date '+%H:%M:%S') ${yellow}РКН: зелёного покрытия нет — профильная строка не менялась.${plain}" >&2
-        fi
         marker="domains"
-        telemetry_notify
-    elif [ -n "$best" ]; then
+    fi
+    # Победитель профиля РКН — дефолт для доменов без персонального лока.
+    if [ -n "$best" ]; then
         old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
         if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
-            marker="$best"
+            [ "$name" = rkn ] || marker="$best"
             printf 'profile\t%s\t%s\n' "$pkey" "$best" >> "${dir}/applied.tsv"
-            echo -e "$(date '+%H:%M:%S') ${Fgreen}Профиль ${pkey}: воркер завершён — применена лучшая стратегия ${best}${plain} (${best_short})"
+            if [ "$name" = rkn ]; then
+                echo -e "$(date '+%H:%M:%S') ${Fgreen}Профиль ${pkey} (РКН): применена стратегия ${best}${plain} (${best_short})"
+            else
+                echo -e "$(date '+%H:%M:%S') ${Fgreen}Профиль ${pkey}: воркер завершён — применена лучшая стратегия ${best}${plain} (${best_short})"
+            fi
             profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"
-            telemetry_notify
+            [ "$name" = rkn ] || telemetry_notify
         else
-            marker="error"
-            echo -e "$(date '+%H:%M:%S') ${red}Профиль ${pkey}: не удалось применить стратегию ${best}.${plain}" >&2
+            if [ "$name" = rkn ]; then
+                echo -e "$(date '+%H:%M:%S') ${red}Профиль ${pkey} (РКН): не удалось применить стратегию ${best}.${plain}" >&2
+            else
+                marker="error"
+                echo -e "$(date '+%H:%M:%S') ${red}Профиль ${pkey}: не удалось применить стратегию ${best}.${plain}" >&2
+            fi
         fi
+    elif [ "$name" = rkn ]; then
+        echo -e "$(date '+%H:%M:%S') ${yellow}РКН: зелёного покрытия нет — профильная строка не менялась.${plain}" >&2
     else
-        # no best: return the profile to its pre-sweep lock right away
+        # Нет победителя — сразу вернуть прежний профильный лок.
         _supersweep_restore_prev profile "$pkey"
     fi
+    if [ "$name" = rkn ]; then telemetry_notify; fi
     printf '%s\n' "$marker" > "${dir}/applied.done.${name}"
     return 0
 }
 
-# settle every finished-but-unsettled worker (skipped on cancel: an abort
-# must not introduce new changes). called from the coordinator loop and once
-# after it: the loop breaks the moment the last worker dies, before it could
-# process that worker's done marker (typically the rkn winner)
+# Вызывать в цикле и после wait: воркер может выйти до обработки done.
+# При отмене не вызывать: новые результаты применять нельзя.
 _supersweep_settle_pass() {
     local cfg="$1" dir="$Z2R_SUPERSWEEP_DIR" wname
     for wname in yt gv ds rkn; do
@@ -587,8 +514,7 @@ _supersweep_apply_cmd() {
     local f="$1" dir="$Z2R_SUPERSWEEP_DIR"
     local name="${f##*/cmd.}"
     local target="${dir}/applied.${name}"
-    # pipe subshell is fine: orch_locked_set is inherited, writes land in the
-    # real lock file (single writer = this parent process)
+    # Pipe-subshell наследует orch_locked_set; файлы общие, писатель один.
     tail -n +2 "$f" 2>/dev/null | while IFS='|' read -r kind key proto val; do
         [ -n "$kind" ] || continue
         case "$kind" in
@@ -600,13 +526,13 @@ _supersweep_apply_cmd() {
 }
 
 _supersweep_kv_read() {
-    # $1 = file, $2 = key; prints value (empty when missing)
+    # file, key → значение (пусто, если отсутствует).
     [ -f "$1" ] || return 0
     sed -n "s/^$2=//p" "$1" | head -n1
 }
 
 _supersweep_restore_prev() {
-    # $1 = kind filter (profile|domain, empty = all), $2 = optional key filter
+    # Фильтры: kind (profile|domain, пусто = все), необязательный key.
     local dir="$Z2R_SUPERSWEEP_DIR" want_kind="${1:-}" want_key="${2:-}"
     local kind key proto prev
     [ -f "${dir}/prev.tsv" ] || return 0
@@ -637,13 +563,9 @@ _supersweep_status_write() {
     } > "${dir}/status.tmp.$$" && mv -f "${dir}/status.tmp.$$" "${dir}/status"
 }
 
-# create the results archive the same way backup_create_core does: plain
-# uncompressed tar over a stable stage dir (results are final when this
-# runs). plain "tar" can still resolve to busybox tar without create mode
-# in non-login contexts (entware: /opt/usr/bin/tar shadows the GNU one in
-# /opt/bin; login shells and the interactive menu get GNU first), so walk
-# the candidates: explicit override first (also used by smoke tests), then
-# PATH tar, then known GNU tar locations
+# Несжатый tar финальных результатов, как backup_create_core.
+# Entware: в non-login PATH /opt/usr/bin/tar может быть BusyBox без create.
+# Приоритет: Z2R_SUPERSWEEP_TAR → PATH → известные GNU tar.
 _supersweep_tar_create() {
     local tgz="$1" dir="$2" t
     for t in "${Z2R_SUPERSWEEP_TAR:-}" tar /opt/bin/tar /opt/libexec/tar-gnu; do
@@ -654,11 +576,8 @@ _supersweep_tar_create() {
     return 1
 }
 
-# archive everything the sweep collected (including the rolled-back previous
-# locks from prev.tsv) and push it to the stats endpoint when configured
 
-# telemetry identity for the stats upload: same uuid as the main telemetry
-# (telemetry.config); empty when telemetry was never initialized
+# UUID из telemetry.config; пусто, если телеметрия не инициализирована.
 _supersweep_stats_uuid() {
     local cfg="${TELEMETRY_CFG:-/opt/zator/z2r_lib/telemetry.config}"
     [ -f "$cfg" ] || return 0
@@ -670,13 +589,8 @@ _supersweep_stats_enabled() {
     [ -f "$cfg" ] && grep -q '^tel_enabled=1$' "$cfg"
 }
 
-# meta.tsv inside every results archive: identity and context for the stats
-# backend. uuid ties the archive to the main telemetry records (isp/os/webui
-# live there — no duplication here); blob_* rows mirror the blob fields of
-# send_stats: blob_global = the config-wide blob (config_tls_blob_menu_value,
-# "fake_default_tls" or a maxru file name), blob_<profile> = the effective
-# blob for profiles that support overrides (blob_override.tsv, falling back
-# to the global one)
+# meta.tsv: связь с телеметрией; blob_* как в send_stats.
+# Глобальный blob: fake_default_tls/maxru; без override профиль наследует его.
 _supersweep_meta_write() {
     local dir="$Z2R_SUPERSWEEP_DIR"
     local uuid prov blob_cfg blob_global p b_val v m
@@ -708,8 +622,7 @@ _supersweep_meta_write() {
                 printf 'blob_%s\t%s\n' "$p" "$v"
             done < <(blob_override_supported_profiles)
         fi
-        # режим фейков по профилям (clone/classic): автору для статистики —
-        # пустая строка в mode_override.tsv означает classic
+        # mode_<profile>: clone/classic; без строки в mode_override.tsv — classic.
         if type mode_override_get >/dev/null 2>&1 \
             && type mode_override_supported_profiles >/dev/null 2>&1; then
             while read -r p; do
@@ -719,8 +632,7 @@ _supersweep_meta_write() {
                 printf 'mode_%s\t%s\n' "$p" "$m"
             done < <(mode_override_supported_profiles)
         fi
-        # лимит размера клонов по профилям (clonesize.tsv): рядом с mode_*,
-        # пустая строка = без пользовательского лимита (верхняя граница 1200)
+        # size_<profile>: лимит клона; без строки — только общий потолок 1200 Б.
         if type clone_size_get >/dev/null 2>&1 \
             && type clone_size_supported_profiles >/dev/null 2>&1; then
             while read -r p; do
@@ -738,15 +650,13 @@ supersweep_results_archive() {
     [ -d "$dir" ] || return 1
     mkdir -p "$Z2R_SUPERSWEEP_ARCHIVE_DIR" 2>/dev/null || return 1
     _supersweep_meta_write
-    # the archive name carries the telemetry uuid so the backend can key
-    # the record without unpacking
+    # UUID в имени позволяет серверу связать архив с телеметрией без распаковки.
     uuid="$(_supersweep_stats_uuid)"
     fname="supersweep-$(date +%Y%m%d-%H%M%S)"
     [ -n "$uuid" ] && fname="${fname}-${uuid}"
     tgz="${Z2R_SUPERSWEEP_ARCHIVE_DIR}/${fname}.tar"
     _supersweep_tar_create "$tgz" "$dir" || return 1
-    # rotate: keep the newest $Z2R_SUPERSWEEP_ARCHIVE_KEEP archives (any
-    # extension — .tgz from older builds rotates out too)
+    # Оставить ARCHIVE_KEEP новых архивов, включая старый формат .tgz.
     ls -1t "${Z2R_SUPERSWEEP_ARCHIVE_DIR}"/supersweep-* 2>/dev/null \
         | tail -n +$((Z2R_SUPERSWEEP_ARCHIVE_KEEP + 1)) \
         | while IFS= read -r arc; do rm -f "$arc"; done
@@ -758,7 +668,6 @@ supersweep_results_archive() {
                 sent="yes"
             fi
         else
-            # consent switch off: keep the local archive, skip the upload
             sent="off"
         fi
     fi
@@ -766,8 +675,7 @@ supersweep_results_archive() {
     return 0
 }
 
-# a real probe hostname: at least one dot and one letter — tokens like "1"
-# or "bad" survive z2r_normalize_domain but are not hostnames
+# Требуем точку и букву: normalize_domain пропускает также "1" и "bad".
 _supersweep_domain_valid() {
     case "$1" in
         *.*) ;;
@@ -779,9 +687,7 @@ _supersweep_domain_valid() {
     esac
 }
 
-# normalize + dedupe the domain list; garbage tokens (dialog text, typos,
-# anything z2r_normalize_domain rejects) are dropped with a warning —
-# protects the engine from bad input on any surface (CLI capture, webui)
+# Нормализация и дедупликация; мусор из CLI/WebUI отбрасывается с предупреждением.
 supersweep_sanitize_domains() {
     local dom clean out="" dropped=0
     for dom in $1; do
@@ -797,23 +703,18 @@ supersweep_sanitize_domains() {
     printf '%s\n' "$out"
 }
 
-# Единая оценка длительности прогона (считают и меню, и шапка прогона —
-# раньше формулы расходились). Фазы идут строго по очереди, поэтому складываем:
-# каждая стратегия = проверка (~6с) + пауза фазы (выдержка после лока уже
-# входит в паузу), РКН = домены по одному, плюс паузы между фазами.
-# Зелёный ускоритель паузы не учитываем — оценка по худшему случаю.
+# Общая оценка меню/прогона: сумма фаз (проба ≈6 с + пауза) и межфазовых пауз.
+# РКН — по доменам; settle входит в паузу. GREEN_PAUSE не учитываем (худший случай).
 _supersweep_estimate_total() {
-    # $1..$4 = стратегий в профилях 1/2/4/3, $5 = доменов РКН,
-    # $6 = пауза yt/gv, $7 = пауза Discord, $8 = пауза РКН; печатает секунды
+    # $1..4: max профилей 1/2/4/3; $5: домены; $6..8: паузы yt/gv, ds, rkn. Выход: секунды.
     local m1="$1" m2="$2" m4="$3" m3="$4" nd="$5" p="$6" pd="$7" pr="$8"
     local phase_pause="${Z2R_SUPERSWEEP_PHASE_PAUSE:-30}"
     case "$phase_pause" in ''|*[!0-9]*) phase_pause=30 ;; esac
     echo $(( m1 * (6 + p) + m2 * (6 + p) + m4 * (6 + pd) + nd * m3 * (6 + pr) + 3 * phase_pause ))
 }
 
-# core engine, no interactive input (menu wrapper asks the questions):
-#   supersweep_run <tls_pref> <pause_sec> <ds_pause> <rkn_pause> <rkn_par> <domain...>
-# returns 0 when results were applied, 1 when cancelled/restored.
+# supersweep_run <tls_pref> <pause> <ds_pause> <rkn_pause> <rkn_par> <domain...>
+# Без диалогов; rc=0 завершён, rc=1 отменён/откат.
 supersweep_run() {
     local tls_pref="$1" pause_sec="$2" ds_pause="$3" rkn_pause="$4" rkn_par="$5"
     shift 5
@@ -832,7 +733,6 @@ supersweep_run() {
     case "$tls_pref" in 12|13|both) ;; *) tls_pref="any" ;; esac
     case "${Z2R_SUPERSWEEP_SETTLE:-2}" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
 
-    # dialog leftovers / typos / webui input must not reach the workers
     domains="$(supersweep_sanitize_domains "$domains")"
     [ -n "$domains" ] || {
         echo -e "${red}После проверки не осталось ни одного корректного домена РКН.${plain}"
@@ -862,7 +762,7 @@ supersweep_run() {
     gv_domain="$(get_yt_cluster_domain 2>/dev/null || echo 'rr2---sn-4g5ednly.googlevideo.com')"
     gv_url="https://${gv_domain}/"
 
-    # worker registry (static info for webui)
+    # Статический реестр воркеров для WebUI.
     {
         printf 'yt\tyt\tprofile\t1\thttps://www.youtube.com/\t%s\n' "$max1"
         printf 'gv\tgv\tprofile\t2\t%s\t%s\n' "$gv_url" "$max2"
@@ -870,7 +770,7 @@ supersweep_run() {
         printf 'rkn\tRKN\trkn\t3\t%s\t%s\n' "$(printf '%s' "$domains" | tr ' ' ',')" "$max3"
     } > "${dir}/workers.tsv"
 
-    # remember current locks: restored on cancel, archived with the results
+    # Прежние локи для отката и архива.
     {
         printf 'profile|1|tls|%s\n' "$(orch_locked_state_get 1 tls)"
         printf 'profile|1|http|%s\n' "$(orch_locked_state_get 1 http)"
@@ -883,8 +783,7 @@ supersweep_run() {
         done
     } > "${dir}/prev.tsv"
 
-    local total_rkn=0
-    for d in $domains; do total_rkn=$((total_rkn + 1)); done
+    local total_rkn="$(_supersweep_count_list "$domains")"
     local est_total
     est_total="$(_supersweep_estimate_total "$max1" "$max2" "$max4" "$max3" "$total_rkn" "$pause_sec" "$ds_pause" "$rkn_pause")"
 
@@ -899,9 +798,7 @@ supersweep_run() {
     local had_e=0
     case "$-" in *e*) had_e=1 ;; esac
     set +e
-    # both TLS versions must be probed honestly in every worker; probes of
-    # the two versions go with a small gap — simultaneous attempts on one
-    # target read as a scanner (tspu rate heuristic)
+    # Ждём обе TLS-пробы; небольшой разрыв снижает риск rate-эвристики ТСПУ.
     local wait_both_prev="${Z2R_TLS_WAIT_BOTH:-}"
     Z2R_TLS_WAIT_BOTH=1
     export Z2R_TLS_WAIT_BOTH
@@ -915,12 +812,8 @@ supersweep_run() {
     local interrupted=0
     trap 'interrupted=1' INT
 
-    local pid_yt="" pid_gv="" pid_ds="" pid_rkn=""
-    # Фазовый режим: профили гоняются строго по очереди (YouTube -> Googlevideo
-    # -> Discord -> РКН по одному домену), между фазами пауза. Параллельные
-    # переключения стратегий на нескольких целях одновременно — типичный
-    # триггер rate-эвристики ТСПУ; последовательные фазы с паузами её не будят.
-    local phase cancelled=0 pid_alive
+    # Один воркер за раз, паузы между фазами против rate-эвристик ТСПУ.
+    local phase cancelled=0 pid
     for phase in yt gv ds rkn; do
         [ "$cancelled" = 1 ] && break
         [ "$interrupted" = 1 ] && cancelled=1 && break
@@ -931,64 +824,45 @@ supersweep_run() {
             rkn) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза 4/4: РКН (профиль 3, домены по одному) ===${plain}" ;;
         esac
         case "$phase" in
-            yt) _supersweep_worker_profile yt yt 1 "tls http" "https://www.youtube.com/" "$max1" "$tls_pref" "$pause_sec" & local pid_yt=$! ;;
-            gv) _supersweep_worker_profile gv gv 2 "tls" "$gv_url" "$max2" "$tls_pref" "$pause_sec" & local pid_gv=$! ;;
-            ds) _supersweep_worker_profile ds ds 4 "tls" "https://discord.com/" "$max4" "$tls_pref" "$ds_pause" & local pid_ds=$! ;;
-            rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" $domains & local pid_rkn=$! ;;
+            yt) _supersweep_worker_profile yt yt 1 "tls http" "https://www.youtube.com/" "$max1" "$tls_pref" "$pause_sec" & ;;
+            gv) _supersweep_worker_profile gv gv 2 "tls" "$gv_url" "$max2" "$tls_pref" "$pause_sec" & ;;
+            ds) _supersweep_worker_profile ds ds 4 "tls" "https://discord.com/" "$max4" "$tls_pref" "$ds_pause" & ;;
+            rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" $domains & ;;
         esac
-        local wpids pid alive
-        case "$phase" in
-            yt) wpids="$pid_yt" ;;
-            gv) wpids="$pid_gv" ;;
-            ds) wpids="$pid_ds" ;;
-            rkn) wpids="$pid_rkn" ;;
-        esac
-    while :; do
-        alive=""
-        for pid in $wpids; do
-            kill -0 "$pid" 2>/dev/null && alive="${alive} ${pid}"
-        done
-        [ -n "$alive" ] || break
-        if [ "$interrupted" = 1 ]; then
-            if [ ! -e "${dir}/cancel" ]; then
-                : > "${dir}/cancel"
-                for pid in $alive; do kill -INT "$pid" 2>/dev/null || true; done
+        pid=$!
+        while kill -0 "$pid" 2>/dev/null; do
+            if [ "$interrupted" = 1 ]; then
+                if [ ! -e "${dir}/cancel" ]; then
+                    : > "${dir}/cancel"
+                    kill -INT "$pid" 2>/dev/null || true
+                fi
+                cancelled=1
             fi
-            cancelled=1
-        fi
-        _supersweep_cancelled && cancelled=1
-        local f
-        for f in "${dir}"/cmd.*; do
-            [ -e "$f" ] || continue
-            _supersweep_apply_cmd "$f"
+            _supersweep_cancelled && cancelled=1
+            local f
+            for f in "${dir}"/cmd.*; do
+                [ -e "$f" ] || continue
+                _supersweep_apply_cmd "$f"
+            done
+            # Завершённое применяем сразу; при отмене новых изменений не вводим.
+            [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
+            local alive_names=""
+            kill -0 "$pid" 2>/dev/null && alive_names="$phase"
+            _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_names" "$domains"
+            sleep 0.3 2>/dev/null || sleep 1
         done
-        # a finished worker goes live immediately (skip on cancel: an abort
-        # must not introduce new changes)
-        [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
-        local alive_names=""
-        kill -0 "$pid_yt" 2>/dev/null && alive_names="yt"
-        kill -0 "$pid_gv" 2>/dev/null && alive_names="${alive_names} gv"
-        kill -0 "$pid_ds" 2>/dev/null && alive_names="${alive_names} ds"
-        kill -0 "$pid_rkn" 2>/dev/null && alive_names="${alive_names} rkn"
-        _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "${alive_names# }" "$domains"
-        sleep 0.3 2>/dev/null || sleep 1
-    done
-    for pid in $wpids; do
         wait "$pid" 2>/dev/null || true
+        # Обработать done последнего воркера, пропущенный из-за выхода из цикла.
+        [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
+        # пауза между фазами (не после последней и не при отмене)
+        if [ "$cancelled" != 1 ] && [ "$phase" != rkn ]; then
+            _supersweep_phase_pause
+            _supersweep_cancelled && cancelled=1
+            [ "$interrupted" = 1 ] && cancelled=1
+        fi
     done
-    # the loop breaks the moment the worker dies: settle whatever it did not
-    # get to process (for rkn — the per-domain winners)
-    [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
-    # пауза между фазами (не после последней и не при отмене)
-    if [ "$cancelled" != 1 ] && [ "$phase" != rkn ]; then
-        _supersweep_phase_pause
-        _supersweep_cancelled && cancelled=1
-        [ "$interrupted" = 1 ] && cancelled=1
-    fi
-    done
-    # прерывание обработано: до конца прогона (откат, сводка, архив) INT
-    # глушится — повторный Ctrl+C не должен убивать скрипт с полуприменёнными
-    # локами. Возврат к дефолтному INT — в supersweep_menu после его паузы
+    # До конца отката/сводки/архива глушим повторный INT, чтобы не оставить полулоки.
+    # supersweep_menu вернёт обычный INT после финальной паузы.
     trap ':' INT
 
     Z2R_TLS_WAIT_BOTH="$wait_both_prev"
@@ -1006,15 +880,12 @@ supersweep_run() {
         fi
     fi
 
-    # read worker results
     local best_yt best_gv best_ds winner applied_any=0
     best_yt="$(_supersweep_kv_read "${dir}/best.yt" best)"
     best_gv="$(_supersweep_kv_read "${dir}/best.gv" best)"
     best_ds="$(_supersweep_kv_read "${dir}/best.ds" best)"
     winner="$(_supersweep_kv_read "${dir}/best.rkn" winner)"
-    # a worker killed mid-write (double interrupt in older builds) still
-    # leaves coverage.tsv — recompute the rkn winners from it so the report
-    # and the apply do not silently lose the collected map
+    # Без best.rkn восстановить отчёт из coverage.tsv (воркер мог погибнуть при записи).
     local warn_winner="" rkn_fallback_line=""
     if [ -z "$winner" ] && [ -s "${dir}/coverage.tsv" ] \
         && [ -z "$(_supersweep_kv_read "${dir}/best.rkn" reference)" ]; then
@@ -1026,8 +897,7 @@ supersweep_run() {
     if [ "$cancelled" = 1 ]; then
         echo ""
         echo -e "${yellow}Прервано пользователем: возвращаю прежние стратегии...${plain}"
-        # profiles already settled mid-run keep their applied strategies:
-        # the user is already watching youtube / chatting on them
+        # Уже применённые профили при отмене сохраняются.
         for settle_spec in "yt:1" "gv:2" "ds:4"; do
             settle_wname="${settle_spec%%:*}"; settle_pkey="${settle_spec#*:}"
             settle_marker=""; [ -f "${dir}/applied.done.${settle_wname}" ] && settle_marker="$(cat "${dir}/applied.done.${settle_wname}")"
@@ -1040,9 +910,7 @@ supersweep_run() {
                     ;;
             esac
         done
-        # rkn on cancel: probe domain rows revert; a settled rkn worker keeps
-        # its winners (per-domain + профильная строка максимума покрытия),
-        # an unsettled one reverts the profile row too
+        # РКН: доменные пробы откатить; применённый профиль сохранить, иначе вернуть прежний.
         _supersweep_restore_prev domain
         if awk -F'\t' '$1 == "profile" && $2 == 3 { f = 1; exit } END { exit !f }' "${dir}/applied.tsv" 2>/dev/null; then
             echo -e "Профиль 3 (РКН): ${green}оставлена применённая стратегия${plain}."
@@ -1051,11 +919,8 @@ supersweep_run() {
         fi
         _supersweep_status_write cancelled "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
     else
-        # probe locks are temporary: пробные доменные строки откатываются,
-        # применённые пер-доменные победители остаются; профили были
-        # применены координатором по завершении воркеров, упавший воркер
-        # (без маркера) возвращается к прежнему локу
-        local d_applied d_tab
+        # Откатить доменные пробы без применённого победителя и профили без маркера.
+        local d_tab
         d_tab="$(printf '\t')"
         for d in $domains; do
             grep -q "^domain${d_tab}${d}${d_tab}" "${dir}/applied.tsv" 2>/dev/null \
@@ -1068,15 +933,9 @@ supersweep_run() {
         _supersweep_status_write applying "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
     fi
 
-    # archive + optional stats push — ДО сводки и интерактивного вопроса про
-    # жёлтые: пользователь может сидеть на вопросе сколько угодно, а результаты
-    # прогона уже должны быть на сервере статистики. Красный прогон («ни одна
-    # стратегия не открыла ни один домен») сюда тоже попадает — coverage.tsv
-    # существует, прогон завершён. Пустой прерванный прогон (нет ни применённых
-    # стратегий, ни карты покрытий) не архивируется и НЕ отправляется: автору
-    # нужна частичная, но заполненная статистика, а история пустых откатов не
-    # нужна. Жёлтые, применённые после вопроса, в архив не попадают — полные
-    # данные и так лежат в coverage.tsv.
+    # Архив/отправка ДО интерактивной сводки: она может ждать бесконечно.
+    # Включаем красные и частичные прогоны, кроме пустой отмены.
+    # Поздние жёлтые opt-in не попадут в applied.tsv архива; пробы уже есть в coverage.tsv.
     local arc_line arc_path arc_sent
     if [ "$cancelled" = 1 ] && [ ! -s "${dir}/applied.tsv" ] && [ ! -s "${dir}/coverage.tsv" ]; then
         echo -e " ${yellow}Прогон прерван до первого результата: архив не создавался, на сервер статистики ничего не отправлено.${plain}"
@@ -1106,7 +965,7 @@ supersweep_run() {
         fi
     fi
 
-    # --- сводка + автоматическое применение лучших стратегий ---
+    # --- Сводка и резервное применение ---
     echo ""
     echo "================================================"
     if [ "$cancelled" = 1 ]; then
@@ -1146,7 +1005,7 @@ supersweep_run() {
                     echo -e "   ${red}Не удалось применить стратегию ${best} для профиля ${pkey}.${plain}"
                     ;;
                 *)
-                    # worker crashed before settling: apply now as a fallback
+                    # Воркер умер до применения — применить здесь.
                     old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
                     if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
                         echo -e "   ${Fgreen}Применена стратегия ${best}${plain} (${best_short})"
@@ -1166,8 +1025,7 @@ supersweep_run() {
             fi
         else
             echo -e "   ${red}Рабочих стратегий не найдено.${plain}"
-            # YouTube весь красный (и прогон не отменён) — дело не в
-            # стратегиях: советуем перезагрузить роутер (просьба автора)
+            # Завершённый YouTube весь красный → совет перезагрузить роутер.
             if [ "$wname" = yt ] && [ "$cancelled" != 1 ] \
                 && [ "$(_supersweep_kv_read "${dir}/best.yt" n_ok)" = "0" ] \
                 && [ "$(_supersweep_kv_read "${dir}/best.yt" n_warn)" = "0" ] \
@@ -1177,11 +1035,9 @@ supersweep_run() {
         fi
     done
 
-    # rkn report: per-domain winners applied live, профильная строка 3 —
-    # стратегия максимума покрытия (дефолт списка), жёлтые — только опция
+    # РКН: доменные победители, дефолт профиля и опциональные жёлтые.
     local cover totald warn_cover ref_dom yt_greens corr rkn_ans
-    totald=0
-    for d in $domains; do totald=$((totald + 1)); done
+    totald="$total_rkn"
     ref_dom="${domains%% *}"
     cover="$(_supersweep_kv_read "${dir}/best.rkn" winner_cover)"
     warn_winner="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner)"
@@ -1193,7 +1049,6 @@ supersweep_run() {
     fi
     echo -e " РКН (профиль 3, доменов в прогоне: ${totald}):"
     echo -e "   Домены гоняются по одному, полный проход стратегий на каждый."
-    # применённые пер-доменные победители (зелёные, применены сразу)
     local applied_dom applied_cnt=0
     applied_dom="$(awk -F'\t' '$1 == "domain" { print "     " $2 ": стратегия " $3 }' "${dir}/applied.tsv" 2>/dev/null || true)"
     if [ -n "$applied_dom" ]; then
@@ -1205,15 +1060,12 @@ supersweep_run() {
     else
         echo -e "   Прогон прерван — пер-доменные результаты не применялись."
     fi
-    # жёлтые (одна версия TLS): показываются, применяются только явным согласием
     local warn_dom
     warn_dom="$(_supersweep_rkn_domain_winners "${dir}/coverage.tsv" | awk -F'\t' '$3 == 1 { print $1 }' || true)"
     if [ -n "$warn_dom" ]; then
         echo -e "   Жёлтые (только одна версия TLS, не применялись): ${yellow}$(printf '%s ' $warn_dom)${plain}"
         echo -e "   ${yellow}Сплошные жёлтые/красные результаты похожи на деградацию канала (возможно, сработала защита от частых переключений). Повторите прогон позже или с большей паузой.${plain}"
-        # explicit opt-in: never automatic (an all-yellow map is often the
-        # channel, not the strategy), and only in an interactive terminal —
-        # a webui run just sees the hint above
+        # Жёлтые — только явное согласие в терминале; WebUI получает лишь подсказку.
         if [ "$cancelled" != 1 ] && [ -t 0 ]; then
             read -re -p "   Применить жёлтые пер-доменные стратегии (одна версия TLS)? 1 - да, Enter - нет: " rkn_ans || rkn_ans=""
             if [ "$rkn_ans" = "1" ]; then
@@ -1234,7 +1086,6 @@ supersweep_run() {
     if [ -z "$applied_dom" ] && [ -z "$warn_dom" ]; then
         echo -e "   ${red}Ни одна стратегия не открыла ни один домен.${plain}"
     fi
-    # профильная строка РКН (максимум покрытия) — дефолт всего списка
     local rkn_prof no_win="" d_tab2
     d_tab2="$(printf '\t')"
     if [ "$cancelled" = 1 ]; then
@@ -1242,7 +1093,7 @@ supersweep_run() {
     elif [ -n "$winner" ]; then
         rkn_prof="$(awk -F'\t' '$1 == "profile" && $2 == 3 { print $3; exit }' "${dir}/applied.tsv" 2>/dev/null || true)"
         if [ -z "$rkn_prof" ]; then
-            # settle не успел (воркер упал после записи best) — применяем сейчас
+            # Профильный победитель ещё не применён — применить здесь.
             old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
             if profile_state_set_and_apply 3 "tls" "$winner" "$cfg"; then
                 printf 'profile\t%s\t%s\n' 3 "$winner" >> "${dir}/applied.tsv"
@@ -1259,14 +1110,13 @@ supersweep_run() {
     else
         echo -e "   Профильная стратегия РКН не менялась: зелёного покрытия нет ни у одной стратегии."
     fi
-    # домены без персонального победителя едут на профильной стратегии
+    # Без персонального победителя домен использует профильную стратегию.
     for d in $domains; do
         grep -q "^domain${d_tab2}${d}${d_tab2}" "${dir}/applied.tsv" 2>/dev/null \
             || no_win="${no_win}${no_win:+ }${d}"
     done
     [ -n "$no_win" ] && echo -e "   Без персональной стратегии (едут на профильной): ${no_win}"
-    # correlation hint: youtube-green strategies vs the reference passes.
-    # an early cancel can leave no coverage.tsv at all — print plain zeros
+    # Корреляция с YouTube по эталонному домену; без coverage.tsv — нули.
     yt_greens="$(_supersweep_kv_read "${dir}/best.yt" greens)"
     corr="0 0"
     if [ -s "${dir}/coverage.tsv" ]; then
@@ -1284,10 +1134,8 @@ supersweep_run() {
 
     _supersweep_status_write "$([ "$cancelled" = 1 ] && echo cancelled || echo done)" \
         "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
-    # set -e возвращаем только в самом конце: сводка/откат/архив идут под
-    # set +e, иначе любой незащищённый сбой внутри них роняет скрипт, а
-    # возврат 1 (отмена) при восстановленном set -e убивал бы вызывающее
-    # меню сразу после сводки
+    # set -e вернуть лишь перед выходом: сбой сводки/отката не должен убивать меню.
+    # Вызывающее меню обязано обработать rc=1 (отмена).
     if [ "$had_e" = 1 ]; then set -e; fi
     if [ "$cancelled" = 1 ]; then
         return 1
@@ -1301,14 +1149,11 @@ _supersweep_count_list() {
     printf '%s' "$n"
 }
 
-# --- menu dialog -----------------------------------------------------------
+# --- Диалоги: stdout только ответ, подсказки в stderr (контракт orch_ask_*) ---
 
-# dialog helpers contract (same as orch_ask_sweep_pause/orch_ask_sweep_tls_pref):
-# ALL explanation text goes to stderr, stdout carries ONLY the answer —
-# callers capture stdout and feed it straight into the engine.
 
 supersweep_ask_domains() {
-    # prints the selected space-separated domain list (empty = cancel)
+    # stdout: выбранные домены через пробел; 0 отменяет с rc=1.
     local defaults="$Z2R_SUPERSWEEP_RKN_DOMAINS"
     local d i pick dom selected="" total=0
     echo -e "${cyan}--- Домены РКН для карты покрытий ---" >&2
@@ -1337,14 +1182,13 @@ supersweep_ask_domains() {
         printf '%s\n' "$defaults"
         return 0
     fi
-    for d in $selected; do total=$((total + 1)); done
+    total="$(_supersweep_count_list "$selected")"
     echo -e "Из базового набора выбрано ${green}${total}${plain}: ${green}${selected}${plain}" >&2
     printf '%s\n' "$selected"
 }
 
 supersweep_ask_own_domains() {
-    # $1 = current selection (space separated); appends user domains,
-    # adding unknown ones to TCP_Custom.txt so profile 3 picks them up
+    # Дополнить $1 своими доменами; неизвестные добавить в TCP_Custom для профиля 3.
     local selected="$1" raw dom clean added=0 skipped=0 total=0
     read -re -p "Свои домены через пробел (Enter - пропустить): " raw
     [ -z "$raw" ] && { printf '%s\n' "$selected"; return 0; }
@@ -1370,29 +1214,26 @@ supersweep_ask_own_domains() {
         fi
     done
     [ "$skipped" -gt 0 ] && echo -e "${yellow}Пропущено нераспознанных: ${skipped}.${plain}" >&2
-    for dom in $selected; do total=$((total + 1)); done
+    total="$(_supersweep_count_list "$selected")"
     echo -e "Всего доменов РКН в прогоне: ${green}${total}${plain}" >&2
     echo -e "${green}${selected}${plain}" >&2
     printf '%s\n' "$selected"
 }
 
-supersweep_ask_pause() {
-    # фазы YouTube/Googlevideo идут по очереди и щепетильно не переключают
-    # много локов сразу: по отзывам достаточно короткой паузы (минимум 5 сек)
-    local pause
+# stdout carries only the answer; 0 cancels, EOF uses the default.
+_supersweep_ask_pause() {
+    local minimum="$1" default="$2" prompt="$3" label="$4" pause
     while true; do
-        read -re -p "Пауза YouTube/Googlevideo между стратегиями. Минимум 5 сек (Enter - 5 сек, 0 - отмена): " pause || pause=""
-        if [ "$pause" = "0" ]; then
-            return 0
-        fi
-        [ -n "$pause" ] || pause=5
+        read -re -p "$prompt" pause || pause=""
+        [ "$pause" = "0" ] && return 0
+        [ -n "$pause" ] || pause="$default"
         case "$pause" in
             *[!0-9]*)
-                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум 5).${plain}" >&2
+                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум ${minimum}).${plain}" >&2
                 ;;
             *)
-                if [ "$pause" -lt 5 ]; then
-                    echo -e "${yellow}Пауза не может быть меньше 5 секунд (введено ${pause}).${plain}" >&2
+                if [ "$pause" -lt "$minimum" ]; then
+                    echo -e "${yellow}Пауза${label} не может быть меньше ${minimum} секунд (введено ${pause}).${plain}" >&2
                 else
                     echo "$pause"
                     return 0
@@ -1402,84 +1243,16 @@ supersweep_ask_pause() {
     done
 }
 
-supersweep_ask_rkn_par() {
-    # how many RKN domains to probe simultaneously per batch; every selected
-    # domain is still checked each round — this only sets the batch size
-    local par ndom=0 d
-    for d in $1; do ndom=$((ndom + 1)); done
-    echo -e "Все выбранные домены проверяются на каждой стратегии — пакет лишь" >&2
-    echo -e "задаёт, сколько проверок идёт одновременно (больше = быстрее, но" >&2
-    echo -e "выше нагрузка на роутер и шумнее замеры скорости)." >&2
-    while true; do
-        read -re -p "Доменов в одном пакете, 1-${ndom} (Enter - ${Z2R_SUPERSWEEP_RKN_PAR_DEFAULT}): " par || par=""
-        [ -n "$par" ] || par="$Z2R_SUPERSWEEP_RKN_PAR_DEFAULT"
-        case "$par" in
-            0) return 1 ;;
-            *[!0-9]*)
-                echo -e "${yellow}Неверный ввод: нужно число 1-${ndom}.${plain}" >&2
-                ;;
-            *)
-                if [ "$par" -ge 1 ] && [ "$par" -le "$ndom" ]; then
-                    echo "$par"
-                    return 0
-                fi
-                echo -e "${yellow}Число должно быть в диапазоне 1-${ndom}.${plain}" >&2
-                ;;
-        esac
-    done
+supersweep_ask_pause() {
+    _supersweep_ask_pause 5 5 "Пауза YouTube/Googlevideo между стратегиями. Минимум 5 сек (Enter - 5 сек, 0 - отмена): " ""
 }
 
 supersweep_ask_ds_pause() {
-    # discord требовательнее к частым переключениям (голос/шлюзы): своя
-    # увеличенная пауза, минимум 15 секунд
-    local pause
-    while true; do
-        read -re -p "Пауза Discord между стратегиями. Минимум 15 сек (Enter - 15 сек, 0 - отмена): " pause || pause=""
-        if [ "$pause" = "0" ]; then
-            return 0
-        fi
-        [ -n "$pause" ] || pause=15
-        case "$pause" in
-            *[!0-9]*)
-                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум 15).${plain}" >&2
-                ;;
-            *)
-                if [ "$pause" -lt 15 ]; then
-                    echo -e "${yellow}Пауза Discord не может быть меньше 15 секунд (введено ${pause}).${plain}" >&2
-                else
-                    echo "$pause"
-                    return 0
-                fi
-                ;;
-        esac
-    done
+    _supersweep_ask_pause 15 15 "Пауза Discord между стратегиями. Минимум 15 сек (Enter - 15 сек, 0 - отмена): " " Discord"
 }
 
 supersweep_ask_rkn_pause() {
-    # РКН идёт по одному домену с полным проходом стратегий; минутный
-    # интервал максимально щадящий к ТСПУ (медленнее, но безопаснее),
-    # минимум 30 секунд
-    local pause
-    while true; do
-        read -re -p "Пауза РКН между попытками. Минимум 30 сек, минута - максимально щадяще (Enter - 60 сек, 0 - отмена): " pause || pause=""
-        if [ "$pause" = "0" ]; then
-            return 0
-        fi
-        [ -n "$pause" ] || pause=60
-        case "$pause" in
-            *[!0-9]*)
-                echo -e "${yellow}Неверный ввод: нужно число секунд (минимум 30).${plain}" >&2
-                ;;
-            *)
-                if [ "$pause" -lt 30 ]; then
-                    echo -e "${yellow}Пауза РКН не может быть меньше 30 секунд (введено ${pause}).${plain}" >&2
-                else
-                    echo "$pause"
-                    return 0
-                fi
-                ;;
-        esac
-    done
+    _supersweep_ask_pause 30 60 "Пауза РКН между попытками. Минимум 30 сек, минута - максимально щадяще (Enter - 60 сек, 0 - отмена): " " РКН"
 }
 
 supersweep_menu() {
@@ -1538,9 +1311,7 @@ supersweep_menu() {
         return 0
     fi
 
-    local ndom=0 d
-    for d in $domains; do ndom=$((ndom + 1)); done
-    # та же формула оценки, что и в шапке прогона (раньше считали по-разному)
+    local ndom="$(_supersweep_count_list "$domains")"
     local max1 max2 max4 max3 est_total
     max1="$(config_profile_max_strategy 1 "$cfg")"
     printf '%s' "$max1" | grep -Eq '^[1-9][0-9]*$' || max1=43
@@ -1559,16 +1330,13 @@ supersweep_menu() {
     echo ""
     echo -e "Прогон займёт ориентировочно до $(( (est_total + 59) / 60 )) мин. Во время прогона"
     echo -e "интернет может подтормаживать (стратегии переключаются на лету)."
-    # Ctrl+C на промпте старта — отмена, а не смерть скрипта
+    # Ctrl+C на старте отменяет диалог, а не скрипт.
     answer=""
     read -re -p "Enter - старт, 0 - отмена: " answer || answer="0"
     [ "$answer" = "0" ] && { echo "Отмена."; return 0; }
 
-    # пред-проверка подмены DNS (просьба автора): спуф делает все проверки
-    # прогона ложными. Проверяем ЭТАЛОННЫЙ домен (rutracker.org), а не первый
-    # выбранный — пользовательский набор меняется, эталон нет. Останавливаем
-    # ТОЛЬКО подтверждённую подмену; молчащий 8.8.8.8 или недоступные DoH —
-    # не стоп, только предупреждение.
+    # DNS-gate всегда по эталону rutracker.org, а не пользовательскому домену.
+    # Только подтверждённый спуф останавливает; тихий DNS/недоступный DoH — предупреждение.
     gate_rc=0
     z2r_dns_spoof_gate "${Z2R_DNS_REF_DOMAIN:-rutracker.org}" || gate_rc=$?
     if [ "$gate_rc" = 2 ]; then
@@ -1576,13 +1344,10 @@ supersweep_menu() {
         return 0
     fi
 
-    # возврат 1 (отмена) не должен ронять меню под глобальным set -e z2r.sh:
-    # раньше скрипт умирал сразу после сводки и пользователь выпадал в шелл
+    # Обработать rc=1 отмены, чтобы глобальный set -e не закрыл меню.
     ss_run_rc=0
     supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || ss_run_rc=$?
-    # повторный Ctrl+C в сводке/паузе тоже не убивает меню: на время диалога
-    # INT глушится (supersweep_run оставляет его заглушенным), после паузы
-    # возвращаем дефолтное поведение
+    # Повторный Ctrl+C в сводке/паузе игнорируем; затем вернуть обычный INT.
     trap ':' INT
     pause_enter || true
     trap - INT
