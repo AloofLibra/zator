@@ -818,7 +818,7 @@ local function z2r_clone_rerandomize(clone)
   return clone
 end
 
-local function fake_mode_user_clone(desync, sni, profile_key)
+local function fake_mode_user_clone(desync, sni, profile_key, whole_only, instance_func)
   if desync.l7payload ~= "tls_client_hello" then return nil end
   local payload = desync.reasm_data or (desync.dis and desync.dis.payload)
   if type(payload) ~= "string" or #payload == 0 then return nil end
@@ -828,13 +828,21 @@ local function fake_mode_user_clone(desync, sni, profile_key)
     sni_snt_new = 0,
   })
   if not (ok and type(clone) == "string" and #clone > 0) then return nil end
-  -- Лимит размера клона (clonesize.tsv, нет строки = 1200). Резка — с точечной
-  -- операцией на key_share: PQ-записи вычищаются, классические остаются
-  -- (см. z2r_clone_key_share_drop_pq: CH без key_share ТСПУ режет — исход
-  -- первой версии резки; key_share из одной x25519 — норма до pq-эры).
-  -- Не влезли даже минимальным набором — откат на штатный блоб конфига.
+  -- Лимит размера клона (clonesize.tsv, нет строки = 1200). Клону больше
+  -- лимита резка разрешена ТОЛЬКО на цельно-фейковых инстансах (func "fake":
+  -- фейк уходит целиком; живой тест 03.10: большой гейтвей-поток жив, клон
+  -- 522Б). На зеркалящих (multisplit/fakeddisorder/fakemultisplit/... — фейк
+  -- или данные режутся по сегментам реального пакета) резаный клон большого
+  -- CH валит поток при любой резке — там клон живёт только целым, иначе
+  -- откат на штатный блоб конфига (это же поведение — у владельской
+  -- стратегии 7). Резка — с точечной операцией на key_share: PQ-записи
+  -- вычищаются, классические остаются (CH без key_share ТСПУ режет).
   local limit = z2r_clone_limit_for(profile_key)
   if #clone > limit then
+    if whole_only then
+      DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, whole-only for "..tostring(instance_func)..", keeping config blob profile="..tostring(profile_key))
+      return nil
+    end
     local cut = z2r_clone_semantic_cut(clone, limit)
     if not cut then
       DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, cut failed, keeping config blob profile="..tostring(profile_key))
@@ -876,8 +884,13 @@ function blob_override_execute(desync, verdict, instance, profile_key)
     name = nil
   end
   -- режим clone: клон CH юзера выигрывает у блоба-override; провал клона
-  -- (не CH-пакет, dissect/reconstruct не удался) = штатный путь ниже
-  local clone_data = mode == "clone" and fake_mode_user_clone(desync, sni, profile_key) or nil
+  -- (не CH-пакет, dissect/reconstruct не удался) = штатный путь ниже.
+  -- Резка oversize-клона разрешена только цельно-фейковым инстансам
+  -- (func "fake"); зеркалящие (multisplit/fakeddisorder/...) получают клон
+  -- только целым — живой тест 03.10, второй раунд.
+  local clone_data = mode == "clone"
+    and fake_mode_user_clone(desync, sni, profile_key, instance.func ~= "fake", instance.func)
+    or nil
   local target = clone_data and Z2R_CLONE_FIELD or name
   if clone_data then
     desync[Z2R_CLONE_FIELD] = clone_data
