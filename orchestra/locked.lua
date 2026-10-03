@@ -772,18 +772,17 @@ local function fake_mode_user_clone(desync, sni, profile_key)
     sni_snt_new = 0,
   })
   if not (ok and type(clone) == "string" and #clone > 0) then return nil end
-  -- Лимит размера клона (clonesize.tsv, нет строки = 1200): согласованная
-  -- резка группами расширений. Резать не смогли — фейк не шлём, провал =
-  -- штатный путь (блоб конфига).
+  -- Лимит размера клона (clonesize.tsv, нет строки = 1200). Резать НЕ режем:
+  -- живой тест 03.10 показал, что ЛЮБОЙ резаный клон большого CH валит поток
+  -- (куски фейка сверх длины клона добиваются нулями — record с нулевым
+  -- хвостом невалиден, ТСПУ молча режет весь поток; согласованная резка
+  -- группами расширений того же исхода). Клон живёт только целым, поэтому
+  -- не влез в лимит — откат на штатный блоб конфига (он на больших потоках
+  -- проверен классикой).
   local limit = z2r_clone_limit_for(profile_key)
   if #clone > limit then
-    local cut = z2r_clone_semantic_cut(clone, limit)
-    if not cut then
-      DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, cut failed, keeping config blob profile="..tostring(profile_key))
-      return nil
-    end
-    DLOG("fake_mode: clone cut "..#clone.."->"..#cut.."B (limit "..limit.."B) profile="..tostring(profile_key))
-    clone = cut
+    DLOG_ERR("fake_mode: clone "..#clone.."B over limit "..limit.."B, using config blob profile="..tostring(profile_key))
+    return nil
   end
   return clone
 end

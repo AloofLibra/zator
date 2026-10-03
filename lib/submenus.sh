@@ -1926,7 +1926,7 @@ clone_size_profile_pick() {
     elif [ "$choice" = "1" ]; then
       if clone_size_clear "$profile"; then
         echo -e "${green}Сброшено: клоны профиля $profile без пользовательского ограничения.${plain}"
-        echo -e "${yellow}Границу ТСПУ 1200 Б система держит всегда. Применится сам в течение ~2 секунд.${plain}"
+        echo -e "${yellow}Граница ТСПУ 1200 Б держится всегда. Применится сам в течение ~2 секунд.${plain}"
         telemetry_notify
       else
         echo -e "${red}Не удалось сбросить ограничение.${plain}"
@@ -1936,7 +1936,7 @@ clone_size_profile_pick() {
       preset="${presets[$((choice-2))]}"
       if clone_size_set "$profile" "$preset"; then
         echo -e "${green}Профиль $profile: клон-пакеты не больше ${preset} Б.${plain}"
-        echo -e "${yellow}Размер получается «не больше» — резка идёт согласованными группами расширений.${plain}"
+        echo -e "${yellow}Клоны больше лимита не отправляются: для таких потоков работает штатный блоб конфига.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
         clone_size_small_warn "$preset"
         telemetry_notify
@@ -1951,7 +1951,7 @@ clone_size_profile_pick() {
       elif [ -n "$size" ] && clone_size_valid "$size"; then
         if clone_size_set "$profile" "$size"; then
           echo -e "${green}Профиль $profile: клон-пакеты не больше ${size} Б.${plain}"
-          echo -e "${yellow}Размер получается «не больше» — резка идёт согласованными группами расширений.${plain}"
+          echo -e "${yellow}Клоны больше лимита не отправляются: для таких потоков работает штатный блоб конфига.${plain}"
           echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
           clone_size_small_warn "$size"
           telemetry_notify
@@ -1980,9 +1980,9 @@ clone_size_submenu() {
     clear -x
     echo -e "${cyan}--- Размер клон-пакетов (лимит байт по профилям) ---${plain}"
     echo ""
-    echo -e "${yellow}Действует в режиме клонов: клоны режутся до «не больше N Б»${plain}"
-    echo -e "${yellow}согласованными группами расширений; откатить не смогли — штатный блоб.${plain}"
-    echo -e "${yellow}Нет строки = без ограничения. Границу ТСПУ 1200 Б держит система.${plain}"
+    echo -e "${yellow}Действует в режиме клонов: клон отправляется только целым${plain}"
+    echo -e "${yellow}в пределах лимита; клоны больше лимита не шлются — штатный блоб.${plain}"
+    echo -e "${yellow}Нет строки = граница ТСПУ 1200 Б. Меняется на лету, рестарт не нужен.${plain}"
     echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
     echo ""
     i=1

@@ -124,8 +124,11 @@ assert_contains "$LOCKED_LUA_SRC" '\[45\] = true, \[41\] = true, \[42\] = true' 
 assert_contains "$LOCKED_LUA_SRC" 'z2r_clone_semantic_cut' "нет согласованной резки клона"
 assert_contains "$LOCKED_LUA_SRC" 'z2r_tls_record_cut' "нет сырой резки TLS-рекордов"
 assert_contains "$LOCKED_LUA_SRC" 'string\.char\(math\.floor\(space / 256\)\)' \
-  "сырая резка не чинит длину последнего рекорда"assert_contains "$LOCKED_LUA_SRC" 'keeping config blob profile=' \
-  "провал резки клона не откатывается на штатный блоб"
+  "сырая резка не чинит длину последнего рекорда"
+# клон живёт только целым: не влез в лимит — штатный блоб (резаный клон ТСПУ
+# режет вместе с потоком, живой тест 03.10)
+assert_contains "$LOCKED_LUA_SRC" 'using config blob profile=' \
+  "превышение лимита клона не откатывается на штатный блоб"
 
 # --- 2. Статический wiring меню и бэкапов -----------------------------------
 
