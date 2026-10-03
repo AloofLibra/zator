@@ -928,6 +928,30 @@ z2r_dns_spoof_gate_help() {
     echo "  - после исправления DNS запустить суперавтопрогон заново."
 }
 
+# Большая бирюзовая подсказка после ПОЛНОГО краса YouTube (просьба автора):
+# когда ни одна стратегия не открыла youtube, дело почти всегда не в
+# стратегиях, а в залипшем канале/сессиях провайдера — перезагрузка роутера
+# (особенно Keenetic) часто возвращает доступ. WAN-порт показываем из config
+# (config_get_iface_wan: только явно прописанный, раскомментированный
+# IFACE_WAN — у Keenetic он задан установщиком, у OpenWRT/VPS эталонный
+# #IFACE_WAN=eth1 закомментирован и не показывается), чтобы пользователь
+# сверил, что обход вообще смотрит в тот интерфейс.
+z2r_youtube_reboot_advice() {
+    local wan=""
+    if type config_get_iface_wan >/dev/null 2>&1; then
+        wan="$(config_get_iface_wan 2>/dev/null || true)"
+    fi
+    echo ""
+    echo -e "${Fcyan:-}=================================================================${plain:-}"
+    echo -e "${Fcyan:-}   НИ ОДНА СТРАТЕГИЯ НЕ ОТКРЫЛА YOUTUBE.                          ${plain:-}"
+    echo -e "${Fcyan:-}   ПОПРОБУЙТЕ ПЕРЕЗАГРУЗИТЬ РОУТЕР И ПОВТОРИТЬ ПОДБОР.            ${plain:-}"
+    echo -e "${Fcyan:-}=================================================================${plain:-}"
+    if [ -n "$wan" ]; then
+        echo -e "${Fcyan:-}WAN-порт из config: IFACE_WAN=\"${wan}\" — проверьте, что это точно ваш интернет-интерфейс.${plain:-}"
+    fi
+    return 0
+}
+
 check_dns() {
     local DOMAIN="${1:-rutracker.org}"
     local DOH_LINE DOH_IPS DOH_SRC NS_RAW NS_IPS MATCH_IPS MATCH_COUNT DOH_COUNT NS_COUNT ip

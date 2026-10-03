@@ -504,6 +504,22 @@ config_mode_text() {
   esac
 }
 
+# Значение IFACE_WAN из живого config: WAN-интерфейс (у Keenetic задаётся
+# установщиком: IFACE_WAN="eth3", у OpenWRT/VPS в эталоне строка закомментирована:
+# #IFACE_WAN=eth1). Закомментированная строка — комментарий и НЕ учитывается:
+# пусто = нигде не показывать. Значит, показываем только явно прописанный порт.
+config_get_iface_wan() {
+  local cfg line wan
+  cfg="${1:-}"
+  [ -n "$cfg" ] || { cfg="$(config_get_file 2>/dev/null)" || return 0; }
+  [ -f "$cfg" ] || return 0
+  line="$(grep -E '^IFACE_WAN=' "$cfg" 2>/dev/null | head -n1)"
+  [ -n "$line" ] || return 0
+  wan="$(printf '%s' "$line" | sed 's/^IFACE_WAN=//; s/[[:space:]]*#.*$//; s/^[[:space:]]*//; s/^"//; s/".*$//; s/[[:space:]]*$//')"
+  [ -n "$wan" ] && printf '%s\n' "$wan"
+  return 0
+}
+
 # Сводка платформы для шапки меню. Keenetic: ndmc show version (description
 # = модель, title = прошивка); Netcraze отличается содержимым /bin/ndmc;
 # Merlin: nvram productid; OpenWrt: /etc/openwrt_release; VPS: PRETTY_NAME.

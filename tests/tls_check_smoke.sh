@@ -534,6 +534,9 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   out="$(printf '\n' | orch_auto_sweep profile 4 tls https://discord.com/ 1 2 0 0 both)"
   printf '%s' "$out" | grep -q "Рабочих стратегий не найдено" \
     || fail "сценарий 14c: все красные не дали «не найдено»"
+  if printf '%s' "$out" | grep -q 'ПОПРОБУЙТЕ ПЕРЕЗАГРУЗИТЬ'; then
+    fail "сценарий 14c: совет перезагрузки появился не на YouTube (Discord)"
+  fi
   [ "$(orch_locked_state_get 4 tls)" = "auto" ] \
     || fail "сценарий 14c: неудачный прогон оставил лок '$(orch_locked_state_get 4 tls)' вместо auto"
   if grep -q '^4[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
@@ -548,6 +551,16 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   if grep -q '^ghost.org[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
     fail "сценарий 14c: доменный прогон записал лок 0"
   fi
+
+  # YouTube весь красный — большая бирюзовая рекомендация перезагрузки роутера
+  # (просьба автора); WAN-порт в этом окружении не показывается: config.sh
+  # не source-ится, config_get_iface_wan недоступна
+  rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
+  out="$(printf '0\n' | orch_auto_sweep profile 1 tls https://www.youtube.com/ 1 2 0 0 both)"
+  printf '%s' "$out" | grep -q "ПОПРОБУЙТЕ ПЕРЕЗАГРУЗИТЬ РОУТЕР" \
+    || fail "сценарий 14c: нет совета перезагрузки при полном красе YouTube"
+  printf '%s' "$out" | grep -q "Рабочих стратегий не найдено" \
+    || fail "сценарий 14c: полный крас YouTube должен дать «не найдено»"
 
   # регрессия: явный 0 до прогона восстанавливается как 0 (пользователь сам выключил)
   orch_locked_set 4 tls 0

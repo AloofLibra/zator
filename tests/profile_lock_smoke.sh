@@ -570,6 +570,26 @@ menu_config_snapshot "$TMP_DIR/missing-$$.cfg"
 grep -qF 'Версия config файла от: ${plain}${MENU_CONFIG_DATE}' "$REPO_DIR/z2r.sh" \
   || fail "main menu does not show config file date"
 
+# --- WAN-порт (IFACE_WAN): только раскомментированная строка учитывается ---
+# эталонный config.default несёт закомментированный #IFACE_WAN=eth1 (OpenWRT/VPS):
+# значение пусто и нигде не показывается; у Keenetic установщик пишет IFACE_WAN="ethN"
+[ -z "$(config_get_iface_wan "$CFG")" ] \
+  || fail "config_get_iface_wan must ignore the commented #IFACE_WAN default"
+wan_cfg="$TMP_DIR/wan.cfg"
+printf 'IFACE_WAN="eth3"\n#IFACE_WAN=eth1\n' > "$wan_cfg"
+[ "$(config_get_iface_wan "$wan_cfg")" = "eth3" ] \
+  || fail "config_get_iface_wan must read the uncommented IFACE_WAN value"
+printf 'IFACE_WAN=eth1 # comment\n' > "$wan_cfg"
+[ "$(config_get_iface_wan "$wan_cfg")" = "eth1" ] \
+  || fail "config_get_iface_wan must strip trailing comments without quotes"
+printf 'IFACE_WAN="eth2" # note\n' > "$wan_cfg"
+[ "$(config_get_iface_wan "$wan_cfg")" = "eth2" ] \
+  || fail "config_get_iface_wan must strip trailing comments with quotes"
+[ -z "$(config_get_iface_wan "$TMP_DIR/wan-missing.cfg")" ] \
+  || fail "config_get_iface_wan must return empty without a config file"
+grep -qF '${MENU_WAN_LINE}' "$REPO_DIR/z2r.sh" \
+  || fail "main menu does not show the WAN port line"
+
 # Регрессия reinstall-skip: Z2R_GET_REPO_SKIP_EXISTING не должен глотать
 # замену zapret2-native файлов — архив zapret2 распаковывает свои
 # config.default/иниты, затор обязан их перезаписывать (кейс: после

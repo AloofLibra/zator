@@ -442,6 +442,15 @@ orch_auto_sweep() {
         fi
     else
         echo -e " ${red}Рабочих стратегий не найдено.${plain}"
+        # YouTube весь красный — дело не в стратегиях: советуем перезагрузить
+        # роутер (просьба автора; только для цели YouTube)
+        case "$test_url" in
+            *youtube.com*)
+                if [ "$n_ok" = "0" ] && [ "$n_warn" = "0" ] && [ "$n_fail" -gt 0 ]; then
+                    z2r_youtube_reboot_advice
+                fi
+                ;;
+        esac
     fi
     if [ -n "$best_full" ] && [ "$best_full" != "$best" ]; then
         echo -e " Самая быстрая полная (TLS 1.2 и 1.3): ${Fgreen}${best_full}${plain} (${best_full_short})"

@@ -2366,6 +2366,17 @@ get_menu() {
 "
       MENU_ERR_STATE="${red} (ошибок: ${MENU_ERR_N})${yellow}"
     fi
+    # WAN-порт из config рядом с платформой: IFACE_WAN прописан установщиком
+    # на Keenetic; на OpenWRT/VPS эталонная строка закомментирована и строка
+    # в шапке не появляется (config_get_iface_wan читает только раскомментированное)
+    MENU_WAN_LINE=""
+    if type config_get_iface_wan >/dev/null 2>&1; then
+      MENU_WAN_VAL="$(config_get_iface_wan 2>/dev/null || true)"
+      if [ -n "$MENU_WAN_VAL" ]; then
+        MENU_WAN_LINE="WAN-порт: ${plain}${MENU_WAN_VAL}${yellow}
+"
+      fi
+    fi
 	TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
       TITLE_MENU_LINE="\n${pink}Титул:${plain} $(cat "$PREMIUM_TITLE_FILE")${yellow}\n"
@@ -2390,7 +2401,7 @@ ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Платформа: ${plain}${MENU_PLATFORM}${yellow}
-Аптайм: ${plain}${MENU_UPTIME}${yellow}
+${MENU_WAN_LINE}Аптайм: ${plain}${MENU_UPTIME}${yellow}
 RAM: ${plain}${MENU_RAM}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
 zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}

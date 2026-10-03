@@ -1058,6 +1058,44 @@ supersweep_run() {
         _supersweep_status_write applying "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
     fi
 
+    # archive + optional stats push — ДО сводки и интерактивного вопроса про
+    # жёлтые: пользователь может сидеть на вопросе сколько угодно, а результаты
+    # прогона уже должны быть на сервере статистики. Красный прогон («ни одна
+    # стратегия не открыла ни один домен») сюда тоже попадает — coverage.tsv
+    # существует, прогон завершён. Пустой прерванный прогон (нет ни применённых
+    # стратегий, ни карты покрытий) не архивируется и НЕ отправляется: автору
+    # нужна частичная, но заполненная статистика, а история пустых откатов не
+    # нужна. Жёлтые, применённые после вопроса, в архив не попадают — полные
+    # данные и так лежат в coverage.tsv.
+    local arc_line arc_path arc_sent
+    if [ "$cancelled" = 1 ] && [ ! -s "${dir}/applied.tsv" ] && [ ! -s "${dir}/coverage.tsv" ]; then
+        echo -e " ${yellow}Прогон прерван до первого результата: архив не создавался, на сервер статистики ничего не отправлено.${plain}"
+    else
+        arc_line="$(supersweep_results_archive)" || arc_line=""
+        if [ -n "$arc_line" ]; then
+            arc_path="$(printf '%s' "$arc_line" | cut -f1)"
+            arc_sent="$(printf '%s' "$arc_line" | cut -f2)"
+            echo -e " Архив результатов: ${arc_path}"
+            if [ -n "$Z2R_SUPERSWEEP_STATS_URL" ]; then
+                case "$arc_sent" in
+                    yes)
+                        echo -e " ${green}Архив отправлен на сервер статистики.${plain}"
+                        ;;
+                    off)
+                        echo -e " ${yellow}Отправка отключена: анонимная статистика выключена в настройках телеметрии.${plain}"
+                        ;;
+                    *)
+                        echo -e " ${yellow}Не удалось отправить архив на сервер статистики (сеть/endpoint).${plain}"
+                        ;;
+                esac
+            else
+                echo -e " ${yellow}Отправка на сервер статистики не настроена (Z2R_SUPERSWEEP_STATS_URL).${plain}"
+            fi
+        else
+            echo -e " ${yellow}Не удалось упаковать архив результатов.${plain}"
+        fi
+    fi
+
     # --- сводка + автоматическое применение лучших стратегий ---
     echo ""
     echo "================================================"
@@ -1118,6 +1156,14 @@ supersweep_run() {
             fi
         else
             echo -e "   ${red}Рабочих стратегий не найдено.${plain}"
+            # YouTube весь красный (и прогон не отменён) — дело не в
+            # стратегиях: советуем перезагрузить роутер (просьба автора)
+            if [ "$wname" = yt ] && [ "$cancelled" != 1 ] \
+                && [ "$(_supersweep_kv_read "${dir}/best.yt" n_ok)" = "0" ] \
+                && [ "$(_supersweep_kv_read "${dir}/best.yt" n_warn)" = "0" ] \
+                && [ -n "$(_supersweep_kv_read "${dir}/best.yt" n_fail)" ]; then
+                z2r_youtube_reboot_advice
+            fi
         fi
     done
 
@@ -1225,39 +1271,6 @@ supersweep_run() {
     echo "================================================"
 
     [ "$applied_any" = 1 ] && telemetry_notify
-
-    # archive + optional stats push. Пустой прерванный прогон (нет ни
-    # применённых стратегий, ни карты покрытий) не архивируется и НЕ
-    # отправляется: автору нужна частичная, но заполненная статистика,
-    # а история пустых откатов не нужна
-    local arc_line arc_path arc_sent
-    if [ "$cancelled" = 1 ] && [ ! -s "${dir}/applied.tsv" ] && [ ! -s "${dir}/coverage.tsv" ]; then
-        echo -e " ${yellow}Прогон прерван до первого результата: архив не создавался, на сервер статистики ничего не отправлено.${plain}"
-    else
-        arc_line="$(supersweep_results_archive)" || arc_line=""
-        if [ -n "$arc_line" ]; then
-            arc_path="$(printf '%s' "$arc_line" | cut -f1)"
-            arc_sent="$(printf '%s' "$arc_line" | cut -f2)"
-            echo -e " Архив результатов: ${arc_path}"
-            if [ -n "$Z2R_SUPERSWEEP_STATS_URL" ]; then
-                case "$arc_sent" in
-                    yes)
-                        echo -e " ${green}Архив отправлен на сервер статистики.${plain}"
-                        ;;
-                    off)
-                        echo -e " ${yellow}Отправка отключена: анонимная статистика выключена в настройках телеметрии.${plain}"
-                        ;;
-                    *)
-                        echo -e " ${yellow}Не удалось отправить архив на сервер статистики (сеть/endpoint).${plain}"
-                        ;;
-                esac
-            else
-                echo -e " ${yellow}Отправка на сервер статистики не настроена (Z2R_SUPERSWEEP_STATS_URL).${plain}"
-            fi
-        else
-            echo -e " ${yellow}Не удалось упаковать архив результатов.${plain}"
-        fi
-    fi
 
     _supersweep_status_write "$([ "$cancelled" = 1 ] && echo cancelled || echo done)" \
         "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
