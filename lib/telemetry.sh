@@ -2,7 +2,7 @@
 # Настройки z4r telemetry endpoint
 STATS_ENDPOINT="https://alooflibra.fun/z4r/telemetry"
 STATS_TOKEN="TzeiCfYn5DUIwjHJ6dPa4bSKrkFRZqts3BGWpA9l"
-STATS_CHANNEL_ID="z4r-sql-v2"
+STATS_CHANNEL_ID="z4r-sql-v3-modes"
 
 # 2. Пути к файлам (используем простые форматы)
 CACHE_DIR="/opt/zator/extra_strats/cache"
@@ -145,6 +145,20 @@ send_stats() {
         done < <(blob_override_supported_profiles)
     fi
 
+    # Режим фейков по профилям; пусто, если модуль недоступен.
+    local mode_p1="" mode_p2="" mode_p3="" mode_p4="" mode_p8="" mode_profile mode_value
+    if type mode_override_get >/dev/null 2>&1; then
+        for mode_profile in 1 2 3 4 8; do
+            mode_value="$(mode_override_get "$mode_profile")"
+            [ "$mode_value" = clone ] || mode_value=classic
+            case "$mode_profile" in
+                1) mode_p1="$mode_value" ;; 2) mode_p2="$mode_value" ;;
+                3) mode_p3="$mode_value" ;; 4) mode_p4="$mode_value" ;;
+                8) mode_p8="$mode_value" ;;
+            esac
+        done
+    fi
+
     # 3. Платформа и наличие установленного WebUI.
     local router_os="unknown"
     if [ -d /jffs ] || uname -a 2>/dev/null | grep -qi merlin; then
@@ -184,6 +198,11 @@ send_stats() {
         -d "blob_3=$blob_p3" \
         -d "blob_4=$blob_p4" \
         -d "blob_8=$blob_p8" \
+        -d "mode_1=$mode_p1" \
+        -d "mode_2=$mode_p2" \
+        -d "mode_3=$mode_p3" \
+        -d "mode_4=$mode_p4" \
+        -d "mode_8=$mode_p8" \
         -d "os=$router_os" \
         -d "webui=$webui" \
         "$STATS_ENDPOINT" > /dev/null 2>&1 &
