@@ -1317,7 +1317,7 @@ provider_submenu() {
 
     submenu_item "1" "Указать провайдера вручную"
     submenu_item "2" "Определить провайдера заново (сбросить кэш)"
-    submenu_item "3" "Обновить базу рекомендаций (подсказки)"
+    submenu_item "3" "Обновить подсказки по статистике провайдера"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1335,14 +1335,15 @@ provider_submenu() {
         pause_enter
         ;;
       "3")
-        echo "Обновляем базу рекомендаций..."
-        rm -f "$RECS_FILE"
-        update_recommendations
-        if [ -s "$RECS_FILE" ]; then
-          echo -e "${green}База успешно обновлена!${plain}"
-        else
-          echo -e "${red}Ошибка обновления базы.${plain}"
-        fi
+        echo "Обновляем подсказки с сервера статистики..."
+        # Явное обновление обходит TTL, но не удаляет рабочий кеш при сбое.
+        rm -f "${RECS_FILE}.request"
+        recommendations_load
+        case "$RECS_STATUS" in
+          ready|insufficient) echo -e "${green}Статистика обновлена.${plain}" ;;
+          *) echo -e "${yellow}Не удалось обновить статистику; сохранённые данные не удалены.${plain}" ;;
+        esac
+        show_hint 1
         sleep 1
         pause_enter
         ;;

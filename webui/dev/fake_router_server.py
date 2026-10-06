@@ -1634,6 +1634,7 @@ class FakeRouterState:
         self.check_result = check_result  # ok | fail | mixed
         self.simulate_error = set(simulate_error or [])
         self.provider = provider
+        self.recommendations_status = "ready"
         self.rst_guard_lua = True
         self.backups = []
 
@@ -2347,6 +2348,24 @@ class FakeRouterState:
 
     # --- Провайдер ----------------------------------------------------------
 
+    def build_recommendations(self):
+        """Детерминированная симуляция UI; никаких запросов к живой статистике."""
+        status = self.recommendations_status
+        samples = 6 if status == "insufficient" else 24 if status in ("ready", "stale") else 0
+        profiles = {}
+        for profile in range(1, 5):
+            top = [{"strategy": strategy, "success_pct": pct, "samples": count, "mode": mode}
+                   for strategy, pct, count, mode in ((7, 92, 12, "clone"), (3, 80, 10, "classic"), (12, 75, 8, "mixed"))]
+            profiles[str(profile)] = {
+                "samples": samples, "top": top if status in ("ready", "stale") else [],
+                "clone_recommended": status in ("ready", "stale") and profile in (1, 4),
+                "classic_pct": 60 if samples >= 10 else None,
+                "clone_pct": 90 if samples >= 10 else None,
+            }
+        return {"provider": self.provider + " · симуляция dev", "samples": samples,
+                "minimum": 10, "generated_at": int(time.time()) - (86400 if status == "stale" else 0),
+                "status": status, "profiles": profiles}
+
     def build_provider_settings(self):
         """api_provider_get() — _lib.sh."""
         return {"provider": self.provider}
@@ -2669,6 +2688,7 @@ class FakeRouterState:
         return {
             "nfqws2_running": bool(self.nfqws2_running),
             "check_result": self.check_result,
+            "recommendations_status": self.recommendations_status,
             "simulate_error": sorted(self.simulate_error),
             "provider": self.provider,
             "rst_guard_lua": bool(self.rst_guard_lua),
@@ -3054,7 +3074,9 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 
         if self.command == "GET":
             with self.state.lock:
-                if setting == "wg_blob":
+                if setting == "recommendations":
+                    self._send_json(self.state.build_recommendations())
+                elif setting == "wg_blob":
                     self._log("GET {0} | wg_blob settings".format(parsed.path))
                     self._send_json(self.state.build_wg_blob_settings())
                 elif setting == "wg_state":
@@ -3417,6 +3439,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(400, "Невалидный JSON")
                 return
             with self.state.lock:
+                if "recommendations_status" in payload:
+                    if payload["recommendations_status"] not in ("ready", "insufficient", "stale", "unavailable", "unknown_provider"):
+                        self._send_error_json(400, "Некорректный статус рекомендаций")
+                        return
+                    self.state.recommendations_status = payload["recommendations_status"]
                 if "nfqws2_running" in payload:
                     self.state.nfqws2_running = bool(payload["nfqws2_running"])
                 if "check_result" in payload:

@@ -389,7 +389,7 @@ apiline="$(printf '%s\n' "$provider_sh" | grep -n 'curl.*ip-api\.com' | head -1 
 [ -n "$who_line" ] && [ -n "$info_line" ] && [ -n "$apiline" ] && [ "$who_line" -lt "$info_line" ] && [ "$info_line" -lt "$apiline" ] \
   || fail "каскад детекта должен быть ipwho.is -> ipinfo.io -> ip-api.com"
 grep -q 'tr -cd' "$REPO_DIR/lib/provider.sh" && fail "provider.sh не должен калечить строки через tr -cd"
-grep -q 'provider_brand_aliases' "$REPO_DIR/lib/recommendations.sh" || fail "show_hint не использует алиасы ASN-таблицы"
+grep -q 'recommendations_json' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail "WebUI не использует общий движок подсказок"
 grep -q '_detect_api_simple' "$REPO_DIR/lib/telemetry.sh" || fail "фоллбек телеметрии не использует общий детектор"
 
 provider_set_manual "MTS" "Moscow" || fail "provider_set_manual упал"

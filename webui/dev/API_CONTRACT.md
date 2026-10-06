@@ -483,6 +483,55 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 }                                 // при сетевом сбое (кэш не трогается)
 ```
 
+### Рекомендации провайдера — отдельный GET
+
+`GET /cgi-bin/settings.cgi?setting=recommendations` загружается только на странице
+«Стратегии», не входит в `state.cgi` или `status.cgi` и не меняет локи/настройки.
+После смены провайдера страница отменяет прежний запрос и читает данные заново.
+
+```json
+{
+  "provider": "MTS",
+  "samples": 24,
+  "minimum": 10,
+  "generated_at": 1791200000,
+  "status": "ready",
+  "profiles": {
+    "1": {
+      "samples": 24,
+      "top": [{"strategy": 7, "success_pct": 92, "samples": 12, "mode": "clone"}],
+      "clone_recommended": true,
+      "classic_pct": 60,
+      "clone_pct": 90
+    },
+    "2": {"samples": 0, "top": [], "clone_recommended": false, "classic_pct": null, "clone_pct": null},
+    "3": {"samples": 0, "top": [], "clone_recommended": false, "classic_pct": null, "clone_pct": null},
+    "4": {"samples": 0, "top": [], "clone_recommended": false, "classic_pct": null, "clone_pct": null}
+  }
+}
+```
+
+- `status`: `ready | insufficient | unavailable | unknown_provider | stale`.
+- `generated_at`: Unix timestamp в секундах. `stale` сохраняет старые валидные
+  данные: UI показывает их с датой и предупреждением о недоступности сервера.
+- При `samples < 10`/`insufficient` стратегии и clone-подсказки скрыты.
+- `top`: до 3 стратегий по блоку 1/2/3/4; `success_pct` — доля зелёных результатов
+  среди проверок данной стратегии, `samples` строки — число разных UUID,
+  проверивших её (для RKN один UUID проверяет несколько доменов).
+  `mode`: `classic | clone | mixed`. Это опыт сообщества, не гарантия работы.
+- Номер подставляется только в форму, без сохранения или автоматического set-lock.
+  Номера вне текущего `max_strategy` не предлагаются; обычный гейтинг сохраняется.
+- Clone-подсказка зависит только от `clone_recommended` сервера и скрывается,
+  если профиль уже в режиме clone; ссылка ведёт в `/settings/tls-blob`, без переключения.
+- Другие профили не имеют рекомендаций supersweep.
+
+**Dev:** fake-router возвращает явно помеченную «симуляция dev» ready-выборку,
+не читает живую статистику. `POST /__dev/state` с
+`{"recommendations_status":"insufficient"}` (также `ready`, `stale`, `unavailable`,
+`unknown_provider`) переключает сценарий; `simulate_error:["settings"]` даёт HTTP 500.
+Проверки: `node scripts/check-recommendations.mjs` из `webui-src/` и
+`python webui-src/scripts/check-recommendations.py` из корня.
+
 ### POST — применение настроек
 
 Тело: `setting=<...>&value=<...>` (для портов/провайдера — свои ключи, см. ниже).

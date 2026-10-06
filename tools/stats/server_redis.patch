@@ -1,0 +1,45 @@
+--- a/server_redis.py
++++ b/server_redis.py
+@@ -16,6 +16,12 @@
+ from urllib.parse import parse_qs, quote_plus, urlparse
+ 
+ import redis
++from recommendations import load_aliases, recommendations_tsv, validate_provider
++
++# Deploy recommendations.py and the maintained data/providers/asn.txt beside this file.
++RECOMMENDATION_ALIASES_PATH = os.environ.get(
++    "Z4R_STATS_PROVIDER_ASN", os.path.join(os.path.dirname(__file__), "asn.txt"))
++RECOMMENDATION_ALIASES = None
+ 
+ REDIS_URL = os.environ.get("Z4R_STATS_REDIS", "redis://127.0.0.1:6379/0")
+ RECORDS_KEY = "z4r:telemetry"
+@@ -686,6 +692,29 @@
+     def do_GET(self):
+         parsed = urlparse(self.path)
+         params = parse_qs(parsed.query)
++        if parsed.path == "/recommendations.tsv":
++            providers = parse_qs(parsed.query, keep_blank_values=True).get("provider", [])
++            try:
++                if len(providers) != 1:
++                    raise ValueError("invalid provider")
++                provider = validate_provider(providers[0])
++            except ValueError:
++                self.send_json(400, {"ok": False, "error": "invalid provider"})
++                return
++            try:
++                global RECOMMENDATION_ALIASES
++                if RECOMMENDATION_ALIASES is None:
++                    RECOMMENDATION_ALIASES = load_aliases(RECOMMENDATION_ALIASES_PATH)
++                body = recommendations_tsv(rdb, provider, RECOMMENDATION_ALIASES).encode("utf-8")
++            except Exception:
++                self.send_json(503, {"ok": False, "error": "recommendations unavailable"})
++                return
++            self.send_response(200)
++            self.send_header("content-type", "text/tab-separated-values; charset=utf-8")
++            self.send_header("content-length", str(len(body)))
++            self.end_headers()
++            self.wfile.write(body)
++            return
+         if parsed.path == "/health":
+             try:
+                 rdb.ping()

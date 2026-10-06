@@ -36,6 +36,7 @@ find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{
 . "$LIB_DIR/netcheck.sh"
 [ -f "$LIB_DIR/actions.sh" ] && . "$LIB_DIR/actions.sh"
 [ -f "$LIB_DIR/provider.sh" ] && . "$LIB_DIR/provider.sh"
+[ -f "$LIB_DIR/recommendations.sh" ] && . "$LIB_DIR/recommendations.sh"
 [ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
 [ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
 
@@ -1527,6 +1528,14 @@ api_ports_remove() {
     send_error "400 Bad Request" "Порт не найден среди добавленных: $PARAM_VALUE"
   _service_apply_restart
   send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED}"
+}
+
+api_recommendations_get() {
+  if type recommendations_json >/dev/null 2>&1; then
+    send_json "200 OK" "$(recommendations_json)"
+  else
+    send_json "200 OK" '{"provider":"","samples":0,"minimum":10,"generated_at":0,"status":"unavailable","profiles":{}}'
+  fi
 }
 
 api_provider_get() {

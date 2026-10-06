@@ -41,6 +41,9 @@ case "${REQUEST_METHOD:-GET}" in
       provider)
         api_provider_get
         ;;
+      recommendations)
+        api_recommendations_get
+        ;;
       update_check)
         api_update_check
         ;;

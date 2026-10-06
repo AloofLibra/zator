@@ -2330,7 +2330,7 @@ get_menu() {
     fi
     provider_init_once
     init_telemetry
-    update_recommendations
+    # Подсказки загружаются лениво при подборе стратегии, не тормозят главное меню.
   while true; do
   	local strategies_status
     strategies_status=$(get_orchestra_locks_info)

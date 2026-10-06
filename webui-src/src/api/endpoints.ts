@@ -3,7 +3,7 @@ import type {
   ApplyResult, BackupsPayload, CheckPayload, DomainsImportResult, DomainsListPayload,
   FallbackSettings, ModeSettingData, PortInfo, PortsSettings, ProfileInfo, ProviderSettings,
   ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult,
-  WgBlobSettings, WgStateSettings,
+  WgBlobSettings, WgStateSettings, Recommendations,
 } from './types'
 
 export const fetchStatus = (scope: string) =>
@@ -11,6 +11,9 @@ export const fetchStatus = (scope: string) =>
 
 export const fetchState = (scope: string) =>
   api<StatePayload>(`/cgi-bin/state.cgi?scope=${encodeURIComponent(scope)}`)
+
+export const fetchRecommendations = (signal?: AbortSignal) =>
+  api<Recommendations>('/cgi-bin/settings.cgi?setting=recommendations', { signal })
 
 export const fetchScopes = () => api<ScopesPayload>('/cgi-bin/scopes.cgi')
 
