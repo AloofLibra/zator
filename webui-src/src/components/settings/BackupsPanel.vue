@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import Icon from '../ui/Icon.vue'
 import { backups as backupsApi } from '../../api/endpoints'
 import { backupsListExpanded, backups, formatSize, refreshBackups } from '../../stores/backups'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
@@ -96,7 +97,7 @@ async function onImportChange(event: Event) {
         <span class="backup-actions">
           <a class="download-btn" :href="backupsApi.downloadUrl(item.name)" aria-label="Скачать" title="Скачать">↓</a>
           <button type="button" class="ghost danger remove-btn" aria-label="Удалить" title="Удалить"
-            :disabled="busyActive" @click="remove(item.name)">×</button>
+            :disabled="busyActive" @click="remove(item.name)"><Icon name="cross" /></button>
         </span>
       </li>
       <li v-if="items.length > BACKUPS_PREVIEW_COUNT" class="backup-toggle-row">

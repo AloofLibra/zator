@@ -243,10 +243,15 @@ z2r_download_zapret2_release() {
   rm -f "$dest"
 
   if [ "$(zapret2_flavor_load)" = fork ]; then
-    # форк-релизы живут только на GitHub форка: зеркал и Яндекс.Диска нет
     primary="${ZAPRET2_FORK_RELEASE_BASE}/v${ver}/${tarfile}"
     z2r_fetch_url_to_file "$dest" "$primary" && return 0
     rm -f "$dest"
+    if [ -n "${ZAPRET2_RELEASE_MIRROR_BASE:-}" ]; then
+      mirror="${ZAPRET2_RELEASE_MIRROR_BASE%/}/v${ver}/${tarfile}"
+      echo -e "${yellow}GitHub недоступен для $tarfile. Пробую зеркало zapret2 release.${plain}" >&2
+      z2r_fetch_url_to_file "$dest" "$mirror" && return 0
+      rm -f "$dest"
+    fi
     return 1
   fi
 
@@ -581,6 +586,8 @@ z2r_archive_preflight() {
   }
   if ! z2r_validate_tar_archive "$required_archive"; then
     echo -e "${red}Архив $(basename "$required_archive") повреждён или содержит небезопасные пути.${plain}"
+    z2r_archive_download_diagnose "$required_archive"
+    echo -e "${yellow}Перекачайте установочный архив zator и повторите установку.${plain}"
     return 1
   fi
   grep -Fx "zapret2-v$ZAPRET2_VERSION/install_bin.sh" < <(tar -tzf "$required_archive") >/dev/null || {
@@ -1400,16 +1407,73 @@ done
 
 z2r_validate_tar_archive() {
  local archive="$1"
- local entry
+ local entry tar
 
- if ! tar -tzf "$archive" >/dev/null 2>&1; then
+ tar="$(z2r_pick_tar)"
+ if ! "$tar" -tzf "$archive" >/dev/null 2>&1; then
   return 1
  fi
  while IFS= read -r entry; do
   case "$entry" in
    /*|../*|*/../*|*/..) return 1 ;;
   esac
- done < <(tar -tzf "$archive")
+ done < <("$tar" -tzf "$archive")
+ return 0
+}
+
+z2r_ensure_gnu_tar() {
+ local t
+ t="$(z2r_pick_tar)"
+ [ "$t" != "tar" ] && return 0
+ if command -v opkg >/dev/null 2>&1; then
+  echo -e "${yellow}tar системы не читает длинные имена архива — ставлю GNU tar через opkg...${plain}"
+  opkg install tar >/dev/null 2>&1 || {
+   opkg update >/dev/null 2>&1
+   opkg install tar >/dev/null 2>&1
+  }
+ elif command -v apk >/dev/null 2>&1; then
+  echo -e "${yellow}tar системы не читает длинные имена архива — ставлю GNU tar через apk...${plain}"
+  apk update >/dev/null 2>&1 || true
+  apk add tar >/dev/null 2>&1 || true
+ else
+  return 1
+ fi
+ t="$(z2r_pick_tar)"
+ [ "$t" != "tar" ] && return 0
+ echo -e "${yellow}GNU tar поставить не удалось.${plain}"
+ return 1
+}
+
+z2r_archive_download_diagnose() {
+ local archive="$1"
+ local size tar_err tmp_hdr free_kb bad_entry
+
+ if [ ! -s "$archive" ]; then
+  echo -e "${yellow}Файл пустой или отсутствует: скачать не удалось, хотя инструмент ошибки не вернул.${plain}"
+  return 0
+ fi
+ size="$(wc -c < "$archive" 2>/dev/null | tr -d ' ' || true)"
+ echo -e "${yellow}Размер скачанного файла: ${size:-?} байт.${plain}"
+
+ tmp_hdr="/tmp/z2r_magic_$$"
+ printf '\037\213' > "$tmp_hdr" 2>/dev/null
+ if head -c 2 "$archive" 2>/dev/null | cmp -s - "$tmp_hdr"; then
+  echo -e "${yellow}gzip-сигнатура в начале есть: файл обрезан или побит в середине передачи.${plain}"
+ else
+  echo -e "${yellow}Это НЕ gzip: вместо архива по каналу пришёл другой ответ (перехват/портал/прокси).${plain}"
+ fi
+ rm -f "$tmp_hdr"
+
+ if "$(z2r_pick_tar)" -tzf "$archive" >/dev/null 2>&1; then
+  bad_entry="$("$(z2r_pick_tar)" -tzf "$archive" 2>/dev/null | grep -m 3 -E '^/|(^|/)\.\.(/|$)' || true)"
+  [ -n "$bad_entry" ] && echo -e "${yellow}Небезопасные пути внутри архива: ${bad_entry}${plain}"
+ else
+  tar_err="$("$(z2r_pick_tar)" -tzf "$archive" 2>&1 >/dev/null | head -n 3 || true)"
+  [ -n "$tar_err" ] && echo -e "${yellow}Ошибка tar: ${tar_err}${plain}"
+ fi
+
+ free_kb="$(df -k /tmp 2>/dev/null | awk 'NR==2 {print $4}' || true)"
+ [ -n "$free_kb" ] && echo -e "${yellow}Свободно в /tmp: ${free_kb} КБ.${plain}"
  return 0
 }
 
@@ -1418,6 +1482,7 @@ zapret_get() {
  local archive
  local extract_dir
  local workdir
+ local zipmode=0
  if [[ "$OSystem" == "WRT" ]]; then
      tarfile="zapret2-v$VER-openwrt-embedded.tar.gz"
  else
@@ -1441,13 +1506,44 @@ zapret_get() {
  fi
  if ! z2r_validate_tar_archive "$archive"; then
      echo -e "${red}Архив zapret2 повреждён или содержит небезопасные пути: $tarfile.${plain}"
+     z2r_archive_download_diagnose "$archive"
      rm -f "$archive"
-     return 1
+     z2r_ensure_gnu_tar || true
+     if [ -n "${ZAPRET2_ARCHIVE_DIR:-}" ]; then
+         if cp -f "$bundled_archive" "$archive" 2>/dev/null \
+            && z2r_validate_tar_archive "$archive"; then
+             echo -e "${green}После установки GNU tar архив прошёл проверку — продолжаю.${plain}"
+         else
+             rm -f "$archive"
+             echo -e "${yellow}Локальный архив не читается: opkg update && opkg install tar — и повторите установку.${plain}"
+             return 1
+         fi
+     elif z2r_download_zapret2_release "$archive" "$VER" "$tarfile" \
+        && z2r_validate_tar_archive "$archive"; then
+         echo -e "${green}Повторная загрузка прошла проверку — продолжаю.${plain}"
+     elif command -v unzip >/dev/null 2>&1 \
+        && z2r_download_zapret2_release "$archive" "$VER" "${tarfile%.tar.gz}.zip" \
+        && unzip -t "$archive" >/dev/null 2>&1; then
+         zipmode=1
+         echo -e "${green}Взял zip-версию релиза: tar этого роутера не читает длинные имена GNU-архива.${plain}"
+     else
+         rm -f "$archive"
+         echo -e "${yellow}Чаще всего это битая доставка с github.com (канал/перехват): повторите позже или скачайте через VPN.${plain}"
+         echo -e "${yellow}Если не поможет: opkg update && opkg install tar — и повторите установку.${plain}"
+         return 1
+     fi
  fi
  workdir="/tmp/z2r_zapret2_$$"
  rm -rf "$workdir"
  mkdir -p "$workdir"
- if ! tar -xzf "$archive" -C "$workdir"; then
+ if [ "$zipmode" = 1 ]; then
+     if ! unzip -q "$archive" -d "$workdir"; then
+         echo -e "${red}Архив zapret2 не распаковывается: ${tarfile%.tar.gz}.zip.${plain}"
+         rm -f "$archive"
+         rm -rf "$workdir"
+         return 1
+     fi
+ elif ! "$(z2r_pick_tar)" -xzf "$archive" -C "$workdir"; then
      echo -e "${red}Архив zapret2 повреждён или не является tar.gz: $tarfile.${plain}"
      rm -f "$archive"
      rm -rf "$workdir"

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import Icon from './Icon.vue'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -32,8 +33,8 @@ function step(direction: number) {
     <input type="number" :min="inputMin" :max="inputMax" step="1" required :disabled="disabled"
       :value="modelValue" @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)">
     <div class="stepper-buttons">
-      <button type="button" :disabled="disabled" :aria-label="upLabel" @click="step(1)">↑</button>
-      <button type="button" :disabled="disabled" :aria-label="downLabel" @click="step(-1)">↓</button>
+      <button type="button" :disabled="disabled" :aria-label="upLabel" @click="step(1)"><Icon name="arrow-up" /></button>
+      <button type="button" :disabled="disabled" :aria-label="downLabel" @click="step(-1)"><Icon name="arrow-down" /></button>
     </div>
   </div>
 </template>

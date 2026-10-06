@@ -9,6 +9,7 @@ import { showToast } from '../../stores/toast'
 import { DOMAIN_META, type DomainListName } from '../../stores/domains'
 import CheckResults from '../ui/CheckResults.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
+import Icon from '../ui/Icon.vue'
 
 const props = defineProps<{
   item: DomainItem
@@ -191,8 +192,8 @@ async function submitRename() {
         <button v-if="isCustomRkn && !renaming" type="button" class="ghost domain-check-btn" :disabled="busyActive" @click="checkDomain">Проверить</button>
         <button v-if="isCustomRkn && !renaming" type="button" class="ghost trial-btn" :disabled="busyActive" @click="toggleTrial">Подобрать</button>
         <button v-if="!renaming" type="button" class="ghost rename-btn" :disabled="busyActive"
-          aria-label="Переименовать" title="Переименовать" @click="startRename">✎</button>
-        <button v-if="!renaming" type="button" class="ghost danger remove-btn" :disabled="busyActive" aria-label="Удалить" @click="removeDomain">×</button>
+          aria-label="Переименовать" title="Переименовать" @click="startRename"><Icon name="pencil" /></button>
+        <button v-if="!renaming" type="button" class="ghost danger remove-btn" :disabled="busyActive" aria-label="Удалить" @click="removeDomain"><Icon name="cross" /></button>
       </div>
     </div>
     <div v-if="hasCheck" class="checks domain-check">

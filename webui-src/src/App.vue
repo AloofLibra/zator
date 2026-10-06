@@ -9,6 +9,7 @@ import { theme, type ThemeMode } from './stores/theme'
 import ToastHost from './components/ui/ToastHost.vue'
 import ConfirmDialog from './components/ui/ConfirmDialog.vue'
 import SupportModal from './components/ui/SupportModal.vue'
+import Icon from './components/ui/Icon.vue'
 
 const route = useRoute()
 
@@ -90,7 +91,7 @@ onBeforeUnmount(() => {
     <router-view />
 
     <button id="to-top" type="button" aria-label="Наверх" :class="{ 'is-visible': heroHidden }"
-      @click="scrollToTop">↑</button>
+      @click="scrollToTop"><Icon name="arrow-up" /></button>
 
     <ToastHost />
     <ConfirmDialog />
