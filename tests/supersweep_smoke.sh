@@ -117,6 +117,10 @@ printf 'tel_enabled=1\ntel_uuid=deadbeef\n' > "$TELEMETRY_CFG"
 export Z2R_SWEEP_PAUSE=0
 # зелёный ускоритель в тестах выключен: паузы остаются нулевыми
 export Z2R_SUPERSWEEP_GREEN_PAUSE=0
+# межфазные паузы (30 сек по умолчанию, 3 промежутка на прогон) тоже в ноль
+export Z2R_SUPERSWEEP_PHASE_PAUSE=0
+# опрос cmd/applied-файлов: на Windows-машине каждая итерация дорога, в тестах ускоряем
+export Z2R_SUPERSWEEP_POLL=0.05
 export Z2R_SUPERSWEEP_ARCHIVE_KEEP=3
 mkdir -p "$ORCH" "$ROOT" "$ZATOR_ROOT/extra_strats"
 : > "$ORCH_LOCK_FILE"
@@ -183,8 +187,8 @@ grep -q '_supersweep_estimate_total' "$REPO_DIR/lib/supersweep.sh" \
 grep -q 'pacing.tsv' "$REPO_DIR/lib/supersweep.sh" || fail "нет pacing-файла фактических пауз воркеров"
 # архивация/отправка ДО интерактивного вопроса про жёлтые: пользователь может
 # не отвечать сколько угодно — результаты уже на сервере
-arc_ln="$(grep -n 'Архив результатов: ' "$REPO_DIR/lib/supersweep.sh" | cut -d: -f1 | head -n1)"
-sum_ln="$(grep -n 'автоматическое применение лучших стратегий' "$REPO_DIR/lib/supersweep.sh" | cut -d: -f1 | head -n1)"
+arc_ln="$(grep -n 'Архив результатов: ' "$REPO_DIR/lib/supersweep.sh" | cut -d: -f1 | head -n1 || true)"
+sum_ln="$(grep -n 'Сводка и резервное применение' "$REPO_DIR/lib/supersweep.sh" | cut -d: -f1 | head -n1 || true)"
 [ -n "$arc_ln" ] && [ -n "$sum_ln" ] && [ "$arc_ln" -lt "$sum_ln" ] \
   || fail "архив результатов должен печататься до сводки (и вопроса про жёлтые)"
 # совет перезагрузки при полном красе YouTube: общая функция в netcheck,

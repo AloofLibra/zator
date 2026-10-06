@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
+import Icon from '../ui/Icon.vue'
 import { applySetting } from '../../api/endpoints'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
 import { refreshAll } from '../../stores/status'
@@ -95,7 +96,7 @@ async function removePort(proto: 'tcp' | 'udp', token: string) {
         <span v-for="token in tcpUsers" :key="token" class="port-chip">
           <span>{{ token }}</span>
           <button type="button" class="port-remove" :disabled="busyActive"
-            :aria-label="`Удалить порт ${token}`" @click="removePort('tcp', token)">×</button>
+            :aria-label="`Удалить порт ${token}`" @click="removePort('tcp', token)"><Icon name="cross" /></button>
         </span>
       </div>
       <div class="form-hint ports-empty" id="ports-tcp-empty" :hidden="tcpUsers.length > 0">Добавленных TCP-портов нет.</div>
@@ -121,7 +122,7 @@ async function removePort(proto: 'tcp' | 'udp', token: string) {
           :title="token === '1026-65531' ? 'Управляется переключателем «Игровой UDP» выше' : undefined">
           <span>{{ token }}</span>
           <button v-if="token !== '1026-65531'" type="button" class="port-remove" :disabled="busyActive"
-            :aria-label="`Удалить порт ${token}`" @click="removePort('udp', token)">×</button>
+            :aria-label="`Удалить порт ${token}`" @click="removePort('udp', token)"><Icon name="cross" /></button>
         </span>
       </div>
       <div class="form-hint ports-empty" id="ports-udp-empty" :hidden="udpUsers.length > 0">Добавленных UDP-портов нет.</div>
