@@ -48,6 +48,23 @@ Z2R_TLS_DL_SPEED_TIME=1
 # Функции движка всегда возвращают 0 (вызовы под set -e в z2r.sh):
 # код возврата curl передаётся внутри данных, а не статусом функции.
 
+# mkdir атомарно резервирует приватный каталог без зависимости от mktemp.
+# В $(...) и фоновых пробах $$ совпадает: коллизии обходим счётчиком.
+z2r_tls_tmpdir() (
+    umask 077
+    local dir i=0
+    while [ "$i" -lt 100 ]; do
+        dir="${TMPDIR:-/tmp}/z2r_tls.$$.$i"
+        if mkdir "$dir" 2>/dev/null; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    echo "Не удалось создать временный каталог TLS в ${TMPDIR:-/tmp}" >&2
+    return 1
+)
+
 z2r_tls_head_once() {
     local url="$1" hdr="$2"; shift 2
     local out rc
@@ -59,14 +76,21 @@ z2r_tls_head_once() {
     printf '%s|%s\n' "$rc" "${out:-- -}"
 }
 
-z2r_tls_probe_version() {
-    local url="$1" ver="$2" flags hdr raw rc rest time ip first proto code
+z2r_tls_probe_version() (
+    local url="$1" ver="$2" flags tmp hdr="${3:-}" raw rc rest time ip first proto code
     case "$ver" in
         12) flags="--tlsv1.2 --tls-max 1.2" ;;
         13) flags="--tlsv1.3" ;;
         *) return 1 ;;
     esac
-    hdr="$(mktemp "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
+    if [ -z "$hdr" ]; then
+        tmp="$(z2r_tls_tmpdir)" || return 1
+        trap 'rm -rf "$tmp"' EXIT
+        hdr="$tmp/headers"
+    fi
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     : >"$hdr"
     raw="$(z2r_tls_head_once "$url" "$hdr" $flags)"
     rc="${raw%%|*}"; rest="${raw#*|}"
@@ -78,9 +102,8 @@ z2r_tls_probe_version() {
     proto="${first%% *}"; code="${first#* }"; code="${code%% *}"
     [ -n "$proto" ] || proto="-"
     case "$code" in ''|*[!0-9]*) code=000 ;; esac
-    rm -f "$hdr"
     printf '%s|%s|%s|%s|%s\n' "$rc" "$code" "$proto" "$time" "$ip"
-}
+)
 
 z2r_tls_probe_download() {
     local url="$1" out rc code rest size time
@@ -148,17 +171,21 @@ z2r_tls_poll_sleep() {
     sleep 0.3 2>/dev/null || sleep 1
 }
 
-z2r_tls_check_target() {
-    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0 tls_gap
-    tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
-    z2r_tls_probe_version "$url" 12 >"$tmp/v12" 2>/dev/null </dev/null &
+z2r_tls_check_target() (
+    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0 tls_gap pids
+    tmp="$(z2r_tls_tmpdir)" || return 1
+    trap 'trap "" INT TERM HUP; pids="$(jobs -pr)"; if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi; rm -rf "$tmp"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    z2r_tls_probe_version "$url" 12 "$tmp/h12" >"$tmp/v12" 2>/dev/null </dev/null &
     p12=$!
     # Z2R_TLS_PROBE_GAP: интервал между пробами TLS 1.2 и 1.3 — одновременные
     # попытки обеих версий на одну цель читаются ТСПУ как сканер
     tls_gap="${Z2R_TLS_PROBE_GAP:-0}"
     case "$tls_gap" in ''|*[!0-9]*) tls_gap=0 ;; esac
     [ "$tls_gap" -gt 0 ] && sleep "$tls_gap"
-    z2r_tls_probe_version "$url" 13 >"$tmp/v13" 2>/dev/null </dev/null &
+    z2r_tls_probe_version "$url" 13 "$tmp/h13" >"$tmp/v13" 2>/dev/null </dev/null &
     p13=$!
 
     t0=$SECONDS
@@ -216,9 +243,8 @@ z2r_tls_check_target() {
                 "$(z2r_tls_field "$dl2" 3)" "$(z2r_tls_field "$dl2" 4)")"
         fi
     fi
-    rm -rf "$tmp"
     printf '%s\n%s\n%s\n' "$v12" "$v13" "$dl"
-}
+)
 
 # Версия строки проверки: "факт|подсказка". Подсказка пустая только при успехе;
 # в CLI факт красится жёлтым/зелёным, подсказка — красным (как в эталонном выводе).
