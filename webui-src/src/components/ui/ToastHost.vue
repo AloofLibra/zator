@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { toast, type ToastState } from '../../stores/toast'
+import Icon from './Icon.vue'
 
 const current = ref<ToastState | null>(null)
 const visible = ref(false)
@@ -31,7 +32,7 @@ onBeforeUnmount(() => window.clearTimeout(hideTimer))
   <div v-if="current" class="toast-region" role="status" aria-live="polite" aria-atomic="true">
     <div :class="['toast', current.type, { 'is-visible': visible }]" :role="current.type === 'error' ? 'alert' : undefined">
       <div class="toast-message">{{ current.message }}</div>
-      <button type="button" class="toast-close" aria-label="Закрыть уведомление" @click="dismiss">×</button>
+      <button type="button" class="toast-close" aria-label="Закрыть уведомление" @click="dismiss"><Icon name="cross" /></button>
     </div>
   </div>
 </template>

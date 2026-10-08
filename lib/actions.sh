@@ -1098,6 +1098,21 @@ backup_pick_archive() {
   return 0
 }
 
+z2r_pick_tar() {
+  local t
+  t="$(command -v tar 2>/dev/null || true)"
+  if [ -n "$t" ] && "$t" --version >/dev/null 2>&1; then
+    printf '%s' "$t"
+    return 0
+  fi
+  if [ -x /opt/libexec/tar-gnu ]; then
+    printf '/opt/libexec/tar-gnu'
+    return 0
+  fi
+  printf 'tar'
+  return 0
+}
+
 backup_create_core() {
   local ts archive stage rel src tmp_list
   BACKUP_LAST_ARCHIVE=""
@@ -1125,7 +1140,7 @@ backup_create_core() {
 
   mkdir -p "$Z2R_BACKUP_DIR" || { rm -rf "$stage"; return 1; }
 
-  tar -cf "$archive" -C "$stage" . 2>/dev/null || { rm -rf "$stage" "$archive"; return 1; }
+  "$(z2r_pick_tar)" -cf "$archive" -C "$stage" . 2>/dev/null || { rm -rf "$stage" "$archive"; return 1; }
   rm -rf "$stage"
 
   BACKUP_LAST_ARCHIVE="$archive"
@@ -1164,7 +1179,7 @@ backup_import_core() {
   [ -f "$src" ] || return 1
   [ -s "$src" ] || return 1
   listing="/tmp/z2r_backup_import_$$"
-  tar -tf "$src" > "$listing" 2>/dev/null || { rm -f "$listing"; return 1; }
+  "$(z2r_pick_tar)" -tf "$src" > "$listing" 2>/dev/null || { rm -f "$listing"; return 1; }
   grep -qE '(^|/)config$|/(lists|extra_strats)/' "$listing" || { rm -f "$listing"; return 1; }
   rm -f "$listing"
   case "$orig" in
@@ -1748,7 +1763,7 @@ menu_action_backup_restore() {
     return 1
   fi
 
-  if ! tar -xf "$archive" -C "$restore_dir" 2>/dev/null; then
+  if ! "$(z2r_pick_tar)" -xf "$archive" -C "$restore_dir" 2>/dev/null; then
     rm -rf "$restore_dir"
     echo -e "${red}Не удалось распаковать архив: $(basename "$archive")${plain}"
     return 1

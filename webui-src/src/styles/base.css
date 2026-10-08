@@ -320,6 +320,13 @@ h3 { font-size: 1rem; line-height: 1.25; }
 
 .toast-message { min-width: 0; line-height: 1.35; }
 
+.icon-svg {
+  width: 1.05em;
+  height: 1.05em;
+  display: inline-block;
+  vertical-align: -0.18em;
+}
+
 .toast-close {
   border: 0;
   background: transparent;

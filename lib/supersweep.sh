@@ -93,13 +93,23 @@ _supersweep_request_lock() {
     local name="$1" round="$2" specs="$3" dir="$Z2R_SUPERSWEEP_DIR"
     printf 'r|%s\n%s\n' "$round" "$specs" > "${dir}/cmd.${name}.tmp.$$" \
         && mv -f "${dir}/cmd.${name}.tmp.$$" "${dir}/cmd.${name}" || return 1
-    local t0=$SECONDS
+    local t0=$SECONDS poll="${Z2R_SUPERSWEEP_POLL:-0.3}" int
+    case "$poll" in ''|*[!0-9.]*|*..*|.) poll=0.3 ;; esac
+    int="${poll%%.*}"
+    case "$int" in ''|*[!0-9]*) int=0 ;; esac
+    [ "$int" -gt 2 ] && poll=0.3
+    case "$poll" in 0|0.0|0.00) poll=0.3 ;; esac
     while [ $((SECONDS - t0)) -lt 15 ]; do
         [ -f "${dir}/applied.${name}" ] \
             && [ "$(sed -n 1p "${dir}/applied.${name}" 2>/dev/null)" = "r|${round}" ] \
             && return 0
-        sleep 0.3 2>/dev/null || sleep 1
+        sleep "$poll" 2>/dev/null || sleep 1
     done
+    # последний взгляд вне условия цикла: ACK, записанный на последнем шаге,
+    # иначе засчитается таймаутом даже при штатном интервале
+    [ -f "${dir}/applied.${name}" ] \
+        && [ "$(sed -n 1p "${dir}/applied.${name}" 2>/dev/null)" = "r|${round}" ] \
+        && return 0
     echo "supersweep: lock apply timeout (worker $name, round $round)" >&2
     return 1
 }
@@ -722,6 +732,7 @@ supersweep_run() {
     local dir="$Z2R_SUPERSWEEP_DIR"
     local cfg max1 max2 max4 max3
     local started="$(date +%s)"
+    local last_alive="" last_st=""
 
     case "$pause_sec" in ''|*[!0-9]*) pause_sec="${Z2R_SWEEP_PAUSE:-5}" ;; esac
     # дискорд требовательнее: своя увеличенная пауза фазы
@@ -848,8 +859,16 @@ supersweep_run() {
             [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
             local alive_names=""
             kill -0 "$pid" 2>/dev/null && alive_names="$phase"
-            _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_names" "$domains"
-            sleep 0.3 2>/dev/null || sleep 1
+            # status перезаписывается только при смене данных или раз в 5 сек:
+            # при частом опросе каждая запись это дюжина fork'ов, на слабых
+            # машинах именно она съедает время прогона
+            if [ "$alive_names" != "${last_alive:-}" ] || [ -z "${last_st:-}" ] \
+               || [ $((SECONDS - last_st)) -ge 5 ]; then
+                _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_names" "$domains"
+                last_alive="$alive_names"
+                last_st=$SECONDS
+            fi
+            sleep "${Z2R_SUPERSWEEP_POLL:-0.3}" 2>/dev/null || sleep 1
         done
         wait "$pid" 2>/dev/null || true
         # Обработать done последнего воркера, пропущенный из-за выхода из цикла.
