@@ -281,7 +281,7 @@ NFQWS2_OPT="
 --lua-desync=fake:blob=0x00:repeats=4:ip_autottl=0,3-20:ip6_autottl=0,3-20:out_range=-d10:strategy=16
 --lua-desync=fake:blob=0x00:repeats=6:out_range=-n2:strategy=17
 --lua-desync=fake:blob=quic_google:out_range=-n2:strategy=18
---lua-desync=fake:blob=quic_test:out_range=-d2:strategy=19
+--lua-desync=fake:blob=quic_google:out_range=-d2:strategy=19
 --lua-desync=send:repeats=2:ip_autottl=0,3-200:strategy=20 --lua-desync=fake:blob=discord_fake:ip_autottl=0,3-20:out_range=-d100:strategy=20
 --lua-desync=send:repeats=2:ip6_autottl=0,3-20:strategy=21 --lua-desync=fake:blob=discord_fake:ip6_autottl=0,3-20:out_range=-d10:strategy=21
 --lua-desync=fake:blob=discord_fake:repeats=11:out_range=-d5:strategy=22
@@ -321,7 +321,7 @@ NFQWS2_OPT="
 --lua-desync=fake:blob=0x00:repeats=4:ip_autottl=0,3-20:ip6_autottl=0,3-20:out_range=-d10:strategy=16
 --lua-desync=fake:blob=0x00:repeats=6:out_range=-n2:strategy=17
 --lua-desync=fake:blob=quic_google:out_range=-n2:strategy=18
---lua-desync=fake:blob=quic_test:out_range=-d2:strategy=19
+--lua-desync=fake:blob=quic_google:out_range=-d2:strategy=19
 --lua-desync=send:repeats=2:ip_autottl=0,3-200:strategy=20 --lua-desync=fake:blob=discord_fake:ip_autottl=0,3-20:out_range=-d100:strategy=20
 --lua-desync=send:repeats=2:ip6_autottl=0,3-20:strategy=21 --lua-desync=fake:blob=discord_fake:ip6_autottl=0,3-20:out_range=-d10:strategy=21
 --lua-desync=fake:blob=discord_fake:repeats=11:out_range=-d5:strategy=22
