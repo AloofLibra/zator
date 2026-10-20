@@ -955,7 +955,8 @@ strategies_submenu() {
       submenu_item "10" "Профиль 10: DNS антиспуф UDP:53 [${MENU_PROFILE_MAX_10:-0}]" "udp" "$STRATEGY_STATE_DNS_UDP"
     fi
     submenu_item "11" "Авторотация TCP/HTTP [${auto_state}]"
-    submenu_item "12" "Суперавтопрогон: YouTube + Googlevideo + Discord параллельно и карта РКН"
+    submenu_item "12" "Суперавтопрогон: запуск / остановка"
+    submenu_item "13" "Суперавтопрогон: прогресс и последний результат"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1043,6 +1044,9 @@ strategies_submenu() {
         else
           supersweep_menu
         fi
+        ;;
+      "13")
+        supersweep_status_menu
         ;;
       "0"|"")
         ORCH_ACTIVE_SCOPE="default"

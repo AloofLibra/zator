@@ -23,6 +23,155 @@ Z2R_SUPERSWEEP_RKN_DOMAINS="${Z2R_SUPERSWEEP_RKN_DOMAINS:-xhamster.com anidub.co
 [ -z "${Fcyan:-}" ] && Fcyan='\033[1;36m'
 [ -z "${Fyellow:-}" ] && Fyellow='\033[1;33m'
 
+supersweep_report_tsv() {
+    local dir="$Z2R_SUPERSWEEP_DIR" file pid="" alive=0
+    if [ ! -s "$dir/status" ]; then
+        if [ -s "$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv" ]; then
+            awk -F '\t' 'BEGIN{OFS="\t"} $1=="R" {$3=0;$10="saved";if($2~/^(starting|running|applying)$/)$2="interrupted"} {print}' "$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv"
+        else
+            printf 'R\tidle\t0\t0\t0\tdefault\t-\t0\t0\tnone\n'
+        fi
+        return 0
+    fi
+    if [ -r "$dir.lock/pid" ]; then
+        IFS= read -r pid < "$dir.lock/pid" || true
+        case "$pid" in ''|*[!0-9]*) ;; *) kill -0 "$pid" 2>/dev/null && alive=1 ;; esac
+    fi
+    [ "${_Z2R_SS_REPORT_FINAL:-0}" != 1 ] || alive=0
+    set --
+    for file in status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv \
+        best.yt best.gv best.ds best.rkn applied.yt applied.gv applied.ds applied.rkn applied.tsv; do
+        [ ! -r "$dir/$file" ] || set -- "$@" "$dir/$file"
+    done
+    awk -F '\t' -v alive="$alive" '
+    function clean(s) {gsub(/[[:cntrl:]]/," ",s);return s==""?"-":s}
+    function num(s) {return s~/^[0-9]+$/?s+0:0}
+    BEGIN {
+        OFS="\t"; names[1]="yt";names[2]="gv";names[3]="ds";names[4]="rkn"
+        labels["yt"]="YouTube";labels["gv"]="Googlevideo";labels["ds"]="Discord";labels["rkn"]="РКН"
+        profiles["yt"]=1;profiles["gv"]=2;profiles["ds"]=4;profiles["rkn"]=3
+        byprofile[1]="yt";byprofile[2]="gv";byprofile[4]="ds";byprofile[3]="rkn"
+    }
+    {
+        file=FILENAME;sub(/^.*\//,"",file)
+        if(file=="status") {i=index($0,"=");if(i)kv[substr($0,1,i-1)]=substr($0,i+1);next}
+        if(file=="workers.tsv" && NF>=6 && $1 in labels) {
+            w=$1;seen[w]=1;total[w]=num($6)*(w=="rkn"?split($5,ds,","):1);url[w]=$5;next
+        }
+        if(file~/^progress\.(yt|gv|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail)$/) {
+            w=file;sub(/^progress\./,"",w);sub(/\.tsv$/,"",w);count[w]++;verdict[w,$4]++;next
+        }
+        if(file~/^best\.(yt|gv|ds|rkn)$/) {
+            w=file;sub(/^best\./,"",w);i=index($0,"=");key=substr($0,1,i-1);v=substr($0,i+1)
+            if(key=="greens" || key=="warns") lists[w,key]=v
+            next
+        }
+        if(file~/^applied\.(yt|gv|ds|rkn)$/) {
+            w=file;sub(/^applied\./,"",w);split($0,a,"[|]")
+            if(a[1]~/^(profile|domain)$/ && a[4]~/^[1-9][0-9]*$/) {current[w]=a[4];target[w]=a[1]=="domain"?a[2]:url[w]}
+            next
+        }
+        if(file=="applied.tsv" && NF==3 && $1~/^(profile|domain)$/ && $3~/^[1-9][0-9]*$/) {
+            key=$1 SUBSEP $2;if(!(key in applied)) order[++na]=key
+            applied[key]=$3;kind[key]=$1;dest[key]=$2
+            if($1=="profile" && $2 in byprofile) winner[byprofile[$2]]=$3
+        }
+    }
+    END {
+        state=kv["state"];if(state!~/^(starting|running|applying|done|cancelled|interrupted)$/)state="interrupted"
+        active=state~/^(starting|running|applying)$/ && alive
+        if(state~/^(starting|running|applying)$/ && !alive)state="interrupted"
+        phase=kv["alive"];sub(/,.*/,"",phase);if(!active)phase=""
+        for(i=1;i<=4;i++){w=names[i];completed+=count[w];sum+=total[w]}
+        printf "R\t%s\t%d\t%.0f\t%.0f\t%s\t%s\t%d\t%d\tlive\n",state,active,num(kv["started"]),num(kv["updated"]),clean(kv["scope"]==""?"default":kv["scope"]),clean(phase),completed,sum
+        for(i=1;i<=4;i++) {
+            w=names[i];if(!seen[w])continue
+            print "W",w,labels[w],profiles[w],count[w]+0,total[w]+0,verdict[w,"ok"]+0,verdict[w,"warn"]+0,verdict[w,"fail"]+0,clean(active&&phase==w?current[w]:""),clean(target[w]),clean(lists[w,"greens"]),clean(lists[w,"warns"]),clean(winner[w])
+        }
+        for(i=1;i<=na;i++){key=order[i];print "A",kind[key],clean(dest[key]),applied[key]}
+    }' "$@" || return 1
+    if [ -s "$dir/coverage.tsv" ]; then
+        _supersweep_rkn_domain_winners "$dir/coverage.tsv" | awk -F '\t' 'BEGIN{OFS="\t"} {gsub(/[[:cntrl:]]/," ",$1);print "D",$1,$3==2?"-":$2,$3==0?"ok":$3==1?"warn":"fail"}'
+    fi
+}
+
+supersweep_report_save() (
+    local file="$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv"
+    [ -s "$Z2R_SUPERSWEEP_DIR/status" ] || return 0
+    umask 077
+    mkdir -p "$Z2R_SUPERSWEEP_ARCHIVE_DIR" || return 1
+    _Z2R_SS_REPORT_FINAL=1 supersweep_report_tsv > "$file.tmp.$$" && mv -f "$file.tmp.$$" "$file"
+)
+
+supersweep_report_cli() {
+    local kind a b c d e f g h i j k l m title
+    while IFS=$'\t' read -r kind a b c d e f g h i j k l m; do
+        case "$kind" in
+            R)
+                case "$a" in idle) title='ещё не запускался' ;; starting) title='подготовка' ;; running) title='выполняется' ;; applying) title='применение результатов' ;; done) title='завершён' ;; cancelled) title='отменён' ;; *) title='прерван (процесс не работает)' ;; esac
+                printf 'Суперавтопрогон: %s\nОбласть: %s\nВсего: %s/%s проверок\n' "$title" "$e" "$g" "$h"
+                if [ "$c" != 0 ]; then
+                    printf 'Начало: '; date -d "@$c" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || printf '%s (Unix)\n' "$c"
+                    printf 'Обновлено: '; date -d "@$d" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || printf '%s (Unix)\n' "$d"
+                fi
+                [ "$f" = '-' ] || printf 'Текущая фаза: %s\n' "$f"
+                [ "$i" != saved ] || printf 'Показан сохранённый результат последнего прогона.\n'
+                ;;
+            W)
+                printf '\n%s (профиль %s): %s/%s; зелёных %s, жёлтых %s, красных %s\n' "$b" "$c" "$d" "$e" "$f" "$g" "$h"
+                [ "$i" = '-' ] || printf '  Сейчас: стратегия %s, цель %s\n' "$i" "$j"
+                [ "$k" = '-' ] || printf '  Зелёные стратегии: %s\n' "$k"
+                [ "$l" = '-' ] || printf '  Жёлтые стратегии: %s (не применяются автоматически)\n' "$l"
+                ;;
+            A) [ "$a" != profile ] || printf 'Применено: профиль %s, стратегия %s\n' "$b" "$c"
+                [ "$a" != domain ] || printf 'Применено: домен %s, стратегия %s\n' "$b" "$c" ;;
+            D) printf 'РКН %s: %s, кандидат %s\n' "$a" "$c" "$b" ;;
+        esac
+    done < <(supersweep_report_tsv)
+}
+
+supersweep_status_menu() {
+    local answer
+    while :; do
+        [ ! -t 0 ] || clear -x
+        supersweep_report_cli
+        [ -t 0 ] || return 0
+        answer=""
+        read -re -p 'Enter — обновить, 0 — назад: ' answer || return 0
+        [ "$answer" != 0 ] || return 0
+    done
+}
+
+supersweep_report_json() {
+    local report
+    report="$(supersweep_report_tsv)" || return 1
+    case "$report" in R$'\t'*) ;; *) return 1 ;; esac
+    printf '%s\n' "$report" | awk -F '\t' '
+    function q(s, i,c,out) {
+        if (s=="-") s=""
+        out="\""
+        for (i=1;i<=length(s);i++) {
+            c=substr(s,i,1)
+            if (c=="\\") out=out "\\\\"
+            else if (c=="\"") out=out "\\\""
+            else if (c ~ /[[:cntrl:]]/) out=out " "
+            else out=out c
+        }
+        return out "\""
+    }
+    function n(s) {return s ~ /^[0-9]+$/ ? sprintf("%.0f",s+0) : "0"}
+    BEGIN {ws=as=ds=""; workers=applied=domains=""}
+    $1=="R" {
+        root="{\"available\":" ($10=="none"?"false":"true") ",\"state\":" q($2) ",\"active\":" ($3==1?"true":"false") ",\"started\":" n($4) ",\"updated\":" n($5) ",\"scope\":" q($6) ",\"phase\":" q($7) ",\"completed\":" n($8) ",\"total\":" n($9) ",\"source\":" q($10)
+    }
+    $1=="W" {
+        workers=workers ws "{\"name\":" q($2) ",\"label\":" q($3) ",\"profile\":" n($4) ",\"completed\":" n($5) ",\"total\":" n($6) ",\"ok\":" n($7) ",\"warn\":" n($8) ",\"fail\":" n($9) ",\"current_strategy\":" ($10=="-"?"null":n($10)) ",\"current_target\":" q($11) ",\"greens\":" q($12) ",\"warns\":" q($13) ",\"applied\":" q($14) "}"; ws=","
+    }
+    $1=="A" {applied=applied as "{\"kind\":" q($2) ",\"target\":" q($3) ",\"strategy\":" n($4) "}"; as=","; if($2=="domain") da[$3]=$4}
+    $1=="D" {domains=domains ds "{\"domain\":" q($2) ",\"best_strategy\":" ($3=="-"?"null":n($3)) ",\"verdict\":" q($4) ",\"applied\":" ($2 in da?n(da[$2]):"null") "}"; ds=","}
+    END {print root ",\"workers\":[" workers "],\"applied\":[" applied "],\"domains\":[" domains "]}"}'
+}
+
 supersweep_dir() {
     printf '%s\n' "$Z2R_SUPERSWEEP_DIR"
 }
@@ -601,6 +750,7 @@ _supersweep_status_write() {
     local dir="$Z2R_SUPERSWEEP_DIR"
     {
         printf 'state=%s\n' "$1"
+        printf 'scope=%s\n' "${ORCH_ACTIVE_SCOPE:-default}"
         printf 'started=%s\n' "$2"
         printf 'updated=%s\n' "$(date +%s)"
         printf 'tls_pref=%s\n' "$3"
@@ -776,6 +926,7 @@ _supersweep_cleanup() {
             return 1
         }
     fi
+    supersweep_report_save || echo 'Не удалось сохранить последний отчёт суперавтопрогона.' >&2
     rm -f "${Z2R_SUPERSWEEP_DIR}.lock/pid"
     rmdir "${Z2R_SUPERSWEEP_DIR}.lock" 2>/dev/null || true
 }
@@ -796,6 +947,7 @@ supersweep_run() (
 
 _supersweep_run() {
     local tls_pref="$1" pause_sec="$2" ds_pause="$3" rkn_pause="$4" rkn_par="$5"
+    printf '%s\n' "${BASHPID:-$$}" > "$Z2R_SUPERSWEEP_DIR.lock/pid" || return 1
     shift 5
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
@@ -840,6 +992,7 @@ _supersweep_run() {
     if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
         mkdir -p "${dir}/probe" || return 1
     fi
+    _supersweep_status_write starting "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
 
     local gv_domain gv_url
     gv_domain="$(get_yt_cluster_domain 2>/dev/null || echo 'rr2---sn-4g5ednly.googlevideo.com')"
@@ -1128,6 +1281,7 @@ _supersweep_run() {
                     # Воркер умер до применения — применить здесь.
                     old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
                     if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
+                        printf 'profile\t%s\t%s\n' "$pkey" "$best" >> "${dir}/applied.tsv"
                         echo -e "   ${Fgreen}Применена стратегия ${best}${plain} (${best_short})"
                         applied_any=1
                         profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"

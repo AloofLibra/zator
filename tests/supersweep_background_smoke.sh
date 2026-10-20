@@ -157,6 +157,15 @@ for ((i=0; i<1800; i++)); do
 done
 [ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ] || { cat "$Z2R_SUPERSWEEP_DIR.log"; exit 1; }
 grep -q '^state=done$' "$Z2R_SUPERSWEEP_DIR/status" || { cat "$Z2R_SUPERSWEEP_DIR.log"; exit 1; }
+[ -s "$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv" ] || { echo 'FAIL: completed run did not persist its report' >&2; exit 1; }
+supersweep_report_json > "$TMP/completed-report.json"
+python3 - "$TMP/completed-report.json" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1]))
+assert r['state']=='done' and not r['active'] and r['scope']=='mark:5'
+assert r['completed']==r['total'] and len(r['workers'])==4
+assert {a['target'] for a in r['applied'] if a['kind']=='profile'}=={'1','2','3','4'}
+PY
 [ "$(wc -l < "$TMP/nfq.pids")" = 4 ]
 grep -q -- '--local-port 62000-62999' "$TMP/network.args"
 grep -q -- '-D OUTPUT' "$TMP/iptables.args"
@@ -194,6 +203,8 @@ done
 grep -q '^state=cancelled$' "$Z2R_SUPERSWEEP_DIR/status"
 grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE"
 [ ! -s "$Z2R_SUPERSWEEP_DIR/applied.tsv" ]
+rm -rf "$Z2R_SUPERSWEEP_DIR"
+supersweep_report_json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["state"]=="cancelled" and r["source"]=="saved" and not r["active"] and r["applied"]==[]'
 # TERM targets the exact PID advertised to callers, not an inferred worker PID.
 : > "$TMP/network.args"
 cp "$ORCH_LOCK_FILE" "$TMP/term.global.before"
@@ -234,5 +245,7 @@ done
 ! kill -0 "$worker_pid" 2>/dev/null
 cmp "$TMP/term.global.before" "$ORCH_LOCK_FILE"
 cmp "$TMP/term.scope.before" "$ORCH_DIR/scopes/mark_5.tsv"
+rm -rf "$Z2R_SUPERSWEEP_DIR"
+supersweep_report_json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["state"]=="interrupted" and r["source"]=="saved" and not r["active"] and r["applied"]==[]'
 [ "$regression_failed" = 0 ]
 echo 'supersweep background smoke ok'

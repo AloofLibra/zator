@@ -44,6 +44,9 @@ case "${REQUEST_METHOD:-GET}" in
       recommendations)
         api_recommendations_get
         ;;
+      supersweep)
+        api_supersweep_get
+        ;;
       update_check)
         api_update_check
         ;;

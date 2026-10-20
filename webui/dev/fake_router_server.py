@@ -1635,6 +1635,11 @@ class FakeRouterState:
         self.simulate_error = set(simulate_error or [])
         self.provider = provider
         self.recommendations_status = "ready"
+        self.supersweep_report = {
+            "available": False, "state": "idle", "active": False, "source": "none",
+            "started": 0, "updated": 0, "scope": "default", "phase": "",
+            "completed": 0, "total": 0, "workers": [], "applied": [], "domains": [],
+        }
         self.rst_guard_lua = True
         self.backups = []
 
@@ -3076,6 +3081,8 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             with self.state.lock:
                 if setting == "recommendations":
                     self._send_json(self.state.build_recommendations())
+                elif setting == "supersweep":
+                    self._send_json(self.state.supersweep_report)
                 elif setting == "wg_blob":
                     self._log("GET {0} | wg_blob settings".format(parsed.path))
                     self._send_json(self.state.build_wg_blob_settings())

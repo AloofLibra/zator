@@ -532,6 +532,51 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 Проверки: `node scripts/check-recommendations.mjs` из `webui-src/` и
 `python webui-src/scripts/check-recommendations.py` из корня.
 
+### Суперавтопрогон — отдельный read-only GET
+
+`GET /cgi-bin/settings.cgi?setting=supersweep` → `api_supersweep_get`.
+Ответ `200 OK`, `Cache-Control: no-store`. Не входит в агрегированный `state.cgi`,
+читается только панелью на странице стратегий. Не запускает/отменяет прогон,
+не делает сетевых проб, не меняет конфиг, локи или службы.
+
+Базовая форма ответа при отсутствии прогонов:
+
+```json
+{
+  "available": false, "state": "idle", "active": false, "source": "none",
+  "started": 0, "updated": 0, "scope": "default", "phase": "",
+  "completed": 0, "total": 0, "workers": [], "applied": [], "domains": []
+}
+```
+
+- `state`: `idle | starting | running | applying | done | cancelled | interrupted`.
+  `active` означает живой процесс незавершённого прогона; оставшийся статус
+  `running` без владельца показывается как `interrupted`, не как работающий.
+- `source`: `none | live | saved`. `live` — runtime-файлы, включая завершённый
+  прогон; `saved` — атомарный `last-report.tsv` после утраты runtime-каталога.
+- `started`, `updated` — Unix seconds из статуса. `scope` — область **этого
+  прогона**, не выбранный сейчас фильтр групп; endpoint показывает общий последний
+  прогон. `phase` — `yt | gv | ds | rkn` или пустая строка.
+- `completed/total` — число проверок, для РКН это стратегии × домены, не число
+  раундов. Полностью записанные строки прогресса суммируются по воркерам.
+- `workers[]`: `name`, `label`, `profile` (number), `completed`, `total`, `ok`,
+  `warn`, `fail` (numbers), `current_strategy` (number|null), `current_target`
+  (string), `greens`, `warns`, `applied` (строки номеров через пробел / пустая).
+  Списки зелёных/жёлтых вариантов публикуются по завершении соответствующей фазы.
+- `applied[]`: `{kind:"profile"|"domain", target:string, strategy:number}` — только
+  реально зафиксированное применение в этом прогоне. Не вычисляется из `best`
+  и не отражает последующих ручных изменений локов.
+- `domains[]`: `{domain:string, best_strategy:number|null,
+  verdict:"ok"|"warn"|"fail", applied:number|null}` — наблюдавшиеся домены РКН.
+  Найденный кандидат и применённый победитель — разные поля; при отмене или
+  жёлтом результате кандидат может быть найден, но не применён.
+- Недоступная библиотека Core: `503`; ошибка чтения отчёта: `500`, стандартный
+  `{error:...}`. Панель сохраняет предыдущие данные, явно помечая их устаревшими.
+
+**Dev:** fake-router по умолчанию возвращает `idle`; объект
+`FakeRouterState.supersweep_report` доступен для тестовых сценариев без запуска
+настоящего nfqws2 или изменения файлов `/opt`.
+
 ### POST — применение настроек
 
 Тело: `setting=<...>&value=<...>` (для портов/провайдера — свои ключи, см. ниже).

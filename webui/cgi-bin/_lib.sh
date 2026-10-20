@@ -39,6 +39,17 @@ find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{
 [ -f "$LIB_DIR/recommendations.sh" ] && . "$LIB_DIR/recommendations.sh"
 [ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
 [ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
+[ -f "$LIB_DIR/supersweep.sh" ] && . "$LIB_DIR/supersweep.sh"
+
+api_supersweep_get() {
+  local body
+  if ! type supersweep_report_json >/dev/null 2>&1; then
+    send_error '503 Service Unavailable' 'Для просмотра суперавтопрогона обновите Core zator.'
+  fi
+  body="$(supersweep_report_json)" || { send_error '500 Internal Server Error' 'Не удалось прочитать отчёт суперавтопрогона.'; }
+  printf 'Cache-Control: no-store\r\n'
+  send_json '200 OK' "$body"
+}
 
 telemetry_notify() {
   type send_stats >/dev/null 2>&1 && send_stats || true
