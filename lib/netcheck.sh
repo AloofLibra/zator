@@ -134,7 +134,23 @@ z2r_tls_probe_download() {
 }
 
 z2r_tls_field() {
-    printf '%s\n' "$1" | cut -d'|' -f"$2"
+    local line rest field n
+    # Callers request one positive field number; delimiter-free lines pass through.
+    [[ "$2" =~ ^0*[1-9][0-9]*$ ]] || return 1
+    while IFS= read -r line; do
+        rest="$line"; n=$((10#$2))
+        case "$line" in
+            *'|'*)
+                while [ "$n" -gt 1 ]; do
+                    case "$rest" in *'|'*) rest="${rest#*|}" ;; *) rest=""; break ;; esac
+                    n=$((n - 1))
+                done
+                field="${rest%%|*}"
+                ;;
+            *) field="$line" ;;
+        esac
+        printf '%s\n' "$field"
+    done <<< "$1"
 }
 
 z2r_tls_code_ok() {
@@ -144,21 +160,27 @@ z2r_tls_code_ok() {
     esac
 }
 
+# Optional $3 names a caller variable; omit it for the original stdout API.
 z2r_tls_version_state() {
-    local rc="$1" code="$2"
-    if [ "$code" != "000" ]; then
-        if z2r_tls_code_ok "$code"; then echo ok; else echo http; fi
-        return
+    local _z2r_rc="$1" _z2r_code="$2" _z2r_state
+    if [ "$#" -gt 2 ]; then
+        [[ "$3" =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ ]] || return 1
     fi
-    case "$rc" in
-        X) echo aborted ;;
-        6) echo dns ;;
-        28) echo timeout ;;
-        7) echo conn ;;
-        4) echo unsupported ;;
-        35|16|53|54|56|60|77) echo tls ;;
-        *) echo none ;;
-    esac
+    if [ "$_z2r_code" != "000" ]; then
+        if z2r_tls_code_ok "$_z2r_code"; then _z2r_state=ok; else _z2r_state=http; fi
+    else
+        case "$_z2r_rc" in
+            X) _z2r_state=aborted ;;
+            6) _z2r_state=dns ;;
+            28) _z2r_state=timeout ;;
+            7) _z2r_state=conn ;;
+            4) _z2r_state=unsupported ;;
+            35|16|53|54|56|60|77) _z2r_state=tls ;;
+            *) _z2r_state=none ;;
+        esac
+    fi
+    if [ "$#" -gt 2 ]; then printf -v "$3" '%s' "$_z2r_state"
+    else printf '%s\n' "$_z2r_state"; fi
 }
 
 # 206/2xx/3xx + rc=0 и любые байты > 0 — тело дошло целиком (страница может
@@ -177,12 +199,40 @@ z2r_tls_download_state() {
     fi
 }
 
+# Initialize in the owning shell before resolving intervals in $(...).
+z2r_poll_sleep_init() {
+    case "${Z2R_POLL_FRACTIONAL:-}" in
+        0|1) ;;
+        *) if sleep 0.001 2>/dev/null; then Z2R_POLL_FRACTIONAL=1; else Z2R_POLL_FRACTIONAL=0; fi ;;
+    esac
+    export Z2R_POLL_FRACTIONAL
+}
+
+z2r_poll_interval() {
+    local requested="$1" whole fraction
+    if ! [[ "$requested" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
+        printf '1\n'
+    elif [ "${Z2R_POLL_FRACTIONAL:-0}" = 1 ]; then
+        printf '%s\n' "$requested"
+    else
+        whole="${requested%%.*}"; fraction="${requested#*.}"
+        [ "$fraction" != "$requested" ] || fraction=0
+        whole=$((10#${whole:-0}))
+        case "$fraction" in *[1-9]*) whole=$((whole + 1)) ;; esac
+        [ "$whole" -gt 0 ] || whole=1
+        printf '%s\n' "$whole"
+    fi
+}
+
 z2r_tls_poll_sleep() {
-    sleep 0.3 2>/dev/null || sleep 1
+    sleep "${Z2R_TLS_POLL_INTERVAL:-1}"
 }
 
 z2r_tls_check_target() (
-    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0 tls_gap pids
+    local url="$1" tmp v12 v13 dl dl1 dl2 p12 p13 d1_pid d2_pid peek t0 tls_gap pids
+    local rc code rc13 code13 size time unused Z2R_TLS_POLL_INTERVAL
+    z2r_poll_sleep_init
+    Z2R_TLS_POLL_INTERVAL="$(z2r_poll_interval 0.3)"
     tmp="$(z2r_tls_tmpdir)" || return 1
     trap 'trap "" INT TERM HUP; pids="$(jobs -pr)"; if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi; rm -rf "$tmp"' EXIT
     trap 'exit 129' HUP
@@ -209,14 +259,16 @@ z2r_tls_check_target() (
         if [ -z "${Z2R_TLS_WAIT_BOTH:-}" ]; then
             if [ -s "$tmp/v12" ] && [ ! -s "$tmp/v13" ]; then
                 peek="$(cat "$tmp/v12" 2>/dev/null)" || peek=""
-                if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
+                IFS='|' read -r rc code unused <<< "$peek"
+                if z2r_tls_code_ok "$code"; then
                     kill "$p13" 2>/dev/null || true
                     wait "$p13" 2>/dev/null || true
                     break
                 fi
             elif [ -s "$tmp/v13" ] && [ ! -s "$tmp/v12" ]; then
                 peek="$(cat "$tmp/v13" 2>/dev/null)" || peek=""
-                if z2r_tls_code_ok "$(z2r_tls_field "$peek" 2)"; then
+                IFS='|' read -r rc code unused <<< "$peek"
+                if z2r_tls_code_ok "$code"; then
                     kill "$p12" 2>/dev/null || true
                     wait "$p12" 2>/dev/null || true
                     break
@@ -235,22 +287,26 @@ z2r_tls_check_target() (
     [ -n "$v12" ] || v12="X|000|-|-|-"
     [ -n "$v13" ] || v13="X|000|-|-|-"
     dl="skip"
-    if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
+    IFS='|' read -r rc code unused <<< "$v12"
+    IFS='|' read -r rc13 code13 unused <<< "$v13"
+    if z2r_tls_code_ok "$code" || z2r_tls_code_ok "$code13"; then
         z2r_tls_probe_download "$url" >"$tmp/d1" 2>/dev/null </dev/null &
         d1_pid=$!
-        z2r_tls_probe_download "$url" >"$tmp/d2" 2>/dev/null </dev/null &
-        d2_pid=$!
-        wait "$d1_pid" "$d2_pid" 2>/dev/null || true
+        wait "$d1_pid" 2>/dev/null || true
         dl1="$(cat "$tmp/d1" 2>/dev/null)" || dl1=""
-        dl2="$(cat "$tmp/d2" 2>/dev/null)" || dl2=""
         [ -n "$dl1" ] || dl1="28|000|0|-"
-        [ -n "$dl2" ] || dl2="28|000|0|-"
         dl="$dl1"
-        if [ "$(z2r_tls_download_state "$(z2r_tls_field "$dl1" 1)" "$(z2r_tls_field "$dl1" 2)" "$(z2r_tls_field "$dl1" 3)")" != "ok" ] \
-            && [ "$(z2r_tls_download_state "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" "$(z2r_tls_field "$dl2" 3)")" = "ok" ]; then
-            dl="$(printf '%s|%s|%s|%s|retry' \
-                "$(z2r_tls_field "$dl2" 1)" "$(z2r_tls_field "$dl2" 2)" \
-                "$(z2r_tls_field "$dl2" 3)" "$(z2r_tls_field "$dl2" 4)")"
+        IFS='|' read -r rc code size time unused <<< "$dl1"
+        if [ "$(z2r_tls_download_state "$rc" "$code" "$size")" != "ok" ]; then
+            z2r_tls_probe_download "$url" >"$tmp/d2" 2>/dev/null </dev/null &
+            d2_pid=$!
+            wait "$d1_pid" "$d2_pid" 2>/dev/null || true
+            dl2="$(cat "$tmp/d2" 2>/dev/null)" || dl2=""
+            [ -n "$dl2" ] || dl2="28|000|0|-"
+            IFS='|' read -r rc code size time unused <<< "$dl2"
+            if [ "$(z2r_tls_download_state "$rc" "$code" "$size")" = "ok" ]; then
+                dl="$rc|$code|$size|$time|retry"
+            fi
         fi
     fi
     printf '%s\n%s\n%s\n' "$v12" "$v13" "$dl"
@@ -260,10 +316,9 @@ z2r_tls_check_target() (
 # в CLI факт красится жёлтым/зелёным, подсказка — красным (как в эталонном выводе).
 z2r_tls_version_parts() {
     local ver="$1" raw="$2"
-    local rc code proto time state why fact hint
-    rc="$(z2r_tls_field "$raw" 1)"; code="$(z2r_tls_field "$raw" 2)"
-    proto="$(z2r_tls_field "$raw" 3)"; time="$(z2r_tls_field "$raw" 4)"
-    state="$(z2r_tls_version_state "$rc" "$code")"
+    local rc code proto time state why fact hint unused
+    IFS='|' read -r rc code proto time unused <<< "$raw"
+    z2r_tls_version_state "$rc" "$code" state
     if [ "$ver" = "1.2" ]; then
         why="важно для ТВ и т.п."
     else
@@ -295,19 +350,18 @@ z2r_tls_version_text() {
 }
 
 z2r_tls_download_parts() {
-    local raw="$1" rc code size time state fact hint
+    local raw="$1" rc code size time state fact hint retry unused
     if [ "$raw" = "skip" ]; then
         printf '|\n'
         return
     fi
-    rc="$(z2r_tls_field "$raw" 1)"; code="$(z2r_tls_field "$raw" 2)"
-    size="$(z2r_tls_field "$raw" 3)"; time="$(z2r_tls_field "$raw" 4)"
+    IFS='|' read -r rc code size time retry unused <<< "$raw"
     state="$(z2r_tls_download_state "$rc" "$code" "$size")"
     hint="Проверьте доступность вручную. Возможно ошибка теста."
     case "$state" in
         ok)
             fact="Данные: получено $size байт за $time с (код $code)"
-            if [ "$(z2r_tls_field "$raw" 5)" = "retry" ]; then
+            if [ "$retry" = "retry" ]; then
                 fact="Данные: получено $size байт за $time с (код $code) — со второй попытки, первая оборвалась"
             fi
             hint=""
@@ -344,11 +398,11 @@ z2r_tls_download_text() {
 
 z2r_tls_target_verdict() {
     local v12="$1" v13="$2" dl="$3"
-    local rc12 code12 rc13 code13 s12 s13 t12 t13 best dlrc dlcode dlsize dstate reason
-    rc12="$(z2r_tls_field "$v12" 1)"; code12="$(z2r_tls_field "$v12" 2)"
-    rc13="$(z2r_tls_field "$v13" 1)"; code13="$(z2r_tls_field "$v13" 2)"
-    s12="$(z2r_tls_version_state "$rc12" "$code12")"
-    s13="$(z2r_tls_version_state "$rc13" "$code13")"
+    local rc12 code12 rc13 code13 s12 s13 t12 t13 best dlrc dlcode dlsize dstate reason dltime retry unused
+    IFS='|' read -r rc12 code12 unused <<< "$v12"
+    IFS='|' read -r rc13 code13 unused <<< "$v13"
+    z2r_tls_version_state "$rc12" "$code12" s12
+    z2r_tls_version_state "$rc13" "$code13" s13
     case "$s12" in ok|http) t12=1 ;; *) t12=0 ;; esac
     case "$s13" in ok|http) t13=1 ;; *) t13=0 ;; esac
     if [ "$t12" -eq 0 ] && [ "$t13" -eq 0 ]; then
@@ -370,7 +424,7 @@ z2r_tls_target_verdict() {
         return
     fi
     if [ "$dl" != "skip" ]; then
-        dlrc="$(z2r_tls_field "$dl" 1)"; dlcode="$(z2r_tls_field "$dl" 2)"; dlsize="$(z2r_tls_field "$dl" 3)"
+        IFS='|' read -r dlrc dlcode dlsize dltime retry unused <<< "$dl"
         dstate="$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")"
         if [ "$dstate" = "cut" ]; then
             printf 'fail|TLS работает, но поток данных срезается после %s байт - похоже на блокировку «16кб». Проверьте доступность вручную. Возможно ошибка теста.' "$dlsize"
@@ -380,7 +434,7 @@ z2r_tls_target_verdict() {
             printf 'fail|TLS работает, но данные не приходят — страница не скачивается. Проверьте доступность вручную. Возможно ошибка теста.'
             return
         fi
-        if [ "$(z2r_tls_field "$dl" 5)" = "retry" ]; then
+        if [ "$retry" = "retry" ]; then
             printf 'warn|Поток иногда срезается — повторное соединение прошло, страница может открываться не с первого раза. Проверьте доступность вручную.'
             return
         fi
@@ -399,12 +453,12 @@ z2r_tls_target_verdict() {
 # TLS (докачка по-прежнему обязательна), иначе жёлтая с пояснением.
 z2r_tls_short_result() {
     local v12="$1" v13="$2" dl="$3" pref="${4:-any}"
-    local rc12 code12 rc13 code13 s12 s13 t12 t13 q12 q13 best
-    local dlrc dlcode dlsize dltime dstate short
-    rc12="$(z2r_tls_field "$v12" 1)"; code12="$(z2r_tls_field "$v12" 2)"
-    rc13="$(z2r_tls_field "$v13" 1)"; code13="$(z2r_tls_field "$v13" 2)"
-    s12="$(z2r_tls_version_state "$rc12" "$code12")"
-    s13="$(z2r_tls_version_state "$rc13" "$code13")"
+    local rc12 code12 rc13 code13 s12 s13 t12 t13 q12 q13 best unused
+    local dlrc dlcode dlsize dltime dstate short retry
+    IFS='|' read -r rc12 code12 unused <<< "$v12"
+    IFS='|' read -r rc13 code13 unused <<< "$v13"
+    z2r_tls_version_state "$rc12" "$code12" s12
+    z2r_tls_version_state "$rc13" "$code13" s13
     case "$s12" in ok|http) t12=1 ;; *) t12=0 ;; esac
     case "$s13" in ok|http) t13=1 ;; *) t13=0 ;; esac
     q12=0; q13=0
@@ -457,15 +511,14 @@ z2r_tls_short_result() {
         return
     fi
     if [ "$dl" != "skip" ]; then
-        dlrc="$(z2r_tls_field "$dl" 1)"; dlcode="$(z2r_tls_field "$dl" 2)"
-        dlsize="$(z2r_tls_field "$dl" 3)"; dltime="$(z2r_tls_field "$dl" 4)"
+        IFS='|' read -r dlrc dlcode dlsize dltime retry unused <<< "$dl"
         dstate="$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")"
         case "$dstate" in
             cut) printf 'fail|срез после %s байт\n' "$dlsize"; return ;;
             zero) printf 'fail|тело не приходит\n'; return ;;
             fail) printf 'fail|докачка не началась\n'; return ;;
             ok)
-                if [ "$(z2r_tls_field "$dl" 5)" = "retry" ]; then
+                if [ "$retry" = "retry" ]; then
                     printf 'warn|срез нестабильный, повтор прошёл\n'
                     return
                 fi
@@ -512,25 +565,28 @@ z2r_tls_short_result() {
 # (ok|http|fail|aborted — состояние выбирает цвет вызывающий).
 # Для ответивших версий добавляем время ответа, как в выводе пункта 01.
 z2r_tls_version_badge() {
-    local label="$1" raw="$2" rc code state time int frac btime
-    rc="$(z2r_tls_field "$raw" 1)"
-    code="$(z2r_tls_field "$raw" 2)"
-    state="$(z2r_tls_version_state "$rc" "$code")"
-    btime=""
-    time="$(z2r_tls_field "$raw" 4)"
-    case "$time" in
+    local _z2r_badge_label="$1" _z2r_badge_raw="$2" _z2r_badge_rc _z2r_badge_code _z2r_badge_state
+    local _z2r_badge_time _z2r_badge_int _z2r_badge_frac _z2r_badge_btime="" _z2r_badge_proto _z2r_badge_unused _z2r_badge_text
+    if [ "$#" -gt 2 ]; then
+        [[ "$3" =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ ]] || return 1
+    fi
+    IFS='|' read -r _z2r_badge_rc _z2r_badge_code _z2r_badge_proto _z2r_badge_time _z2r_badge_unused <<< "$_z2r_badge_raw"
+    z2r_tls_version_state "$_z2r_badge_rc" "$_z2r_badge_code" _z2r_badge_state
+    case "$_z2r_badge_time" in
         [0-9]*)
-            int="${time%.*}"; frac="${time#*.}"
-            [ "$frac" = "$time" ] && frac=""
-            btime="${int}.${frac:0:1}с"
+            _z2r_badge_int="${_z2r_badge_time%.*}"; _z2r_badge_frac="${_z2r_badge_time#*.}"
+            [ "$_z2r_badge_frac" = "$_z2r_badge_time" ] && _z2r_badge_frac=""
+            _z2r_badge_btime="${_z2r_badge_int}.${_z2r_badge_frac:0:1}с"
             ;;
     esac
-    case "$state" in
-        ok) printf '%s OK %s|ok\n' "$label" "$btime" ;;
-        http) printf '%s %s %s|http\n' "$label" "$code" "$btime" ;;
-        aborted) printf '%s -|aborted\n' "$label" ;;
-        *) printf '%s FAIL|fail\n' "$label" ;;
+    case "$_z2r_badge_state" in
+        ok) _z2r_badge_text="$_z2r_badge_label OK $_z2r_badge_btime|ok" ;;
+        http) _z2r_badge_text="$_z2r_badge_label $_z2r_badge_code $_z2r_badge_btime|http" ;;
+        aborted) _z2r_badge_text="$_z2r_badge_label -|aborted" ;;
+        *) _z2r_badge_text="$_z2r_badge_label FAIL|fail" ;;
     esac
+    if [ "$#" -gt 2 ]; then printf -v "$3" '%s' "$_z2r_badge_text"
+    else printf '%s\n' "$_z2r_badge_text"; fi
 }
 
 # --- DNS-антиспуф (профиль 10): проверка резолва через nslookup/dig ---
@@ -756,12 +812,16 @@ z2r_dns_check_print() {
 
 check_access() {
     local TestURL="$1" out v12 v13 dl parts fact hint c12 c13 cd verdict vcolor
+    local rc12 code12 rc13 code13 dlrc dlcode dlsize unused
     out="$(z2r_tls_check_target "$TestURL")"
     v12="$(printf '%s\n' "$out" | sed -n 1p)"
     v13="$(printf '%s\n' "$out" | sed -n 2p)"
     dl="$(printf '%s\n' "$out" | sed -n 3p)"
 
-    case "$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")" in
+    IFS='|' read -r rc12 code12 unused <<< "$v12"
+    IFS='|' read -r rc13 code13 unused <<< "$v13"
+    z2r_tls_version_state "$rc12" "$code12" c12
+    case "$c12" in
         ok|http) c12="$green" ;;
         aborted) c12="${plain}" ;;
         *) c12="$yellow" ;;
@@ -774,7 +834,8 @@ check_access() {
         echo -e "${c12}${fact}${plain}"
     fi
 
-    case "$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")" in
+    z2r_tls_version_state "$rc13" "$code13" c13
+    case "$c13" in
         ok|http) c13="$green" ;;
         aborted) c13="${plain}" ;;
         *) c13="$yellow" ;;
@@ -788,7 +849,8 @@ check_access() {
     fi
 
     if [ "$dl" != "skip" ]; then
-        case "$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "$(z2r_tls_field "$dl" 2)" "$(z2r_tls_field "$dl" 3)")" in
+        IFS='|' read -r dlrc dlcode dlsize unused <<< "$dl"
+        case "$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")" in
             ok) cd="$green" ;;
             *) cd="$yellow" ;;
         esac
