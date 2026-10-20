@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# Из develop: отдельная NFQUEUE, зарезервированные curl-порты и минимальный
+# план nfqws2. Без adaptive-controller, телеметрийных патчей и фонового обучения.
+
+supersweep_probe_config() {
+    local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" f
+    case "$profile" in 1|2|3|4) ;; *) return 1 ;; esac
+    # Пути попадут в Lua-строку и @config: не интерпретируем shell/Lua-код.
+    case "$dir" in /*) ;; *) return 1 ;; esac
+    case "$dir" in *[!a-zA-Z0-9_./-]*) return 1 ;; esac
+    mkdir -p "$dir" || return 1
+    # Lua после drop privileges читает только приватные локи/копии настроек.
+    chmod 755 "$Z2R_SUPERSWEEP_DIR" "$dir" || return 1
+    sed -e "s#^local LOCKED_PATH = .*#local LOCKED_PATH = \"$dir/locked.tsv\"#" \
+        -e "s#^local LOCKED_MANUAL_PATH = .*#local LOCKED_MANUAL_PATH = \"$dir/locked.manual.tsv\"#" \
+        "${ZATOR_ROOT:-/opt/zator}/lua/locked.lua" > "$dir/locked.lua" || return 1
+    : > "$dir/locked.tsv"
+    : > "$dir/locked.manual.tsv"
+    for f in blob_override.tsv mode_override.tsv sni_override.tsv clonesize.tsv; do
+        [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
+    done
+    {
+        printf '%s\n' "--qnum=65535" "--fwmark=${DESYNC_MARK:-0x40000000}" \
+            '--uid=65533:65533' \
+            "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-lib.lua" \
+            "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
+            "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
+            "--lua-init=@$dir/locked.lua" \
+            "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
+        # Только blobs, общий шаблон и НУМЕРОВАННЫЕ стратегии нужного
+        # стандартного профиля. Исключения/hostlists и детекторы не нужны:
+        # весь трафик этой очереди — явно выбранная проба нужного профиля.
+        awk -v p="$profile" '
+            /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
+            opts && /^"[[:space:]]*$/ { opts=0 }
+            !opts { next }
+            /^--blob=/ { print; next }
+            /^--template=z2r_tcp_tls_common$/ { common=1; found=1; print; next }
+            common && /^--new/ { common=0 }
+            common && /^--/ { print }
+            $0 == "#Z2R_AUTO_STANDARD_" p "_BEGIN" { block=1; seen=1; next }
+            $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
+            block {
+                if (!header++) {
+                    print "--new\n--filter-tcp=443\n--filter-l7=tls"
+                    print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
+                    print "--out-range=-s34228"
+                    print "--in-range=-s32768 --lua-desync=circular_locked:key=" p
+                }
+                if (/^--import=/) { print; plan=1 }
+                if (/^--lua-desync=/ && /:strategy=[0-9]+/) { print; plan=1 }
+                if (/^--in-range=x$/ || /^--payload=tls_client_hello,discord_ip_discovery$/) print
+            }
+            END { if (!found || !seen || !plan) exit 1 }
+        ' "$cfg" || return 1
+    } > "$dir/nfqws2.conf" || return 1
+    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.conf"
+}
+
+supersweep_probe_stop() {
+    # Сначала убрать маршрутизацию; затем остановить ТОЛЬКО своего ребёнка.
+    if [ "${Z2R_SUPERSWEEP_TRANSPORT_ACTIVE:-0}" = 1 ]; then
+        supersweep_transport_stop || return 1
+        Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=0
+    fi
+    if [ -n "${Z2R_SUPERSWEEP_NFQ_PID:-}" ]; then
+        kill "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
+        wait "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
+        Z2R_SUPERSWEEP_NFQ_PID=""
+    fi
+    unset Z2R_TLS_LOCAL_PORTS
+}
+
+supersweep_probe_healthy() {
+    kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null && supersweep_transport_check || return 1
+    if grep -Eq 'LUA ERROR|desync ERROR' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.log"; then
+        echo 'Ошибка Lua тестового nfqws2: прогон остановлен (см. probe/nfqws2.log).' >&2
+        return 1
+    fi
+}
+
+supersweep_probe_sequence() {
+    local seq
+    seq="$(awk '$1==65535 {print $8; exit}' "${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}")" || return 1
+    case "$seq" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$seq"
+}
+
+supersweep_probe_start() {
+    local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" i=0
+    local binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+    local queue_file="${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}" status key uid rest
+    [ -x "$binary" ] || return 1
+    [ -r "$queue_file" ] || return 1
+    # Никогда не отбирать очередь у другого nfqws2.
+    ! awk '$1==65535 {found=1} END {exit !found}' "$queue_file" || return 1
+    # Свой UID отличает raw-сегменты от основного nfqws2 даже когда
+    # сторонний OUTPUT переписал их DESYNC_MARK.
+    if awk -F: '$3==65533 {found=1} END {exit !found}' /etc/passwd; then
+        echo 'UID 65533 уже занят: фоновый прогон не запущен.' >&2; return 1
+    fi
+    for status in /proc/[0-9]*/status; do
+        [ -r "$status" ] || continue
+        while read -r key uid rest; do
+            [ "$key" = Uid: ] || continue
+            [ "$uid" != 65533 ] || { echo 'UID 65533 уже используется процессом.' >&2; return 1; }
+            break
+        done < "$status" 2>/dev/null || true
+    done
+    supersweep_probe_config "$profile" "$cfg" || return 1
+    "$binary" "@$dir/nfqws2.conf" > "$dir/nfqws2.log" 2>&1 </dev/null &
+    Z2R_SUPERSWEEP_NFQ_PID=$!
+    while [ "$i" -lt 5 ]; do
+        kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || { supersweep_probe_stop; return 1; }
+        awk '$1==65535 {found=1} END {exit !found}' "$queue_file" && break
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ "$i" = 5 ]; then supersweep_probe_stop; return 1; fi
+    # Даже частичная установка правил обязана пройти cleanup.
+    Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
+    if ! supersweep_transport_start; then supersweep_probe_stop; return 1; fi
+    export Z2R_TLS_LOCAL_PORTS=62000-62999
+}
+
+supersweep_background_start() {
+    local cfg="$1" lib="${LIB_DIR:-${BASH_SOURCE[0]%/*}}" dir="$Z2R_SUPERSWEEP_DIR"
+    local job_control=0
+    shift
+    command -v nohup >/dev/null 2>&1 || return 1
+    [ -r "$lib/supersweep_probe.sh" ] && [ -r "$lib/supersweep_transport.sh" ] || return 1
+    (umask 077; mkdir "${dir}.lock") 2>/dev/null || {
+        echo 'Суперавтопрогон уже запущен.' >&2; return 1;
+    }
+    # Старые Entware без setsid: отдельная группа фоновой job, только при
+    # живом tty (set -m на закрытой CGI-pty может зависнуть).
+    if ! command -v setsid >/dev/null 2>&1 && [ -t 0 ]; then
+        case "$-" in *m*) ;; *) set -m; job_control=1 ;; esac
+    fi
+    (
+        trap '' HUP INT QUIT
+        export Z2R_SUPERSWEEP_LOCK_HELD=1 Z2R_SUPERSWEEP_ISOLATED=1
+        export Z2R_SUPERSWEEP_DIR ZATOR_ROOT ZAPRET2_ROOT ORCH_DIR ORCH_LOCK_FILE
+        export ORCH_ACTIVE_SCOPE="${ORCH_ACTIVE_SCOPE:-default}"
+        export Z2R_SUPERSWEEP_ARCHIVE_DIR Z2R_SUPERSWEEP_STATS_URL TELEMETRY_CFG
+        export CONFIG_FILE="$cfg"
+        if command -v setsid >/dev/null 2>&1; then
+            exec nohup setsid bash "$lib/supersweep_probe.sh" --run "$@"
+        fi
+        exec nohup bash "$lib/supersweep_probe.sh" --run "$@"
+    ) > "${dir}.log" 2>&1 </dev/null &
+    local pid=$!
+    [ "$job_control" != 1 ] || set +m
+    printf '%s\n' "$pid" > "${dir}.lock/pid"
+    sleep 1
+    if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "${dir}.lock/pid"
+        rmdir "${dir}.lock" 2>/dev/null || true
+        echo "Фоновый запуск не удался: ${dir}.log" >&2
+        return 1
+    fi
+    echo "Суперавтопрогон запущен в фоне. Лог: ${dir}.log"
+}
+
+if [ "${1:-}" = --run ]; then
+    shift
+    LIB_DIR="${BASH_SOURCE[0]%/*}"
+    telemetry_cfg="${TELEMETRY_CFG:-${ZATOR_ROOT:-/opt/zator}/z2r_lib/telemetry.config}"
+    for lib in config orchestra_state ui netcheck strategies telemetry supersweep supersweep_transport; do
+        source "$LIB_DIR/$lib.sh" || exit 1
+    done
+    CACHE_DIR="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache"
+    TELEMETRY_CFG="$telemetry_cfg"
+    PROVIDER_TXT="$CACHE_DIR/provider.txt"
+    get_config_file() { printf '%s\n' "$CONFIG_FILE"; }
+    # Настройки firewall читаем как данные, не source-им пользовательский config.
+    FWTYPE="$(config_get_var "$CONFIG_FILE" FWTYPE | tr -d '\"\047')"
+    DESYNC_MARK="$(config_get_var "$CONFIG_FILE" DESYNC_MARK | tr -d '\"\047')"
+    DESYNC_MARK_POSTNAT="$(config_get_var "$CONFIG_FILE" DESYNC_MARK_POSTNAT | tr -d '\"\047')"
+    POSTNAT="$(config_get_var "$CONFIG_FILE" POSTNAT | tr -d '\"\047')"
+    POSTNAT_ALL="$(config_get_var "$CONFIG_FILE" POSTNAT_ALL | tr -d '\"\047')"
+    ZAPRET_NFT_TABLE="$(config_get_var "$CONFIG_FILE" ZAPRET_NFT_TABLE | tr -d '\"\047')"
+    FILTER_MARK="$(config_get_var "$CONFIG_FILE" FILTER_MARK | tr -d '\"\047')"
+    CLIENT_SCOPE_MARK_MASK="$(config_get_var "$CONFIG_FILE" CLIENT_SCOPE_MARK_MASK | tr -d '\"\047')"
+    export FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT
+    # This advertised PID owns the probe/worker and waits for their cleanup.
+    # Keep the inherited ignored HUP/INT for detached operation.
+    trap '_supersweep_cleanup' EXIT
+    trap 'exit 143' TERM
+    _supersweep_run "$@"
+    exit $?
+fi
