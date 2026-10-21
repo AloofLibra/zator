@@ -159,6 +159,8 @@ ok "архив: version.env, manifest.tsv, symlink, LF"
 # предустановка «старого» пользователя: изменённые netrogat.txt и TCP_Custom,
 # runtime-состояние, которого нет в архиве
 mkdir -p "$ZATOR_ROOT/lists" "$ZATOR_ROOT/extra_strats" "$ZATOR_ROOT/extra_strats/cache/orchestra" "$ZATOR_ROOT/webui/run"
+mkdir -p "$ZATOR_ROOT/lua"
+printf '%s\n' '-- stale runtime controller' > "$ZATOR_ROOT/lua/locked.lua"
 printf 'user-domain.example\n' > "$ZATOR_ROOT/lists/netrogat.txt"
 printf 'custom.example\n' > "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
 printf 'autohost-runtime\n' > "$ZATOR_ROOT/lists/autohostlist.txt"
@@ -354,6 +356,10 @@ ok "харденинг: tar с ../ и манифест с чужим dest отк
 
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
+[ -f "$ZATOR_ROOT/lua/locked.lua" ] || fail "runtime lua/locked.lua не установлен"
+tr -d '\r' < "$REPO_DIR/orchestra/locked.lua" > "$WORK/expected-locked.lua"
+cmp -s "$WORK/expected-locked.lua" "$ZATOR_ROOT/lua/locked.lua" || fail "runtime locked.lua не совпадает с исходником"
+cmp -s "$ZATOR_ROOT/lua/locked.lua" "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.lua" || fail "runtime и compatibility locked.lua разошлись"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"
 [ -f "$ZATOR_ROOT/.deploy-payload/config.default" ] || fail "payload config.default не разложен"
 [ -f "$ZATOR_ROOT/.deploy-payload/Entware/keenetic-policy.sh" ] || fail "payload keenetic-policy.sh не разложен"
@@ -500,6 +506,7 @@ c_free_kb=$(( c_unpacked_kb + DEPLOY_MARGIN_KB + DEPLOY_SLACK_KB + 300 ))
 TMP_FREE_KB=100 OPT_FREE_KB="$c_free_kb" PATH="$WORK/bin:$PATH" deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 \
   || fail "deploy_from_tar (C) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "режим C: z2r_lib не на месте"
+cmp -s "$WORK/expected-locked.lua" "$ZATOR_ROOT/lua/locked.lua" || fail "режим C: runtime locked.lua не обновлён"
 [ ! -d "$ZATOR_ROOT.old.$$" ] || fail "старый каталог не убран"
 [ ! -d "$ZATOR_ROOT.deploy.new.$$" ] || fail "новый каталог не перенесён"
 grep -q 'user-domain-2.example' "$ZATOR_ROOT/lists/netrogat.txt" || fail "режим C: netrogat.txt перезаписан"

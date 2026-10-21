@@ -98,6 +98,7 @@ end
 function rst_guard_locked(ctx, desync)
     local verdict = rst_guard(ctx, desync)
     if verdict == VERDICT_DROP then
+        circular_locked_passthrough(ctx, desync)
         return verdict
     end
 

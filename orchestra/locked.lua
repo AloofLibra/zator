@@ -1023,12 +1023,22 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   return v
 end
 
+function circular_locked_passthrough(ctx, desync)
+  -- Без orchestrate: не создаём полный план, но запрещаем нативному циклу
+  -- выполнить оставшиеся стратегии. Вложенный план очищаем на месте.
+  if ctx then execution_plan_cancel(ctx) end
+  if desync.plan then plan_clear(desync) end
+  return VERDICT_PASS
+end
+
 function circular_locked(ctx, desync)
-  orchestrate(ctx, desync)
+  if desync.arg and desync.arg.payload and not payload_check(desync) then
+    return circular_locked_passthrough(ctx, desync)
+  end
   local allow_nohost_enabled = desync_allow_nohost(desync)
   if not desync.track and not allow_nohost_enabled then
     DLOG_ERR("circular_locked: conntrack is missing but required")
-    return
+    return circular_locked_passthrough(ctx, desync)
   end
 
   local proto = desync_proto(desync)
@@ -1067,18 +1077,18 @@ function circular_locked(ctx, desync)
   local profile = (host and host ~= "") and host or base_profile
   if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, gate_host) then
     DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..tostring(gate_host))
-    return VERDICT_PASS
+    return circular_locked_passthrough(ctx, desync)
   end
   local exclude_substrings = desync.arg and desync.arg.exclude_substrings
   if exclude_substrings and substring_hostlist_matches_desync(desync, exclude_substrings, gate_host) then
     DLOG("circular_locked: excluded by substring profile="..profile.." host="..tostring(gate_host))
-    return VERDICT_PASS
+    return circular_locked_passthrough(ctx, desync)
   end
   local include_substrings = desync.arg and desync.arg.include_substrings
   if include_substrings and not substring_hostlist_matches_desync(desync, include_substrings, gate_host) then
     DLOG("circular_locked: no substring match profile="..profile.." host="..tostring(gate_host))
-    lua_cutoff(ctx)
-    return VERDICT_PASS
+    if ctx then lua_cutoff(ctx) end
+    return circular_locked_passthrough(ctx, desync)
   end
 
   local hrec
@@ -1091,10 +1101,24 @@ function circular_locked(ctx, desync)
       DLOG("circular_locked: allow_nohost enabled, using local record")
     else
       DLOG("circular_locked: passing with no tampering")
-      return
+      return circular_locked_passthrough(ctx, desync)
     end
   end
 
+  local scope = desync_client_scope(desync)
+  local locked = locked_strategy_for_profile(profile, proto, scope)
+  if (not locked) and profile ~= base_profile then
+    locked = locked_strategy_for_profile(base_profile, proto, scope)
+    if locked then
+      DLOG("circular_locked: fallback lock profile="..base_profile.." for host profile="..profile)
+    end
+  end
+  if locked == 0 then
+    DLOG("circular_locked: profile disabled by lock 0 profile="..profile)
+    return circular_locked_passthrough(ctx, desync)
+  end
+
+  orchestrate(ctx, desync)
   if not hrec.ctstrategy then
     local uniq = {}
     local n = 0
@@ -1124,18 +1148,7 @@ function circular_locked(ctx, desync)
     error("circular_locked: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
   end
 
-  local scope = desync_client_scope(desync)
-  local locked = locked_strategy_for_profile(profile, proto, scope)
-  if (not locked) and profile ~= base_profile then
-    locked = locked_strategy_for_profile(base_profile, proto, scope)
-    if locked then
-      DLOG("circular_locked: fallback lock profile="..base_profile.." for host profile="..profile)
-    end
-  end
-  if locked == 0 then
-    DLOG("circular_locked: profile disabled by lock 0 profile="..profile)
-    return VERDICT_PASS
-  elseif locked and locked >= 1 and locked <= hrec.ctstrategy then
+  if locked and locked >= 1 and locked <= hrec.ctstrategy then
     hrec.nstrategy = locked
     if scope ~= "default" then
       DLOG("circular_locked: locked strategy "..hrec.nstrategy.." scope="..scope.." profile="..profile)

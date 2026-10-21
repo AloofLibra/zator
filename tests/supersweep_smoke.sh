@@ -128,7 +128,7 @@ mkdir -p "$ORCH" "$ROOT" "$ZATOR_ROOT/extra_strats"
 # урезанный конфиг: стратегии 1-5 в шаблоне и во всех блоках (быстрый прогон)
 trim_config() {
   tr -d '\r' < "$REPO_DIR/config.default" \
-    | sed -E '/strategy=(6|7|8|9|[1-3][0-9]|4[0-3])([^0-9]|$)/d' > "$1"
+    | sed -E '/strategy=([6-9]|[1-9][0-9]+)([^0-9]|$)/d' > "$1"
 }
 trim_config "$CFG"
 

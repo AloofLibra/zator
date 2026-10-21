@@ -1651,9 +1651,16 @@ supersweep_menu() {
     echo -e "Обычный прогон переключает рабочие стратегии. Фоновый использует отдельный nfqws2;"
     echo -e "рабочие стратегии меняются только при применении найденного победителя."
     # Ctrl+C на старте отменяет диалог, а не скрипт.
-    answer=""
-    read -re -p "Enter - обычный старт, B - в фоне без переключения рабочих стратегий, 0 - отмена: " answer || answer="0"
-    [ "$answer" = "0" ] && { echo "Отмена."; return 0; }
+    while :; do
+        answer=""
+        read -re -p "Enter - обычный старт, B/В - в фоне без переключения рабочих стратегий, 0 - отмена: " answer || answer="0"
+        case "$answer" in
+            '') break ;;
+            b|B|в|В|б|Б) answer="B"; break ;;
+            0) echo "Отмена."; return 0 ;;
+            *) echo "Не удалось распознать ввод. Нажмите Enter, B/В или 0." ;;
+        esac
+    done
 
     # DNS-gate всегда по эталону rutracker.org, а не пользовательскому домену.
     # Только подтверждённый спуф останавливает; тихий DNS/недоступный DoH — предупреждение.
@@ -1666,7 +1673,7 @@ supersweep_menu() {
 
     # Обработать rc=1 отмены, чтобы глобальный set -e не закрыл меню.
     case "$answer" in
-        b|B|б|Б)
+        B)
             supersweep_background_start "$cfg" "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || true
             pause_enter || true
             return 0
