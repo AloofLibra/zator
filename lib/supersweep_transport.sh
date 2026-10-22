@@ -218,7 +218,7 @@ supersweep_transport_check() {
 }
 
 supersweep_transport_stop() {
-  local hook chain chains= rc=0
+  local hook chain chains= rc=0 hooks_live=0
   if [ "${_Z2R_SS_NFT_ACTIVE:-0}" = 1 ]; then
     local rules
     rules="$(_supersweep_transport_nft_owned)" || return 1
@@ -233,21 +233,30 @@ delete chain inet $_Z2R_SS_NFT_TABLE z2r_supersweep_output"
   fi
   _Z2R_SS_ACTIVE=0
   # Disable marking, then the reply queue, then its production-bypass guard.
-  # On failure leave the remaining live path intact for a safe retry.
+  # Keenetic ndm периодически переприменяет firewall и выметает чужие цепи:
+  # исчезнувшее правило — не ошибка, живое после неудачного -D — оставляем
+  # в списке для ретрая и не трогаем цепи, пока такое правило есть.
   for hook in ${_Z2R_SS_HOOKS:-}; do
-    _supersweep_transport_hook -D "$hook" || {
-      _supersweep_transport_error 'hook cleanup incomplete; retry stop before exiting'; return 1;
-    }
+    if ! _supersweep_transport_hook -D "$hook" 2>/dev/null; then
+      if _supersweep_transport_hook -C "$hook" >/dev/null 2>&1; then
+        hooks_live=1
+        continue
+      fi
+    fi
     _Z2R_SS_HOOKS="${_Z2R_SS_HOOKS#* }"
   done
-  for chain in ${_Z2R_SS_CHAINS:-}; do
-    # Only chains successfully created by this shell can reach this path.
-    if _supersweep_transport_ipt -F "$chain" && _supersweep_transport_ipt -X "$chain"; then
-      :
-    else
-      chains="$chains $chain"; rc=1
-    fi
-  done
-  _Z2R_SS_CHAINS="$chains"
-  [ "$rc" -eq 0 ] || _supersweep_transport_error 'cleanup incomplete; retry stop before exiting'
+  if [ "$hooks_live" = 0 ]; then
+    for chain in ${_Z2R_SS_CHAINS:-}; do
+      if _supersweep_transport_ipt -F "$chain" 2>/dev/null && _supersweep_transport_ipt -X "$chain" 2>/dev/null; then
+        :
+      elif _supersweep_transport_ipt -nL "$chain" >/dev/null 2>&1; then
+        chains="$chains $chain"; rc=1
+      fi
+    done
+    _Z2R_SS_CHAINS="$chains"
+  fi
+  if [ "$hooks_live" = 1 ] || [ "$rc" -eq 1 ]; then
+    _supersweep_transport_error 'cleanup incomplete; retry stop before exiting'
+    return 1
+  fi
 }
