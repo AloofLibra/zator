@@ -23,6 +23,7 @@ supersweep_probe_config() {
         printf '%s\n' "--qnum=${Z2R_SUPERSWEEP_QNUM:-65535}" \
             "--fwmark=${DESYNC_MARK:-0x40000000}" \
             '--uid=65533:65533' \
+            '--autoexclude=0' \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-lib.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
@@ -35,7 +36,12 @@ supersweep_probe_config() {
             /^--blob=/ { print; next }
             /^--template=z2r_tcp_tls_common$/ { common=1; found=1; print; next }
             common && /^--new/ { common=0; new_seen=1; print; next }
-            common && /^--/ { print }
+            common && /^--/ {
+                if (/^--lua-desync=/) {
+                    n = split($0, piece, / --lua-desync=/)
+                    for (i = 1; i <= n; i++) print (i > 1 ? "--lua-desync=" : "") piece[i]
+                } else print
+            }
             END { if (!found || !new_seen) exit 1 }
         ' "$cfg" || return 1
     } > "$dir/nfqws2.args" || return 1
@@ -43,14 +49,14 @@ supersweep_probe_config() {
     # hostlists и детекторы не нужны: весь трафик очереди — явно выбранная проба.
     # Каждый аргумент — отдельной строкой: @-файл nfqws2 не режет строку по
     # пробелам, и combined-заголовок оставлял профиль вообще без lua-функций
-    # («no lua functions in this profile» — пробы уходили без десинка).
+    # («no lua functions in this profile» — пробы уходили без десинка). Тело
+    # общего шаблона в argv (см. nfqws2.args), в плане оно не дублируется.
     awk -v p="$profile" '
         /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
         opts && /^"[[:space:]]*$/ { opts=0 }
         !opts { next }
         /^--template=z2r_tcp_tls_common$/ { common=1; found=1; next }
-        common && /^--new/ { common=0 }
-        common && /^--/ { print }
+        common && /^--new/ { common=0; next }
         $0 == "#Z2R_AUTO_STANDARD_" p "_BEGIN" { block=1; seen=1; next }
         $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
         block {
@@ -77,7 +83,14 @@ supersweep_probe_config() {
 supersweep_probe_stop() {
     # Сначала убрать маршрутизацию; затем остановить ТОЛЬКО своего ребёнка.
     if [ "${Z2R_SUPERSWEEP_TRANSPORT_ACTIVE:-0}" = 1 ]; then
-        supersweep_transport_stop || return 1
+        # Старый iptables без -w может упереться в чужой xtables lock — это
+        # транзиент, ретраим, иначе очистка бросит живой пробник и lock.
+        local t=0
+        until supersweep_transport_stop; do
+            t=$((t + 1))
+            [ "$t" -lt 3 ] || return 1
+            sleep 1
+        done
         Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=0
     fi
     if [ -n "${Z2R_SUPERSWEEP_NFQ_PID:-}" ]; then
@@ -131,15 +144,33 @@ supersweep_probe_start() {
         args+=("$line")
     done < "$dir/nfqws2.args"
     [ "${#args[@]}" -gt 0 ] || return 1
-    "$binary" "${args[@]}" "@$dir/nfqws2.conf" > "$dir/nfqws2.log" 2>&1 </dev/null &
-    Z2R_SUPERSWEEP_NFQ_PID=$!
-    while [ "$i" -lt 5 ]; do
-        kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || { supersweep_probe_stop; return 1; }
-        awk '$1==65535 {found=1} END {exit !found}' "$queue_file" && break
-        sleep 1
-        i=$((i + 1))
+    # Сборки nfqws2 расходятся в позиции @-файла: официальная читает его только
+    # первым аргументом, у форка ct13 рабочим является обратный порядок. Пробуем
+    # @-файл первым, при смерти процесса повторяем с обратным.
+    local attempt
+    for attempt in 1 2; do
+        if [ "$attempt" = 1 ]; then
+            "$binary" "@$dir/nfqws2.conf" "${args[@]}" > "$dir/nfqws2.log" 2>&1 </dev/null &
+        else
+            "$binary" "${args[@]}" "@$dir/nfqws2.conf" > "$dir/nfqws2.log" 2>&1 </dev/null &
+        fi
+        Z2R_SUPERSWEEP_NFQ_PID=$!
+        i=0
+        while [ "$i" -lt 5 ]; do
+            kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || break
+            awk '$1==65535 {found=1} END {exit !found}' "$queue_file" && break
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null \
+            && awk '$1==65535 {found=1} END {exit !found}' "$queue_file"; then
+            break
+        fi
+        kill "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
+        wait "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
+        Z2R_SUPERSWEEP_NFQ_PID=""
+        [ "$attempt" = 1 ] || { supersweep_probe_stop; return 1; }
     done
-    if [ "$i" = 5 ]; then supersweep_probe_stop; return 1; fi
     # Даже частичная установка правил обязана пройти cleanup.
     Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
     if ! supersweep_transport_start; then supersweep_probe_stop; return 1; fi

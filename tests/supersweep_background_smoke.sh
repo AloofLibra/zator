@@ -67,12 +67,12 @@ rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 )
 (
     calls=0
-    supersweep_transport_stop() { calls=$((calls + 1)); [ "$calls" -gt 1 ]; }
+    supersweep_transport_stop() { calls=$((calls + 1)); [ "$calls" -gt 3 ]; }
     Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
     ! supersweep_probe_stop
     [ "$Z2R_SUPERSWEEP_TRANSPORT_ACTIVE" = 1 ]
     supersweep_probe_stop
-    [ "$calls" = 2 ]
+    [ "$calls" = 4 ]
 )
 cp orchestra/locked.lua "$ZATOR_ROOT/lua/locked.lua"
 tr -d '\r' < config.default > "$CONFIG_FILE"
@@ -80,10 +80,12 @@ supersweep_probe_config 4 "$CONFIG_FILE"
 grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--qnum=65535' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--autoexclude=0' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--blob=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--template=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -qx -- '--new' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
-! grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -qE '^--lua-desync=[^ ]* --lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 (
     supersweep_transport_check() { return 0; }
     Z2R_SUPERSWEEP_NFQ_PID=$$
@@ -92,7 +94,8 @@ grep -qx -- '--new' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.log"
 grep -q -- '--lua-desync=circular_locked:key=4' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
-grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
 ! grep -qE 'adaptive|circular_quality|validator=|hostlist=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
 grep -Fq "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
 ! grep -q '/opt/zator/extra_strats/cache/orchestra/locked' "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
@@ -159,6 +162,7 @@ done
 grep -q -- '--qnum=65535' "$TMP/nfq.args"
 grep -q -- '--uid=65533:65533' "$TMP/nfq.args"
 grep -q -- '--lua-init=@' "$TMP/nfq.args"
+[[ "$(head -n1 "$TMP/nfq.args")" == "@$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf" ]]
 grep -qF -- "@$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf" "$TMP/nfq.args"
 printf 'r|99\nprofile|invalid|tls|1\n' > "$Z2R_SUPERSWEEP_DIR/cmd.yt.tmp.poison"
 for ((i=0; i<1800; i++)); do
