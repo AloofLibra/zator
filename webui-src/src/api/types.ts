@@ -133,6 +133,41 @@ export interface Recommendations {
   profiles: Record<string, RecommendationProfile>
 }
 
+export interface SupersweepPayload {
+  available: boolean
+  state: 'idle' | 'starting' | 'running' | 'applying' | 'done' | 'cancelled' | 'interrupted'
+  active: boolean
+  source: 'none' | 'live' | 'saved'
+  started: number
+  updated: number
+  scope: string
+  phase: string
+  completed: number
+  total: number
+  workers: {
+    name: string
+    label: string
+    profile: number
+    completed: number
+    total: number
+    ok: number
+    warn: number
+    fail: number
+    current_strategy: number | null
+    current_target: string
+    greens: string
+    warns: string
+    applied: string
+  }[]
+  applied: { kind: 'profile' | 'domain'; target: string; strategy: number }[]
+  domains: {
+    domain: string
+    best_strategy: number | null
+    verdict: 'ok' | 'warn' | 'fail'
+    applied: number | null
+  }[]
+}
+
 export interface ProviderSettings {
   provider?: string
 }

@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# Изолированные пробы не меняют рабочие локи и не откатывают изменения меню.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+TMP="$(mktemp -d)"
+trap '[ "${SMOKE_KEEP:-0}" = 1 ] || rm -rf "$TMP"' EXIT
+export Z2R_SUPERSWEEP_DIR="$TMP/run" ZATOR_ROOT="$TMP/zator" ZAPRET2_ROOT="$TMP/zapret2"
+mkdir -p "$Z2R_SUPERSWEEP_DIR/probe" "$ZATOR_ROOT/lua" "$ZAPRET2_ROOT"
+export ORCH_DIR="$TMP/live" ORCH_LOCK_FILE="$TMP/live/locked.tsv" CONFIG_FILE="$TMP/config"
+mkdir -p "$ORCH_DIR"
+printf '1\ttls\t7\n' > "$ORCH_LOCK_FILE"
+source lib/config.sh
+source lib/orchestra_state.sh
+source lib/netcheck.sh
+source lib/supersweep.sh
+export Z2R_SUPERSWEEP_ISOLATED=1
+printf 'r|1\nprofile|1|tls|2\n' > "$Z2R_SUPERSWEEP_DIR/cmd.yt"
+_supersweep_apply_cmd "$Z2R_SUPERSWEEP_DIR/cmd.yt"
+grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE" || { echo 'FAIL: probe changed production lock'; exit 1; }
+grep -q $'^1\ttls\t2$' "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
+(
+    orch_locked_set() { return 1; }
+    printf 'r|1\nprofile|1|tls|2\n' > "$Z2R_SUPERSWEEP_DIR/cmd.bad"
+    ! _supersweep_apply_cmd "$Z2R_SUPERSWEEP_DIR/cmd.bad"
+    [ ! -e "$Z2R_SUPERSWEEP_DIR/applied.bad" ]
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cmd.bad"
+printf 'profile|1|tls|3\n' > "$Z2R_SUPERSWEEP_DIR/prev.tsv"
+_supersweep_restore_prev
+ grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE"
+# The same TLS engine must steer both HEAD and download; ordinary checks unchanged.
+curl() { printf '%s\n' "$*" >> "$TMP/curl.args"; printf '206 64 1'; }
+export Z2R_TLS_LOCAL_PORTS=62000-62999
+z2r_tls_head_once https://example.com/ "$TMP/h" >/dev/null
+z2r_tls_probe_download https://example.com/ >/dev/null
+[ "$(grep -c -- '--local-port 62000-62999' "$TMP/curl.args")" = 2 ]
+unset Z2R_TLS_LOCAL_PORTS
+z2r_tls_probe_download https://example.com/ >/dev/null
+[ "$(grep -c -- '--local-port' "$TMP/curl.args")" = 2 ]
+# Build from deployed source, not develop strategies or its adaptive extensions.
+source lib/supersweep_probe.sh
+# Router BusyBox can reject fractional sleep; no unguarded fractional waits.
+if grep -nE 'sleep [0-9]+\.[0-9]+[[:space:]]*$' lib/supersweep_probe.sh lib/orchestra_state.sh; then
+    echo 'FAIL: unguarded fractional sleep on router' >&2
+    exit 1
+fi
+# Cleanup failures remain retryable and must prevent starting the next phase.
+(
+    supersweep_probe_healthy() { return 0; }
+    supersweep_probe_sequence() { echo 0; }
+    z2r_tls_check_target() { printf '0|200|HTTP/2|0.1|192.0.2.1\n0|200|HTTP/2|0.1|192.0.2.1\nskip\n'; }
+    ! _supersweep_check_target https://example.com/
+    [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+(
+    printf 'best=1\nbest_kind=warn\ninterrupted=0\n' > "$Z2R_SUPERSWEEP_DIR/best.yt"
+    [ -z "$(_supersweep_profile_best yt)" ]
+    config_get_var() { echo 0; }
+    profile_state_set_and_apply() { : > "$TMP/warn-applied"; }
+    profile_strategy_restart_if_needed() { :; }
+    telemetry_notify() { :; }
+    _supersweep_settle_worker yt 1 'tls http' "$CONFIG_FILE"
+    [ ! -e "$TMP/warn-applied" ]
+    printf 'best=1\nbest_kind=best\ninterrupted=0\n' > "$Z2R_SUPERSWEEP_DIR/best.yt"
+    [ "$(_supersweep_profile_best yt)" = 1 ]
+)
+(
+    calls=0
+    supersweep_transport_stop() { calls=$((calls + 1)); [ "$calls" -gt 1 ]; }
+    Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
+    ! supersweep_probe_stop
+    [ "$Z2R_SUPERSWEEP_TRANSPORT_ACTIVE" = 1 ]
+    supersweep_probe_stop
+    [ "$calls" = 2 ]
+)
+cp orchestra/locked.lua "$ZATOR_ROOT/lua/locked.lua"
+tr -d '\r' < config.default > "$CONFIG_FILE"
+supersweep_probe_config 4 "$CONFIG_FILE"
+grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+(
+    supersweep_transport_check() { return 0; }
+    Z2R_SUPERSWEEP_NFQ_PID=$$
+    printf 'LUA ERROR: missing runtime dependency\n' > "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.log"
+    ! supersweep_probe_healthy 2>/dev/null
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.log"
+grep -q -- '--lua-desync=circular_locked:key=4' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+! grep -qE 'adaptive|circular_quality|validator=|hostlist=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -Fq "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
+! grep -q '/opt/zator/extra_strats/cache/orchestra/locked' "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
+supersweep_probe_config 3 "$CONFIG_FILE"
+grep -q -- '--import=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+# Invalid/missing profile plans must fail, not silently test an empty plan.
+! supersweep_probe_config 10 "$CONFIG_FILE"
+# Detached runner is a real child bash; only nfqws2/firewall/network are mocked.
+unset -f curl
+mkdir -p "$TMP/bin" "$ZAPRET2_ROOT/nfq2"
+export Z2R_SUPERSWEEP_QUEUE_FILE="$TMP/queue" Z2R_SUPERSWEEP_PORT_RANGE_FILE="$TMP/ports"
+export Z2R_SUPERSWEEP_PHASE_PAUSE=0 Z2R_SUPERSWEEP_PROBE_GAP=0 Z2R_SUPERSWEEP_GREEN_PAUSE=0 Z2R_SUPERSWEEP_SETTLE=0
+export Z2R_SUPERSWEEP_STATS_URL='' Z2R_SUPERSWEEP_ARCHIVE_DIR="$TMP/archives"
+export LIB_DIR="$PWD/lib" TMP
+printf '32768 60999\n' > "$TMP/ports"
+: > "$TMP/queue"
+cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK'
+#!/bin/sh
+[ "${1:-}" != --version ] || { echo 'nfqws2 smoke'; exit 0; }
+printf '65535 0 0 2 65531 0 0 0 1\n' > "$Z2R_SUPERSWEEP_QUEUE_FILE"
+echo "$$" >> "$TMP/nfq.pids"
+trap ': > "$Z2R_SUPERSWEEP_QUEUE_FILE"; exit' TERM INT
+while :; do sleep 0.1; done
+MOCK
+cat > "$TMP/bin/iptables" <<'MOCK'
+#!/bin/sh
+echo "$*" >> "$TMP/iptables.args"
+MOCK
+cat > "$TMP/bin/curl" <<'MOCK'
+#!/bin/sh
+case "$*" in *report_mapping*) exit 0 ;; esac
+echo "$*" >> "$TMP/network.args"
+sleep "${MOCK_BG_DELAY:-0.1}"
+seq="$(awk '$1==65535 {print $8}' "$Z2R_SUPERSWEEP_QUEUE_FILE")"
+printf '65535 0 0 2 65531 0 0 %s 1\n' "$(( ${seq:-0} + 1 ))" > "$Z2R_SUPERSWEEP_QUEUE_FILE.$$"
+mv "$Z2R_SUPERSWEEP_QUEUE_FILE.$$" "$Z2R_SUPERSWEEP_QUEUE_FILE"
+prev=''
+for arg in "$@"; do
+    [ "$prev" != -D ] || printf 'HTTP/2 200\r\n' > "$arg"
+    prev="$arg"
+done
+case "$*" in *' -I '*) echo '0.1 192.0.2.1' ;; *) echo '206 64 0.1' ;; esac
+MOCK
+chmod +x "$ZAPRET2_ROOT/nfq2/nfqws2" "$TMP/bin/"*
+export PATH="$TMP/bin:$PATH"
+# Keep one strategy per plan so this lifecycle check stays short.
+sed -E '/strategy=([2-9]|[1-9][0-9]+)([^0-9]|$)/d' "$CONFIG_FILE" > "$TMP/trimmed"
+mv "$TMP/trimmed" "$CONFIG_FILE"
+# Match the submenu: selected scope is a shell variable, not an environment var.
+export -n ORCH_ACTIVE_SCOPE
+ORCH_ACTIVE_SCOPE=mark:5
+mkdir -p "$ORCH_DIR/scopes"
+printf '1\ttls\t7\n' > "$ORCH_DIR/scopes/mark_5.tsv"
+cp "$ORCH_LOCK_FILE" "$TMP/global.before"
+cp "$CONFIG_FILE" "$TMP/config.before"
+supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
+[ -d "$Z2R_SUPERSWEEP_DIR.lock" ]
+! supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com 2>/dev/null
+for ((i=0; i<200; i++)); do
+    [ -s "$TMP/network.args" ] && break
+    sleep 0.1
+done
+printf 'r|99\nprofile|invalid|tls|1\n' > "$Z2R_SUPERSWEEP_DIR/cmd.yt.tmp.poison"
+for ((i=0; i<1800; i++)); do
+    [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || break
+    sleep 0.1
+done
+[ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ] || { cat "$Z2R_SUPERSWEEP_DIR.log"; exit 1; }
+grep -q '^state=done$' "$Z2R_SUPERSWEEP_DIR/status" || { cat "$Z2R_SUPERSWEEP_DIR.log"; exit 1; }
+[ -s "$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv" ] || { echo 'FAIL: completed run did not persist its report' >&2; exit 1; }
+supersweep_report_json > "$TMP/completed-report.json"
+python3 - "$TMP/completed-report.json" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1]))
+assert r['state']=='done' and not r['active'] and r['scope']=='mark:5'
+assert r['completed']==r['total'] and len(r['workers'])==4
+assert {a['target'] for a in r['applied'] if a['kind']=='profile'}=={'1','2','3','4'}
+PY
+[ "$(wc -l < "$TMP/nfq.pids")" = 4 ]
+grep -q -- '--local-port 62000-62999' "$TMP/network.args"
+grep -q -- '-D OUTPUT' "$TMP/iptables.args"
+while read -r pid; do ! kill -0 "$pid" 2>/dev/null; done < "$TMP/nfq.pids"
+regression_failed=0
+if ! cmp -s "$TMP/global.before" "$ORCH_LOCK_FILE" \
+    || ! cmp -s "$TMP/config.before" "$CONFIG_FILE" \
+    || ! grep -q $'^1\ttls\t1$' "$ORCH_DIR/scopes/mark_5.tsv" \
+    || ! grep -q $'^2\ttls\t1$' "$ORCH_DIR/scopes/mark_5.tsv" \
+    || ! grep -q $'^4\ttls\t1$' "$ORCH_DIR/scopes/mark_5.tsv" \
+    || ! grep -q $'^3\ttls\t1$' "$ORCH_DIR/scopes/mark_5.tsv"; then
+    echo 'FAIL: detached winners lost selected scope or changed global state' >&2
+    regression_failed=1
+fi
+grep -q $'^example.com\ttls\t1$' "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
+[ ! -d "$Z2R_SUPERSWEEP_DIR/probe/scopes" ]
+# Cancel a detached run during its first probe; no production rollback/write.
+printf '1\ttls\t7\n' > "$ORCH_LOCK_FILE"
+: > "$TMP/network.args"
+export MOCK_BG_DELAY=1
+supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
+for ((i=0; i<200; i++)); do
+    [ -s "$TMP/network.args" ] && break
+    sleep 0.1
+done
+[ -s "$TMP/network.args" ]
+kill -HUP "$(cat "$Z2R_SUPERSWEEP_DIR.lock/pid")"
+kill -INT "$(cat "$Z2R_SUPERSWEEP_DIR.lock/pid")"
+supersweep_cancel_running
+for ((i=0; i<1800; i++)); do
+    [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || break
+    sleep 0.1
+done
+[ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ]
+grep -q '^state=cancelled$' "$Z2R_SUPERSWEEP_DIR/status"
+grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE"
+[ ! -s "$Z2R_SUPERSWEEP_DIR/applied.tsv" ]
+rm -rf "$Z2R_SUPERSWEEP_DIR"
+supersweep_report_json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["state"]=="cancelled" and r["source"]=="saved" and not r["active"] and r["applied"]==[]'
+# TERM targets the exact PID advertised to callers, not an inferred worker PID.
+: > "$TMP/network.args"
+cp "$ORCH_LOCK_FILE" "$TMP/term.global.before"
+cp "$ORCH_DIR/scopes/mark_5.tsv" "$TMP/term.scope.before"
+supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
+for ((i=0; i<200; i++)); do
+    [ -s "$TMP/network.args" ] && break
+    sleep 0.1
+done
+[ -s "$TMP/network.args" ]
+published_pid="$(cat "$Z2R_SUPERSWEEP_DIR.lock/pid")"
+# Retain children only to clean up the intentionally broken RED run.
+children="$(ps --ppid "$published_pid" -o pid=)"
+worker_pid="$(ps --ppid "$published_pid" -o pid=,comm= | awk '$2=="bash" {print $1; exit}')"
+[ -n "$worker_pid" ]
+nfq_pid="$(tail -n1 "$TMP/nfq.pids")"
+deletes_before="$(grep -c -- '-D OUTPUT' "$TMP/iptables.args")"
+kill -TERM "$published_pid"
+for ((i=0; i<100; i++)); do
+    [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || break
+    sleep 0.1
+done
+if [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || kill -0 "$nfq_pid" 2>/dev/null \
+    || kill -0 "$worker_pid" 2>/dev/null \
+    || [ "$(grep -c -- '-D OUTPUT' "$TMP/iptables.args")" -le "$deletes_before" ]; then
+    echo 'FAIL: TERM to published PID left its daemon/firewall/lock alive' >&2
+    regression_failed=1
+    touch "$Z2R_SUPERSWEEP_DIR/cancel"
+    kill -TERM $children 2>/dev/null || true
+fi
+wait "$published_pid" 2>/dev/null || true
+for ((i=0; i<100; i++)); do
+    [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || break
+    sleep 0.1
+done
+[ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ]
+! kill -0 "$nfq_pid" 2>/dev/null
+! kill -0 "$worker_pid" 2>/dev/null
+cmp "$TMP/term.global.before" "$ORCH_LOCK_FILE"
+cmp "$TMP/term.scope.before" "$ORCH_DIR/scopes/mark_5.tsv"
+rm -rf "$Z2R_SUPERSWEEP_DIR"
+supersweep_report_json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["state"]=="interrupted" and r["source"]=="saved" and not r["active"] and r["applied"]==[]'
+[ "$regression_failed" = 0 ]
+echo 'supersweep background smoke ok'

@@ -23,6 +23,155 @@ Z2R_SUPERSWEEP_RKN_DOMAINS="${Z2R_SUPERSWEEP_RKN_DOMAINS:-xhamster.com anidub.co
 [ -z "${Fcyan:-}" ] && Fcyan='\033[1;36m'
 [ -z "${Fyellow:-}" ] && Fyellow='\033[1;33m'
 
+supersweep_report_tsv() {
+    local dir="$Z2R_SUPERSWEEP_DIR" file pid="" alive=0
+    if [ ! -s "$dir/status" ]; then
+        if [ -s "$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv" ]; then
+            awk -F '\t' 'BEGIN{OFS="\t"} $1=="R" {$3=0;$10="saved";if($2~/^(starting|running|applying)$/)$2="interrupted"} {print}' "$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv"
+        else
+            printf 'R\tidle\t0\t0\t0\tdefault\t-\t0\t0\tnone\n'
+        fi
+        return 0
+    fi
+    if [ -r "$dir.lock/pid" ]; then
+        IFS= read -r pid < "$dir.lock/pid" || true
+        case "$pid" in ''|*[!0-9]*) ;; *) kill -0 "$pid" 2>/dev/null && alive=1 ;; esac
+    fi
+    [ "${_Z2R_SS_REPORT_FINAL:-0}" != 1 ] || alive=0
+    set --
+    for file in status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv \
+        best.yt best.gv best.ds best.rkn applied.yt applied.gv applied.ds applied.rkn applied.tsv; do
+        [ ! -r "$dir/$file" ] || set -- "$@" "$dir/$file"
+    done
+    awk -F '\t' -v alive="$alive" '
+    function clean(s) {gsub(/[[:cntrl:]]/," ",s);return s==""?"-":s}
+    function num(s) {return s~/^[0-9]+$/?s+0:0}
+    BEGIN {
+        OFS="\t"; names[1]="yt";names[2]="gv";names[3]="ds";names[4]="rkn"
+        labels["yt"]="YouTube";labels["gv"]="Googlevideo";labels["ds"]="Discord";labels["rkn"]="РКН"
+        profiles["yt"]=1;profiles["gv"]=2;profiles["ds"]=4;profiles["rkn"]=3
+        byprofile[1]="yt";byprofile[2]="gv";byprofile[4]="ds";byprofile[3]="rkn"
+    }
+    {
+        file=FILENAME;sub(/^.*\//,"",file)
+        if(file=="status") {i=index($0,"=");if(i)kv[substr($0,1,i-1)]=substr($0,i+1);next}
+        if(file=="workers.tsv" && NF>=6 && $1 in labels) {
+            w=$1;seen[w]=1;total[w]=num($6)*(w=="rkn"?split($5,ds,","):1);url[w]=$5;next
+        }
+        if(file~/^progress\.(yt|gv|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail)$/) {
+            w=file;sub(/^progress\./,"",w);sub(/\.tsv$/,"",w);count[w]++;verdict[w,$4]++;next
+        }
+        if(file~/^best\.(yt|gv|ds|rkn)$/) {
+            w=file;sub(/^best\./,"",w);i=index($0,"=");key=substr($0,1,i-1);v=substr($0,i+1)
+            if(key=="greens" || key=="warns") lists[w,key]=v
+            next
+        }
+        if(file~/^applied\.(yt|gv|ds|rkn)$/) {
+            w=file;sub(/^applied\./,"",w);split($0,a,"[|]")
+            if(a[1]~/^(profile|domain)$/ && a[4]~/^[1-9][0-9]*$/) {current[w]=a[4];target[w]=a[1]=="domain"?a[2]:url[w]}
+            next
+        }
+        if(file=="applied.tsv" && NF==3 && $1~/^(profile|domain)$/ && $3~/^[1-9][0-9]*$/) {
+            key=$1 SUBSEP $2;if(!(key in applied)) order[++na]=key
+            applied[key]=$3;kind[key]=$1;dest[key]=$2
+            if($1=="profile" && $2 in byprofile) winner[byprofile[$2]]=$3
+        }
+    }
+    END {
+        state=kv["state"];if(state!~/^(starting|running|applying|done|cancelled|interrupted)$/)state="interrupted"
+        active=state~/^(starting|running|applying)$/ && alive
+        if(state~/^(starting|running|applying)$/ && !alive)state="interrupted"
+        phase=kv["alive"];sub(/,.*/,"",phase);if(!active)phase=""
+        for(i=1;i<=4;i++){w=names[i];completed+=count[w];sum+=total[w]}
+        printf "R\t%s\t%d\t%.0f\t%.0f\t%s\t%s\t%d\t%d\tlive\n",state,active,num(kv["started"]),num(kv["updated"]),clean(kv["scope"]==""?"default":kv["scope"]),clean(phase),completed,sum
+        for(i=1;i<=4;i++) {
+            w=names[i];if(!seen[w])continue
+            print "W",w,labels[w],profiles[w],count[w]+0,total[w]+0,verdict[w,"ok"]+0,verdict[w,"warn"]+0,verdict[w,"fail"]+0,clean(active&&phase==w?current[w]:""),clean(target[w]),clean(lists[w,"greens"]),clean(lists[w,"warns"]),clean(winner[w])
+        }
+        for(i=1;i<=na;i++){key=order[i];print "A",kind[key],clean(dest[key]),applied[key]}
+    }' "$@" || return 1
+    if [ -s "$dir/coverage.tsv" ]; then
+        _supersweep_rkn_domain_winners "$dir/coverage.tsv" | awk -F '\t' 'BEGIN{OFS="\t"} {gsub(/[[:cntrl:]]/," ",$1);print "D",$1,$3==2?"-":$2,$3==0?"ok":$3==1?"warn":"fail"}'
+    fi
+}
+
+supersweep_report_save() (
+    local file="$Z2R_SUPERSWEEP_ARCHIVE_DIR/last-report.tsv"
+    [ -s "$Z2R_SUPERSWEEP_DIR/status" ] || return 0
+    umask 077
+    mkdir -p "$Z2R_SUPERSWEEP_ARCHIVE_DIR" || return 1
+    _Z2R_SS_REPORT_FINAL=1 supersweep_report_tsv > "$file.tmp.$$" && mv -f "$file.tmp.$$" "$file"
+)
+
+supersweep_report_cli() {
+    local kind a b c d e f g h i j k l m title
+    while IFS=$'\t' read -r kind a b c d e f g h i j k l m; do
+        case "$kind" in
+            R)
+                case "$a" in idle) title='ещё не запускался' ;; starting) title='подготовка' ;; running) title='выполняется' ;; applying) title='применение результатов' ;; done) title='завершён' ;; cancelled) title='отменён' ;; *) title='прерван (процесс не работает)' ;; esac
+                printf 'Суперавтопрогон: %s\nОбласть: %s\nВсего: %s/%s проверок\n' "$title" "$e" "$g" "$h"
+                if [ "$c" != 0 ]; then
+                    printf 'Начало: '; date -d "@$c" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || printf '%s (Unix)\n' "$c"
+                    printf 'Обновлено: '; date -d "@$d" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || printf '%s (Unix)\n' "$d"
+                fi
+                [ "$f" = '-' ] || printf 'Текущая фаза: %s\n' "$f"
+                [ "$i" != saved ] || printf 'Показан сохранённый результат последнего прогона.\n'
+                ;;
+            W)
+                printf '\n%s (профиль %s): %s/%s; зелёных %s, жёлтых %s, красных %s\n' "$b" "$c" "$d" "$e" "$f" "$g" "$h"
+                [ "$i" = '-' ] || printf '  Сейчас: стратегия %s, цель %s\n' "$i" "$j"
+                [ "$k" = '-' ] || printf '  Зелёные стратегии: %s\n' "$k"
+                [ "$l" = '-' ] || printf '  Жёлтые стратегии: %s (не применяются автоматически)\n' "$l"
+                ;;
+            A) [ "$a" != profile ] || printf 'Применено: профиль %s, стратегия %s\n' "$b" "$c"
+                [ "$a" != domain ] || printf 'Применено: домен %s, стратегия %s\n' "$b" "$c" ;;
+            D) printf 'РКН %s: %s, кандидат %s\n' "$a" "$c" "$b" ;;
+        esac
+    done < <(supersweep_report_tsv)
+}
+
+supersweep_status_menu() {
+    local answer
+    while :; do
+        [ ! -t 0 ] || clear -x
+        supersweep_report_cli
+        [ -t 0 ] || return 0
+        answer=""
+        read -re -p 'Enter — обновить, 0 — назад: ' answer || return 0
+        [ "$answer" != 0 ] || return 0
+    done
+}
+
+supersweep_report_json() {
+    local report
+    report="$(supersweep_report_tsv)" || return 1
+    case "$report" in R$'\t'*) ;; *) return 1 ;; esac
+    printf '%s\n' "$report" | awk -F '\t' '
+    function q(s, i,c,out) {
+        if (s=="-") s=""
+        out="\""
+        for (i=1;i<=length(s);i++) {
+            c=substr(s,i,1)
+            if (c=="\\") out=out "\\\\"
+            else if (c=="\"") out=out "\\\""
+            else if (c ~ /[[:cntrl:]]/) out=out " "
+            else out=out c
+        }
+        return out "\""
+    }
+    function n(s) {return s ~ /^[0-9]+$/ ? sprintf("%.0f",s+0) : "0"}
+    BEGIN {ws=as=ds=""; workers=applied=domains=""}
+    $1=="R" {
+        root="{\"available\":" ($10=="none"?"false":"true") ",\"state\":" q($2) ",\"active\":" ($3==1?"true":"false") ",\"started\":" n($4) ",\"updated\":" n($5) ",\"scope\":" q($6) ",\"phase\":" q($7) ",\"completed\":" n($8) ",\"total\":" n($9) ",\"source\":" q($10)
+    }
+    $1=="W" {
+        workers=workers ws "{\"name\":" q($2) ",\"label\":" q($3) ",\"profile\":" n($4) ",\"completed\":" n($5) ",\"total\":" n($6) ",\"ok\":" n($7) ",\"warn\":" n($8) ",\"fail\":" n($9) ",\"current_strategy\":" ($10=="-"?"null":n($10)) ",\"current_target\":" q($11) ",\"greens\":" q($12) ",\"warns\":" q($13) ",\"applied\":" q($14) "}"; ws=","
+    }
+    $1=="A" {applied=applied as "{\"kind\":" q($2) ",\"target\":" q($3) ",\"strategy\":" n($4) "}"; as=","; if($2=="domain") da[$3]=$4}
+    $1=="D" {domains=domains ds "{\"domain\":" q($2) ",\"best_strategy\":" ($3=="-"?"null":n($3)) ",\"verdict\":" q($4) ",\"applied\":" ($2 in da?n(da[$2]):"null") "}"; ds=","}
+    END {print root ",\"workers\":[" workers "],\"applied\":[" applied "],\"domains\":[" domains "]}"}'
+}
+
 supersweep_dir() {
     printf '%s\n' "$Z2R_SUPERSWEEP_DIR"
 }
@@ -47,7 +196,7 @@ _supersweep_settle() {
 # прерываемый сон: выход раньше при отмене (cancel-файл), шаг 1 сек
 _supersweep_sleep() {
     local secs="$1" i=0
-    printf '%s' "$secs" | grep -Eq '^[0-9]+$' || return 0
+    case "$secs" in ''|*[!0-9]*) return 0 ;; esac
     while [ "$i" -lt "$secs" ]; do
         _supersweep_cancelled && return 1
         sleep 1
@@ -59,7 +208,7 @@ _supersweep_sleep() {
 # пауза между фазами прогона: канал отдыхает от частых переключений
 _supersweep_phase_pause() {
     local secs="${Z2R_SUPERSWEEP_PHASE_PAUSE:-30}"
-    printf '%s' "$secs" | grep -Eq '^[0-9]+$' || secs=30
+    case "$secs" in ''|*[!0-9]*) secs=30 ;; esac
     [ "$secs" -gt 0 ] || return 0
     echo -e "$(date '+%H:%M:%S') ${cyan}Пауза между фазами: ${secs} сек — канал отдыхает от переключений.${plain}"
     _supersweep_sleep "$secs"
@@ -89,27 +238,37 @@ _supersweep_rkn_domain_winners() {
 # profile|<prof>|<proto>|<strategy> или domain|<dom>|<proto>|<strategy>.
 # После orch_locked_set родитель переименовывает файл в applied.<name> — ACK раунда.
 
-_supersweep_request_lock() {
-    local name="$1" round="$2" specs="$3" dir="$Z2R_SUPERSWEEP_DIR"
-    printf 'r|%s\n%s\n' "$round" "$specs" > "${dir}/cmd.${name}.tmp.$$" \
-        && mv -f "${dir}/cmd.${name}.tmp.$$" "${dir}/cmd.${name}" || return 1
-    local t0=$SECONDS poll="${Z2R_SUPERSWEEP_POLL:-0.3}" int
+_supersweep_poll_interval() {
+    local poll="${Z2R_SUPERSWEEP_POLL:-0.3}" int
     case "$poll" in ''|*[!0-9.]*|*..*|.) poll=0.3 ;; esac
     int="${poll%%.*}"
     case "$int" in ''|*[!0-9]*) int=0 ;; esac
     [ "$int" -gt 2 ] && poll=0.3
-    case "$poll" in 0|0.0|0.00) poll=0.3 ;; esac
+    [ -n "${poll//[0.]/}" ] || poll=0.3
+    z2r_poll_interval "$poll"
+}
+
+_supersweep_request_lock() {
+    local name="$1" round="$2" specs="$3" dir="$Z2R_SUPERSWEEP_DIR"
+    printf 'r|%s\n%s\n' "$round" "$specs" > "${dir}/cmd.${name}.tmp.$$" \
+        && mv -f "${dir}/cmd.${name}.tmp.$$" "${dir}/cmd.${name}" || return 1
+    local t0=$SECONDS poll ack=""
+    z2r_poll_sleep_init
+    poll="$(_supersweep_poll_interval)"
     while [ $((SECONDS - t0)) -lt 15 ]; do
-        [ -f "${dir}/applied.${name}" ] \
-            && [ "$(sed -n 1p "${dir}/applied.${name}" 2>/dev/null)" = "r|${round}" ] \
-            && return 0
-        sleep "$poll" 2>/dev/null || sleep 1
+        _supersweep_cancelled && return 1
+        if [ -f "${dir}/applied.${name}" ]; then
+            IFS= read -r ack < "${dir}/applied.${name}" || true
+            [ "$ack" != "r|${round}" ] || return 0
+        fi
+        sleep "$poll"
     done
     # последний взгляд вне условия цикла: ACK, записанный на последнем шаге,
     # иначе засчитается таймаутом даже при штатном интервале
-    [ -f "${dir}/applied.${name}" ] \
-        && [ "$(sed -n 1p "${dir}/applied.${name}" 2>/dev/null)" = "r|${round}" ] \
-        && return 0
+    if [ -f "${dir}/applied.${name}" ]; then
+        IFS= read -r ack < "${dir}/applied.${name}" || true
+        [ "$ack" != "r|${round}" ] || return 0
+    fi
     echo "supersweep: lock apply timeout (worker $name, round $round)" >&2
     return 1
 }
@@ -118,7 +277,7 @@ _supersweep_request_lock() {
 
 _supersweep_badge() {
     local label="$1" raw="$2" badge btxt bst
-    badge="$(z2r_tls_version_badge "$label" "$raw")"
+    z2r_tls_version_badge "$label" "$raw" badge
     btxt="${badge%%|*}"; bst="${badge#*|}"
     case "$bst" in
         ok) printf '%b%-17s%b' "$green" "$btxt" "$plain" ;;
@@ -136,16 +295,38 @@ _supersweep_verdict_color() {
     esac
 }
 
+# Перезагрузка firewall не должна превратить ответ рабочего сервиса
+# в победителя тестовой стратегии: проверяем изоляцию до И после сети.
+_supersweep_check_target() {
+    local out seq_before seq_after
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+        supersweep_probe_healthy || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+        seq_before="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+    fi
+    out="$(z2r_tls_check_target "$1")" || return 1
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+        supersweep_probe_healthy || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+        seq_after="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+        if [ "$seq_before" = "$seq_after" ]; then
+            echo 'Пакеты не попали в тестовую NFQUEUE: проверьте маршрутизацию и DNS. Прогон остановлен.' >&2
+            : > "$Z2R_SUPERSWEEP_DIR/cancel"
+            return 1
+        fi
+    fi
+    printf '%s\n' "$out"
+}
+
 # progress.<name>.tsv: epoch, target, strategy, token, tls12, tls13, dl bytes, dl time, short.
 _supersweep_progress_row() {
     local epoch="$1" target="$2" strat="$3" token="$4" v12="$5" v13="$6" dl="$7" short="$8"
-    local st12 st13 dlbytes dltime
-    st12="$(z2r_tls_version_state "$(z2r_tls_field "$v12" 1)" "$(z2r_tls_field "$v12" 2)")"
-    st13="$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")"
+    local st12 st13 dlbytes dltime rc code unused
+    IFS='|' read -r rc code unused <<< "$v12"
+    z2r_tls_version_state "$rc" "$code" st12
+    IFS='|' read -r rc code unused <<< "$v13"
+    z2r_tls_version_state "$rc" "$code" st13
     dlbytes="-"; dltime="-"
     if [ "$dl" != "skip" ]; then
-        dlbytes="$(z2r_tls_field "$dl" 3)"
-        dltime="$(z2r_tls_field "$dl" 4)"
+        IFS='|' read -r rc code dlbytes dltime unused <<< "$dl"
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$epoch" "$target" "$strat" "$token" "$st12" "$st13" "$dlbytes" "$dltime" "$short"
@@ -153,31 +334,47 @@ _supersweep_progress_row() {
 
 _supersweep_print_line() {
     local tag="$1" domain="$2" strat="$3" token="$4" v12="$5" v13="$6" short="$7"
-    local color disp
-    color="$(_supersweep_verdict_color "$token")"
+    local color disp stamp
     case "$token" in
-        ok) disp="OK  " ;;
-        warn) disp="WARN" ;;
-        *) disp="FAIL"; token="fail" ;;
+        ok) disp="OK  "; color="$green" ;;
+        warn) disp="WARN"; color="$yellow" ;;
+        *) disp="FAIL"; color="$red" ;;
     esac
+    printf -v stamp '%(%H:%M:%S)T' -1 2>/dev/null || stamp="$(date '+%H:%M:%S')"
     if [ -n "$domain" ]; then
-        printf '%s [%-3s] %-18s %3d: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$tag" "$domain" "$strat" \
-            "${color}${disp}${plain}" "$(_supersweep_badge tls1.2 "$v12")" \
-            "$(_supersweep_badge tls1.3 "$v13")" "${color}${short}${plain}"
+        printf '%s [%-3s] %-18s %3d: ' "$stamp" "$tag" "$domain" "$strat"
     else
-        printf '%s [%-3s] %3d: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$tag" "$strat" \
-            "${color}${disp}${plain}" "$(_supersweep_badge tls1.2 "$v12")" \
-            "$(_supersweep_badge tls1.3 "$v13")" "${color}${short}${plain}"
+        printf '%s [%-3s] %3d: ' "$stamp" "$tag" "$strat"
     fi
+    printf '%b ' "${color}${disp}${plain}"
+    _supersweep_badge tls1.2 "$v12"
+    printf ' '
+    _supersweep_badge tls1.3 "$v13"
+    printf ' %b\n' "${color}${short}${plain}"
 }
 
 # --- Профильный воркер: стратегии 1..max ---
 
+_supersweep_worker_priority() {
+    [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] || return 0
+    [ -n "${BASHPID:-}" ] || return 0
+    command -v renice >/dev/null 2>&1 || return 0
+    local pid="$BASHPID" stat
+    IFS= read -r stat < "/proc/$pid/stat" || return 0
+    # Не повышать уже пониженный приоритет. Меняется только воркер:
+    # основной и тестовый nfqws2 запускаются вне его дерева.
+    set -- ${stat##*) }
+    shift 16
+    [ "$1" -lt 10 ] || return 0
+    renice 10 -p "$pid" >/dev/null 2>&1 || true
+}
+
 _supersweep_worker_profile() {
+    _supersweep_worker_priority
     local name="$1" tag="$2" profile="$3" proto_list="$4" url="$5" max="$6"
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tls_pref="$7" pause_sec="$8"
-    local s p round=0 out v12 v13 dl short token specs
+    local s p round=0 out v12 v13 dl short token specs epoch
     local ok_list="" warn_list="" full_list="" ok_stats="" warn_stats=""
     local n_ok=0 n_warn=0 n_fail=0
     local ss_interrupted=0 psleep settle_v g
@@ -198,30 +395,30 @@ _supersweep_worker_profile() {
         _supersweep_request_lock "$name" "$round" "$specs" || { ss_interrupted=1; break; }
         _supersweep_settle
 
-        out="$(z2r_tls_check_target "$url")"
-        v12="$(printf '%s\n' "$out" | sed -n 1p)"
-        v13="$(printf '%s\n' "$out" | sed -n 2p)"
-        dl="$(printf '%s\n' "$out" | sed -n 3p)"
+        out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
+        { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
         short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
         token="${short%%|*}"; short="${short#*|}"
 
-        local q12=0 q13=0 dlsize dltime
-        z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" && q12=1
-        z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)" && q13=1
-        dlsize="$(z2r_tls_field "$dl" 3)"; dltime="$(z2r_tls_field "$dl" 4)"
+        local q12=0 q13=0 dlsize dltime rc code unused
+        IFS='|' read -r rc code unused <<< "$v12"
+        z2r_tls_code_ok "$code" && q12=1
+        IFS='|' read -r rc code unused <<< "$v13"
+        z2r_tls_code_ok "$code" && q13=1
+        IFS='|' read -r rc code dlsize dltime unused <<< "$dl"
         case "$token" in
             ok)
                 n_ok=$((n_ok + 1)); ok_list="${ok_list}${ok_list:+ }${s}"
                 if [ "$q12" = 1 ] && [ "$q13" = 1 ]; then
                     full_list="${full_list}${full_list:+ }${s}"
                 fi
-                if [ "$dl" != "skip" ] && printf '%s' "$dltime" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                if [ "$dl" != "skip" ] && [[ "$dltime" =~ ^[0-9]+\.?[0-9]*$ ]]; then
                     ok_stats="${ok_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
                 fi
                 ;;
             warn)
                 n_warn=$((n_warn + 1)); warn_list="${warn_list}${warn_list:+ }${s}"
-                if [ "$dl" != "skip" ] && printf '%s' "$dltime" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                if [ "$dl" != "skip" ] && [[ "$dltime" =~ ^[0-9]+\.?[0-9]*$ ]]; then
                     warn_stats="${warn_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
                 fi
                 ;;
@@ -231,7 +428,8 @@ _supersweep_worker_profile() {
         esac
 
         _supersweep_print_line "$tag" "" "$s" "$token" "$v12" "$v13" "$short"
-        _supersweep_progress_row "$(date +%s)" "$profile" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
+        printf -v epoch '%(%s)T' -1 2>/dev/null || epoch="$(date +%s)"
+        _supersweep_progress_row "$epoch" "$profile" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
             >> "${dir}/progress.${name}.tsv"
 
         if [ "$s" -lt "$max" ]; then
@@ -322,34 +520,33 @@ _supersweep_rkn_record() {
     # Аргументы: domain, strategy, engine out (3 строки), tls_pref.
     # stdout: ok|warn|fail; stderr: строка для консоли.
     local d="$1" s="$2" out="$3" tls_pref="$4"
-    local v12 v13 dl short token dlsize dltime speed
-    v12="$(printf '%s\n' "$out" | sed -n 1p)"
-    v13="$(printf '%s\n' "$out" | sed -n 2p)"
-    dl="$(printf '%s\n' "$out" | sed -n 3p)"
+    local v12 v13 dl short token dlsize dltime speed rc code unused epoch
+    { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
     short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
     token="${short%%|*}"; short="${short#*|}"
     dlsize="-"; dltime="-"; speed=0
     if [ "$dl" != "skip" ]; then
-        dlsize="$(z2r_tls_field "$dl" 3)"
-        dltime="$(z2r_tls_field "$dl" 4)"
+        IFS='|' read -r rc code dlsize dltime unused <<< "$dl"
         speed="$(awk -v sz="$dlsize" -v t="$dltime" 'BEGIN{if (t ~ /^[0-9]+\.?[0-9]*$/ && t+0>0) printf "%.0f", sz/t; else print 0}')"
     fi
     case "$token" in ok|warn) ;; *) token="fail" ;; esac
     _supersweep_print_line "RKN" "$d" "$s" "$token" "$v12" "$v13" "$short" >&2
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$d" "$s" "$token" "$dlsize" "$speed" \
+    printf -v epoch '%(%s)T' -1 2>/dev/null || epoch="$(date +%s)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$epoch" "$d" "$s" "$token" "$dlsize" "$speed" \
         >> "${Z2R_SUPERSWEEP_DIR}/coverage.tsv"
-    _supersweep_progress_row "$(date +%s)" "$d" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
+    _supersweep_progress_row "$epoch" "$d" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
         >> "${Z2R_SUPERSWEEP_DIR}/progress.rkn.tsv"
     printf '%s\n' "$token"
 }
 
 _supersweep_worker_rkn() {
+    _supersweep_worker_priority
     local name="$1" max="$2" par="$3" tls_pref="$4" pause_sec="$5"
     shift 5
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tmpd="${dir}/wrkn"
-    local ref d round=0 token out s
+    local ref d round=0 token out s v12 v13 rc code12 code13 unused
     local ss_interrupted=0
     trap 'ss_interrupted=1' INT TERM
     set +e
@@ -390,18 +587,22 @@ _supersweep_worker_rkn() {
             round=$((round + 1))
             _supersweep_request_lock "$name" "$round" "domain|${d}|tls|${s}" || { ss_interrupted=1; break; }
             _supersweep_settle
-            z2r_tls_check_target "https://${d}/" > "${tmpd}/r.0" 2>/dev/null </dev/null
+            _supersweep_check_target "https://${d}/" > "${tmpd}/r.0" 2>/dev/null </dev/null \
+                || { ss_interrupted=1; break; }
             [ "$ss_interrupted" = 1 ] && break
-            out="$(cat "${tmpd}/r.0" 2>/dev/null)"
+            out="$(< "${tmpd}/r.0")"
             [ -n "$out" ] || out="28|000|-|-|-
 28|000|-|-|-
 skip"
             token="$(_supersweep_rkn_record "$d" "$s" "$out" "$tls_pref")"
+            { IFS= read -r v12; IFS= read -r v13; } <<< "$out"
+            IFS='|' read -r rc code12 unused <<< "$v12"
+            IFS='|' read -r rc code13 unused <<< "$v13"
             # Обе TLS зелёные → GREEN_PAUSE (0 отключает), иначе пауза пользователя без эскалации.
             peff="$pause_sec"
             if [ "$token" = ok ] \
-                && z2r_tls_code_ok "$(z2r_tls_field "$(printf '%s\n' "$out" | sed -n 1p)" 2)" \
-                && z2r_tls_code_ok "$(z2r_tls_field "$(printf '%s\n' "$out" | sed -n 2p)" 2)"; then
+                && z2r_tls_code_ok "$code12" \
+                && z2r_tls_code_ok "$code13"; then
                 g="${Z2R_SUPERSWEEP_GREEN_PAUSE:-5}"
                 case "$g" in ''|*[!0-9]*) g=5 ;; esac
                 if [ "$g" -gt 0 ]; then peff="$g"; fi
@@ -446,7 +647,7 @@ _supersweep_settle_worker() {
         best="$(_supersweep_kv_read "${dir}/best.rkn" winner)"
         best_short="покрывает $(_supersweep_kv_read "${dir}/best.rkn" winner_cover)/$(_supersweep_kv_read "${dir}/best.rkn" winner_total) доменов"
     else
-        best="$(_supersweep_kv_read "${dir}/best.${name}" best)"
+        best="$(_supersweep_profile_best "$name")"
         best_short="$(_supersweep_kv_read "${dir}/best.${name}" best_short)"
     fi
     # best/done пишутся и при отмене; interrupted запрещает применение частичного результата.
@@ -507,6 +708,7 @@ _supersweep_settle_worker() {
 # При отмене не вызывать: новые результаты применять нельзя.
 _supersweep_settle_pass() {
     local cfg="$1" dir="$Z2R_SUPERSWEEP_DIR" wname
+    _supersweep_cancelled && return 0
     for wname in yt gv ds rkn; do
         [ -e "${dir}/done.${wname}" ] || continue
         [ -e "${dir}/applied.done.${wname}" ] && continue
@@ -522,26 +724,47 @@ _supersweep_settle_pass() {
 
 _supersweep_apply_cmd() {
     local f="$1" dir="$Z2R_SUPERSWEEP_DIR"
+    local ORCH_LOCK_FILE="${ORCH_LOCK_FILE}" ORCH_ACTIVE_SCOPE="${ORCH_ACTIVE_SCOPE:-default}"
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+        ORCH_LOCK_FILE="${dir}/probe/locked.tsv"
+        ORCH_ACTIVE_SCOPE=default
+    fi
     local name="${f##*/cmd.}"
     local target="${dir}/applied.${name}"
     # Pipe-subshell наследует orch_locked_set; файлы общие, писатель один.
     tail -n +2 "$f" 2>/dev/null | while IFS='|' read -r kind key proto val; do
         [ -n "$kind" ] || continue
         case "$kind" in
-            profile|domain) orch_locked_set "$key" "$proto" "$val" || true ;;
+            profile|domain) orch_locked_set "$key" "$proto" "$val" || exit 1 ;;
         esac
-    done
-    mv -f "$f" "$target" 2>/dev/null || rm -f "$f"
+    done || return 1
+    [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" != 1 ] || chmod 644 "$ORCH_LOCK_FILE" || return 1
+    mv -f "$f" "$target" 2>/dev/null || return 1
     return 0
 }
 
 _supersweep_kv_read() {
     # file, key → значение (пусто, если отсутствует).
     [ -f "$1" ] || return 0
-    sed -n "s/^$2=//p" "$1" | head -n1
+    local key value
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        [ "$key" = "$2" ] || continue
+        printf '%s\n' "$value"
+        return 0
+    done < "$1"
+    return 0
+}
+
+# Одинаковый допуск для раннего и резервного применения в сводке.
+_supersweep_profile_best() {
+    local file="${Z2R_SUPERSWEEP_DIR}/best.$1"
+    [ "$(_supersweep_kv_read "$file" best_kind)" != warn ] || return 0
+    _supersweep_kv_read "$file" best
 }
 
 _supersweep_restore_prev() {
+    # Пробы писали только приватный файл. Рабочие локи мог изменить пользователь.
+    [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && return 0
     # Фильтры: kind (profile|domain, пусто = все), необязательный key.
     local dir="$Z2R_SUPERSWEEP_DIR" want_kind="${1:-}" want_key="${2:-}"
     local kind key proto prev
@@ -559,11 +782,13 @@ _supersweep_restore_prev() {
 }
 
 _supersweep_status_write() {
-    local dir="$Z2R_SUPERSWEEP_DIR"
+    local dir="$Z2R_SUPERSWEEP_DIR" epoch
+    printf -v epoch '%(%s)T' -1 2>/dev/null || epoch="$(date +%s)"
     {
         printf 'state=%s\n' "$1"
+        printf 'scope=%s\n' "${ORCH_ACTIVE_SCOPE:-default}"
         printf 'started=%s\n' "$2"
-        printf 'updated=%s\n' "$(date +%s)"
+        printf 'updated=%s\n' "$epoch"
         printf 'tls_pref=%s\n' "$3"
         printf 'pause=%s\n' "$4"
         printf 'settle=%s\n' "${Z2R_SUPERSWEEP_SETTLE:-2}"
@@ -725,8 +950,40 @@ _supersweep_estimate_total() {
 
 # supersweep_run <tls_pref> <pause> <ds_pause> <rkn_pause> <rkn_par> <domain...>
 # Без диалогов; rc=0 завершён, rc=1 отменён/откат.
-supersweep_run() {
+_supersweep_cleanup() {
+    if [ -n "${Z2R_SUPERSWEEP_WORKER_PID:-}" ]; then
+        touch "$Z2R_SUPERSWEEP_DIR/cancel"
+        kill "$Z2R_SUPERSWEEP_WORKER_PID" 2>/dev/null || true
+        wait "$Z2R_SUPERSWEEP_WORKER_PID" 2>/dev/null || true
+    fi
+    if type supersweep_probe_stop >/dev/null 2>&1; then
+        supersweep_probe_stop || {
+            echo 'Не удалось убрать тестовые правила firewall; lock сохранён, требуется ручная проверка.' >&2
+            return 1
+        }
+    fi
+    supersweep_report_save || echo 'Не удалось сохранить последний отчёт суперавтопрогона.' >&2
+    rm -f "${Z2R_SUPERSWEEP_DIR}.lock/pid"
+    rmdir "${Z2R_SUPERSWEEP_DIR}.lock" 2>/dev/null || true
+}
+
+supersweep_run() (
+    # Один прогон на runtime-каталог; cleanup не зависит от исхода/сигнала.
+    if [ "${Z2R_SUPERSWEEP_LOCK_HELD:-0}" != 1 ]; then
+        (umask 077; mkdir "${Z2R_SUPERSWEEP_DIR}.lock") 2>/dev/null || {
+            echo 'Суперавтопрогон уже выполняется (или остался lock после аварии).' >&2
+            return 1
+        }
+    fi
+    trap '_supersweep_cleanup' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
+    _supersweep_run "$@"
+)
+
+_supersweep_run() {
     local tls_pref="$1" pause_sec="$2" ds_pause="$3" rkn_pause="$4" rkn_par="$5"
+    printf '%s\n' "${BASHPID:-$$}" > "$Z2R_SUPERSWEEP_DIR.lock/pid" || return 1
     shift 5
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
@@ -767,7 +1024,11 @@ supersweep_run() {
     }
 
     rm -rf "$dir"
-    mkdir -p "$dir" || { echo -e "${red}Не удалось создать $dir${plain}"; return 1; }
+    (umask 077; mkdir -p "$dir") || { echo -e "${red}Не удалось создать $dir${plain}"; return 1; }
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+        mkdir -p "${dir}/probe" || return 1
+    fi
+    _supersweep_status_write starting "$started" "$tls_pref" "$pause_sec" "$rkn_par" "" "$domains"
 
     local gv_domain gv_url
     gv_domain="$(get_yt_cluster_domain 2>/dev/null || echo 'rr2---sn-4g5ednly.googlevideo.com')"
@@ -818,16 +1079,29 @@ supersweep_run() {
     export Z2R_TLS_PROBE_GAP
 
     local svc_was_running=0
-    zapret2_running && svc_was_running=1
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" != 1 ]; then
+        zapret2_running && svc_was_running=1
+    fi
 
     local interrupted=0
     trap 'interrupted=1' INT
 
     # Один воркер за раз, паузы между фазами против rate-эвристик ТСПУ.
-    local phase cancelled=0 pid
+    local phase cancelled=0 pid poll last_alive="" last_st=""
+    z2r_poll_sleep_init
+    poll="$(_supersweep_poll_interval)"
     for phase in yt gv ds rkn; do
         [ "$cancelled" = 1 ] && break
         [ "$interrupted" = 1 ] && cancelled=1 && break
+        if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+            local probe_profile
+            case "$phase" in yt) probe_profile=1 ;; gv) probe_profile=2 ;; ds) probe_profile=4 ;; rkn) probe_profile=3 ;; esac
+            if ! supersweep_probe_start "$probe_profile" "$cfg"; then
+                echo 'Не удалось запустить изолированную проверку; рабочий zapret2 не менялся.' >&2
+                cancelled=1
+                break
+            fi
+        fi
         case "$phase" in
             yt) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза 1/4: YouTube (профиль 1) ===${plain}" ;;
             gv) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза 2/4: Googlevideo (профиль 2) ===${plain}" ;;
@@ -841,7 +1115,14 @@ supersweep_run() {
             rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" $domains & ;;
         esac
         pid=$!
+        Z2R_SUPERSWEEP_WORKER_PID="$pid"
         while kill -0 "$pid" 2>/dev/null; do
+            if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] \
+                && ! kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null; then
+                echo 'Тестовый nfqws2 завершился; прогон остановлен.' >&2
+                : > "${dir}/cancel"
+                cancelled=1
+            fi
             if [ "$interrupted" = 1 ]; then
                 if [ ! -e "${dir}/cancel" ]; then
                     : > "${dir}/cancel"
@@ -853,25 +1134,34 @@ supersweep_run() {
             local f
             for f in "${dir}"/cmd.*; do
                 [ -e "$f" ] || continue
-                _supersweep_apply_cmd "$f"
+                # cmd.<worker>.tmp.* ещё публикуется: его читать нельзя.
+                case "${f##*/}" in cmd.yt|cmd.gv|cmd.ds|cmd.rkn) ;; *) continue ;; esac
+                if ! _supersweep_apply_cmd "$f"; then
+                    echo 'Не удалось записать пробный лок; прогон остановлен.' >&2
+                    : > "${dir}/cancel"
+                    cancelled=1
+                fi
             done
-            # Завершённое применяем сразу; при отмене новых изменений не вводим.
-            [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
             local alive_names=""
             kill -0 "$pid" 2>/dev/null && alive_names="$phase"
-            # status перезаписывается только при смене данных или раз в 5 сек:
-            # при частом опросе каждая запись это дюжина fork'ов, на слабых
-            # машинах именно она съедает время прогона
+            # status — при смене данных или раз в 5 с. Время берётся builtin,
+            # но атомарный mv остаётся отдельным процессом: не делать на каждом poll.
             if [ "$alive_names" != "${last_alive:-}" ] || [ -z "${last_st:-}" ] \
                || [ $((SECONDS - last_st)) -ge 5 ]; then
                 _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_names" "$domains"
                 last_alive="$alive_names"
                 last_st=$SECONDS
             fi
-            sleep "${Z2R_SUPERSWEEP_POLL:-0.3}" 2>/dev/null || sleep 1
+            sleep "$poll"
         done
         wait "$pid" 2>/dev/null || true
-        # Обработать done последнего воркера, пропущенный из-за выхода из цикла.
+        Z2R_SUPERSWEEP_WORKER_PID=""
+        _supersweep_cancelled && cancelled=1
+        if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+            supersweep_probe_stop || { cancelled=1; break; }
+        fi
+        # Фазы последовательны: завершённое применяем после wait, а не
+        # проверяем четыре done-файла на каждом проходе ожидания ACK.
         [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
         # пауза между фазами (не после последней и не при отмене)
         if [ "$cancelled" != 1 ] && [ "$phase" != rkn ]; then
@@ -900,9 +1190,9 @@ supersweep_run() {
     fi
 
     local best_yt best_gv best_ds winner applied_any=0
-    best_yt="$(_supersweep_kv_read "${dir}/best.yt" best)"
-    best_gv="$(_supersweep_kv_read "${dir}/best.gv" best)"
-    best_ds="$(_supersweep_kv_read "${dir}/best.ds" best)"
+    best_yt="$(_supersweep_profile_best yt)"
+    best_gv="$(_supersweep_profile_best gv)"
+    best_ds="$(_supersweep_profile_best ds)"
     winner="$(_supersweep_kv_read "${dir}/best.rkn" winner)"
     # Без best.rkn восстановить отчёт из coverage.tsv (воркер мог погибнуть при записи).
     local warn_winner="" rkn_fallback_line=""
@@ -1005,7 +1295,7 @@ supersweep_run() {
         wname="${spec%%:*}"; rest="${spec#*:}"
         pkey="${rest%%:*}"; rest="${rest#*:}"
         plabel="${rest%%:*}"; protos="${rest#*:}"
-        best="$(_supersweep_kv_read "${dir}/best.${wname}" best)"
+        best="$(_supersweep_profile_best "$wname")"
         greens="$(_supersweep_kv_read "${dir}/best.${wname}" greens)"
         fulls="$(_supersweep_kv_read "${dir}/best.${wname}" fulls)"
         warns="$(_supersweep_kv_read "${dir}/best.${wname}" warns)"
@@ -1027,6 +1317,7 @@ supersweep_run() {
                     # Воркер умер до применения — применить здесь.
                     old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
                     if profile_state_set_and_apply "$pkey" "$protos" "$best" "$cfg"; then
+                        printf 'profile\t%s\t%s\n' "$pkey" "$best" >> "${dir}/applied.tsv"
                         echo -e "   ${Fgreen}Применена стратегия ${best}${plain} (${best_short})"
                         applied_any=1
                         profile_strategy_restart_if_needed "$pkey" "$cfg" "$old_udp_ports"
@@ -1042,6 +1333,8 @@ supersweep_run() {
             else
                 echo -e "   Кандидат был ${best} — не применён (прогон прерван)."
             fi
+        elif [ -n "$warns" ]; then
+            echo -e "   ${yellow}Жёлтые стратегии не применяются автоматически.${plain}"
         else
             echo -e "   ${red}Рабочих стратегий не найдено.${plain}"
             # Завершённый YouTube весь красный → совет перезагрузить роутер.
@@ -1276,6 +1569,13 @@ supersweep_ask_rkn_pause() {
 
 supersweep_menu() {
     local cfg domains tls_pref pause ds_pause rkn_pause answer ss_run_rc=0
+    if [ -d "${Z2R_SUPERSWEEP_DIR}.lock" ]; then
+        echo "Суперавтопрогон уже выполняется. Лог: ${Z2R_SUPERSWEEP_DIR}.log"
+        answer=""
+        read -re -p '1 - остановить, Enter - вернуться: ' answer || true
+        [ "$answer" != 1 ] || supersweep_cancel_running
+        return 0
+    fi
     cfg="$(config_get_file 2>/dev/null)" || cfg=""
     menu_config_snapshot "$cfg" 2>/dev/null || true
     if [ "${MENU_AUTO_MODE:-}" = "включен" ]; then
@@ -1348,11 +1648,19 @@ supersweep_menu() {
     echo -e "РКН: ${ndom} домен(ов) по одному, полный проход стратегий на каждый, пауза РКН ${rkn_pause} сек."
     echo ""
     echo -e "Прогон займёт ориентировочно до $(( (est_total + 59) / 60 )) мин. Во время прогона"
-    echo -e "интернет может подтормаживать (стратегии переключаются на лету)."
+    echo -e "Обычный прогон переключает рабочие стратегии. Фоновый использует отдельный nfqws2;"
+    echo -e "рабочие стратегии меняются только при применении найденного победителя."
     # Ctrl+C на старте отменяет диалог, а не скрипт.
-    answer=""
-    read -re -p "Enter - старт, 0 - отмена: " answer || answer="0"
-    [ "$answer" = "0" ] && { echo "Отмена."; return 0; }
+    while :; do
+        answer=""
+        read -re -p "Enter - обычный старт, B/В - в фоне без переключения рабочих стратегий, 0 - отмена: " answer || answer="0"
+        case "$answer" in
+            '') break ;;
+            b|B|в|В|б|Б) answer="B"; break ;;
+            0) echo "Отмена."; return 0 ;;
+            *) echo "Не удалось распознать ввод. Нажмите Enter, B/В или 0." ;;
+        esac
+    done
 
     # DNS-gate всегда по эталону rutracker.org, а не пользовательскому домену.
     # Только подтверждённый спуф останавливает; тихий DNS/недоступный DoH — предупреждение.
@@ -1364,7 +1672,17 @@ supersweep_menu() {
     fi
 
     # Обработать rc=1 отмены, чтобы глобальный set -e не закрыл меню.
+    case "$answer" in
+        B)
+            supersweep_background_start "$cfg" "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || true
+            pause_enter || true
+            return 0
+            ;;
+    esac
     ss_run_rc=0
+    # Прогон живёт в subshell с собственным INT trap; родительское меню
+    # тоже получает Ctrl+C от терминала и не должно завершаться вместе с ним.
+    trap ':' INT
     supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || ss_run_rc=$?
     # Повторный Ctrl+C в сводке/паузе игнорируем; затем вернуть обычный INT.
     trap ':' INT

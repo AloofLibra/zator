@@ -193,6 +193,8 @@ for (const name of readdirSync(join(repoRoot, 'lua')).sort()) {
 for (const repoPath of LISTS) add(`lists/${basename(repoPath)}`, repoPath)
 for (const [from, to] of EXTRA_STRATS) add(to, from)
 add('extra_strats/cache/orchestra/locked.lua', 'orchestra/locked.lua')
+// nfqws2 загружает runtime-копию; cache-путь оставлен для совместимости.
+add('lua/locked.lua', 'orchestra/locked.lua')
 for (const repoPath of walkRepo('firewall', { recursive: false })) {
   add(repoPath, repoPath, { executable: true })
 }

@@ -9,6 +9,7 @@ import { fetchRecommendations } from '../api/endpoints'
 import type { Recommendations } from '../api/types'
 import { provider } from '../stores/settings'
 import StrategyCard from '../components/strategies/StrategyCard.vue'
+import SupersweepPanel from '../components/strategies/SupersweepPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -116,6 +117,7 @@ async function refresh() {
       <button id="refresh-locks" :class="{ 'is-busy': busyButton === 'refresh-locks' }" :disabled="busyActive"
         type="button" @click="refresh">Обновить</button>
     </div>
+    <SupersweepPanel />
     <aside v-if="statusLoaded" class="recommendations-banner" aria-live="polite">
       <strong>Опыт сообщества · {{ recommendations?.provider || recommendationProvider || 'Провайдер не определён' }}</strong>
       <p v-if="recommendationsLoading">Загружаем рекомендации…</p>

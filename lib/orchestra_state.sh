@@ -3,6 +3,34 @@
 ORCH_DIR="${ORCH_DIR:-/opt/zator/extra_strats/cache/orchestra}"
 ORCH_LOCK_FILE="${ORCH_LOCK_FILE:-$ORCH_DIR/locked.tsv}"
 
+# Меню, CGI и фоновый прогон — независимые писатели одного locked.tsv.
+# ponytail: один mkdir-lock на orchestra; таймаут вместо небезопасного снятия
+# чужого lock. После SIGKILL оставшийся *.write-lock удаляется вручную.
+_orch_write_run() (
+  if [ "${_ORCH_WRITE_HELD:-0}" = 1 ]; then
+    trap - EXIT
+    "$@"; return $?
+  fi
+  local lock="${ORCH_LOCK_FILE}.write-lock" n=0
+  mkdir -p "$(dirname "$ORCH_LOCK_FILE")" || return 1
+  until mkdir "$lock" 2>/dev/null; do
+    n=$((n + 1))
+    [ "$n" -lt 10 ] || { echo 'Orchestra: write lock timeout' >&2; return 1; }
+    sleep 1
+  done
+  trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  _ORCH_WRITE_HELD=1
+  "$@"
+)
+
+orch_scoped_locks_migrate() { _orch_write_run _orch_scoped_locks_migrate "$@"; }
+orch_scoped_locked_set() { _orch_write_run _orch_scoped_locked_set "$@"; }
+orch_scoped_locked_clear() { _orch_write_run _orch_scoped_locked_clear "$@"; }
+orch_scoped_locked_rename() { _orch_write_run _orch_scoped_locked_rename "$@"; }
+
 # Базовое чтение блокировки из locked.tsv. $3 — значение по умолчанию.
 # Единый awk для orch_locked_get (default "0") и orch_locked_state_get (default "auto").
 _orch_locked_read() {
@@ -59,7 +87,7 @@ _orch_scope_lock_file() {
 # Разовая миграция старого формата: 4-колоночные mark: строки из locked.tsv
 # переезжают в per-mark файлы. Идемпотентна; Lua до сих пор читает и старый
 # формат, так что непромигрированные установки продолжают работать.
-orch_scoped_locks_migrate() {
+_orch_scoped_locks_migrate() {
   local f="${ORCH_LOCK_FILE}" dir tmp
   [ -f "$f" ] || return 0
   awk -F '\t' 'NF>=4 && $1 ~ /^mark:[1-9][0-9]*$/ {m=1} END {exit !m}' "$f" || return 0
@@ -98,7 +126,7 @@ orch_scoped_locked_get() {
   ' "$ORCH_LOCK_FILE"
 }
 
-orch_scoped_locked_set() {
+_orch_scoped_locked_set() {
   local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}"
   local file tmp matches
   _orch_scope_basic_validate "$scope" || { echo "Invalid lock scope: $scope" >&2; return 2; }
@@ -135,7 +163,7 @@ orch_scoped_locked_set() {
   ' "$ORCH_LOCK_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_LOCK_FILE" || { rm -f "$tmp"; echo "Unable to update lock file" >&2; return 1; }
 }
 
-orch_scoped_locked_clear() {
+_orch_scoped_locked_clear() {
   local scope="${1:-}" profile="${2:-}" proto="${3:-}" file tmp
   _orch_scope_basic_validate "$scope" || return 2
   if type orch_scope_validate >/dev/null 2>&1; then orch_scope_validate "$scope" "$profile" "$proto" clear || return 2; fi
@@ -381,7 +409,7 @@ orch_locked_clear_everywhere() {
 
 # Переименование профиля/домена в lock-файле одного scope с сохранением
 # позиции строки. Меняется только первое поле (2/3-колоночные строки).
-orch_scoped_locked_rename() {
+_orch_scoped_locked_rename() {
   local scope="$1" old="$2" new="$3" file tmp
   _orch_scope_basic_validate "$scope" || return 2
   if [ "$scope" != default ]; then
