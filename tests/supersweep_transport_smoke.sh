@@ -14,12 +14,19 @@ log=()
 iptables() {
   log+=("$*")
   if [[ ${MOCK_FAIL_AT:-0} == "${#log[@]}" ]]; then return 1; fi
-  [[ "$1 $2 $3 $4" == '-w 5 -t mangle' ]] || fail 'unexpected table or no xtables lock'
-  shift 4
+  if [[ ${MOCK_NO_WAIT:-0} == 1 && " $* " == *' -w '* ]]; then return 2; fi
+  if [[ "$1 $2 $3 $4" == '-w 5 -t mangle' ]]; then
+    shift 4
+  elif [[ ${MOCK_NO_WAIT:-0} == 1 && "$1 $2" == '-t mangle' ]]; then
+    shift 2
+  else
+    fail 'unexpected table or no xtables lock'
+  fi
   local op=$1 chain=$2 text key
   shift 2
   text="$*"; key="$chain|$text"
   case "$op" in
+    -L) [[ $chain == OUTPUT ]] || fail 'unexpected probe target'; return 0 ;;
     -N) [[ ! ${MOCK_CHAINS[$chain]+yes} ]] || return 1; MOCK_CHAINS[$chain]=1 ;;
     -A|-I) [[ ${MOCK_CHAINS[$chain]+yes} ]] || return 1; rules[$key]=1 ;;
     -D) [[ ${rules[$key]+yes} ]] || return 1; unset 'rules[$key]' ;;
@@ -156,4 +163,17 @@ NFT_TAGGED=1
 supersweep_transport_stop || fail 'native nft stop'
 grep -q '^delete rule inet zapret2 postnat_hook handle 42$' "$TMP_DIR/nft.batch" || fail 'cleanup must delete exact owned handles'
 grep -q '^delete chain inet zapret2 z2r_supersweep_output$' "$TMP_DIR/nft.batch" || fail 'owned output chain leaked'
+
+# Keenetic-style iptables 1.4.21 rejects -w entirely: the probe must disable it
+# once and run the whole install/check/stop cycle without it.
+FWTYPE=iptables
+unset _Z2R_SS_IPT_WAIT _Z2R_SS_IPT_WAIT_DONE
+MOCK_NO_WAIT=1
+log=()
+supersweep_transport_start || fail 'no-w start'
+[[ ${rules['Z2R_SS_OUT|-p tcp --sport 62000:62999 --dport 443 -m mark ! --mark 0x40000000/0x40000000 -j MARK --set-xmark 0x08000000/0x08000000']+yes} ]] || fail 'no-w start missed classification'
+supersweep_transport_check || fail 'no-w check'
+supersweep_transport_stop || fail 'no-w stop'
+[[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'no-w cleanup leaked'
+MOCK_NO_WAIT=0
 printf 'supersweep transport smoke: OK\n'

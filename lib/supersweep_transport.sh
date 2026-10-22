@@ -13,7 +13,7 @@ _supersweep_transport_error() {
 }
 
 _supersweep_transport_ipt() {
-  iptables -w 5 -t mangle "$@"
+  iptables ${_Z2R_SS_IPT_WAIT:+$_Z2R_SS_IPT_WAIT} -t mangle "$@"
 }
 
 _supersweep_transport_mark_safe() {
@@ -179,6 +179,14 @@ supersweep_transport_start() {
     if _supersweep_transport_nft_install; then _Z2R_SS_ACTIVE=1; return 0; fi
     _supersweep_transport_error 'native nft hook installation failed; no fallback to production NFQUEUE'
     return 1
+  fi
+  if [ -z "${_Z2R_SS_IPT_WAIT_DONE:-}" ]; then
+    if iptables -w 5 -t mangle -L OUTPUT -n >/dev/null 2>&1; then
+      _Z2R_SS_IPT_WAIT='-w 5'
+    else
+      _Z2R_SS_IPT_WAIT=''
+    fi
+    _Z2R_SS_IPT_WAIT_DONE=1
   fi
   if _supersweep_transport_install; then
     _Z2R_SS_ACTIVE=1
