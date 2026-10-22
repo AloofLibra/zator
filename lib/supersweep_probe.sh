@@ -41,6 +41,9 @@ supersweep_probe_config() {
     } > "$dir/nfqws2.args" || return 1
     # Только НУМЕРОВАННЫЕ стратегии нужного стандартного профиля. Исключения/
     # hostlists и детекторы не нужны: весь трафик очереди — явно выбранная проба.
+    # Каждый аргумент — отдельной строкой: @-файл nfqws2 не режет строку по
+    # пробелам, и combined-заголовок оставлял профиль вообще без lua-функций
+    # («no lua functions in this profile» — пробы уходили без десинка).
     awk -v p="$profile" '
         /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
         opts && /^"[[:space:]]*$/ { opts=0 }
@@ -55,10 +58,15 @@ supersweep_probe_config() {
                 print "--new\n--filter-tcp=443\n--filter-l7=tls"
                 print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
                 print "--out-range=-s34228"
-                print "--in-range=-s32768 --lua-desync=circular_locked:key=" p
+                print "--in-range=-s32768"
+                print "--lua-desync=circular_locked:key=" p
             }
             if (/^--import=/) { print; plan=1 }
-            if (/^--lua-desync=/ && /:strategy=[0-9]+/) { print; plan=1 }
+            if (/^--lua-desync=/ && /:strategy=[0-9]+/) {
+                n = split($0, piece, / --lua-desync=/)
+                for (i = 1; i <= n; i++) print (i > 1 ? "--lua-desync=" : "") piece[i]
+                plan=1
+            }
             if (/^--in-range=x$/ || /^--payload=tls_client_hello,discord_ip_discovery$/) print
         }
         END { if (!found || !seen || !plan) exit 1 }
