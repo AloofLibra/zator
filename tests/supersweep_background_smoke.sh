@@ -188,8 +188,10 @@ done
 grep -q -- '--qnum=65535' "$TMP/nfq.args"
 grep -q -- '--uid=65533:65533' "$TMP/nfq.args"
 grep -q -- '--lua-init=@' "$TMP/nfq.args"
-[[ "$(head -n1 "$TMP/nfq.args")" == "@$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf" ]]
-grep -qF -- "@$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf" "$TMP/nfq.args"
+grep -q -- '--import=' "$TMP/nfq.args"
+grep -q -- '--lua-desync=circular_locked:key=1' "$TMP/nfq.args"
+! grep -q '^@' "$TMP/nfq.args"
+[ "$(grep -cx -- '--new' "$TMP/nfq.args")" = 1 ]
 printf 'r|99\nprofile|invalid|tls|1\n' > "$Z2R_SUPERSWEEP_DIR/cmd.yt.tmp.poison"
 for ((i=0; i<1800; i++)); do
     [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || break

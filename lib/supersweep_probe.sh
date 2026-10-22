@@ -160,33 +160,33 @@ supersweep_probe_start() {
         args+=("$line")
     done < "$dir/nfqws2.args"
     [ "${#args[@]}" -gt 0 ] || return 1
-    # Сборки nfqws2 расходятся в позиции @-файла: официальная читает его только
-    # первым аргументом, у форка ct13 рабочим является обратный порядок. Пробуем
-    # @-файл первым, при смерти процесса повторяем с обратным.
-    local attempt
-    for attempt in 1 2; do
-        if [ "$attempt" = 1 ]; then
-            "$binary" "@$dir/nfqws2.conf" "${args[@]}" > "$dir/nfqws2.log" 2>&1 </dev/null &
-        else
-            "$binary" "${args[@]}" "@$dir/nfqws2.conf" > "$dir/nfqws2.log" 2>&1 </dev/null &
+    # План идёт в argv следом за демоновскими аргументами: у @-файла на разных
+    # сборках свои причуды (позиция, разбиение строк, регистрация --lua-desync
+    # внутри профиля), а реальный argv — единственный путь, которым nfqws2
+    # гарантированно получает опции на всех платформах (так его запускает и
+    # продакшн-инициализация). Аргументы заканчиваются --new (конец секции
+    # шаблона); ведущий --new плана дал бы второй, пустой профиль без
+    # фильтров, который перехватывает весь трафик мимо плана.
+    local pline skip_new=0
+    if [ "${args[${#args[@]}-1]}" = "--new" ]; then skip_new=1; fi
+    while IFS= read -r pline; do
+        [ -n "$pline" ] || continue
+        if [ "$skip_new" = 1 ] && [ "$pline" = "--new" ]; then
+            skip_new=0
+            continue
         fi
-        Z2R_SUPERSWEEP_NFQ_PID=$!
-        i=0
-        while [ "$i" -lt 5 ]; do
-            kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || break
-            awk '$1==65535 {found=1} END {exit !found}' "$queue_file" && break
-            sleep 1
-            i=$((i + 1))
-        done
-        if kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null \
-            && awk '$1==65535 {found=1} END {exit !found}' "$queue_file"; then
-            break
-        fi
-        kill "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
-        wait "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
-        Z2R_SUPERSWEEP_NFQ_PID=""
-        [ "$attempt" = 1 ] || { supersweep_probe_stop; return 1; }
+        args+=("$pline")
+    done < "$dir/nfqws2.conf"
+    "$binary" "${args[@]}" > "$dir/nfqws2.log" 2>&1 </dev/null &
+    Z2R_SUPERSWEEP_NFQ_PID=$!
+    i=0
+    while [ "$i" -lt 5 ]; do
+        kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || { supersweep_probe_stop; return 1; }
+        awk '$1==65535 {found=1} END {exit !found}' "$queue_file" && break
+        sleep 1
+        i=$((i + 1))
     done
+    if [ "$i" = 5 ]; then supersweep_probe_stop; return 1; fi
     # Даже частичная установка правил обязана пройти cleanup.
     Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
     if ! supersweep_transport_start; then supersweep_probe_stop; return 1; fi
