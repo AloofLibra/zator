@@ -76,6 +76,9 @@ rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 )
 cp orchestra/locked.lua "$ZATOR_ROOT/lua/locked.lua"
 tr -d '\r' < config.default > "$CONFIG_FILE"
+mkdir -p "$ZAPRET2_ROOT/nfq2"
+printf '#!/bin/sh\n[ "${1:-}" != --help ] || { printf " --autoexclude=[0|1]\\n"; exit 0; }\nexit 0\n' > "$ZAPRET2_ROOT/nfq2/nfqws2"
+chmod +x "$ZAPRET2_ROOT/nfq2/nfqws2"
 supersweep_probe_config 4 "$CONFIG_FILE"
 grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
@@ -86,6 +89,28 @@ grep -q -- '--template=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.arg
 grep -qx -- '--new' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 ! grep -qE '^--lua-desync=[^ ]* --lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+# A build without the autoexclude option must not receive it.
+cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK2'
+#!/bin/sh
+[ "${1:-}" != --help ] || { printf 'usage: nfqws2\n'; exit 0; }
+exit 0
+MOCK2
+unset Z2R_SUPERSWEEP_AUTOEXCLUDE
+supersweep_probe_config 4 "$CONFIG_FILE"
+! grep -q -- '--autoexclude' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK'
+#!/bin/sh
+[ "${1:-}" != --version ] || { echo 'nfqws2 smoke'; exit 0; }
+[ "${1:-}" != --help ] || { printf 'usage: nfqws2\n --autoexclude=[0|1]\n'; exit 0; }
+printf '%s\n' "$@" >> "$TMP/nfq.args"
+printf '65535 0 0 2 65531 0 0 0 1\n' > "$Z2R_SUPERSWEEP_QUEUE_FILE"
+echo "$$" >> "$TMP/nfq.pids"
+trap ': > "$Z2R_SUPERSWEEP_QUEUE_FILE"; exit' TERM INT
+while :; do sleep 0.1; done
+MOCK
+unset Z2R_SUPERSWEEP_AUTOEXCLUDE
+supersweep_probe_config 4 "$CONFIG_FILE"
+grep -q -- '--autoexclude=0' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 (
     supersweep_transport_check() { return 0; }
     Z2R_SUPERSWEEP_NFQ_PID=$$
@@ -115,6 +140,7 @@ printf '32768 60999\n' > "$TMP/ports"
 cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK'
 #!/bin/sh
 [ "${1:-}" != --version ] || { echo 'nfqws2 smoke'; exit 0; }
+[ "${1:-}" != --help ] || { printf 'usage: nfqws2\n --autoexclude=[0|1]\n'; exit 0; }
 printf '%s\n' "$@" >> "$TMP/nfq.args"
 printf '65535 0 0 2 65531 0 0 0 1\n' > "$Z2R_SUPERSWEEP_QUEUE_FILE"
 echo "$$" >> "$TMP/nfq.pids"

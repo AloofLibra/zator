@@ -19,11 +19,27 @@ supersweep_probe_config() {
     for f in blob_override.tsv mode_override.tsv sni_override.tsv clonesize.tsv; do
         [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
     done
+    # --autoexclude есть не во всех сборках: неизвестная опция валит бинарник,
+    # поэтому поддержка проверяется по --help и кешируется на процесс.
+    local binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+    case "${Z2R_SUPERSWEEP_AUTOEXCLUDE:-}" in
+        0|1) ;;
+        *)
+            if [ -x "$binary" ] && "$binary" --help 2>&1 | grep -q -- '--autoexclude'; then
+                Z2R_SUPERSWEEP_AUTOEXCLUDE=1
+            else
+                Z2R_SUPERSWEEP_AUTOEXCLUDE=0
+            fi
+            ;;
+    esac
     {
         printf '%s\n' "--qnum=${Z2R_SUPERSWEEP_QNUM:-65535}" \
             "--fwmark=${DESYNC_MARK:-0x40000000}" \
-            '--uid=65533:65533' \
-            '--autoexclude=0' \
+            '--uid=65533:65533'
+        if [ "$Z2R_SUPERSWEEP_AUTOEXCLUDE" = 1 ]; then
+            printf '%s\n' '--autoexclude=0'
+        fi
+        printf '%s\n' \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-lib.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
