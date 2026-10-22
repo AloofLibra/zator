@@ -20,41 +20,50 @@ supersweep_probe_config() {
         [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
     done
     {
-        printf '%s\n' "--qnum=65535" "--fwmark=${DESYNC_MARK:-0x40000000}" \
+        printf '%s\n' "--qnum=${Z2R_SUPERSWEEP_QNUM:-65535}" \
+            "--fwmark=${DESYNC_MARK:-0x40000000}" \
             '--uid=65533:65533' \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-lib.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
             "--lua-init=@$dir/locked.lua" \
             "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
-        # Только blobs, общий шаблон и НУМЕРОВАННЫЕ стратегии нужного
-        # стандартного профиля. Исключения/hostlists и детекторы не нужны:
-        # весь трафик этой очереди — явно выбранная проба нужного профиля.
-        awk -v p="$profile" '
+        awk '
             /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
             opts && /^"[[:space:]]*$/ { opts=0 }
             !opts { next }
             /^--blob=/ { print; next }
             /^--template=z2r_tcp_tls_common$/ { common=1; found=1; print; next }
-            common && /^--new/ { common=0 }
+            common && /^--new/ { common=0; new_seen=1; print; next }
             common && /^--/ { print }
-            $0 == "#Z2R_AUTO_STANDARD_" p "_BEGIN" { block=1; seen=1; next }
-            $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
-            block {
-                if (!header++) {
-                    print "--new\n--filter-tcp=443\n--filter-l7=tls"
-                    print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
-                    print "--out-range=-s34228"
-                    print "--in-range=-s32768 --lua-desync=circular_locked:key=" p
-                }
-                if (/^--import=/) { print; plan=1 }
-                if (/^--lua-desync=/ && /:strategy=[0-9]+/) { print; plan=1 }
-                if (/^--in-range=x$/ || /^--payload=tls_client_hello,discord_ip_discovery$/) print
-            }
-            END { if (!found || !seen || !plan) exit 1 }
+            END { if (!found || !new_seen) exit 1 }
         ' "$cfg" || return 1
-    } > "$dir/nfqws2.conf" || return 1
-    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.conf"
+    } > "$dir/nfqws2.args" || return 1
+    # Только НУМЕРОВАННЫЕ стратегии нужного стандартного профиля. Исключения/
+    # hostlists и детекторы не нужны: весь трафик очереди — явно выбранная проба.
+    awk -v p="$profile" '
+        /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
+        opts && /^"[[:space:]]*$/ { opts=0 }
+        !opts { next }
+        /^--template=z2r_tcp_tls_common$/ { common=1; found=1; next }
+        common && /^--new/ { common=0 }
+        common && /^--/ { print }
+        $0 == "#Z2R_AUTO_STANDARD_" p "_BEGIN" { block=1; seen=1; next }
+        $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
+        block {
+            if (!header++) {
+                print "--new\n--filter-tcp=443\n--filter-l7=tls"
+                print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
+                print "--out-range=-s34228"
+                print "--in-range=-s32768 --lua-desync=circular_locked:key=" p
+            }
+            if (/^--import=/) { print; plan=1 }
+            if (/^--lua-desync=/ && /:strategy=[0-9]+/) { print; plan=1 }
+            if (/^--in-range=x$/ || /^--payload=tls_client_hello,discord_ip_discovery$/) print
+        }
+        END { if (!found || !seen || !plan) exit 1 }
+    ' "$cfg" > "$dir/nfqws2.conf" || return 1
+    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.conf" "$dir/nfqws2.args"
 }
 
 supersweep_probe_stop() {
@@ -87,7 +96,7 @@ supersweep_probe_sequence() {
 }
 
 supersweep_probe_start() {
-    local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" i=0
+    local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" i=0 line
     local binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
     local queue_file="${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}" status key uid rest
     [ -x "$binary" ] || return 1
@@ -108,7 +117,13 @@ supersweep_probe_start() {
         done < "$status" 2>/dev/null || true
     done
     supersweep_probe_config "$profile" "$cfg" || return 1
-    "$binary" "@$dir/nfqws2.conf" > "$dir/nfqws2.log" 2>&1 </dev/null &
+    local args=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        args+=("$line")
+    done < "$dir/nfqws2.args"
+    [ "${#args[@]}" -gt 0 ] || return 1
+    "$binary" "${args[@]}" "@$dir/nfqws2.conf" > "$dir/nfqws2.log" 2>&1 </dev/null &
     Z2R_SUPERSWEEP_NFQ_PID=$!
     while [ "$i" -lt 5 ]; do
         kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || { supersweep_probe_stop; return 1; }

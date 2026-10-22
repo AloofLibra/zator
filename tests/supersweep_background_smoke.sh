@@ -77,8 +77,13 @@ rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 cp orchestra/locked.lua "$ZATOR_ROOT/lua/locked.lua"
 tr -d '\r' < config.default > "$CONFIG_FILE"
 supersweep_probe_config 4 "$CONFIG_FILE"
-grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
-grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--qnum=65535' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--blob=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--template=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--new' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 (
     supersweep_transport_check() { return 0; }
     Z2R_SUPERSWEEP_NFQ_PID=$$
@@ -107,6 +112,7 @@ printf '32768 60999\n' > "$TMP/ports"
 cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK'
 #!/bin/sh
 [ "${1:-}" != --version ] || { echo 'nfqws2 smoke'; exit 0; }
+printf '%s\n' "$@" >> "$TMP/nfq.args"
 printf '65535 0 0 2 65531 0 0 0 1\n' > "$Z2R_SUPERSWEEP_QUEUE_FILE"
 echo "$$" >> "$TMP/nfq.pids"
 trap ': > "$Z2R_SUPERSWEEP_QUEUE_FILE"; exit' TERM INT
@@ -150,6 +156,10 @@ for ((i=0; i<200; i++)); do
     [ -s "$TMP/network.args" ] && break
     sleep 0.1
 done
+grep -q -- '--qnum=65535' "$TMP/nfq.args"
+grep -q -- '--uid=65533:65533' "$TMP/nfq.args"
+grep -q -- '--lua-init=@' "$TMP/nfq.args"
+grep -qF -- "@$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf" "$TMP/nfq.args"
 printf 'r|99\nprofile|invalid|tls|1\n' > "$Z2R_SUPERSWEEP_DIR/cmd.yt.tmp.poison"
 for ((i=0; i<1800; i++)); do
     [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || break
