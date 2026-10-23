@@ -290,4 +290,8 @@ cmp "$TMP/term.scope.before" "$ORCH_DIR/scopes/mark_5.tsv"
 rm -rf "$Z2R_SUPERSWEEP_DIR"
 supersweep_report_json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["state"]=="interrupted" and r["source"]=="saved" and not r["active"] and r["applied"]==[]'
 [ "$regression_failed" = 0 ]
+# ensure_nfqws2_stopped must not murder the isolated probe by name.
+sed -n '/^ensure_nfqws2_stopped()/,/^}/p' z2r.sh > "$TMP/ensure.sh"
+grep -q 'qnum=65535' "$TMP/ensure.sh"
+! grep -qE 'killall|pkill' "$TMP/ensure.sh"
 echo 'supersweep background smoke ok'
