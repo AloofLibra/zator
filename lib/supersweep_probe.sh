@@ -203,6 +203,16 @@ supersweep_background_start() {
     (umask 077; mkdir "${dir}.lock") 2>/dev/null || {
         echo 'Суперавтопрогон уже запущен.' >&2; return 1;
     }
+    # Живой процесс прошлого прогона при удалённом lock (прерванный cleanup)
+    # топтал бы файлы и cancel нового: без него нельзя стартовать.
+    local proc_cmdline
+    for proc_cmdline in /proc/[0-9]*/cmdline; do
+        if grep -aq 'supersweep_probe.sh --run' "$proc_cmdline" 2>/dev/null; then
+            rmdir "${dir}.lock" 2>/dev/null || true
+            echo 'Обнаружен живой процесс прошлого фонового прогона: дождитесь его завершения или остановите (меню 12).' >&2
+            return 1
+        fi
+    done
     # Старые Entware без setsid: отдельная группа фоновой job, только при
     # живом tty (set -m на закрытой CGI-pty может зависнуть).
     if ! command -v setsid >/dev/null 2>&1 && [ -t 0 ]; then
