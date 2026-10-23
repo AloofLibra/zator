@@ -329,4 +329,12 @@ supersweep_report_json | python3 -c 'import json,sys; r=json.load(sys.stdin); as
 sed -n '/^ensure_nfqws2_stopped()/,/^}/p' z2r.sh > "$TMP/ensure.sh"
 grep -q 'qnum=65535' "$TMP/ensure.sh"
 ! grep -qE 'killall|pkill' "$TMP/ensure.sh"
+# The ndm hook must reinstall probe transport while a run is live.
+grep -q 'supersweep_transport_reconcile' Entware/000-zapret2.sh
+grep -q 'transport.env' Entware/000-zapret2.sh
+sh -n Entware/000-zapret2.sh
+# Probe lifecycle must publish/remove the hook env file.
+sed -n '/^supersweep_probe_stop()/,/^}/p' lib/supersweep_probe.sh > "$TMP/pstop.sh"
+grep -q 'rm -f.*transport.env' "$TMP/pstop.sh"
+grep -q 'transport.env' lib/supersweep_probe.sh
 echo 'supersweep background smoke ok'

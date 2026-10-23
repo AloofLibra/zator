@@ -114,6 +114,7 @@ supersweep_probe_stop() {
         wait "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
         Z2R_SUPERSWEEP_NFQ_PID=""
     fi
+    rm -f "${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}/probe/transport.env" 2>/dev/null
     unset Z2R_TLS_LOCAL_PORTS
 }
 
@@ -188,9 +189,26 @@ supersweep_probe_start() {
         i=$((i + 1))
     done
     if [ "$i" = 5 ]; then supersweep_probe_stop; return 1; fi
-    # Даже частичная установка правил обязана пройти cleanup.
     Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
-    if ! supersweep_transport_start; then supersweep_probe_stop; return 1; fi
+    if ! supersweep_transport_start; then
+        supersweep_transport_stop 2>/dev/null || :
+        sleep 2
+        if ! supersweep_transport_start; then
+            supersweep_probe_stop
+            echo 'Не удалось установить правила транспорта: фоновый прогон не запущен.' >&2
+            return 1
+        fi
+    fi
+    {
+        printf 'FWTYPE=%s\n' "$FWTYPE"
+        printf 'DESYNC_MARK=%s\n' "$DESYNC_MARK"
+        printf 'DESYNC_MARK_POSTNAT=%s\n' "${DESYNC_MARK_POSTNAT:-0x20000000}"
+        printf 'POSTNAT=%s\n' "${POSTNAT:-1}"
+        printf 'POSTNAT_ALL=%s\n' "${POSTNAT_ALL:-0}"
+        printf 'ZAPRET_NFT_TABLE=%s\n' "${ZAPRET_NFT_TABLE:-zapret2}"
+        printf 'FILTER_MARK=%s\n' "${FILTER_MARK:-0}"
+        printf 'CLIENT_SCOPE_MARK_MASK=%s\n' "${CLIENT_SCOPE_MARK_MASK:-0}"
+    } > "$dir/transport.env" 2>/dev/null || : && chmod 644 "$dir/transport.env" 2>/dev/null
     export Z2R_TLS_LOCAL_PORTS=62000-62999
 }
 
