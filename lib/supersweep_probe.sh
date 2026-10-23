@@ -136,10 +136,11 @@ supersweep_probe_start() {
     local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" i=0 line
     local binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
     local queue_file="${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}" status key uid rest
-    [ -x "$binary" ] || return 1
-    [ -r "$queue_file" ] || return 1
+    [ -x "$binary" ] || { echo 'nfqws2 не найден или не исполняем: фоновый прогон не запущен.' >&2; return 1; }
+    [ -r "$queue_file" ] || { echo 'Ядро не экспортирует nfnetlink_queue: фоновый прогон не запущен.' >&2; return 1; }
     # Никогда не отбирать очередь у другого nfqws2.
-    ! awk '$1==65535 {found=1} END {exit !found}' "$queue_file" || return 1
+    ! awk '$1==65535 {found=1} END {exit !found}' "$queue_file" \
+        || { echo 'Очередь 65535 занята другим процессом: остановите его или подождите.' >&2; return 1; }
     # Свой UID отличает raw-сегменты от основного nfqws2 даже когда
     # сторонний OUTPUT переписал их DESYNC_MARK.
     if awk -F: '$3==65533 {found=1} END {exit !found}' /etc/passwd; then
