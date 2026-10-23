@@ -172,11 +172,27 @@ ok "пользовательские TCP/UDP порты перенесены в 
 
 # Пользовательские TCP-порты должны попасть в --filter-tcp блока RKN.
 if sed -n '/#Стратегии для RKN/,/^[[:space:]]*--new[[:space:]]*$/p' "$NEW" \
-   | grep -q 'filter-tcp=123,456,80,443'; then
+   | grep -q 'filter-tcp=123,456,443,2053,2083,2087,2096,8443 --filter-l7=tls'; then
   ok "RKN --filter-tcp синхронизирован с пользовательскими портами"
 else
   fail "RKN --filter-tcp не содержит пользовательские порты 123,456"
 fi
+
+# Оба TLS-блока RKN получают точный список без 80; остальные фильтры не меняются.
+for marker in Z2R_AUTO_STANDARD_3 Z2R_AUTO_3; do
+  filter="$(sed -n "/^#${marker}_BEGIN$/,/^#${marker}_END$/p" "$NEW" | grep -- '--filter-tcp=')"
+  [ "${filter#--skip }" = '--filter-tcp=123,456,443,2053,2083,2087,2096,8443 --filter-l7=tls' ] \
+    || fail "лишние или потерянные порты в $marker: $filter"
+done
+ok "оба TLS-фильтра RKN восстановлены без HTTP-порта 80"
+
+PORT_DEFAULT="$ENV/ports_default_config"
+cp "$REPO_DIR/config.default" "$PORT_DEFAULT"
+backup_smart_apply_ports "$REPO_DIR/config.default" "$PORT_DEFAULT"
+backup_smart_apply_ports "$REPO_DIR/config.default" "$PORT_DEFAULT"
+cmp -s "$REPO_DIR/config.default" "$PORT_DEFAULT" \
+  || fail "перенос стандартных портов изменил дефолтный config"
+ok "повторный перенос стандартных портов не меняет config"
 
 # ===========================================================================
 # 3. Синхронизация blob'ов (backup_smart_apply_blobs)

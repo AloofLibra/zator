@@ -355,8 +355,8 @@ PORT_CFG="$TMP_DIR/ports.conf"
 sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" "$REPO_DIR/config.default" > "$PORT_CFG"
 config_set_auto_mode "$PORT_CFG" 1 || fail "port routing test could not enable auto mode"
 ports_set_rkn_filter "$PORT_CFG" "12345"
-assert_contains "$(auto_pair_block "$PORT_CFG" STANDARD_ 3)" '^--skip --filter-tcp=12345,80,443,' "RKN port setter did not update skipped standard profile 3"
-assert_contains "$(auto_pair_block "$PORT_CFG" "" 3)" '^--filter-tcp=12345,80,443,' "RKN port setter did not update active AUTO_3"
+assert_contains "$(auto_pair_block "$PORT_CFG" STANDARD_ 3)" '^--skip --filter-tcp=12345,443,' "RKN port setter did not update skipped standard profile 3 without HTTP port 80"
+assert_contains "$(auto_pair_block "$PORT_CFG" "" 3)" '^--filter-tcp=12345,443,' "RKN port setter did not update active AUTO_3 without HTTP port 80"
 
 [ "$(profile_state_get 3 tls)" = "auto" ] || fail "missing state must be auto"
 

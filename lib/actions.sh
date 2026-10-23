@@ -864,14 +864,15 @@ ports_apply_remove() {
   return 0
 }
 
-# Записать строку --filter-tcp блока RKN = пользовательские TCP-порты + база из конфига.
-# Базовые порты (от якоря 80 и правее) берутся прямо из NFQWS2_PORTS_TCP — без констант.
+# Записать TLS-фильтр RKN: пользовательские TCP-порты + база без HTTP-порта 80.
+# Базовые порты берутся прямо из NFQWS2_PORTS_TCP.
 ports_set_rkn_filter() {
   local cfg="$1" user="$2"
   local tcp_line rkn_ports marker
   tcp_line="$(config_get_var "$cfg" NFQWS2_PORTS_TCP)"
   ports_split "$tcp_line" "80"
   rkn_ports="$(ports_join "$user" "$_PORTS_BASE")"
+  rkn_ports="$(csv_remove_tokens "$rkn_ports" "80")"
   for marker in Z2R_AUTO_STANDARD_3 Z2R_AUTO_3; do
     sed -i "/^#${marker}_BEGIN$/,/^#${marker}_END$/ s/^--filter-tcp=.*--filter-l7=tls[[:space:]]*\$/--filter-tcp=${rkn_ports} --filter-l7=tls/" "$cfg"
     sed -i "/^#${marker}_BEGIN$/,/^#${marker}_END$/ s/^--skip --filter-tcp=.*--filter-l7=tls[[:space:]]*\$/--skip --filter-tcp=${rkn_ports} --filter-l7=tls/" "$cfg"
