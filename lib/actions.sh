@@ -82,6 +82,7 @@ config_apply_from_default() {
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then
     config_client_scope_apply "$old_scope_cfg" "$root/config" || true
+    [ "$hardware" = "keenetic" ] && { config_keenetic_policy_apply "$old_scope_cfg" "$root/config" || true; }
     rm -f "$old_scope_cfg"
   fi
   config_client_scope_ensure "$root/config" || true
@@ -865,6 +866,7 @@ ports_apply_remove() {
 }
 
 # Записать TLS-фильтр RKN: пользовательские TCP-порты + база без HTTP-порта 80.
+
 # Базовые порты берутся прямо из NFQWS2_PORTS_TCP.
 ports_set_rkn_filter() {
   local cfg="$1" user="$2"
@@ -1574,6 +1576,12 @@ backup_smart_apply_flags() {
   # no variables and therefore leave the new defaults untouched.
   config_client_scope_apply "$old_cfg" "$new_cfg"
 
+  # Keenetic-политика (POLICY_NAME/MARK/EXCLUDE) + хуки firewall.
+  if [ "$hardware" = "keenetic" ]; then
+    config_keenetic_policy_apply "$old_cfg" "$new_cfg"
+    ensure_keenetic_policy_config "$new_cfg"
+  fi
+
   # --- Авторотация TCP/HTTP ---
   s_old="$(config_mode_text auto_mode "$old_cfg")"
   s_new="$(config_mode_text auto_mode "$new_cfg")"
@@ -1793,6 +1801,7 @@ menu_action_backup_restore() {
   if [ "$mode" = "1" ]; then
     if [ -f "$restore_dir/config" ]; then
       if cp -f "$restore_dir/config" /opt/zapret2/config; then
+        [ "$hardware" = "keenetic" ] && ensure_keenetic_policy_config /opt/zapret2/config
         echo -e "${green}config восстановлен.${plain}"
       else
         rm -rf "$restore_dir"
