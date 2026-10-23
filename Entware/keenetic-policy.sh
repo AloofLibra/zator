@@ -17,6 +17,47 @@ keenetic_policy_load_config() {
     POLICY_EXCLUDE="${POLICY_EXCLUDE:-0}"
 }
 
+keenetic_policy_get_mark() {
+    local name="$1"
+    command -v ndmc >/dev/null 2>&1 || return 1
+    ndmc -c "show ip policy" 2>/dev/null | awk -v policy="$name" '
+        index($0, "name = " policy ",") || index($0, "description = " policy ":") { found=1; next }
+        found && /mark[[:space:]]*[:=][[:space:]]*/ {
+            sub(/^.*mark[[:space:]]*[:=][[:space:]]*/, "", $0)
+            print ($0 ~ /^0x/ ? $0 : "0x" $0)
+            exit
+        }
+    ' | tr -d ' \r'
+}
+
+keenetic_policy_normalize_mark() {
+    printf '%s' "$1" | tr 'A-F' 'a-f' | sed 's/^0x//'
+}
+
+# Сверяет POLICY_MARK в config с актуальным маркой политики в NDMS
+# и при расхождении перезаписывает его в config.
+keenetic_policy_sync_mark() {
+    local actual
+
+    keenetic_policy_load_config || return 0
+    [ -n "$POLICY_NAME" ] || return 0
+
+    actual="$(keenetic_policy_get_mark "$POLICY_NAME")"
+    if [ -z "$actual" ]; then
+        keenetic_policy_log "cannot get mark of policy '$POLICY_NAME' from NDMS, keeping '${POLICY_MARK:-<empty>}'"
+        return 0
+    fi
+
+    [ "$(keenetic_policy_normalize_mark "$actual")" = "$(keenetic_policy_normalize_mark "$POLICY_MARK")" ] && return 0
+
+    keenetic_policy_log "mark of policy '$POLICY_NAME' changed: '${POLICY_MARK:-<empty>}' -> '$actual', updating config"
+    if grep -q '^POLICY_MARK=' "$KEENETIC_ZAPRET_CONFIG"; then
+        sed -i "s#^POLICY_MARK=.*#POLICY_MARK=$actual#" "$KEENETIC_ZAPRET_CONFIG"
+    else
+        printf 'POLICY_MARK=%s\n' "$actual" >> "$KEENETIC_ZAPRET_CONFIG"
+    fi
+}
+
 keenetic_policy_is_enabled() {
     keenetic_policy_load_config
     [ -n "$POLICY_NAME" ]
@@ -101,6 +142,7 @@ keenetic_policy_apply_rules() {
     local policy_mark
 
     keenetic_policy_cleanup_rules
+    keenetic_policy_sync_mark
     keenetic_policy_is_enabled || return 0
 
     policy_mark="$POLICY_MARK"
