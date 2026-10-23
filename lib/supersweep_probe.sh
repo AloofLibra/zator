@@ -127,7 +127,6 @@ supersweep_background_start() {
     local cfg="$1" lib="${LIB_DIR:-${BASH_SOURCE[0]%/*}}" dir="$Z2R_SUPERSWEEP_DIR"
     local job_control=0
     shift
-    command -v nohup >/dev/null 2>&1 || return 1
     [ -r "$lib/supersweep_probe.sh" ] && [ -r "$lib/supersweep_transport.sh" ] || return 1
     (umask 077; mkdir "${dir}.lock") 2>/dev/null || {
         echo 'Суперавтопрогон уже запущен.' >&2; return 1;
@@ -138,6 +137,7 @@ supersweep_background_start() {
         case "$-" in *m*) ;; *) set -m; job_control=1 ;; esac
     fi
     (
+        # OpenWrt без nohup: игнор HUP наследуется после exec, потоки уже перенаправлены.
         trap '' HUP INT QUIT
         export Z2R_SUPERSWEEP_LOCK_HELD=1 Z2R_SUPERSWEEP_ISOLATED=1
         export Z2R_SUPERSWEEP_DIR ZATOR_ROOT ZAPRET2_ROOT ORCH_DIR ORCH_LOCK_FILE
@@ -145,9 +145,9 @@ supersweep_background_start() {
         export Z2R_SUPERSWEEP_ARCHIVE_DIR Z2R_SUPERSWEEP_STATS_URL TELEMETRY_CFG
         export CONFIG_FILE="$cfg"
         if command -v setsid >/dev/null 2>&1; then
-            exec nohup setsid bash "$lib/supersweep_probe.sh" --run "$@"
+            exec setsid bash "$lib/supersweep_probe.sh" --run "$@"
         fi
-        exec nohup bash "$lib/supersweep_probe.sh" --run "$@"
+        exec bash "$lib/supersweep_probe.sh" --run "$@"
     ) > "${dir}.log" 2>&1 </dev/null &
     local pid=$!
     [ "$job_control" != 1 ] || set +m
