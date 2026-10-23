@@ -815,14 +815,15 @@ change_user() {
 ensure_nfqws2_stopped() {
   z2r_service_action stop
   sleep 1
-  if pidof nfqws2 >/dev/null; then
-    if command -v killall >/dev/null 2>&1; then
-      killall -9 nfqws2
-    else
-      pkill -9 nfqws2
+  local pid
+  for pid in $(pidof nfqws2 2>/dev/null); do
+    if [ -r "/proc/$pid/cmdline" ] \
+       && grep -aq 'qnum=65535' "/proc/$pid/cmdline" 2>/dev/null; then
+      continue
     fi
-    sleep 1
-  fi
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  sleep 1
 }
 
 blockcheck2_run_summary() {

@@ -19,48 +19,94 @@ supersweep_probe_config() {
     for f in blob_override.tsv mode_override.tsv sni_override.tsv clonesize.tsv; do
         [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
     done
+    # --autoexclude есть не во всех сборках: неизвестная опция валит бинарник,
+    # поэтому поддержка проверяется по --help и кешируется на процесс.
+    local binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+    case "${Z2R_SUPERSWEEP_AUTOEXCLUDE:-}" in
+        0|1) ;;
+        *)
+            if [ -x "$binary" ] && "$binary" --help 2>&1 | grep -q -- '--autoexclude'; then
+                Z2R_SUPERSWEEP_AUTOEXCLUDE=1
+            else
+                Z2R_SUPERSWEEP_AUTOEXCLUDE=0
+            fi
+            ;;
+    esac
     {
-        printf '%s\n' "--qnum=65535" "--fwmark=${DESYNC_MARK:-0x40000000}" \
-            '--uid=65533:65533' \
+        printf '%s\n' "--qnum=${Z2R_SUPERSWEEP_QNUM:-65535}" \
+            "--fwmark=${DESYNC_MARK:-0x40000000}" \
+            '--uid=65533:65533'
+        if [ "$Z2R_SUPERSWEEP_AUTOEXCLUDE" = 1 ]; then
+            printf '%s\n' '--autoexclude=0'
+        fi
+        printf '%s\n' \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-lib.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
             "--lua-init=@$dir/locked.lua" \
             "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
-        # Только blobs, общий шаблон и НУМЕРОВАННЫЕ стратегии нужного
-        # стандартного профиля. Исключения/hostlists и детекторы не нужны:
-        # весь трафик этой очереди — явно выбранная проба нужного профиля.
-        awk -v p="$profile" '
+        awk '
             /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
             opts && /^"[[:space:]]*$/ { opts=0 }
             !opts { next }
             /^--blob=/ { print; next }
             /^--template=z2r_tcp_tls_common$/ { common=1; found=1; print; next }
-            common && /^--new/ { common=0 }
-            common && /^--/ { print }
-            $0 == "#Z2R_AUTO_STANDARD_" p "_BEGIN" { block=1; seen=1; next }
-            $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
-            block {
-                if (!header++) {
-                    print "--new\n--filter-tcp=443\n--filter-l7=tls"
-                    print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
-                    print "--out-range=-s34228"
-                    print "--in-range=-s32768 --lua-desync=circular_locked:key=" p
-                }
-                if (/^--import=/) { print; plan=1 }
-                if (/^--lua-desync=/ && /:strategy=[0-9]+/) { print; plan=1 }
-                if (/^--in-range=x$/ || /^--payload=tls_client_hello,discord_ip_discovery$/) print
+            common && /^--new/ { common=0; new_seen=1; print; next }
+            common && /^--/ {
+                if (/^--lua-desync=/) {
+                    n = split($0, piece, / --lua-desync=/)
+                    for (i = 1; i <= n; i++) print (i > 1 ? "--lua-desync=" : "") piece[i]
+                } else print
             }
-            END { if (!found || !seen || !plan) exit 1 }
+            END { if (!found || !new_seen) exit 1 }
         ' "$cfg" || return 1
-    } > "$dir/nfqws2.conf" || return 1
-    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.conf"
+    } > "$dir/nfqws2.args" || return 1
+    # Только НУМЕРОВАННЫЕ стратегии нужного стандартного профиля. Исключения/
+    # hostlists и детекторы не нужны: весь трафик очереди — явно выбранная проба.
+    # Каждый аргумент — отдельной строкой: @-файл nfqws2 не режет строку по
+    # пробелам, и combined-заголовок оставлял профиль вообще без lua-функций
+    # («no lua functions in this profile» — пробы уходили без десинка). Тело
+    # общего шаблона в argv (см. nfqws2.args), в плане оно не дублируется.
+    awk -v p="$profile" '
+        /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
+        opts && /^"[[:space:]]*$/ { opts=0 }
+        !opts { next }
+        /^--template=z2r_tcp_tls_common$/ { common=1; found=1; next }
+        common && /^--new/ { common=0; next }
+        $0 == "#Z2R_AUTO_STANDARD_" p "_BEGIN" { block=1; seen=1; next }
+        $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
+        block {
+            if (!header++) {
+                print "--new\n--filter-tcp=443\n--filter-l7=tls"
+                print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
+                print "--out-range=-s34228"
+                print "--in-range=-s32768"
+                print "--lua-desync=circular_locked:key=" p
+            }
+            if (/^--import=/) { print; plan=1 }
+            if (/^--lua-desync=/ && /:strategy=[0-9]+/) {
+                n = split($0, piece, / --lua-desync=/)
+                for (i = 1; i <= n; i++) print (i > 1 ? "--lua-desync=" : "") piece[i]
+                plan=1
+            }
+            if (/^--in-range=x$/ || /^--payload=tls_client_hello,discord_ip_discovery$/) print
+        }
+        END { if (!found || !seen || !plan) exit 1 }
+    ' "$cfg" > "$dir/nfqws2.conf" || return 1
+    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.conf" "$dir/nfqws2.args"
 }
 
 supersweep_probe_stop() {
     # Сначала убрать маршрутизацию; затем остановить ТОЛЬКО своего ребёнка.
     if [ "${Z2R_SUPERSWEEP_TRANSPORT_ACTIVE:-0}" = 1 ]; then
-        supersweep_transport_stop || return 1
+        # Старый iptables без -w может упереться в чужой xtables lock — это
+        # транзиент, ретраим, иначе очистка бросит живой пробник и lock.
+        local t=0
+        until supersweep_transport_stop; do
+            t=$((t + 1))
+            [ "$t" -lt 3 ] || return 1
+            sleep 1
+        done
         Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=0
     fi
     if [ -n "${Z2R_SUPERSWEEP_NFQ_PID:-}" ]; then
@@ -68,6 +114,7 @@ supersweep_probe_stop() {
         wait "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || true
         Z2R_SUPERSWEEP_NFQ_PID=""
     fi
+    rm -f "${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}/probe/transport.env" 2>/dev/null
     unset Z2R_TLS_LOCAL_PORTS
 }
 
@@ -87,13 +134,14 @@ supersweep_probe_sequence() {
 }
 
 supersweep_probe_start() {
-    local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" i=0
+    local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" i=0 line
     local binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
     local queue_file="${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}" status key uid rest
-    [ -x "$binary" ] || return 1
-    [ -r "$queue_file" ] || return 1
+    [ -x "$binary" ] || { echo 'nfqws2 не найден или не исполняем: фоновый прогон не запущен.' >&2; return 1; }
+    [ -r "$queue_file" ] || { echo 'Ядро не экспортирует nfnetlink_queue: фоновый прогон не запущен.' >&2; return 1; }
     # Никогда не отбирать очередь у другого nfqws2.
-    ! awk '$1==65535 {found=1} END {exit !found}' "$queue_file" || return 1
+    ! awk '$1==65535 {found=1} END {exit !found}' "$queue_file" \
+        || { echo 'Очередь 65535 занята другим процессом: остановите его или подождите.' >&2; return 1; }
     # Свой UID отличает raw-сегменты от основного nfqws2 даже когда
     # сторонний OUTPUT переписал их DESYNC_MARK.
     if awk -F: '$3==65533 {found=1} END {exit !found}' /etc/passwd; then
@@ -108,8 +156,32 @@ supersweep_probe_start() {
         done < "$status" 2>/dev/null || true
     done
     supersweep_probe_config "$profile" "$cfg" || return 1
-    "$binary" "@$dir/nfqws2.conf" > "$dir/nfqws2.log" 2>&1 </dev/null &
+    local args=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        args+=("$line")
+    done < "$dir/nfqws2.args"
+    [ "${#args[@]}" -gt 0 ] || return 1
+    # План идёт в argv следом за демоновскими аргументами: у @-файла на разных
+    # сборках свои причуды (позиция, разбиение строк, регистрация --lua-desync
+    # внутри профиля), а реальный argv — единственный путь, которым nfqws2
+    # гарантированно получает опции на всех платформах (так его запускает и
+    # продакшн-инициализация). Аргументы заканчиваются --new (конец секции
+    # шаблона); ведущий --new плана дал бы второй, пустой профиль без
+    # фильтров, который перехватывает весь трафик мимо плана.
+    local pline skip_new=0
+    if [ "${args[${#args[@]}-1]}" = "--new" ]; then skip_new=1; fi
+    while IFS= read -r pline; do
+        [ -n "$pline" ] || continue
+        if [ "$skip_new" = 1 ] && [ "$pline" = "--new" ]; then
+            skip_new=0
+            continue
+        fi
+        args+=("$pline")
+    done < "$dir/nfqws2.conf"
+    "$binary" "${args[@]}" > "$dir/nfqws2.log" 2>&1 </dev/null &
     Z2R_SUPERSWEEP_NFQ_PID=$!
+    i=0
     while [ "$i" -lt 5 ]; do
         kill -0 "$Z2R_SUPERSWEEP_NFQ_PID" 2>/dev/null || { supersweep_probe_stop; return 1; }
         awk '$1==65535 {found=1} END {exit !found}' "$queue_file" && break
@@ -117,9 +189,26 @@ supersweep_probe_start() {
         i=$((i + 1))
     done
     if [ "$i" = 5 ]; then supersweep_probe_stop; return 1; fi
-    # Даже частичная установка правил обязана пройти cleanup.
     Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
-    if ! supersweep_transport_start; then supersweep_probe_stop; return 1; fi
+    if ! supersweep_transport_start; then
+        supersweep_transport_stop 2>/dev/null || :
+        sleep 2
+        if ! supersweep_transport_start; then
+            supersweep_probe_stop
+            echo 'Не удалось установить правила транспорта: фоновый прогон не запущен.' >&2
+            return 1
+        fi
+    fi
+    {
+        printf 'FWTYPE=%s\n' "$FWTYPE"
+        printf 'DESYNC_MARK=%s\n' "$DESYNC_MARK"
+        printf 'DESYNC_MARK_POSTNAT=%s\n' "${DESYNC_MARK_POSTNAT:-0x20000000}"
+        printf 'POSTNAT=%s\n' "${POSTNAT:-1}"
+        printf 'POSTNAT_ALL=%s\n' "${POSTNAT_ALL:-0}"
+        printf 'ZAPRET_NFT_TABLE=%s\n' "${ZAPRET_NFT_TABLE:-zapret2}"
+        printf 'FILTER_MARK=%s\n' "${FILTER_MARK:-0}"
+        printf 'CLIENT_SCOPE_MARK_MASK=%s\n' "${CLIENT_SCOPE_MARK_MASK:-0}"
+    } > "$dir/transport.env" 2>/dev/null || : && chmod 644 "$dir/transport.env" 2>/dev/null
     export Z2R_TLS_LOCAL_PORTS=62000-62999
 }
 
@@ -131,6 +220,16 @@ supersweep_background_start() {
     (umask 077; mkdir "${dir}.lock") 2>/dev/null || {
         echo 'Суперавтопрогон уже запущен.' >&2; return 1;
     }
+    # Живой процесс прошлого прогона при удалённом lock (прерванный cleanup)
+    # топтал бы файлы и cancel нового: без него нельзя стартовать.
+    local proc_cmdline
+    for proc_cmdline in /proc/[0-9]*/cmdline; do
+        if grep -aq 'supersweep_probe.sh --run' "$proc_cmdline" 2>/dev/null; then
+            rmdir "${dir}.lock" 2>/dev/null || true
+            echo 'Обнаружен живой процесс прошлого фонового прогона: дождитесь его завершения или остановите (меню 12).' >&2
+            return 1
+        fi
+    done
     # Старые Entware без setsid: отдельная группа фоновой job, только при
     # живом tty (set -m на закрытой CGI-pty может зависнуть).
     if ! command -v setsid >/dev/null 2>&1 && [ -t 0 ]; then

@@ -1,4 +1,37 @@
 #!/usr/bin/env bash
+# Быстрый путь для setting=supersweep: отчёт самодостаточен, а сорсинг всех
+# библиотек CGI на mipsel стоит больше полусекунды. Путь эмулирует контракт
+# api_supersweep_get из _lib.sh (заголовки и коды ошибок идентичны).
+if [ "${REQUEST_METHOD:-GET}" = GET ] && [ "${QUERY_STRING:-}" = "setting=supersweep" ]; then
+  lib_dir=""
+  for dir in /opt/zator/z2r_lib /opt/zapret2/z2r_lib "$(dirname -- "$0")/../../z2r_lib"; do
+    if [ -f "$dir/supersweep.sh" ]; then lib_dir="$dir"; break; fi
+  done
+  if [ -z "$lib_dir" ]; then
+    printf 'Status: 503 Service Unavailable\r\n'
+    printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+    printf '{"error":"missing z2r runtime libs"}\n'
+    exit 0
+  fi
+  . "$lib_dir/supersweep.sh"
+  if ! type supersweep_report_json >/dev/null 2>&1; then
+    printf 'Status: 503 Service Unavailable\r\n'
+    printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+    printf '{"error":"Для просмотра суперавтопрогона обновите Core zator."}\n'
+    exit 0
+  fi
+  if ! body="$(supersweep_report_json)"; then
+    printf 'Status: 500 Internal Server Error\r\n'
+    printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+    printf '{"error":"Не удалось прочитать отчёт суперавтопрогона."}\n'
+    exit 0
+  fi
+  printf 'Cache-Control: no-store\r\n'
+  printf 'Status: 200 OK\r\n'
+  printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+  printf '%s\n' "$body"
+  exit 0
+fi
 . /opt/zator/webui/cgi-bin/_lib.sh
 
 case "${REQUEST_METHOD:-GET}" in
