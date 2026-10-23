@@ -17,6 +17,60 @@ keenetic_policy_load_config() {
     POLICY_EXCLUDE="${POLICY_EXCLUDE:-0}"
 }
 
+keenetic_policy_get_mark() {
+    local name="$1"
+    command -v ndmc >/dev/null 2>&1 || return 1
+    ndmc -c "show ip policy" 2>/dev/null | awk -v policy="$name" '
+        index($0, "name = " policy ",") || index($0, "description = " policy ":") { found=1; next }
+        found && /mark[[:space:]]*[:=][[:space:]]*/ {
+            sub(/^.*mark[[:space:]]*[:=][[:space:]]*/, "", $0)
+            print ($0 ~ /^0x/ ? $0 : "0x" $0)
+            exit
+        }
+    ' | tr -d ' \r'
+}
+
+keenetic_policy_normalize_mark() {
+    printf '%s' "$1" | tr 'A-F' 'a-f' | sed 's/^0x//'
+}
+
+# Записывает марк в config и проверяет результат чтением обратно.
+keenetic_policy_save_mark() {
+    local mark="$1" saved
+
+    if grep -q '^POLICY_MARK=' "$KEENETIC_ZAPRET_CONFIG"; then
+        sed -i "s#^POLICY_MARK=.*#POLICY_MARK=$mark#" "$KEENETIC_ZAPRET_CONFIG" || return 1
+    else
+        printf 'POLICY_MARK=%s\n' "$mark" >> "$KEENETIC_ZAPRET_CONFIG" || return 1
+    fi
+
+    saved="$(sed -n 's/^POLICY_MARK=//p' "$KEENETIC_ZAPRET_CONFIG" | tail -n1)"
+    [ "$saved" = "$mark" ]
+}
+
+keenetic_policy_sync_mark() {
+    local actual
+
+    KEENETIC_POLICY_LIVE_MARK=""
+
+    keenetic_policy_load_config || return 0
+    [ -n "$POLICY_NAME" ] || return 0
+
+    actual="$(keenetic_policy_get_mark "$POLICY_NAME")"
+    if [ -z "$actual" ]; then
+        keenetic_policy_log "cannot get mark of policy '$POLICY_NAME' from NDMS, keeping cached '${POLICY_MARK:-<empty>}'"
+        return 0
+    fi
+
+    KEENETIC_POLICY_LIVE_MARK="$actual"
+
+    [ "$(keenetic_policy_normalize_mark "$actual")" = "$(keenetic_policy_normalize_mark "$POLICY_MARK")" ] && return 0
+
+    keenetic_policy_log "mark of policy '$POLICY_NAME' changed: '${POLICY_MARK:-<empty>}' -> '$actual', updating config"
+    keenetic_policy_save_mark "$actual" || keenetic_policy_log "failed to save mark '$actual' to $KEENETIC_ZAPRET_CONFIG; using it for this run only"
+    return 0
+}
+
 keenetic_policy_is_enabled() {
     keenetic_policy_load_config
     [ -n "$POLICY_NAME" ]
@@ -101,9 +155,11 @@ keenetic_policy_apply_rules() {
     local policy_mark
 
     keenetic_policy_cleanup_rules
+    keenetic_policy_sync_mark
     keenetic_policy_is_enabled || return 0
 
-    policy_mark="$POLICY_MARK"
+    # актуальный марк из NDMS важнее кэша в config (is_enabled перечитал config)
+    policy_mark="${KEENETIC_POLICY_LIVE_MARK:-$POLICY_MARK}"
     if [ -z "$policy_mark" ]; then
         keenetic_policy_log "mark for policy '$POLICY_NAME' is not cached; select the policy again in z2r"
         return 0
