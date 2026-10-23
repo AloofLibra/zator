@@ -197,6 +197,11 @@ supersweep_transport_start() {
   return 1
 }
 
+supersweep_transport_reinstall() {
+  supersweep_transport_stop || return 1
+  supersweep_transport_start
+}
+
 supersweep_transport_check() {
   local hook chain owned
   [ "${_Z2R_SS_ACTIVE:-0}" = 1 ] || return 1

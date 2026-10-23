@@ -53,6 +53,28 @@ fi
     [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+# A failed health check must reinstall the transport and keep going.
+(
+    healthy_calls=0
+    supersweep_probe_healthy() { healthy_calls=$((healthy_calls + 1)); [ "$healthy_calls" -ge 4 ]; }
+    supersweep_transport_reinstall() { : > "$TMP/transport-reinstalled"; }
+    printf '4
+' > "$TMP/seqn"
+    supersweep_probe_sequence() { echo $(( $(cat "$TMP/seqn") + 1 )) > "$TMP/seqn"; cat "$TMP/seqn"; }
+    z2r_tls_check_target() { printf '0|200|HTTP/2|0.1|192.0.2.1\n0|200|HTTP/2|0.1|192.0.2.1\nskip\n'; }
+    out="$(_supersweep_check_target https://example.com/)"
+    [ -e "$TMP/transport-reinstalled" ]
+    ! [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    printf '%s\n' "$out" | grep -q '0|200'
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+(
+    supersweep_probe_healthy() { return 1; }
+    supersweep_transport_reinstall() { :; }
+    ! _supersweep_check_target https://example.com/ 2>/dev/null
+    [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 (
     printf 'best=1\nbest_kind=warn\ninterrupted=0\n' > "$Z2R_SUPERSWEEP_DIR/best.yt"
     [ -z "$(_supersweep_profile_best yt)" ]

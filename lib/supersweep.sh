@@ -298,16 +298,22 @@ _supersweep_verdict_color() {
 # Перезагрузка firewall не должна превратить ответ рабочего сервиса
 # в победителя тестовой стратегии: проверяем изоляцию до И после сети.
 # Проверки здоровья и счётчика ретраятся: на iptables без -w чужой
-# xtables lock даёт транзиентный отказ, убивать из-за него прогон нельзя.
+# xtables lock даёт транзиентный отказ. Если правила транспорта снёс
+# внешний firewall-фреймворк (ndm на Keenetic), транспорт
+# переустанавливается на месте — прогон продолжает работу.
 _supersweep_check_target() {
     local out seq_before seq_after try
     if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
         for try in 1 2 3; do
             if supersweep_probe_healthy; then break; fi
             if [ "$try" = 3 ]; then
-                echo 'Тестовый пробник не прошёл проверку здоровья (очередь/правила транспорта); прогон остановлен.' >&2
-                : > "$Z2R_SUPERSWEEP_DIR/cancel"
-                return 1
+                echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
+                if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
+                    echo 'Транспорт не восстановлен; прогон остановлен.' >&2
+                    : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                    return 1
+                fi
+                break
             fi
             sleep 1
         done
@@ -327,9 +333,13 @@ _supersweep_check_target() {
         for try in 1 2 3; do
             if supersweep_probe_healthy; then break; fi
             if [ "$try" = 3 ]; then
-                echo 'Тестовый пробник не прошёл проверку здоровья (очередь/правила транспорта); прогон остановлен.' >&2
-                : > "$Z2R_SUPERSWEEP_DIR/cancel"
-                return 1
+                echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
+                if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
+                    echo 'Транспорт не восстановлен; прогон остановлен.' >&2
+                    : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                    return 1
+                fi
+                break
             fi
             sleep 1
         done
