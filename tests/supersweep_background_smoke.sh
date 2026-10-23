@@ -151,6 +151,12 @@ cat > "$TMP/bin/iptables" <<'MOCK'
 #!/bin/sh
 echo "$*" >> "$TMP/iptables.args"
 MOCK
+# OpenWrt may have setsid but no nohup; inherited ignored HUP is sufficient.
+cat > "$TMP/bin/nohup" <<'MOCK'
+#!/bin/sh
+echo 'FAIL: background launch still requires nohup' >&2
+exit 127
+MOCK
 cat > "$TMP/bin/curl" <<'MOCK'
 #!/bin/sh
 case "$*" in *report_mapping*) exit 0 ;; esac
@@ -228,7 +234,14 @@ grep -q $'^example.com\ttls\t1$' "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
 printf '1\ttls\t7\n' > "$ORCH_LOCK_FILE"
 : > "$TMP/network.args"
 export MOCK_BG_DELAY=1
-supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
+(
+    # Also exercise the Entware fallback without setsid or a controlling tty.
+    command() {
+        [ "$*" != '-v setsid' ] || return 1
+        builtin command "$@"
+    }
+    supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
+)
 for ((i=0; i<200; i++)); do
     [ -s "$TMP/network.args" ] && break
     sleep 0.1
