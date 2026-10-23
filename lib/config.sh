@@ -135,6 +135,19 @@ config_client_scope_apply() {
   config_client_scope_ensure "$new_cfg"
 }
 
+# Keenetic-политика (POLICY_NAME/POLICY_MARK/POLICY_EXCLUDE) — такое же пользовательское
+# состояние внутри config, как и client scope: переносим из старого config в новый.
+# Старые конфиги без этих переменных оставляют дефолты нового config нетронутыми.
+# Хуки INIT_FW_*_HOOK не переносим: их выставляет ensure_keenetic_policy_config().
+config_keenetic_policy_apply() {
+  local old_cfg="$1" new_cfg="$2" v
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+  for v in NAME MARK EXCLUDE; do
+    config_var_exists "$old_cfg" "POLICY_$v" || continue
+    config_set_var "$new_cfg" "POLICY_$v" "$(config_get_var "$old_cfg" "POLICY_$v")"
+  done
+}
+
 config_sed_ereg() {
   if printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
     printf '%s' "-E"
