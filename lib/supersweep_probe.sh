@@ -63,10 +63,7 @@ supersweep_probe_config() {
     } > "$dir/nfqws2.args" || return 1
     # Только НУМЕРОВАННЫЕ стратегии нужного стандартного профиля. Исключения/
     # hostlists и детекторы не нужны: весь трафик очереди — явно выбранная проба.
-    # Каждый аргумент — отдельной строкой: @-файл nfqws2 не режет строку по
-    # пробелам, и combined-заголовок оставлял профиль вообще без lua-функций
-    # («no lua functions in this profile» — пробы уходили без десинка). Тело
-    # общего шаблона в argv (см. nfqws2.args), в плане оно не дублируется.
+    # Дописываем план после --new шаблона; каждый аргумент — отдельной строкой.
     awk -v p="$profile" '
         /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
         opts && /^"[[:space:]]*$/ { opts=0 }
@@ -77,7 +74,7 @@ supersweep_probe_config() {
         $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
         block {
             if (!header++) {
-                print "--new\n--filter-tcp=443\n--filter-l7=tls"
+                print "--filter-tcp=443\n--filter-l7=tls"
                 print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
                 print "--out-range=-s34228"
                 print "--in-range=-s32768"
@@ -92,8 +89,8 @@ supersweep_probe_config() {
             if (/^--in-range=x$/ || /^--payload=tls_client_hello,discord_ip_discovery$/) print
         }
         END { if (!found || !seen || !plan) exit 1 }
-    ' "$cfg" > "$dir/nfqws2.conf" || return 1
-    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.conf" "$dir/nfqws2.args"
+    ' "$cfg" >> "$dir/nfqws2.args" || return 1
+    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.args"
 }
 
 supersweep_probe_stop() {
@@ -162,23 +159,7 @@ supersweep_probe_start() {
         args+=("$line")
     done < "$dir/nfqws2.args"
     [ "${#args[@]}" -gt 0 ] || return 1
-    # План идёт в argv следом за демоновскими аргументами: у @-файла на разных
-    # сборках свои причуды (позиция, разбиение строк, регистрация --lua-desync
-    # внутри профиля), а реальный argv — единственный путь, которым nfqws2
-    # гарантированно получает опции на всех платформах (так его запускает и
-    # продакшн-инициализация). Аргументы заканчиваются --new (конец секции
-    # шаблона); ведущий --new плана дал бы второй, пустой профиль без
-    # фильтров, который перехватывает весь трафик мимо плана.
-    local pline skip_new=0
-    if [ "${args[${#args[@]}-1]}" = "--new" ]; then skip_new=1; fi
-    while IFS= read -r pline; do
-        [ -n "$pline" ] || continue
-        if [ "$skip_new" = 1 ] && [ "$pline" = "--new" ]; then
-            skip_new=0
-            continue
-        fi
-        args+=("$pline")
-    done < "$dir/nfqws2.conf"
+    # Передаём argv напрямую: разбор @-файлов различается между сборками nfqws2.
     "$binary" "${args[@]}" > "$dir/nfqws2.log" 2>&1 </dev/null &
     Z2R_SUPERSWEEP_NFQ_PID=$!
     i=0
@@ -222,9 +203,22 @@ supersweep_background_start() {
     }
     # Живой процесс прошлого прогона при удалённом lock (прерванный cleanup)
     # топтал бы файлы и cancel нового: без него нельзя стартовать.
-    local proc_cmdline
+    local proc_cmdline arg previous runner_found
     for proc_cmdline in /proc/[0-9]*/cmdline; do
-        if grep -aq 'supersweep_probe.sh --run' "$proc_cmdline" 2>/dev/null; then
+        previous=""
+        runner_found=0
+        while IFS= read -r -d '' arg; do
+            case "$previous" in
+                supersweep_probe.sh|*/supersweep_probe.sh)
+                    if [ "$arg" = --run ]; then
+                        runner_found=1
+                        break
+                    fi
+                    ;;
+            esac
+            previous="$arg"
+        done < "$proc_cmdline" 2>/dev/null || true
+        if [ "$runner_found" = 1 ]; then
             rmdir "${dir}.lock" 2>/dev/null || true
             echo 'Обнаружен живой процесс прошлого фонового прогона: дождитесь его завершения или остановите (меню 12).' >&2
             return 1

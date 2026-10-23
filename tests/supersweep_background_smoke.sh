@@ -53,6 +53,38 @@ fi
     [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+# A post-probe health failure invalidates the answer, even if health recovers.
+for health_failure in transient reinstall repeated; do
+(
+    healthy_calls=0
+    sleep() { :; }
+    supersweep_probe_healthy() {
+        healthy_calls=$((healthy_calls + 1))
+        case "$health_failure:$healthy_calls" in
+            transient:2|reinstall:[234]|repeated:[234789]) return 1 ;;
+        esac
+    }
+    supersweep_transport_reinstall() { :; }
+    printf '0\n' > "$TMP/reprobe-count"
+    supersweep_probe_sequence() { cat "$TMP/reprobe-count"; }
+    z2r_tls_check_target() {
+        local count=$(( $(cat "$TMP/reprobe-count") + 1 ))
+        printf '%s\n' "$count" > "$TMP/reprobe-count"
+        printf 'answer-%s\n' "$count"
+    }
+    if out="$(_supersweep_check_target https://example.com/)"; then
+        [ "$health_failure" != repeated ]
+        [ "$out" = answer-2 ]
+        [ ! -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    else
+        [ "$health_failure" = repeated ]
+        [ -z "$out" ]
+        [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    fi
+    [ "$(cat "$TMP/reprobe-count")" = 2 ]
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+done
 # A failed health check must reinstall the transport and keep going.
 (
     healthy_calls=0
@@ -140,14 +172,13 @@ grep -q -- '--autoexclude=0' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
     ! supersweep_probe_healthy 2>/dev/null
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.log"
-grep -q -- '--lua-desync=circular_locked:key=4' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- '--lua-desync=circular_locked:key=4' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
-! grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
-! grep -qE 'adaptive|circular_quality|validator=|hostlist=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+! grep -qE 'adaptive|circular_quality|validator=|hostlist=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -Fq "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
 ! grep -q '/opt/zator/extra_strats/cache/orchestra/locked' "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
 supersweep_probe_config 3 "$CONFIG_FILE"
-grep -q -- '--import=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- '--import=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 # Invalid/missing profile plans must fail, not silently test an empty plan.
 ! supersweep_probe_config 10 "$CONFIG_FILE"
 # Detached runner is a real child bash; only nfqws2/firewall/network are mocked.
@@ -206,6 +237,17 @@ mkdir -p "$ORCH_DIR/scopes"
 printf '1\ttls\t7\n' > "$ORCH_DIR/scopes/mark_5.tsv"
 cp "$ORCH_LOCK_FILE" "$TMP/global.before"
 cp "$CONFIG_FILE" "$TMP/config.before"
+# A live runner without its lock must be found in NUL-separated argv.
+bash -c 'while :; do sleep 0.1; done' "$TMP/supersweep_probe.sh" --run &
+stale_pid=$!
+sleep 0.1
+stale_rc=0
+supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com 2>"$TMP/stale.error" || stale_rc=$?
+kill "$stale_pid" 2>/dev/null || true
+wait "$stale_pid" 2>/dev/null || true
+[ "$stale_rc" != 0 ]
+grep -q 'Обнаружен живой процесс' "$TMP/stale.error"
+[ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ]
 supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
 [ -d "$Z2R_SUPERSWEEP_DIR.lock" ]
 ! supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com 2>/dev/null

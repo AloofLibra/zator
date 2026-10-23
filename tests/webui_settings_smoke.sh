@@ -70,6 +70,34 @@ done
 command -v node >/dev/null 2>&1 && node --check "$REPO_DIR/webui/app.js"
 command -v python >/dev/null 2>&1 && python -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$REPO_DIR/webui/dev/fake_router_server.py"
 
+# The report uses shared HTTP helpers without loading the heavy runtime libs.
+mkdir -p "$TMP_DIR/panel/cgi-bin" "$TMP_DIR/runtime/z2r_lib"
+sed "s#/opt/zator#$TMP_DIR/runtime#g; s#/opt/zapret2#$TMP_DIR/zapret2#g" \
+  "$REPO_DIR/webui/cgi-bin/_lib.sh" > "$TMP_DIR/panel/cgi-bin/_lib.sh"
+sed "s#/opt/zator/webui/cgi-bin/_lib.sh#$TMP_DIR/panel/cgi-bin/_lib.sh#" \
+  "$REPO_DIR/webui/cgi-bin/settings.cgi" > "$TMP_DIR/panel/cgi-bin/settings.cgi"
+printf 'exit 97\n' > "$TMP_DIR/runtime/z2r_lib/config.sh"
+for file in orchestra_state strategies netcheck; do
+  printf ':\n' > "$TMP_DIR/runtime/z2r_lib/$file.sh"
+done
+cat > "$TMP_DIR/runtime/z2r_lib/supersweep.sh" <<'REPORT'
+supersweep_report_json() { printf '{"state":"idle"}\n'; }
+REPORT
+report="$(REQUEST_METHOD=GET QUERY_STRING=setting=supersweep bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -q 'Status: 200 OK' <<< "$report" || fail 'report fast path failed'
+grep -q 'Cache-Control: no-store' <<< "$report" || fail 'report may be cached'
+grep -Fq '{"state":"idle"}' <<< "$report" || fail 'report body changed'
+[ "$(grep -c 'Content-Type:' <<< "$report")" = 1 ] || fail 'duplicate report headers'
+printf 'supersweep_report_json() { return 1; }\n' > "$TMP_DIR/runtime/z2r_lib/supersweep.sh"
+report="$(REQUEST_METHOD=GET QUERY_STRING=setting=supersweep bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -q 'Status: 500 Internal Server Error' <<< "$report" || fail 'report failure status changed'
+printf ':\n' > "$TMP_DIR/runtime/z2r_lib/supersweep.sh"
+report="$(REQUEST_METHOD=GET QUERY_STRING=setting=supersweep bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -q 'Status: 503 Service Unavailable' <<< "$report" || fail 'old core status changed'
+normal_rc=0
+REQUEST_METHOD=GET QUERY_STRING=setting=ports bash "$TMP_DIR/panel/cgi-bin/settings.cgi" || normal_rc=$?
+[ "$normal_rc" = 97 ] || fail 'ordinary settings skipped the runtime loader'
+
 # == 1. Статические инварианты wiring'а ==
 
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '\$LIB_DIR/actions\.sh' "_lib.sh не подключает lib/actions.sh"

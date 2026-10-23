@@ -13,6 +13,7 @@ declare -A MOCK_CHAINS=() rules=()
 log=()
 iptables() {
   log+=("$*")
+  if [[ ${MOCK_LOCKED:-0} == 1 ]]; then return 4; fi
   if [[ ${MOCK_FAIL_AT:-0} == "${#log[@]}" ]]; then return 1; fi
   if [[ ${MOCK_NO_WAIT:-0} == 1 && " $* " == *' -w '* ]]; then return 2; fi
   if [[ ${MOCK_BARE_WAIT:-0} == 1 && "$1" == -w && "${2:-}" == 5 ]]; then return 2; fi
@@ -25,7 +26,11 @@ iptables() {
   else
     fail 'unexpected table or no xtables lock'
   fi
-  local op=$1 chain=$2 text key
+  local op=$1 chain=${2:-} text key
+  if [[ $op == -nL && -z $chain ]]; then
+    for chain in "${!MOCK_CHAINS[@]}"; do printf 'Chain %s (0 references)\n' "$chain"; done
+    return 0
+  fi
   shift 2
   text="$*"; key="$chain|$text"
   case "$op" in
@@ -138,6 +143,27 @@ if supersweep_transport_stop 2>"$TMP_DIR/error"; then fail 'ignored cleanup fail
 MOCK_FAIL_AT=0
 supersweep_transport_stop || fail 'cleanup retry'
 [[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'retry leaked rules'
+# A failed listing is not proof that a hook or chain disappeared.
+supersweep_transport_start || fail 'setup locked cleanup'
+MOCK_LOCKED=1
+! supersweep_transport_stop || fail 'accepted failed hook listing'
+[[ -n $_Z2R_SS_HOOKS && -n $_Z2R_SS_CHAINS ]] || fail 'forgot live transport'
+MOCK_LOCKED=0
+supersweep_transport_stop || fail 'retry locked cleanup'
+supersweep_transport_start || fail 'setup locked chain cleanup'
+for hook in $_Z2R_SS_HOOKS; do _supersweep_transport_hook -D "$hook"; done
+_Z2R_SS_HOOKS=
+MOCK_LOCKED=1
+! supersweep_transport_stop || fail 'accepted failed chain listing'
+[[ -n $_Z2R_SS_CHAINS ]] || fail 'forgot live chains'
+MOCK_LOCKED=0
+supersweep_transport_stop || fail 'retry locked chain cleanup'
+[[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'locked cleanup leaked rules'
+supersweep_transport_start || fail 'setup external wipe cleanup'
+for key in "${!rules[@]}"; do [[ $key != *Z2R_SS_* ]] || unset 'rules[$key]'; done
+for chain in "${!MOCK_CHAINS[@]}"; do [[ $chain != Z2R_SS_* ]] || unset 'MOCK_CHAINS[$chain]'; done
+supersweep_transport_stop || fail 'externally removed rules must allow cleanup'
+[[ -z $_Z2R_SS_HOOKS && -z $_Z2R_SS_CHAINS ]] || fail 'kept externally removed rules'
 # Native nft rules must return from zapret's own hook, not a separate base
 # chain whose ACCEPT still falls through to the production NFQUEUE.
 nft() {
@@ -176,7 +202,7 @@ grep -q '^delete chain inet zapret2 z2r_supersweep_output$' "$TMP_DIR/nft.batch"
 
 # ndm-style external wipe: reconcile must reclaim stale chains and rebuild.
 FWTYPE=iptables
-unset _Z2R_SS_IPT_WAIT _Z2R_SS_IPT_WAIT_DONE _Z2R_SS_RECLAIM
+unset _Z2R_SS_IPT_WAIT _Z2R_SS_IPT_WAIT_DONE
 log=()
 supersweep_transport_start || fail 'setup wipe'
 supersweep_transport_stop || fail 'setup wipe stop'

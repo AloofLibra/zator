@@ -62,12 +62,7 @@ _supersweep_transport_hook() {
 _supersweep_transport_install() {
   local chain hook
   for chain in Z2R_SS_OUT Z2R_SS_POST Z2R_SS_PRE Z2R_SS_IN Z2R_SS_RAW; do
-    if ! _supersweep_transport_ipt -N "$chain" 2>/dev/null; then
-      [ "${_Z2R_SS_RECLAIM:-0}" = 1 ] || return 1
-      _supersweep_transport_ipt -F "$chain" 2>/dev/null || return 1
-      _supersweep_transport_ipt -X "$chain" 2>/dev/null || return 1
-      _supersweep_transport_ipt -N "$chain" || return 1
-    fi
+    _supersweep_transport_ipt -N "$chain" || return 1
     _Z2R_SS_CHAINS="$chain ${_Z2R_SS_CHAINS:-}"
   done
   _supersweep_transport_ipt -A Z2R_SS_OUT -p tcp --sport 62000:62999 --dport 443 \
@@ -207,25 +202,13 @@ supersweep_transport_start() {
   return 1
 }
 
-supersweep_transport_teardown_blind() {
-  local hook chain
-  _Z2R_SS_DESYNC="${_Z2R_SS_DESYNC:-${DESYNC_MARK:-0x40000000}}"
-  for hook in POSTROUTING PREROUTING INPUT OUTPUT RAWOUTPUT SOCKETOUTPUT; do
-    _supersweep_transport_hook -D "$hook" 2>/dev/null || :
-  done
-  for chain in Z2R_SS_OUT Z2R_SS_POST Z2R_SS_PRE Z2R_SS_IN Z2R_SS_RAW; do
-    _supersweep_transport_ipt -F "$chain" 2>/dev/null || :
-    _supersweep_transport_ipt -X "$chain" 2>/dev/null || :
-  done
-  _Z2R_SS_HOOKS=
-  _Z2R_SS_CHAINS=
-  _Z2R_SS_ACTIVE=0
-}
-
 supersweep_transport_reinstall() {
   [ "${FWTYPE:-}" = iptables ] || return 1
-  supersweep_transport_teardown_blind
-  _Z2R_SS_RECLAIM=1
+  _Z2R_SS_DESYNC="${_Z2R_SS_DESYNC:-${DESYNC_MARK:-0x40000000}}"
+  # В ndm-hook нет состояния родителя: восстанавливаем список своих правил.
+  _Z2R_SS_HOOKS='SOCKETOUTPUT RAWOUTPUT OUTPUT INPUT PREROUTING POSTROUTING'
+  _Z2R_SS_CHAINS='Z2R_SS_OUT Z2R_SS_POST Z2R_SS_PRE Z2R_SS_IN Z2R_SS_RAW'
+  supersweep_transport_stop || return 1
   supersweep_transport_start
 }
 
@@ -264,7 +247,7 @@ supersweep_transport_check() {
 }
 
 supersweep_transport_stop() {
-  local hook chain chains= rc=0 hooks_live=0 remaining=
+  local hook chain listing chains= rc=0 hooks_live=0 remaining=
   if [ "${_Z2R_SS_NFT_ACTIVE:-0}" = 1 ]; then
     local rules
     rules="$(_supersweep_transport_nft_owned)" || return 1
@@ -287,7 +270,8 @@ delete chain inet $_Z2R_SS_NFT_TABLE z2r_supersweep_output"
     if ! _supersweep_transport_hook -D "$hook" 2>/dev/null; then
       local live_chain="$hook"
       case "$hook" in RAWOUTPUT|SOCKETOUTPUT) live_chain=OUTPUT ;; esac
-      if _supersweep_transport_ipt -nL "$live_chain" 2>/dev/null | grep -aq 'Z2R_SS_'; then
+      listing="$(_supersweep_transport_ipt -nL "$live_chain" 2>/dev/null)" || return 1
+      if printf '%s\n' "$listing" | grep -aq 'Z2R_SS_'; then
         hooks_live=1
         remaining="$remaining $hook"
         continue
@@ -299,8 +283,11 @@ delete chain inet $_Z2R_SS_NFT_TABLE z2r_supersweep_output"
     for chain in ${_Z2R_SS_CHAINS:-}; do
       if _supersweep_transport_ipt -F "$chain" 2>/dev/null && _supersweep_transport_ipt -X "$chain" 2>/dev/null; then
         :
-      elif _supersweep_transport_ipt -nL "$chain" >/dev/null 2>&1; then
-        chains="$chains $chain"; rc=1
+      else
+        listing="$(_supersweep_transport_ipt -nL 2>/dev/null)" || return 1
+        if printf '%s\n' "$listing" | grep -q "^Chain $chain[[:space:]]"; then
+          chains="$chains $chain"; rc=1
+        fi
       fi
     done
     _Z2R_SS_CHAINS="$chains"
