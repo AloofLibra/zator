@@ -215,7 +215,7 @@ NFQWS2_OPT="
 
 #Отдельные стратегии для TCP_Discord
 #Z2R_AUTO_STANDARD_4_BEGIN
---filter-tcp=80,443,2053,2083,2087,2096,8443 --hostlist=/opt/zator/extra_strats/TCP_Discord.txt
+--filter-tcp=443,2053,2083,2087,2096,8443 --hostlist=/opt/zator/extra_strats/TCP_Discord.txt
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
@@ -468,7 +468,7 @@ NFQWS2_OPT="
   #Авторотация TCP/HTTP.
 
 #Z2R_AUTO_3_BEGIN
---skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --filter-l7=tls
+--skip --filter-tcp=443,2053,2083,2087,2096,8443 --filter-l7=tls
 --hostlist-exclude=/opt/zator/extra_strats/TCP_Discord.txt
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
@@ -480,7 +480,7 @@ NFQWS2_OPT="
 --new
 
 #Z2R_AUTO_4_BEGIN
---skip --filter-tcp=80,443,2053,2083,2087,2096,8443 --hostlist=/opt/zator/extra_strats/TCP_Discord.txt
+--skip --filter-tcp=443,2053,2083,2087,2096,8443 --hostlist=/opt/zator/extra_strats/TCP_Discord.txt
 --hostlist-exclude=/opt/zator/lists/netrogat.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty
 --out-range=-s34228
