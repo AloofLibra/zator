@@ -1261,6 +1261,13 @@ zator_remove() {
   fi
   strategy_validator_remove_service || true
   webui_remove || true
+  if [ -x "$ZATOR_ROOT/bin/zator-desktop-probe" ] && [ -f "$ZATOR_ROOT/desktop-probe.json" ]; then
+    "$ZATOR_ROOT/bin/zator-desktop-probe" admin-stop || return 1
+    "$ZATOR_ROOT/bin/zator-desktop-probe" uninstall-transport || {
+      echo -e "${red}Не удалось убрать Desktop Probe; повторите удаление после исправления ошибки.${plain}"
+      return 1
+    }
+  fi
   # До эпохи единого locked.tsv состояние профилей жило в /opt/etc/z2r —
   # убираем, чтобы после полного удаления не оставалось «призраков».
   rm -rf /opt/etc/z2r 2>/dev/null || true

@@ -1,0 +1,52 @@
+name: desktop-probe
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['desktop-probe/**', 'Entware/000-zapret2.sh', '.github/workflows/desktop-probe.yml']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop-probe/app/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - run: ./desktop-probe/scripts/build-router.ps1
+      - run: npm ci
+        working-directory: desktop-probe/app
+      - run: npm test
+        working-directory: desktop-probe/app
+      - run: npm run smoke
+        working-directory: desktop-probe/app
+      - run: npm run pack
+        working-directory: desktop-probe/app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-probe-windows-and-router
+          path: |
+            desktop-probe/app/release/
+            desktop-probe/dist/
+            desktop-probe/install-router.sh
+            desktop-probe/firewall-openwrt.sh
+            desktop-probe/settings.example.json
+            desktop-probe/README.md
+            desktop-probe/THIRD_PARTY_NOTICES.md
+  router-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - run: go test -race ./... && go vet ./...
+        working-directory: desktop-probe/router
+      - run: bash tests/run.sh quick

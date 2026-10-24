@@ -1,0 +1,19 @@
+{
+  "name": "zator-desktop-probe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Isolated IPv4 HTTPS strategy probes through a Zator router",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc && node scripts/copy-ui.cjs",
+    "start": "npm run build && electron .",
+    "test": "npm run build && node --test dist/core.test.js",
+    "smoke": "npm run build && electron . --probe-smoke",
+    "pack": "npm run build && electron-packager . ZatorDesktopProbe --platform=win32 --arch=x64 --out=release --overwrite --ignore=^/src --ignore=^/release"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "typescript": "7.0.2",
+    "@electron/packager": "20.3.0"
+  }
+}

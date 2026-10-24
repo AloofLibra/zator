@@ -250,5 +250,18 @@ expected="$(printf ' get_menu\ndone')"
 ok "post-install меню: возврат из get_menu повторяет установочный блок"
 
 echo ""
+mkdir -p "$ZATOR_ROOT/bin"
+printf '{}' > "$ZATOR_ROOT/desktop-probe.json"
+printf '#!/bin/sh\n[ "$1" != uninstall-transport ]\n' > "$ZATOR_ROOT/bin/zator-desktop-probe"
+chmod +x "$ZATOR_ROOT/bin/zator-desktop-probe"
+out="$( ( set -e; zator_remove || echo CAUGHT; echo LOOP_CONTINUES ) 2>&1 )"
+[ -f "$ZATOR_ROOT/desktop-probe.json" ] || fail 'component files lost after failed transport cleanup'
+printf '%s\n' "$out" | grep -q CAUGHT || fail 'Desktop Probe cleanup error ignored'
+printf '%s\n' "$out" | grep -q LOOP_CONTINUES || fail 'component cleanup killed menu'
+printf '#!/bin/sh\nexit 0\n' > "$ZATOR_ROOT/bin/zator-desktop-probe"
+zator_remove >/dev/null || fail 'component cleanup success rejected'
+[ ! -e "$ZATOR_ROOT" ] || fail 'component files not removed after cleanup'
+ok 'Desktop Probe cleanup failure preserves component files and keeps menu alive'
+
 echo "============================="
 printf 'uninstall smoke ok (assertions: %d)\n' "$PASS"
