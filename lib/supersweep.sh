@@ -297,23 +297,61 @@ _supersweep_verdict_color() {
 
 # Перезагрузка firewall не должна превратить ответ рабочего сервиса
 # в победителя тестовой стратегии: проверяем изоляцию до И после сети.
+# Проверки здоровья ретраятся: на iptables без -w чужой
+# xtables lock даёт транзиентный отказ. Если правила транспорта снёс
+# внешний firewall-фреймворк (ndm на Keenetic), транспорт
+# переустанавливается на месте — прогон продолжает работу.
 _supersweep_check_target() {
-    local out seq_before seq_after
-    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
-        supersweep_probe_healthy || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
-        seq_before="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
-    fi
-    out="$(z2r_tls_check_target "$1")" || return 1
-    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
-        supersweep_probe_healthy || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
-        seq_after="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
-        if [ "$seq_before" = "$seq_after" ]; then
-            echo 'Пакеты не попали в тестовую NFQUEUE: проверьте маршрутизацию и DNS. Прогон остановлен.' >&2
-            : > "$Z2R_SUPERSWEEP_DIR/cancel"
-            return 1
+    local out seq_before seq_after try attempt isolation_lost
+    for attempt in 1 2; do
+        if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+            for try in 1 2 3; do
+                if supersweep_probe_healthy; then break; fi
+                if [ "$try" = 3 ]; then
+                    echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
+                    if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
+                        echo 'Транспорт не восстановлен; прогон остановлен.' >&2
+                        : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                        return 1
+                    fi
+                    break
+                fi
+                sleep 1
+            done
+            seq_before="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
         fi
-    fi
-    printf '%s\n' "$out"
+        isolation_lost=0
+        out="$(z2r_tls_check_target "$1")" || return 1
+        if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+            for try in 1 2 3; do
+                if supersweep_probe_healthy; then break; fi
+                isolation_lost=1
+                if [ "$try" = 3 ]; then
+                    echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
+                    if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
+                        echo 'Транспорт не восстановлен; прогон остановлен.' >&2
+                        : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                        return 1
+                    fi
+                    break
+                fi
+                sleep 1
+            done
+            # Ответ при потере изоляции недостоверен; повторяем всю пробу один раз.
+            [ "$isolation_lost" = 0 ] || continue
+            seq_after="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+            if [ "$seq_before" = "$seq_after" ]; then
+                echo 'Пакеты не попали в тестовую NFQUEUE: проверьте маршрутизацию и DNS. Прогон остановлен.' >&2
+                : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                return 1
+            fi
+        fi
+        printf '%s\n' "$out"
+        return 0
+    done
+    echo 'Изоляция повторно нарушена во время проверки; прогон остановлен.' >&2
+    : > "$Z2R_SUPERSWEEP_DIR/cancel"
+    return 1
 }
 
 # progress.<name>.tsv: epoch, target, strategy, token, tls12, tls13, dl bytes, dl time, short.

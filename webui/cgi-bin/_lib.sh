@@ -12,49 +12,6 @@ CONFIG_FILE="$ZAPRET_ROOT/config"
 ORCH_DIR="$ZATOR_ROOT/extra_strats/cache/orchestra"
 LIB_DIR=""
 
-find_runtime_libs() {
-  local here dir
-  here="$(cd -- "$(dirname -- "$0")" && pwd)"
-  for dir in \
-    "$ZATOR_ROOT/z2r_lib" \
-    "$ZAPRET_ROOT/z2r_lib" \
-    "$here/../../z2r_lib" \
-    "$here/../../lib" \
-    "$here/../lib"; do
-    if [ -f "$dir/orchestra_state.sh" ] && [ -f "$dir/config.sh" ] && [ -f "$dir/strategies.sh" ] && [ -f "$dir/netcheck.sh" ]; then
-      LIB_DIR="$dir"
-      return 0
-    fi
-  done
-  return 1
-}
-
-find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{"error":"missing z2r runtime libs"}'; exit 0; }
-. "$LIB_DIR/config.sh"
-. "$LIB_DIR/orchestra_state.sh"
-. "$LIB_DIR/strategies.sh"
-. "$LIB_DIR/netcheck.sh"
-[ -f "$LIB_DIR/actions.sh" ] && . "$LIB_DIR/actions.sh"
-[ -f "$LIB_DIR/provider.sh" ] && . "$LIB_DIR/provider.sh"
-[ -f "$LIB_DIR/recommendations.sh" ] && . "$LIB_DIR/recommendations.sh"
-[ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
-[ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
-[ -f "$LIB_DIR/supersweep.sh" ] && . "$LIB_DIR/supersweep.sh"
-
-api_supersweep_get() {
-  local body
-  if ! type supersweep_report_json >/dev/null 2>&1; then
-    send_error '503 Service Unavailable' 'Для просмотра суперавтопрогона обновите Core zator.'
-  fi
-  body="$(supersweep_report_json)" || { send_error '500 Internal Server Error' 'Не удалось прочитать отчёт суперавтопрогона.'; }
-  printf 'Cache-Control: no-store\r\n'
-  send_json '200 OK' "$body"
-}
-
-telemetry_notify() {
-  type send_stats >/dev/null 2>&1 && send_stats || true
-}
-
 json_escape() {
   printf '%s' "$1" | awk 'BEGIN{ORS=""}
   {
@@ -79,6 +36,58 @@ send_error() {
   local message="$2"
   send_json "$status" "{\"error\":\"$(json_escape "$message")\"}"
   exit 0
+}
+
+api_supersweep_get() {
+  local body
+  if ! type supersweep_report_json >/dev/null 2>&1; then
+    send_error '503 Service Unavailable' 'Для просмотра суперавтопрогона обновите Core zator.'
+  fi
+  body="$(supersweep_report_json)" || { send_error '500 Internal Server Error' 'Не удалось прочитать отчёт суперавтопрогона.'; }
+  printf 'Cache-Control: no-store\r\n'
+  send_json '200 OK' "$body"
+}
+
+find_runtime_libs() {
+  local here dir file
+  here="$(cd -- "$(dirname -- "$0")" && pwd)"
+  for dir in \
+    "$ZATOR_ROOT/z2r_lib" \
+    "$ZAPRET_ROOT/z2r_lib" \
+    "$here/../../z2r_lib" \
+    "$here/../../lib" \
+    "$here/../lib"; do
+    for file in "$@"; do
+      [ -f "$dir/$file" ] || continue 2
+    done
+    LIB_DIR="$dir"
+    return 0
+  done
+  return 1
+}
+
+# Отчёт не требует загрузки остальных библиотек на слабом роутере.
+if [ "${0##*/}" = settings.cgi ] && [ "${REQUEST_METHOD:-GET}" = GET ] && [ "${QUERY_STRING:-}" = setting=supersweep ]; then
+  find_runtime_libs supersweep.sh || send_error '503 Service Unavailable' 'missing z2r runtime libs'
+  . "$LIB_DIR/supersweep.sh"
+  api_supersweep_get
+  exit 0
+fi
+
+find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{"error":"missing z2r runtime libs"}'; exit 0; }
+. "$LIB_DIR/config.sh"
+. "$LIB_DIR/orchestra_state.sh"
+. "$LIB_DIR/strategies.sh"
+. "$LIB_DIR/netcheck.sh"
+[ -f "$LIB_DIR/actions.sh" ] && . "$LIB_DIR/actions.sh"
+[ -f "$LIB_DIR/provider.sh" ] && . "$LIB_DIR/provider.sh"
+[ -f "$LIB_DIR/recommendations.sh" ] && . "$LIB_DIR/recommendations.sh"
+[ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
+[ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
+[ -f "$LIB_DIR/supersweep.sh" ] && . "$LIB_DIR/supersweep.sh"
+
+telemetry_notify() {
+  type send_stats >/dev/null 2>&1 && send_stats || true
 }
 
 parse_params() {

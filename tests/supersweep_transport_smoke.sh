@@ -13,13 +13,35 @@ declare -A MOCK_CHAINS=() rules=()
 log=()
 iptables() {
   log+=("$*")
+  if [[ ${MOCK_LOCKED:-0} == 1 ]]; then return 4; fi
   if [[ ${MOCK_FAIL_AT:-0} == "${#log[@]}" ]]; then return 1; fi
-  [[ "$1 $2 $3 $4" == '-w 5 -t mangle' ]] || fail 'unexpected table or no xtables lock'
-  shift 4
-  local op=$1 chain=$2 text key
+  if [[ ${MOCK_NO_WAIT:-0} == 1 && " $* " == *' -w '* ]]; then return 2; fi
+  if [[ ${MOCK_BARE_WAIT:-0} == 1 && "$1" == -w && "${2:-}" == 5 ]]; then return 2; fi
+  if [[ "$1 $2 $3 $4" == '-w 5 -t mangle' ]]; then
+    shift 4
+  elif [[ ${MOCK_BARE_WAIT:-0} == 1 && "$1 $2" == '-w -t' && "${3:-}" == mangle ]]; then
+    shift 3
+  elif [[ ${MOCK_NO_WAIT:-0} == 1 && "$1 $2" == '-t mangle' ]]; then
+    shift 2
+  else
+    fail 'unexpected table or no xtables lock'
+  fi
+  local op=$1 chain=${2:-} text key
+  if [[ $op == -nL && -z $chain ]]; then
+    for chain in "${!MOCK_CHAINS[@]}"; do printf 'Chain %s (0 references)\n' "$chain"; done
+    return 0
+  fi
   shift 2
   text="$*"; key="$chain|$text"
   case "$op" in
+    -L) [[ $chain == OUTPUT ]] || fail 'unexpected probe target'; return 0 ;;
+    -nL)
+      [[ ${MOCK_CHAINS[$chain]+yes} ]] || return 1
+      for key in "${!rules[@]}"; do
+        [[ $key == "$chain|"* && $key == *' -j Z2R_SS_'* ]] && printf ' %s
+' "${key#*|}"
+      done
+      return 0 ;;
     -N) [[ ! ${MOCK_CHAINS[$chain]+yes} ]] || return 1; MOCK_CHAINS[$chain]=1 ;;
     -A|-I) [[ ${MOCK_CHAINS[$chain]+yes} ]] || return 1; rules[$key]=1 ;;
     -D) [[ ${rules[$key]+yes} ]] || return 1; unset 'rules[$key]' ;;
@@ -121,6 +143,27 @@ if supersweep_transport_stop 2>"$TMP_DIR/error"; then fail 'ignored cleanup fail
 MOCK_FAIL_AT=0
 supersweep_transport_stop || fail 'cleanup retry'
 [[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'retry leaked rules'
+# A failed listing is not proof that a hook or chain disappeared.
+supersweep_transport_start || fail 'setup locked cleanup'
+MOCK_LOCKED=1
+! supersweep_transport_stop || fail 'accepted failed hook listing'
+[[ -n $_Z2R_SS_HOOKS && -n $_Z2R_SS_CHAINS ]] || fail 'forgot live transport'
+MOCK_LOCKED=0
+supersweep_transport_stop || fail 'retry locked cleanup'
+supersweep_transport_start || fail 'setup locked chain cleanup'
+for hook in $_Z2R_SS_HOOKS; do _supersweep_transport_hook -D "$hook"; done
+_Z2R_SS_HOOKS=
+MOCK_LOCKED=1
+! supersweep_transport_stop || fail 'accepted failed chain listing'
+[[ -n $_Z2R_SS_CHAINS ]] || fail 'forgot live chains'
+MOCK_LOCKED=0
+supersweep_transport_stop || fail 'retry locked chain cleanup'
+[[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'locked cleanup leaked rules'
+supersweep_transport_start || fail 'setup external wipe cleanup'
+for key in "${!rules[@]}"; do [[ $key != *Z2R_SS_* ]] || unset 'rules[$key]'; done
+for chain in "${!MOCK_CHAINS[@]}"; do [[ $chain != Z2R_SS_* ]] || unset 'MOCK_CHAINS[$chain]'; done
+supersweep_transport_stop || fail 'externally removed rules must allow cleanup'
+[[ -z $_Z2R_SS_HOOKS && -z $_Z2R_SS_CHAINS ]] || fail 'kept externally removed rules'
 # Native nft rules must return from zapret's own hook, not a separate base
 # chain whose ACCEPT still falls through to the production NFQUEUE.
 nft() {
@@ -156,4 +199,58 @@ NFT_TAGGED=1
 supersweep_transport_stop || fail 'native nft stop'
 grep -q '^delete rule inet zapret2 postnat_hook handle 42$' "$TMP_DIR/nft.batch" || fail 'cleanup must delete exact owned handles'
 grep -q '^delete chain inet zapret2 z2r_supersweep_output$' "$TMP_DIR/nft.batch" || fail 'owned output chain leaked'
+
+# ndm-style external wipe: reconcile must reclaim stale chains and rebuild.
+FWTYPE=iptables
+unset _Z2R_SS_IPT_WAIT _Z2R_SS_IPT_WAIT_DONE
+log=()
+supersweep_transport_start || fail 'setup wipe'
+supersweep_transport_stop || fail 'setup wipe stop'
+for chain in Z2R_SS_OUT Z2R_SS_POST Z2R_SS_PRE Z2R_SS_IN Z2R_SS_RAW; do
+  MOCK_CHAINS[$chain]=1
+done
+rules['OUTPUT|-p tcp --sport 62000:62999 --dport 443 -m owner --uid-owner 0 -m mark ! --mark 0x40000000/0x40000000 -j Z2R_SS_OUT']=1
+rules['Z2R_SS_OUT|-p tcp --sport 62000:62999 --dport 443 -m mark ! --mark 0x40000000/0x40000000 -j MARK --set-xmark 0x08000000/0x08000000']=1
+DESYNC_MARK=0x40000000
+supersweep_transport_reconcile || fail 'reconcile'
+[[ ${rules['OUTPUT|-p tcp --sport 62000:62999 --dport 443 -m owner ! --socket-exists -m mark ! --mark 0x40000000/0x40000000 -j Z2R_SS_OUT']+yes} ]] || fail 'reconcile missed socketless hook'
+supersweep_transport_stop || fail 'reconcile stop'
+[[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'reconcile leaked'
+unset DESYNC_MARK
+
+# A live and correct transport must be a no-op for reconcile.
+log=()
+supersweep_transport_start || fail 'setup noop'
+before=${#log[@]}
+DESYNC_MARK=0x40000000
+supersweep_transport_reconcile || fail 'reconcile noop'
+[[ ${#log[@]} -le $((before + 1)) ]] || fail 'reconcile touched live rules'
+supersweep_transport_stop || fail 'reconcile noop stop'
+unset DESYNC_MARK
+
+# Keenetic Entware iptables 1.4.21: -w exists only as a bare flag; -w 5 gives
+# "Bad argument". The probe must pick the bare form and use it everywhere.
+FWTYPE=iptables
+unset _Z2R_SS_IPT_WAIT _Z2R_SS_IPT_WAIT_DONE
+MOCK_BARE_WAIT=1
+log=()
+supersweep_transport_start || fail 'bare-w start'
+[[ ${rules['Z2R_SS_OUT|-p tcp --sport 62000:62999 --dport 443 -m mark ! --mark 0x40000000/0x40000000 -j MARK --set-xmark 0x08000000/0x08000000']+yes} ]] || fail 'bare-w start missed classification'
+supersweep_transport_check || fail 'bare-w check'
+supersweep_transport_stop || fail 'bare-w stop'
+[[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'bare-w cleanup leaked'
+MOCK_BARE_WAIT=0
+
+# Keenetic-style iptables 1.4.21 rejects -w entirely: the probe must disable it
+# once and run the whole install/check/stop cycle without it.
+FWTYPE=iptables
+unset _Z2R_SS_IPT_WAIT _Z2R_SS_IPT_WAIT_DONE
+MOCK_NO_WAIT=1
+log=()
+supersweep_transport_start || fail 'no-w start'
+[[ ${rules['Z2R_SS_OUT|-p tcp --sport 62000:62999 --dport 443 -m mark ! --mark 0x40000000/0x40000000 -j MARK --set-xmark 0x08000000/0x08000000']+yes} ]] || fail 'no-w start missed classification'
+supersweep_transport_check || fail 'no-w check'
+supersweep_transport_stop || fail 'no-w stop'
+[[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'no-w cleanup leaked'
+MOCK_NO_WAIT=0
 printf 'supersweep transport smoke: OK\n'
