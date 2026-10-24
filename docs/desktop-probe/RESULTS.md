@@ -40,6 +40,8 @@
 
 Обновление 25.10.2026: добавлены «Все стратегии» для выбранного профиля и полный последовательный проход по профилям 1/2/4 и всем заданным RKN-сайтам (профиль 3), прогресс и покрытие по стратегиям. Unit tests — 8/8, Electron smoke проверяет оба режима. Повторный живой запуск остановлен с INVALID / ROUTE_MISMATCH после восстановления собственных transport rules: текущий policy path не соответствует настроенному WAN. Полный проход всех стратегий и сервисов на устройстве этим обновлением не подтверждён; рабочие VPN/policy settings не менялись.
 
+Уточнение 25.10.2026: причиной ROUTE_MISMATCH оказался устаревший `wan: pppoe-wan` в настройках компонента. OpenWrt теперь использует DHCP и L3-интерфейс `wan`; `pppoe-wan` отсутствует. Исправлен только `/opt/zator/desktop-probe.json` с резервной копией, выполнен reconcile собственных правил. Повторный Electron browser integration: DIRECT и strategy 1 — оба OK. VPN/policy routing не менялись; полный суперсвип этим коротким прогоном не проверялся.
+
 Физический Keenetic/Entware, 128 МБ/OOM, MIPS ABI/старое ядро, полный firewall/WAN reload и reboot остаются непроверенными. OpenWrt firewall include поставляется отдельно и автоматически в UCI не регистрируется. После пересоздания таблицы нужен hook либо явный reconcile; потеря транспорта отклоняет попытку.
 
 Не выполнены живая авторизованная проверка YouTube/Discord, вся матрица стратегий, Windows packet capture для DNS/UDP/WebRTC leakage и подпись Windows executable. UI DOM/IPC проверены; пиксельная QA недоступна из-за `UnknownVizError` compositor capture в текущем окружении. SOCKS поддерживает только IPv4 TCP/443; результат router sockets не доказывает эквивалентность LAN forwarding. Автоматическое применение в production не входит в MVP.
