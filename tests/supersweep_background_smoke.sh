@@ -237,6 +237,14 @@ mkdir -p "$ORCH_DIR/scopes"
 printf '1\ttls\t7\n' > "$ORCH_DIR/scopes/mark_5.tsv"
 cp "$ORCH_LOCK_FILE" "$TMP/global.before"
 cp "$CONFIG_FILE" "$TMP/config.before"
+# A process may disappear after the /proc glob, before cmdline is opened.
+scan_glob='/proc/[0-9]*/cmdline'
+scan_source="$(sed -n '/^    local proc_cmdline/,/^    # Старые Entware/{ /^    # Старые Entware/!p; }' lib/supersweep_probe.sh)"
+[ -n "$scan_source" ]
+scan_source="${scan_source//"$scan_glob"/"$TMP/disappeared-proc/cmdline"}"
+scan_missing_proc() { eval "$scan_source"; }
+scan_missing_proc 2>"$TMP/proc.error"
+[ ! -s "$TMP/proc.error" ]
 # A live runner without its lock must be found in NUL-separated argv.
 bash -c 'while :; do sleep 0.1; done' "$TMP/supersweep_probe.sh" --run &
 stale_pid=$!

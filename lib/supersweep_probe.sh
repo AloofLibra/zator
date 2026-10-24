@@ -217,7 +217,7 @@ supersweep_background_start() {
                     ;;
             esac
             previous="$arg"
-        done < "$proc_cmdline" 2>/dev/null || true
+        done 2>/dev/null < "$proc_cmdline" || true
         if [ "$runner_found" = 1 ]; then
             rmdir "${dir}.lock" 2>/dev/null || true
             echo 'Обнаружен живой процесс прошлого фонового прогона: дождитесь его завершения или остановите (меню 12).' >&2
