@@ -53,6 +53,60 @@ fi
     [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+# A post-probe health failure invalidates the answer, even if health recovers.
+for health_failure in transient reinstall repeated; do
+(
+    healthy_calls=0
+    sleep() { :; }
+    supersweep_probe_healthy() {
+        healthy_calls=$((healthy_calls + 1))
+        case "$health_failure:$healthy_calls" in
+            transient:2|reinstall:[234]|repeated:[234789]) return 1 ;;
+        esac
+    }
+    supersweep_transport_reinstall() { :; }
+    printf '0\n' > "$TMP/reprobe-count"
+    supersweep_probe_sequence() { cat "$TMP/reprobe-count"; }
+    z2r_tls_check_target() {
+        local count=$(( $(cat "$TMP/reprobe-count") + 1 ))
+        printf '%s\n' "$count" > "$TMP/reprobe-count"
+        printf 'answer-%s\n' "$count"
+    }
+    if out="$(_supersweep_check_target https://example.com/)"; then
+        [ "$health_failure" != repeated ]
+        [ "$out" = answer-2 ]
+        [ ! -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    else
+        [ "$health_failure" = repeated ]
+        [ -z "$out" ]
+        [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    fi
+    [ "$(cat "$TMP/reprobe-count")" = 2 ]
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+done
+# A failed health check must reinstall the transport and keep going.
+(
+    healthy_calls=0
+    supersweep_probe_healthy() { healthy_calls=$((healthy_calls + 1)); [ "$healthy_calls" -ge 4 ]; }
+    supersweep_transport_reinstall() { : > "$TMP/transport-reinstalled"; }
+    printf '4
+' > "$TMP/seqn"
+    supersweep_probe_sequence() { echo $(( $(cat "$TMP/seqn") + 1 )) > "$TMP/seqn"; cat "$TMP/seqn"; }
+    z2r_tls_check_target() { printf '0|200|HTTP/2|0.1|192.0.2.1\n0|200|HTTP/2|0.1|192.0.2.1\nskip\n'; }
+    out="$(_supersweep_check_target https://example.com/)"
+    [ -e "$TMP/transport-reinstalled" ]
+    ! [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    printf '%s\n' "$out" | grep -q '0|200'
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+(
+    supersweep_probe_healthy() { return 1; }
+    supersweep_transport_reinstall() { :; }
+    ! _supersweep_check_target https://example.com/ 2>/dev/null
+    [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+)
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 (
     printf 'best=1\nbest_kind=warn\ninterrupted=0\n' > "$Z2R_SUPERSWEEP_DIR/best.yt"
     [ -z "$(_supersweep_profile_best yt)" ]
@@ -67,18 +121,50 @@ rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 )
 (
     calls=0
-    supersweep_transport_stop() { calls=$((calls + 1)); [ "$calls" -gt 1 ]; }
+    supersweep_transport_stop() { calls=$((calls + 1)); [ "$calls" -gt 3 ]; }
     Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
     ! supersweep_probe_stop
     [ "$Z2R_SUPERSWEEP_TRANSPORT_ACTIVE" = 1 ]
     supersweep_probe_stop
-    [ "$calls" = 2 ]
+    [ "$calls" = 4 ]
 )
 cp orchestra/locked.lua "$ZATOR_ROOT/lua/locked.lua"
 tr -d '\r' < config.default > "$CONFIG_FILE"
+mkdir -p "$ZAPRET2_ROOT/nfq2"
+printf '#!/bin/sh\n[ "${1:-}" != --help ] || { printf " --autoexclude=[0|1]\\n"; exit 0; }\nexit 0\n' > "$ZAPRET2_ROOT/nfq2/nfqws2"
+chmod +x "$ZAPRET2_ROOT/nfq2/nfqws2"
 supersweep_probe_config 4 "$CONFIG_FILE"
-grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
-grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--qnum=65535' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--autoexclude=0' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--blob=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--template=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--new' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -qE '^--lua-desync=[^ ]* --lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+# A build without the autoexclude option must not receive it.
+cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK2'
+#!/bin/sh
+[ "${1:-}" != --help ] || { printf 'usage: nfqws2\n'; exit 0; }
+exit 0
+MOCK2
+unset Z2R_SUPERSWEEP_AUTOEXCLUDE
+supersweep_probe_config 4 "$CONFIG_FILE"
+! grep -q -- '--autoexclude' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK'
+#!/bin/sh
+[ "${1:-}" != --version ] || { echo 'nfqws2 smoke'; exit 0; }
+[ "${1:-}" != --help ] || { printf 'usage: nfqws2\n --autoexclude=[0|1]\n'; exit 0; }
+printf '%s\n' "$@" >> "$TMP/nfq.args"
+printf '65535 0 0 2 65531 0 0 0 1\n' > "$Z2R_SUPERSWEEP_QUEUE_FILE"
+echo "$$" >> "$TMP/nfq.pids"
+trap ': > "$Z2R_SUPERSWEEP_QUEUE_FILE"; exit' TERM INT
+while :; do sleep 0.1; done
+MOCK
+unset Z2R_SUPERSWEEP_AUTOEXCLUDE
+supersweep_probe_config 4 "$CONFIG_FILE"
+grep -q -- '--autoexclude=0' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 (
     supersweep_transport_check() { return 0; }
     Z2R_SUPERSWEEP_NFQ_PID=$$
@@ -86,13 +172,13 @@ grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
     ! supersweep_probe_healthy 2>/dev/null
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.log"
-grep -q -- '--lua-desync=circular_locked:key=4' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
-grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
-! grep -qE 'adaptive|circular_quality|validator=|hostlist=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- '--lua-desync=circular_locked:key=4' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -q -- 'strategy=25' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -qE 'adaptive|circular_quality|validator=|hostlist=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -Fq "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
 ! grep -q '/opt/zator/extra_strats/cache/orchestra/locked' "$Z2R_SUPERSWEEP_DIR/probe/locked.lua"
 supersweep_probe_config 3 "$CONFIG_FILE"
-grep -q -- '--import=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.conf"
+grep -q -- '--import=z2r_tcp_tls_common' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 # Invalid/missing profile plans must fail, not silently test an empty plan.
 ! supersweep_probe_config 10 "$CONFIG_FILE"
 # Detached runner is a real child bash; only nfqws2/firewall/network are mocked.
@@ -107,6 +193,8 @@ printf '32768 60999\n' > "$TMP/ports"
 cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK'
 #!/bin/sh
 [ "${1:-}" != --version ] || { echo 'nfqws2 smoke'; exit 0; }
+[ "${1:-}" != --help ] || { printf 'usage: nfqws2\n --autoexclude=[0|1]\n'; exit 0; }
+printf '%s\n' "$@" >> "$TMP/nfq.args"
 printf '65535 0 0 2 65531 0 0 0 1\n' > "$Z2R_SUPERSWEEP_QUEUE_FILE"
 echo "$$" >> "$TMP/nfq.pids"
 trap ': > "$Z2R_SUPERSWEEP_QUEUE_FILE"; exit' TERM INT
@@ -149,6 +237,25 @@ mkdir -p "$ORCH_DIR/scopes"
 printf '1\ttls\t7\n' > "$ORCH_DIR/scopes/mark_5.tsv"
 cp "$ORCH_LOCK_FILE" "$TMP/global.before"
 cp "$CONFIG_FILE" "$TMP/config.before"
+# A process may disappear after the /proc glob, before cmdline is opened.
+scan_glob='/proc/[0-9]*/cmdline'
+scan_source="$(sed -n '/^    local proc_cmdline/,/^    # Старые Entware/{ /^    # Старые Entware/!p; }' lib/supersweep_probe.sh)"
+[ -n "$scan_source" ]
+scan_source="${scan_source//"$scan_glob"/"$TMP/disappeared-proc/cmdline"}"
+scan_missing_proc() { eval "$scan_source"; }
+scan_missing_proc 2>"$TMP/proc.error"
+[ ! -s "$TMP/proc.error" ]
+# A live runner without its lock must be found in NUL-separated argv.
+bash -c 'while :; do sleep 0.1; done' "$TMP/supersweep_probe.sh" --run &
+stale_pid=$!
+sleep 0.1
+stale_rc=0
+supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com 2>"$TMP/stale.error" || stale_rc=$?
+kill "$stale_pid" 2>/dev/null || true
+wait "$stale_pid" 2>/dev/null || true
+[ "$stale_rc" != 0 ]
+grep -q 'Обнаружен живой процесс' "$TMP/stale.error"
+[ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ]
 supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
 [ -d "$Z2R_SUPERSWEEP_DIR.lock" ]
 ! supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com 2>/dev/null
@@ -156,6 +263,13 @@ for ((i=0; i<200; i++)); do
     [ -s "$TMP/network.args" ] && break
     sleep 0.1
 done
+grep -q -- '--qnum=65535' "$TMP/nfq.args"
+grep -q -- '--uid=65533:65533' "$TMP/nfq.args"
+grep -q -- '--lua-init=@' "$TMP/nfq.args"
+grep -q -- '--import=' "$TMP/nfq.args"
+grep -q -- '--lua-desync=circular_locked:key=1' "$TMP/nfq.args"
+! grep -q '^@' "$TMP/nfq.args"
+[ "$(grep -cx -- '--new' "$TMP/nfq.args")" = 1 ]
 printf 'r|99\nprofile|invalid|tls|1\n' > "$Z2R_SUPERSWEEP_DIR/cmd.yt.tmp.poison"
 for ((i=0; i<1800; i++)); do
     [ -d "$Z2R_SUPERSWEEP_DIR.lock" ] || break
@@ -261,4 +375,16 @@ cmp "$TMP/term.scope.before" "$ORCH_DIR/scopes/mark_5.tsv"
 rm -rf "$Z2R_SUPERSWEEP_DIR"
 supersweep_report_json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["state"]=="interrupted" and r["source"]=="saved" and not r["active"] and r["applied"]==[]'
 [ "$regression_failed" = 0 ]
+# ensure_nfqws2_stopped must not murder the isolated probe by name.
+sed -n '/^ensure_nfqws2_stopped()/,/^}/p' z2r.sh > "$TMP/ensure.sh"
+grep -q 'qnum=65535' "$TMP/ensure.sh"
+! grep -qE 'killall|pkill' "$TMP/ensure.sh"
+# The ndm hook must reinstall probe transport while a run is live.
+grep -q 'supersweep_transport_reconcile' Entware/000-zapret2.sh
+grep -q 'transport.env' Entware/000-zapret2.sh
+sh -n Entware/000-zapret2.sh
+# Probe lifecycle must publish/remove the hook env file.
+sed -n '/^supersweep_probe_stop()/,/^}/p' lib/supersweep_probe.sh > "$TMP/pstop.sh"
+grep -q 'rm -f.*transport.env' "$TMP/pstop.sh"
+grep -q 'transport.env' lib/supersweep_probe.sh
 echo 'supersweep background smoke ok'

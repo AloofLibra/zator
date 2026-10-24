@@ -13,7 +13,7 @@ _supersweep_transport_error() {
 }
 
 _supersweep_transport_ipt() {
-  iptables -w 5 -t mangle "$@"
+  iptables ${_Z2R_SS_IPT_WAIT:+$_Z2R_SS_IPT_WAIT} -t mangle "$@"
 }
 
 _supersweep_transport_mark_safe() {
@@ -62,7 +62,6 @@ _supersweep_transport_hook() {
 _supersweep_transport_install() {
   local chain hook
   for chain in Z2R_SS_OUT Z2R_SS_POST Z2R_SS_PRE Z2R_SS_IN Z2R_SS_RAW; do
-    # Never adopt or flush a pre-existing chain, even with our name.
     _supersweep_transport_ipt -N "$chain" || return 1
     _Z2R_SS_CHAINS="$chain ${_Z2R_SS_CHAINS:-}"
   done
@@ -155,7 +154,11 @@ supersweep_transport_start() {
     *) _supersweep_transport_error 'FWTYPE must explicitly select iptables or nftables'; return 1 ;;
   esac
   range_file="${Z2R_SUPERSWEEP_PORT_RANGE_FILE:-/proc/sys/net/ipv4/ip_local_port_range}"
-  IFS=' 	' read -r first last extra < "$range_file" || {
+  # busybox read берёт из /proc-файлов этого ядра только первый кусок: читаем
+  # через cat и разбиение по IFS — одинаково в ash и bash.
+  set -- $(cat "$range_file" 2>/dev/null) || :
+  first=${1:-} last=${2:-} extra=${3:-}
+  [ -n "$first" ] || {
     _supersweep_transport_error 'cannot read kernel ephemeral port range'; return 1;
   }
   case "$first:$last" in *[!0-9:]*|:*|*:) _supersweep_transport_error 'invalid kernel ephemeral port range'; return 1 ;; esac
@@ -180,6 +183,16 @@ supersweep_transport_start() {
     _supersweep_transport_error 'native nft hook installation failed; no fallback to production NFQUEUE'
     return 1
   fi
+  if [ -z "${_Z2R_SS_IPT_WAIT_DONE:-}" ]; then
+    if iptables -w 5 -t mangle -L OUTPUT -n >/dev/null 2>&1; then
+      _Z2R_SS_IPT_WAIT='-w 5'
+    elif iptables -w -t mangle -L OUTPUT -n >/dev/null 2>&1; then
+      _Z2R_SS_IPT_WAIT='-w'
+    else
+      _Z2R_SS_IPT_WAIT=''
+    fi
+    _Z2R_SS_IPT_WAIT_DONE=1
+  fi
   if _supersweep_transport_install; then
     _Z2R_SS_ACTIVE=1
     return 0
@@ -187,6 +200,30 @@ supersweep_transport_start() {
   _supersweep_transport_error 'iptables installation failed; removing partial transport' || :
   supersweep_transport_stop || :
   return 1
+}
+
+supersweep_transport_reinstall() {
+  [ "${FWTYPE:-}" = iptables ] || return 1
+  _Z2R_SS_DESYNC="${_Z2R_SS_DESYNC:-${DESYNC_MARK:-0x40000000}}"
+  # В ndm-hook нет состояния родителя: восстанавливаем список своих правил.
+  _Z2R_SS_HOOKS='SOCKETOUTPUT RAWOUTPUT OUTPUT INPUT PREROUTING POSTROUTING'
+  _Z2R_SS_CHAINS='Z2R_SS_OUT Z2R_SS_POST Z2R_SS_PRE Z2R_SS_IN Z2R_SS_RAW'
+  supersweep_transport_stop || return 1
+  supersweep_transport_start
+}
+
+supersweep_transport_reconcile() {
+  [ "${FWTYPE:-}" = iptables ] || return 0
+  _Z2R_SS_DESYNC="${DESYNC_MARK:-0x40000000}"
+  if _supersweep_transport_hook -C SOCKETOUTPUT 2>/dev/null; then
+    return 0
+  fi
+  local t=0
+  until supersweep_transport_reinstall; do
+    t=$((t + 1))
+    [ "$t" -lt 5 ] || return 1
+    sleep 3
+  done
 }
 
 supersweep_transport_check() {
@@ -210,7 +247,7 @@ supersweep_transport_check() {
 }
 
 supersweep_transport_stop() {
-  local hook chain chains= rc=0
+  local hook chain listing chains= rc=0 hooks_live=0 remaining=
   if [ "${_Z2R_SS_NFT_ACTIVE:-0}" = 1 ]; then
     local rules
     rules="$(_supersweep_transport_nft_owned)" || return 1
@@ -225,21 +262,38 @@ delete chain inet $_Z2R_SS_NFT_TABLE z2r_supersweep_output"
   fi
   _Z2R_SS_ACTIVE=0
   # Disable marking, then the reply queue, then its production-bypass guard.
-  # On failure leave the remaining live path intact for a safe retry.
+  # Keenetic ndm периодически переприменяет firewall и выметает чужие цепи:
+  # исчезнувшее правило — не ошибка. -D может отказать и транзиентно (чужой
+  # xtables lock), поэтому факт существования правила проверяется листингом
+  # цепи: правило на месте — останавливаемся и ретраим, исчезло — идём дальше.
   for hook in ${_Z2R_SS_HOOKS:-}; do
-    _supersweep_transport_hook -D "$hook" || {
-      _supersweep_transport_error 'hook cleanup incomplete; retry stop before exiting'; return 1;
-    }
-    _Z2R_SS_HOOKS="${_Z2R_SS_HOOKS#* }"
-  done
-  for chain in ${_Z2R_SS_CHAINS:-}; do
-    # Only chains successfully created by this shell can reach this path.
-    if _supersweep_transport_ipt -F "$chain" && _supersweep_transport_ipt -X "$chain"; then
-      :
-    else
-      chains="$chains $chain"; rc=1
+    if ! _supersweep_transport_hook -D "$hook" 2>/dev/null; then
+      local live_chain="$hook"
+      case "$hook" in RAWOUTPUT|SOCKETOUTPUT) live_chain=OUTPUT ;; esac
+      listing="$(_supersweep_transport_ipt -nL "$live_chain" 2>/dev/null)" || return 1
+      if printf '%s\n' "$listing" | grep -aq 'Z2R_SS_'; then
+        hooks_live=1
+        remaining="$remaining $hook"
+        continue
+      fi
     fi
   done
-  _Z2R_SS_CHAINS="$chains"
-  [ "$rc" -eq 0 ] || _supersweep_transport_error 'cleanup incomplete; retry stop before exiting'
+  _Z2R_SS_HOOKS="${remaining# }"
+  if [ "$hooks_live" = 0 ]; then
+    for chain in ${_Z2R_SS_CHAINS:-}; do
+      if _supersweep_transport_ipt -F "$chain" 2>/dev/null && _supersweep_transport_ipt -X "$chain" 2>/dev/null; then
+        :
+      else
+        listing="$(_supersweep_transport_ipt -nL 2>/dev/null)" || return 1
+        if printf '%s\n' "$listing" | grep -q "^Chain $chain[[:space:]]"; then
+          chains="$chains $chain"; rc=1
+        fi
+      fi
+    done
+    _Z2R_SS_CHAINS="$chains"
+  fi
+  if [ "$hooks_live" = 1 ] || [ "$rc" -eq 1 ]; then
+    _supersweep_transport_error 'cleanup incomplete; retry stop before exiting'
+    return 1
+  fi
 }
