@@ -1,4 +1,16 @@
 export type Verdict = 'OK' | 'FAIL' | 'WARN' | 'UNKNOWN' | 'INVALID'
+export function withinTimeout<T>(work: Promise<T>, milliseconds: number, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', abort) }
+    const fail = (error: unknown) => { cleanup(); reject(error) }
+    const abort = () => fail(new Error('CANCELLED'))
+    const timer = setTimeout(() => fail(new Error('ATTEMPT_TIMEOUT')), Math.max(0, milliseconds))
+    signal.addEventListener('abort', abort, { once: true })
+    work.then(value => { cleanup(); resolve(value) }, fail)
+    if (signal.aborted) abort()
+    else if (milliseconds <= 0) fail(new Error('ATTEMPT_TIMEOUT'))
+  })
+}
 export interface ScanTarget { url: string; profile: number; scenario: 'generic_page' | 'youtube_video' | 'discord'; selector: string }
 export interface ScanOptions extends ScanTarget {
   scanMode?: 'single' | 'supersweep'; strategyMode?: 'selected' | 'all'; strategies: number[];
@@ -54,6 +66,7 @@ export interface Observation {
   functional: boolean | null; auth_required: boolean; errors: string[];
   evidence_complete?: boolean;
   requested_host?: string; expected_origin?: boolean;
+  timed_out?: boolean;
 }
 export function safeURL(raw: string): string {
   const u = new URL(raw)
@@ -71,6 +84,8 @@ export function classify(before: RouterStatus, after: RouterStatus, o: Observati
   if (o.expected_origin === false) return { verdict: 'UNKNOWN', reason: 'UNEXPECTED_REDIRECT' }
   if (o.auth_required) return { verdict: 'UNKNOWN', reason: 'AUTH_REQUIRED' }
   if (o.functional === null) return { verdict: 'UNKNOWN', reason: 'FUNCTIONAL_CONDITION_NOT_PROVEN' }
+  if (o.timed_out) return { verdict: 'FAIL', reason: 'ATTEMPT_TIMEOUT' }
+  if (!o.dom_loaded) return { verdict: 'FAIL', reason: 'PAGE_LOAD_FAILED' }
   if (!o.functional || !o.dom_loaded || !o.http_status || o.http_status >= 400) return { verdict: 'UNKNOWN', reason: 'RETRY_REQUIRED' }
   return o.errors.length ? { verdict: 'WARN', reason: 'FUNCTION_PASSED_WITH_RESOURCE_ERRORS' } : { verdict: 'OK', reason: 'DECLARED_SCENARIO_PASSED' }
 }

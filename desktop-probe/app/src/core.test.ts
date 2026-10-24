@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions } from './core'
+import { classify, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions, withinTimeout } from './core'
 
 const scan: ScanOptions = { url: 'https://example.org/', profile: 3, scenario: 'generic_page', selector: 'body', strategies: [1], scanMode: 'supersweep', youtubeURL: 'https://www.youtube.com/watch?v=test', discordURL: 'https://discord.com/app', discordSelector: '#app-mount', rknURLs: 'https://example.org/\nhttps://example.net/\nhttps://example.org/', rknSelector: 'body' }
 test('supersweep includes every profile and every selected RKN domain with live strategy numbers', () => {
@@ -32,6 +32,24 @@ test('coverage ranks green domains, keeps profiles separate and never treats war
 const before: RouterStatus = { ok: true, session_id: 'one', strategy: 1, strategy_generation: 2, transport_generation: 'four', route_generation: 0, firewall_generation: 0, proxy: { host: '127.0.0.1', port: 41081, alive: true }, queue: { number: 65534, counter: 10, alive: true }, proof: { connection_match: 'verified', strategy_invocation: 'verified', route: 'kernel_route_verified' } }
 const after = { ...before, queue: { ...before.queue, counter: 20 } }
 const observed: Observation = { http_status: 200, dom_loaded: true, fresh_connection: true, functional: true, auth_required: false, errors: [] }
+test('attempt timeout and definitive navigation failure skip retries without bypassing isolation checks', () => {
+  const timeout = { ...observed, dom_loaded: false, functional: false, timed_out: true }
+  assert.deepEqual(classify(before, after, timeout), { verdict: 'FAIL', reason: 'ATTEMPT_TIMEOUT' })
+  assert.equal(classify(before, after, { ...timeout, timed_out: false }).reason, 'PAGE_LOAD_FAILED')
+  assert.equal(classify(before, after, { ...timeout, functional: null }).verdict, 'UNKNOWN')
+  assert.equal(classify(before, { ...after, queue: before.queue }, timeout).verdict, 'INVALID')
+  assert.equal(classify(before, after, { ...observed, functional: false }).reason, 'RETRY_REQUIRED')
+})
+test('bounded browser work times out, cancels and preserves failures', async () => {
+  const never = new Promise<never>(() => {})
+  const controller = new AbortController()
+  assert.equal(await withinTimeout(Promise.resolve(42), 1000, controller.signal), 42)
+  await assert.rejects(withinTimeout(never, 10, controller.signal), /ATTEMPT_TIMEOUT/)
+  await assert.rejects(withinTimeout(Promise.resolve(42), 0, controller.signal), /ATTEMPT_TIMEOUT/)
+  await assert.rejects(withinTimeout(Promise.reject(new Error('SCRIPT_ERROR')), 1000, controller.signal), /SCRIPT_ERROR/)
+  const pending = withinTimeout(never, 1000, controller.signal); controller.abort()
+  await assert.rejects(pending, /CANCELLED/)
+})
 test('DIRECT brackets strategy changes with a repeated reference on longer sweeps', () => { assert.deepEqual(strategySequence([1, 1]), [0, 1]); assert.deepEqual(strategySequence([1, 2, 3]), [0, 1, 0, 2, 3]) })
 test('HTTP 200 alone never proves a strategy', () => { assert.equal(classify(before, after, { ...observed, functional: null }).verdict, 'UNKNOWN'); assert.equal(classify(before, { ...after, proof: { ...after.proof, connection_match: 'unavailable' } }, observed).verdict, 'INVALID') })
 test('generation, fresh connection, queue and route are required', () => {

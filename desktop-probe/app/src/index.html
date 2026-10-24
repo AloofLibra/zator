@@ -31,7 +31,8 @@ https://amnezia.org/</textarea></label>
         <label>Общее DOM-условие RKN<input id="rkn-selector" value="body" maxlength="128" disabled required></label>
         <p class="note">Все стратегии берутся из живого конфига. Проход последовательный; каждый RKN-сайт проверяется всеми номерами. Авторизация Discord может дать UNKNOWN; body подтверждает только загрузку DOM.</p>
       </div>
-      <label>Ожидание загрузки, секунд<input id="timeout" type="number" min="5" max="60" value="20" required></label>
+      <label>Лимит всей пробы, секунд<input id="timeout" type="number" min="5" max="60" value="10" required></label>
+      <p class="note">Таймаут и отказ загрузки не повторяются. Паузы между стратегиями: 15 с, RKN — 30 с.</p>
       <label><span><input id="manual" type="checkbox"> Ожидать ручную оценку сайта (до 5 минут)</span></label>
     </fieldset>
     <p class="note">DIRECT проверяется первым. Без доказанной изоляции результат INVALID; без функционального условия — UNKNOWN. QUIC, UDP, IPv6 и WebRTC не проверяются.</p>

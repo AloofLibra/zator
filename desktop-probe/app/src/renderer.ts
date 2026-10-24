@@ -3,6 +3,7 @@ const field = (id: string) => document.getElementById(id) as HTMLInputElement
 const statusNode = document.getElementById('status')!
 const labels: Record<string, string> = { IDLE: 'Готов', PREPARING: 'Подготовка', BASELINE: 'DIRECT', SWITCHING: 'Смена стратегии', LOADING: 'Загрузка сайта', ANALYZING: 'Проверка доказательств', MANUAL: 'Оцените сайт в строке результата', NEXT: 'Следующая стратегия', REPORTING: 'Отчёт', CANCELLED: 'Отменено', ERROR: 'Ошибка', CLEANUP_ERROR: 'Не удалось завершить сессию; действует TTL роутера' }
 function showError(error: unknown) { statusNode.textContent = String(error) }
+labels.PAUSE = 'Пауза между проверками'
 function scanModeChanged() {
   const sweep = field('scan-mode').value === 'supersweep'
   for (const [id, enabled] of [['single-options', !sweep], ['sweep-options', sweep]] as const) {
@@ -33,7 +34,7 @@ probe.onUpdate(data => {
     }
   }
   if (data.state) {
-    statusNode.textContent = [labels[data.state] || data.state, data.strategy !== undefined ? String(data.strategy || 'DIRECT') : '', data.error || data.cleanup_error || ''].filter(Boolean).join(' · ')
+    statusNode.textContent = [labels[data.state] || data.state, data.strategy !== undefined ? String(data.strategy || 'DIRECT') : '', data.pause_seconds ? `${data.pause_seconds} с` : '', data.error || data.cleanup_error || ''].filter(Boolean).join(' · ')
     const busy = !['IDLE', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR'].includes(data.state)
     if (data.total !== undefined) document.getElementById('progress')!.textContent = `${data.completed}/${data.total} | ${data.target_index || ''}/${data.target_count || ''} | P${data.profile || ''} | ${data.target || ''}`
     field('run').disabled = busy; field('cancel').disabled = !busy

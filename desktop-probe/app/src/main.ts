@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, scanTargets, scanStrategies, coverageSummary } from './core'
+import { classify, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, scanTargets, scanStrategies, coverageSummary, withinTimeout } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
@@ -101,35 +101,43 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     if (method === 'Network.webSocketFrameReceived' && gatewayRequests.has(p.requestId)) socketFrames++
     if (Date.now() - lastNetworkUpdate > 250) { lastNetworkUpdate = Date.now(); update({ network: [...requests.values()].slice(-50) }) }
   })
-  wc.on('dom-ready', () => { observation.dom_loaded = true })
+  const domReady = new Promise<void>(resolve => wc.once('dom-ready', () => { observation.dom_loaded = true; resolve() }))
+  const deadline = Date.now() + options.timeout * 1000
+  const bounded = <T>(work: Promise<T>) => withinTimeout(work, deadline - Date.now(), signal)
   const aborted = () => { if (!wc.isDestroyed()) { wc.stop(); wc.close() } }
   signal.addEventListener('abort', aborted, { once: true })
   try {
     const navigation = wc.loadURL(options.url).catch(() => { observation.errors.push('NAVIGATION_FAILED') })
-    await Promise.race([navigation, delay(options.timeout * 1000, signal)])
+    await bounded(Promise.race([navigation, domReady]))
     if (signal.aborted) throw new Error('CANCELLED')
     const finalURL = new URL(wc.getURL())
     if (finalURL.protocol === 'https:') { const original = new URL(options.url).hostname; observation.requested_host = finalURL.hostname; observation.expected_origin = finalURL.hostname === original || finalURL.hostname.endsWith(`.${original}`) }
     if (!observation.dom_loaded) { observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null; return { attempt_id: attempt, observation, requests: [...requests.values()] } }
-    const auth = await wc.executeJavaScript(`!!document.querySelector('input[type="password"], iframe[src*="captcha"], #captcha') || /just a moment|captcha|verify you are human|sign in|войдите/i.test(document.title)`).catch(() => true)
+    const auth = await bounded(wc.executeJavaScript(`!!document.querySelector('input[type="password"], iframe[src*="captcha"], #captcha') || /just a moment|captcha|verify you are human|sign in|войдите/i.test(document.title)`).catch(() => true))
     observation.auth_required = auth
     if (options.scenario === 'youtube_video') {
-      await wc.executeJavaScript(`(() => { const v=document.querySelector('video'); if (!v) return false; v.muted=true; return v.play().then(()=>true).catch(()=>false) })()`, true).catch(() => false)
-      const time = () => wc.executeJavaScript(`(() => { const v=document.querySelector('video'); return v && !v.paused ? v.currentTime : null })()`)
-      const start = await time().catch(() => null)
-      await delay(5000, signal)
-      const end = await time().catch(() => null)
+      await bounded(wc.executeJavaScript(`(() => { const v=document.querySelector('video'); if (!v) return false; v.muted=true; return v.play().then(()=>true).catch(()=>false) })()`, true).catch(() => false))
+      const time = () => bounded(wc.executeJavaScript(`(() => { const v=document.querySelector('video'); return v && !v.paused ? v.currentTime : null })()`).catch(() => null))
+      const start = await time()
+      await bounded(delay(5000, signal))
+      const end = await time()
       observation.functional = typeof start === 'number' && typeof end === 'number' && end - start >= 1 && mediaBytes > 0 ? true : null
     } else if (options.selector) {
       let found: boolean | null = null
       for (let n = 0; n < 10; n++) {
-        found = await wc.executeJavaScript(`!!document.querySelector(${JSON.stringify(options.selector)})`).catch(() => null)
+        found = await bounded(wc.executeJavaScript(`!!document.querySelector(${JSON.stringify(options.selector)})`).catch(() => null))
         if (found !== false) break
-        await delay(500, signal)
+        await bounded(delay(500, signal))
       }
       observation.functional = options.scenario === 'discord' ? (found && socketFrames > 0 ? true : null) : found
     }
     return { attempt_id: attempt, observation, requests: [...requests.values()], media_bytes: mediaBytes, websocket_frames: socketFrames }
+  } catch (e) {
+    if (signal.aborted || (e as Error).message !== 'ATTEMPT_TIMEOUT') throw e
+    wc.stop()
+    observation.timed_out = true
+    observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null
+    return { attempt_id: attempt, observation, requests: [...requests.values()] }
   } finally { signal.removeEventListener('abort', aborted) }
 }
 
@@ -169,7 +177,7 @@ async function run(options: RunOptions) {
         if (index > 0) status = await router.call('set-strategy', { strategy }, signal)
         let result: any
         for (let retry = 0; retry < 2; retry++) {
-          if (retry) { await closePreview(); status = await router.call('set-strategy', { strategy }, signal); await delay(pause, signal) }
+          if (retry) { await closePreview(); status = await router.call('set-strategy', { strategy }, signal); update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: pause / 1000 }); await delay(pause, signal) }
           const before: RouterStatus = await router.call('status', {}, signal)
           if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
           update({ state: 'LOADING', ...context, completed, strategy, retry, results })
@@ -190,13 +198,13 @@ async function run(options: RunOptions) {
         }
         update({ state: 'NEXT', ...context, completed, strategy, results })
         if (result.verdict === 'INVALID') throw new Error('SCAN_STOPPED_INVALID_TRANSPORT')
-        if (index < sequence.length - 1) await delay(pause, signal)
+        if (index < sequence.length - 1) { update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: pause / 1000 }); await delay(pause, signal) }
       }
       if (heartbeat) clearInterval(heartbeat)
       heartbeat = undefined
       await closePreview()
       await router.stop()
-      if (targetIndex < plan.length - 1) await delay(30000, signal)
+      if (targetIndex < plan.length - 1) { update({ state: 'PAUSE', ...context, completed, pause_seconds: 30 }); await delay(30000, signal) }
     }
     update({ state: 'REPORTING', completed, total, results })
   } catch (e) { finalState = signal.aborted && !heartbeatError ? 'CANCELLED' : 'ERROR'; runError = heartbeatError?.message || (e as Error).message }
