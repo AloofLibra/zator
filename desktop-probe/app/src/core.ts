@@ -1,4 +1,41 @@
 export type Verdict = 'OK' | 'FAIL' | 'WARN' | 'UNKNOWN' | 'INVALID'
+export interface ScanTarget { url: string; profile: number; scenario: 'generic_page' | 'youtube_video' | 'discord'; selector: string }
+export interface ScanOptions extends ScanTarget {
+  scanMode?: 'single' | 'supersweep'; strategyMode?: 'selected' | 'all'; strategies: number[];
+  youtubeURL?: string; discordURL?: string; discordSelector?: string; rknURLs?: string; rknSelector?: string;
+}
+export function scanTargets(options: ScanOptions): ScanTarget[] {
+  if (options.scanMode !== undefined && !['single', 'supersweep'].includes(options.scanMode)) throw new Error('INVALID_SCAN_MODE')
+  const targets: ScanTarget[] = options.scanMode !== 'supersweep' ? [options] : [
+    { url: options.youtubeURL || '', profile: 1, scenario: 'youtube_video', selector: '' },
+    { url: options.youtubeURL || '', profile: 2, scenario: 'youtube_video', selector: '' },
+    { url: options.discordURL || '', profile: 4, scenario: 'discord', selector: options.discordSelector || '' },
+    ...[...new Set((options.rknURLs || '').split(/[\s,]+/).filter(Boolean))].map(url => ({ url, profile: 3, scenario: 'generic_page' as const, selector: options.rknSelector || '' }))
+  ]
+  if (!targets.length || targets.length > 35 || (options.scanMode === 'supersweep' && targets.length < 4)) throw new Error('REQUIRE_1_TO_32_RKN_URLS')
+  return targets.map(t => {
+    if (![0, 1, 2, 3, 4].includes(t.profile) || !['generic_page', 'youtube_video', 'discord'].includes(t.scenario) || typeof t.selector !== 'string' || t.selector.length > 128) throw new Error('INVALID_TARGET')
+    return { url: safeURL(t.url), profile: t.profile, scenario: t.scenario, selector: t.selector }
+  })
+}
+export function scanStrategies(options: Pick<ScanOptions, 'scanMode' | 'strategyMode' | 'strategies'>, available: unknown): number[] {
+  if (options.strategyMode !== undefined && !['selected', 'all'].includes(options.strategyMode)) throw new Error('INVALID_STRATEGY_MODE')
+  if (!Array.isArray(available) || !available.length || available.some(n => !Number.isInteger(n) || n < 1) || available.length > 64) throw new Error('PROFILE_UNAVAILABLE')
+  const chosen = options.scanMode === 'supersweep' || options.strategyMode === 'all' ? available : options.strategies
+  if (!Array.isArray(chosen) || !chosen.length || chosen.length > 64 || chosen.some(n => !Number.isInteger(n) || !available.includes(n))) throw new Error('INVALID_STRATEGIES')
+  return [...new Set(chosen)]
+}
+export function coverageSummary(rows: { profile: number; strategy: number; site: string; verdict: string }[]) {
+  const groups = new Map<string, { profile: number; strategy: number; sites: Map<string, string> }>()
+  for (const row of rows) {
+    if (!row.strategy) continue
+    const key = `${row.profile}:${row.strategy}`
+    if (!groups.has(key)) groups.set(key, { profile: row.profile, strategy: row.strategy, sites: new Map() })
+    groups.get(key)!.sites.set(row.site, row.verdict)
+  }
+  return [...groups.values()].map(g => ({ profile: g.profile, strategy: g.strategy, green: [...g.sites.values()].filter(v => v === 'OK').length, checked: g.sites.size }))
+    .sort((a, b) => a.profile - b.profile || b.green - a.green || a.strategy - b.strategy)
+}
 export function strategySequence(strategies: number[]): number[] {
   const sequence = [0, ...new Set(strategies)]
   if (sequence.length > 3) sequence.splice(Math.floor(sequence.length / 2), 0, 0)

@@ -12,10 +12,25 @@
       <label>Путь к ключу (пусто — SSH agent)<input id="identity" placeholder="C:\Users\…\.ssh\router" autocomplete="off"></label>
     </fieldset>
     <fieldset><legend>Проба</legend>
+      <label>Режим<select id="scan-mode"><option value="single">Один сайт / профиль</option><option value="supersweep">Полное сканирование · 4 профиля</option></select></label>
+      <div id="single-options">
       <label>HTTPS URL<input id="url" type="url" placeholder="https://example.org/" required autocomplete="off"></label>
-      <div class="row"><label>Профиль<select id="profile"><option value="0">Авто по спискам</option><option value="1">1 · YouTube</option><option value="2">2 · Googlevideo</option><option value="3" selected>3 · RKN / сайт</option><option value="4">4 · Discord</option></select></label><label>Стратегии<input id="strategies" value="1" placeholder="1,2,3" required></label></div>
+      <div class="row"><label>Профиль<select id="profile"><option value="0">Авто по спискам</option><option value="1">1 · YouTube</option><option value="2">2 · Googlevideo</option><option value="3" selected>3 · RKN / сайт</option><option value="4">4 · Discord</option></select></label><label>Перебор<select id="strategy-mode"><option value="selected">Указанные номера</option><option value="all">Все стратегии</option></select></label></div>
+      <label>Номера стратегий через запятую<input id="strategies" value="1" placeholder="1,2,3" required></label>
       <label>Сценарий<select id="scenario"><option value="generic_page">Страница / DOM-условие</option><option value="youtube_video">YouTube: прогресс видео</option><option value="discord">Discord: DOM + WebSocket</option></select></label>
       <label>Обязательный CSS selector (необязательно)<input id="selector" maxlength="128" placeholder="#content"></label>
+      </div>
+      <div id="sweep-options" hidden>
+        <label>Прямая HTTPS-ссылка на YouTube-видео<input id="youtube-url" type="url" placeholder="https://www.youtube.com/watch?v=…" disabled required></label>
+        <p class="note">Видео проверяется отдельно с профилями 1 и 2. Нужны воспроизведение и данные Googlevideo.</p>
+        <label>Discord URL<input id="discord-url" type="url" value="https://discord.com/app" disabled required></label>
+        <label>Discord DOM selector<input id="discord-selector" value="#app-mount" maxlength="128" disabled required></label>
+        <label>RKN HTTPS-сайты · по одному на строку, до 32<textarea id="rkn-urls" rows="4" disabled required>https://xhamster.com/
+https://anidub.com/
+https://amnezia.org/</textarea></label>
+        <label>Общее DOM-условие RKN<input id="rkn-selector" value="body" maxlength="128" disabled required></label>
+        <p class="note">Все стратегии берутся из живого конфига. Проход последовательный; каждый RKN-сайт проверяется всеми номерами. Авторизация Discord может дать UNKNOWN; body подтверждает только загрузку DOM.</p>
+      </div>
       <label>Ожидание загрузки, секунд<input id="timeout" type="number" min="5" max="60" value="20" required></label>
       <label><span><input id="manual" type="checkbox"> Ожидать ручную оценку сайта (до 5 минут)</span></label>
     </fieldset>
@@ -23,8 +38,10 @@
     <div class="row"><button id="run" type="submit">Начать</button><button id="cancel" type="button" class="secondary" disabled>Отменить</button></div>
   </form>
   <p id="status" role="status" aria-live="polite">Готов к запуску</p>
+  <p id="progress" role="status" aria-live="polite"></p>
   <div class="row"><button id="export" class="secondary" type="button">Экспорт</button><button id="screenshot" class="secondary" type="button">Снимок</button></div>
-  <table><caption>Результаты · ручная оценка отдельно</caption><thead><tr><th>Стратегия</th><th>Вердикт</th><th>Оценка</th></tr></thead><tbody id="results"></tbody></table>
+  <table><caption>Покрытие · OK / проверено сайтов</caption><thead><tr><th>Профиль</th><th>Стратегия</th><th>OK</th></tr></thead><tbody id="coverage"></tbody></table>
+  <table><caption>Результаты · ручная оценка отдельно</caption><thead><tr><th>Цель / стратегия</th><th>Вердикт</th><th>Оценка</th></tr></thead><tbody id="results"></tbody></table>
   <details><summary>Детали последнего результата</summary><pre id="details"></pre></details>
   <details><summary>Сеть текущей пробы · последние 50 запросов</summary><div id="network"></div></details>
 </main><section id="placeholder" aria-label="Область браузера"><div><span>→</span><h2>Здесь откроется сайт</h2><p>Новый контекст для каждой стратегии.<br>Ключи, cookie и тела запросов в отчёт не попадают.</p></div></section>

@@ -3,10 +3,21 @@ const field = (id: string) => document.getElementById(id) as HTMLInputElement
 const statusNode = document.getElementById('status')!
 const labels: Record<string, string> = { IDLE: 'Готов', PREPARING: 'Подготовка', BASELINE: 'DIRECT', SWITCHING: 'Смена стратегии', LOADING: 'Загрузка сайта', ANALYZING: 'Проверка доказательств', MANUAL: 'Оцените сайт в строке результата', NEXT: 'Следующая стратегия', REPORTING: 'Отчёт', CANCELLED: 'Отменено', ERROR: 'Ошибка', CLEANUP_ERROR: 'Не удалось завершить сессию; действует TTL роутера' }
 function showError(error: unknown) { statusNode.textContent = String(error) }
+function scanModeChanged() {
+  const sweep = field('scan-mode').value === 'supersweep'
+  for (const [id, enabled] of [['single-options', !sweep], ['sweep-options', sweep]] as const) {
+    const group = document.getElementById(id)!
+    group.hidden = !enabled
+    group.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input,select,textarea').forEach(input => { input.disabled = !enabled })
+  }
+  field('strategies').disabled = sweep || field('strategy-mode').value === 'all'
+}
+field('scan-mode').addEventListener('change', scanModeChanged)
+field('strategy-mode').addEventListener('change', scanModeChanged)
 field('probe-form').addEventListener('submit', event => {
   event.preventDefault()
   const strategies = field('strategies').value.split(',').map(v => Number(v.trim()))
-  void probe.command('run', { ssh: { host: field('host').value.trim(), user: field('user').value.trim(), port: Number(field('port').value), identity: field('identity').value.trim() }, url: field('url').value, profile: Number(field('profile').value), strategies, scenario: field('scenario').value, selector: field('selector').value.trim(), timeout: Number(field('timeout').value), manual: field('manual').checked }).catch(showError)
+  void probe.command('run', { scanMode: field('scan-mode').value, strategyMode: field('strategy-mode').value, youtubeURL: field('youtube-url').value, discordURL: field('discord-url').value, discordSelector: field('discord-selector').value, rknURLs: field('rkn-urls').value, rknSelector: field('rkn-selector').value, ssh: { host: field('host').value.trim(), user: field('user').value.trim(), port: Number(field('port').value), identity: field('identity').value.trim() }, url: field('url').value, profile: Number(field('profile').value), strategies, scenario: field('scenario').value, selector: field('selector').value.trim(), timeout: Number(field('timeout').value), manual: field('manual').checked }).catch(showError)
 })
 for (const name of ['cancel', 'export', 'screenshot']) field(name).addEventListener('click', () => { void probe.command(name).catch(showError) })
 probe.onUpdate(data => {
@@ -24,13 +35,22 @@ probe.onUpdate(data => {
   if (data.state) {
     statusNode.textContent = [labels[data.state] || data.state, data.strategy !== undefined ? String(data.strategy || 'DIRECT') : '', data.error || data.cleanup_error || ''].filter(Boolean).join(' · ')
     const busy = !['IDLE', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR'].includes(data.state)
+    if (data.total !== undefined) document.getElementById('progress')!.textContent = `${data.completed}/${data.total} | ${data.target_index || ''}/${data.target_count || ''} | P${data.profile || ''} | ${data.target || ''}`
     field('run').disabled = busy; field('cancel').disabled = !busy
+  }
+  if (data.coverage) {
+    const body = document.getElementById('coverage')!; body.replaceChildren()
+    for (const item of data.coverage) {
+      const row = document.createElement('tr')
+      for (const value of [item.profile, item.strategy, `${item.green}/${item.checked}`]) { const cell = document.createElement('td'); cell.textContent = String(value); row.append(cell) }
+      body.append(row)
+    }
   }
   if (!data.results) return
   const body = document.getElementById('results')!; body.replaceChildren()
   data.results.forEach((result: any, index: number) => {
     const row = document.createElement('tr')
-    const strategy = document.createElement('td'); strategy.textContent = String(result.strategy || 'DIRECT')
+    const strategy = document.createElement('td'); strategy.textContent = `P${result.profile} | ${result.site} | ${result.strategy || 'DIRECT'}`
     const verdict = document.createElement('td'); verdict.textContent = result.verdict; verdict.className = result.verdict; verdict.title = result.reason
     const manual = document.createElement('td'), select = document.createElement('select'); select.setAttribute('aria-label', `Ручная оценка стратегии ${result.strategy || 'DIRECT'}`)
     for (const [value, text] of [['', '—'], ['passed', 'Работает'], ['failed', 'Не работает'], ['unknown', 'Неясно']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; select.append(option) }

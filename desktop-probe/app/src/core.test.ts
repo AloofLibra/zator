@@ -1,6 +1,33 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence } from './core'
+import { classify, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions } from './core'
+
+const scan: ScanOptions = { url: 'https://example.org/', profile: 3, scenario: 'generic_page', selector: 'body', strategies: [1], scanMode: 'supersweep', youtubeURL: 'https://www.youtube.com/watch?v=test', discordURL: 'https://discord.com/app', discordSelector: '#app-mount', rknURLs: 'https://example.org/\nhttps://example.net/\nhttps://example.org/', rknSelector: 'body' }
+test('supersweep includes every profile and every selected RKN domain with live strategy numbers', () => {
+  const targets = scanTargets(scan)
+  assert.deepEqual(targets.map(t => t.profile), [1, 2, 4, 3, 3])
+  assert.deepEqual(targets.map(t => t.scenario), ['youtube_video', 'youtube_video', 'discord', 'generic_page', 'generic_page'])
+  assert.equal(targets[1].url, targets[0].url)
+  assert.deepEqual(scanStrategies(scan, [1, 2, 3]), [1, 2, 3])
+  assert.deepEqual(scanStrategies({ ...scan, scanMode: 'single', strategyMode: 'all' }, [1, 2]), [1, 2])
+  assert.deepEqual(scanStrategies({ ...scan, scanMode: 'single' }, [1, 2]), [1])
+  assert.deepEqual(scanTargets({ ...scan, scanMode: 'single' }), [{ url: scan.url, profile: 3, scenario: 'generic_page', selector: 'body' }])
+})
+test('scan validation rejects missing, unsafe, excessive and unsupported targets before starting', () => {
+  for (const bad of [{ rknURLs: '' }, { youtubeURL: 'http://youtube.com/' }, { discordURL: 'https://user:pass@discord.com/' }, { rknURLs: Array.from({ length: 33 }, (_, n) => `https://site${n}.org/`).join('\n') }]) assert.throws(() => scanTargets({ ...scan, ...bad }))
+  for (const available of [undefined, [], [0], [1, '2']]) assert.throws(() => scanStrategies(scan, available))
+  assert.throws(() => scanStrategies({ ...scan, scanMode: 'single', strategies: [99] }, [1, 2]))
+  assert.throws(() => scanStrategies({ ...scan, scanMode: 'single', strategies: [] }, [1, 2]))
+})
+test('coverage ranks green domains, keeps profiles separate and never treats warnings or baselines as winners', () => {
+  const rows = [
+    { profile: 3, strategy: 1, site: 'a', verdict: 'OK' }, { profile: 3, strategy: 1, site: 'b', verdict: 'WARN' },
+    { profile: 3, strategy: 2, site: 'a', verdict: 'OK' }, { profile: 3, strategy: 2, site: 'b', verdict: 'OK' },
+    { profile: 3, strategy: 0, site: 'b', verdict: 'OK' }, { profile: 1, strategy: 1, site: 'a', verdict: 'UNKNOWN' }
+  ]
+  assert.deepEqual(coverageSummary(rows), [{ profile: 1, strategy: 1, green: 0, checked: 1 }, { profile: 3, strategy: 2, green: 2, checked: 2 }, { profile: 3, strategy: 1, green: 1, checked: 2 }])
+  assert.deepEqual(coverageSummary(rows.slice(0, 1)), [{ profile: 3, strategy: 1, green: 1, checked: 1 }])
+})
 
 const before: RouterStatus = { ok: true, session_id: 'one', strategy: 1, strategy_generation: 2, transport_generation: 'four', route_generation: 0, firewall_generation: 0, proxy: { host: '127.0.0.1', port: 41081, alive: true }, queue: { number: 65534, counter: 10, alive: true }, proof: { connection_match: 'verified', strategy_invocation: 'verified', route: 'kernel_route_verified' } }
 const after = { ...before, queue: { ...before.queue, counter: 20 } }
