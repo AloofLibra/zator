@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,58 @@ func TestShippedProfiles(t *testing.T) {
 	}
 	if _, _, err := profilePlan("NFQWS2_OPT=\"\n--new\n\"", 1); err == nil {
 		t.Fatal("broken config accepted")
+	}
+}
+
+func TestPairedYouTubeConfig(t *testing.T) {
+	c := testSettings()
+	c.ZatorRoot = t.TempDir()
+	c.ZapretRoot = t.TempDir()
+	dir := filepath.Join(t.TempDir(), "nfq")
+	for _, path := range []string{filepath.Join(c.ZatorRoot, "lua"), filepath.Join(c.ZatorRoot, "extra_strats/cache/orchestra"), dir} {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := os.ReadFile("../../config.default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lua, err := os.ReadFile("../../orchestra/locked.lua")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string][]byte{filepath.Join(c.ZapretRoot, "config"): cfg, filepath.Join(c.ZatorRoot, "lua/locked.lua"): lua, filepath.Join(c.ZatorRoot, "extra_strats/cache/orchestra/locked.tsv"): []byte("production\n")} {
+		if err := os.WriteFile(path, body, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args, err := prepareConfig(c, dir, 1, 3, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\n")
+	gv, yt := strings.Index(joined, "--lua-desync=circular_locked:key=2"), strings.Index(joined, "--lua-desync=circular_locked:key=1")
+	if gv < 0 || yt <= gv || strings.Count(joined, "\n--new\n") != 2 || !strings.Contains(joined, "--hostlist-domains=googlevideo.com") {
+		t.Fatal("wrong profile routing or separator", joined)
+	}
+	locks, _ := os.ReadFile(filepath.Join(dir, "locked.tsv"))
+	if string(locks) != "1\ttls\t3\n2\ttls\t7\n" {
+		t.Fatal(string(locks))
+	}
+	adapter, _ := os.ReadFile(filepath.Join(dir, "locked.lua"))
+	if !strings.Contains(string(adapter), `.."\t"..tostring(profile)`) {
+		t.Fatal("profile identity missing from private evidence")
+	}
+	production, _ := os.ReadFile(filepath.Join(c.ZatorRoot, "extra_strats/cache/orchestra/locked.tsv"))
+	if string(production) != "production\n" {
+		t.Fatal("production lock changed")
+	}
+	if _, err = prepareConfig(c, dir, 1, 3, 999); err == nil {
+		t.Fatal("unknown GV strategy accepted")
+	}
+	if _, err = prepareConfig(c, dir, 2, 3, 7); err == nil {
+		t.Fatal("paired non-YT profile accepted")
 	}
 }
 

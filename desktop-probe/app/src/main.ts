@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, scanTargets, scanStrategies, coverageSummary, withinTimeout } from './core'
+import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, coverageSummary, withinTimeout } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
@@ -40,7 +40,7 @@ async function closePreview() {
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => { const done = () => { signal.removeEventListener('abort', abort); resolve() }; const timer = setTimeout(done, ms); const abort = () => { clearTimeout(timer); reject(new Error('CANCELLED')) }; signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort() })
 }
-interface RunOptions extends ScanOptions { ssh: SSHOptions; timeout: number; manual?: boolean }
+interface RunOptions extends ScanOptions { ssh: SSHOptions; timeout: number; manual?: boolean; youtubePair?: boolean; checkVideo?: boolean }
 function waitForManual(index: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); manualWait = undefined; resolve() }
@@ -73,14 +73,24 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
   const requests = new Map<string, any>()
   const gatewayRequests = new Set<string>()
   const requiredHosts = new Set<string>()
+  const videoHosts = new Set<string>()
   let mediaBytes = 0, socketFrames = 0, mainFrame = '', lastNetworkUpdate = 0
   wc.debugger.attach('1.3')
   await wc.debugger.sendCommand('Network.enable')
   await wc.debugger.sendCommand('Page.enable')
+  const evaluate = async (expression: string, userGesture = false): Promise<any> => {
+    // Electron executeJavaScript waits for load; CDP can inspect an already visible DOM earlier.
+    const result = await wc.debugger.sendCommand('Runtime.evaluate', { expression, userGesture, returnByValue: true, awaitPromise: true })
+    if (result.exceptionDetails) throw new Error('DOM_EVALUATION_FAILED')
+    return result.result.value
+  }
   mainFrame = (await wc.debugger.sendCommand('Page.getFrameTree')).frameTree.frame.id
   wc.debugger.on('message', (_event, method, p) => {
     if (method === 'Page.frameNavigated' && !p.frame.parentId) mainFrame = p.frame.id
-    if (method === 'Network.requestWillBeSent' && requests.size < 1500) requests.set(p.requestId, { url: redactURL(p.request.url), type: p.type, status: null, protocol: null, bytes: 0, error: null, started: p.timestamp, duration_ms: null })
+    if (method === 'Network.requestWillBeSent' && requests.size < 1500) {
+      requests.set(p.requestId, { url: redactURL(p.request.url), type: p.type, status: null, protocol: null, bytes: 0, error: null, started: p.timestamp, duration_ms: null })
+      try { const host = new URL(p.request.url).hostname; if (host === 'googlevideo.com' || host.endsWith('.googlevideo.com')) videoHosts.add(host) } catch {}
+    }
     if (requests.size >= 1500) observation.evidence_complete = false
     if (method === 'Network.responseReceived') {
       const row = requests.get(p.requestId)
@@ -114,12 +124,25 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     const finalURL = new URL(wc.getURL())
     if (finalURL.protocol === 'https:') { const original = new URL(options.url).hostname; observation.requested_host = finalURL.hostname; observation.expected_origin = finalURL.hostname === original || finalURL.hostname.endsWith(`.${original}`) }
     if (!observation.dom_loaded) { observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null; return { attempt_id: attempt, observation, requests: [...requests.values()] } }
-    const auth = await bounded(wc.executeJavaScript(`!!document.querySelector('input[type="password"], iframe[src*="captcha"], #captcha') || /just a moment|captcha|verify you are human|sign in|войдите/i.test(document.title)`).catch(() => true))
+    const auth = await bounded(evaluate(`!!document.querySelector('input[type="password"], iframe[src*="captcha"], #captcha') || /just a moment|captcha|verify you are human|sign in|войдите/i.test(document.title)`).catch(() => true))
     observation.auth_required = auth
     if (options.scenario === 'youtube_video') {
+      if (options.youtubePair) {
+        while (Date.now() < deadline) {
+          observation.page_functional = await bounded(evaluate(`!!document.querySelector('ytd-app')`).catch(() => false))
+          if (observation.page_functional) break
+          await bounded(delay(250, signal))
+        }
+        if (options.checkVideo === false || !observation.page_functional || auth) {
+          observation.functional = null
+          observation.video_hosts = [...videoHosts]
+          observation.required_hosts = [...requiredHosts]
+          return { attempt_id: attempt, observation, requests: [...requests.values()], media_bytes: mediaBytes, websocket_frames: socketFrames }
+        }
+      }
       let start: number | null = null
       while (Date.now() < deadline) {
-        const time: number | null = await bounded(wc.executeJavaScript(`(() => { const v=document.querySelector('video'); if (!v) return null; v.muted=true; if(v.paused) void v.play().catch(()=>{}); return !v.paused && v.readyState>=2 ? v.currentTime : null })()`, true).catch(() => null))
+        const time: number | null = await bounded(evaluate(`(() => { const v=document.querySelector('video'); if (!v) return null; v.muted=true; if(v.paused) void v.play().catch(()=>{}); return !v.paused && v.readyState>=2 ? v.currentTime : null })()`, true).catch(() => null))
         if (typeof time === 'number') {
           if (start === null || time < start) start = time
           observation.playback_progress_seconds = time - start
@@ -130,19 +153,21 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     } else if (options.selector) {
       let found: boolean | null = null
       for (let n = 0; n < 10; n++) {
-        found = await bounded(wc.executeJavaScript(`!!document.querySelector(${JSON.stringify(options.selector)})`).catch(() => null))
+        found = await bounded(evaluate(`!!document.querySelector(${JSON.stringify(options.selector)})`).catch(() => null))
         if (found !== false) break
         await bounded(delay(500, signal))
       }
       observation.functional = options.scenario === 'discord' ? (found && socketFrames > 0 ? true : null) : found
     }
     observation.required_hosts = [...requiredHosts]
+    observation.video_hosts = [...videoHosts]
     return { attempt_id: attempt, observation, requests: [...requests.values()], media_bytes: mediaBytes, websocket_frames: socketFrames }
   } catch (e) {
     if (signal.aborted || (e as Error).message !== 'ATTEMPT_TIMEOUT') throw e
     wc.stop()
     observation.timed_out = true
     observation.required_hosts = [...requiredHosts]
+    observation.video_hosts = [...videoHosts]
     observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null
     return { attempt_id: attempt, observation, requests: [...requests.values()], media_bytes: mediaBytes, websocket_frames: socketFrames }
   } finally { signal.removeEventListener('abort', aborted) }
@@ -161,22 +186,76 @@ async function run(options: RunOptions) {
     update({ state: 'PREPARING', results })
     const capabilities = await router.call('capabilities', {}, signal)
     if (!capabilities.isolation?.available) throw new Error(`ISOLATION_UNAVAILABLE: ${capabilities.isolation?.reason || 'UNKNOWN'}`)
-    const plan = []
+    const plan: (ScanTarget & { strategies: number[]; gvStrategies?: number[] })[] = []
     for (const target of targets) {
+      if (target.scenario === 'youtube_video') {
+        if (!capabilities.youtube_pair_supported) throw new Error('UPDATE_ROUTER_AGENT_REQUIRED: paired YouTube/GV')
+        target.profile = 1
+        plan.push({ ...target, strategies: scanStrategies(options, capabilities.profiles?.['1']), gvStrategies: scanStrategies(options, capabilities.profiles?.['2']) })
+        continue
+      }
       if (target.profile === 0) target.profile = (await router.call('resolve-profile', { hostname: new URL(target.url).hostname }, signal)).profile
       plan.push({ ...target, strategies: scanStrategies(options, capabilities.profiles?.[String(target.profile)]) })
     }
-    const total = plan.reduce((sum, t) => sum + strategySequence(t.strategies).length, 0)
+    const total = plan.reduce((sum, t) => sum + (t.gvStrategies ? 2 + t.strategies.length + t.gvStrategies.length : strategySequence(t.strategies).length), 0)
     let completed = 0
     for (const [targetIndex, target] of plan.entries()) {
       const attemptOptions = { ...options, ...target }
       const context = { target: redactURL(target.url), profile: target.profile, target_index: targetIndex + 1, target_count: plan.length, completed, total }
       update({ state: 'PREPARING', ...context, results })
-      let status: RouterStatus = await router.call('start', { profile: target.profile }, signal)
+      let status: RouterStatus = await router.call('start', { profile: target.profile, paired: !!target.gvStrategies }, signal)
       heartbeat = setInterval(async () => { if (beating || signal.aborted) return; beating = true; try { await router.call('heartbeat', {}, signal) } catch (e) { heartbeatError = e as Error; controller?.abort() } finally { beating = false } }, 15000)
       const port = await router.tunnel(status.proxy)
       const sequence = strategySequence(target.strategies)
       const pause = target.profile === 3 ? 30000 : 15000
+      if (target.gvStrategies) {
+        const sweep = new YouTubeSweep(target.strategies, target.gvStrategies)
+        let first = true
+        for (let pair = sweep.next(); pair; pair = sweep.next()) {
+          if (signal.aborted) throw new Error('CANCELLED')
+          await closePreview()
+          const pairContext = { ...context, completed, strategy: pair.yt, gv_strategy: pair.gv }
+          update({ state: pair.baseline ? 'BASELINE' : 'SWITCHING', ...pairContext, results })
+          if (!first) status = await router.call('set-strategy', { strategy: pair.yt, gv_strategy: pair.gv }, signal)
+          first = false
+          const before: RouterStatus = await router.call('status', {}, signal)
+          if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
+          update({ state: 'LOADING', ...pairContext })
+          const observed = await observe({ ...attemptOptions, youtubePair: true, checkVideo: pair.testGV }, port, signal)
+          update({ state: 'ANALYZING', ...pairContext })
+          let after: RouterStatus
+          try {
+            if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
+            after = await router.call('telemetry', {}, signal)
+          } catch (e) {
+            results.push({ test_id: randomUUID(), site: redactURL(target.url), profile: 1, strategy: pair.yt, yt_strategy: pair.yt, gv_strategy: pair.gv, stage: 'page', scenario: target.scenario, ...observed, verdict: 'INVALID', reason: (e as Error).message })
+            await saveResults(); throw e
+          }
+          const verdicts = classifyYouTube(before, after, observed.observation)
+          const evidence = { ...observed, session_id: before.session_id, strategy_generation: before.strategy_generation, transport_generation_start: before.transport_generation, transport_generation_end: after.transport_generation, route_generation_start: before.route_generation, route_generation_end: after.route_generation, firewall_generation_start: before.firewall_generation, firewall_generation_end: after.firewall_generation, queue_number: before.queue.number, queue_counter_start: before.queue.counter, queue_counter_end: after.queue.counter, queue_delta: after.queue.counter - before.queue.counter, flows: after.flows || [], proof: after.proof }
+          const row = { ...evidence, site: redactURL(target.url), scenario: target.scenario, mode: 'router_socks_tcp', protocol_scope: 'TCP_HTTPS_IPV4', yt_strategy: pair.yt, gv_strategy: pair.gv, paired: true, manual: null, tested: true }
+          const oldLength = results.length
+          if (pair.testYT || !succeeded(verdicts.page.verdict)) {
+            results.push({ ...row, test_id: randomUUID(), profile: 1, strategy: pair.yt, stage: 'page', helper: !pair.testYT, ...verdicts.page, observation: { ...observed.observation, functional: observed.observation.page_functional ?? false, timed_out: observed.observation.page_functional ? false : observed.observation.timed_out, required_hosts: [] } })
+            if (pair.testYT) completed++
+          }
+          if (verdicts.video && pair.testGV) {
+            results.push({ ...row, test_id: randomUUID(), profile: 2, strategy: pair.gv, stage: 'video', ...verdicts.video }); completed++
+          } else if (pair.baseline) {
+            results.push({ ...row, test_id: randomUUID(), profile: 2, strategy: 0, stage: 'video', verdict: 'UNKNOWN', reason: 'VIDEO_NOT_TESTED_WITH_WORKING_PAGE', tested: false }); completed++
+          }
+          await saveResults()
+          if (verdicts.page.verdict === 'INVALID' || verdicts.video?.verdict === 'INVALID') throw new Error(`SCAN_STOPPED_INVALID_TRANSPORT: ${verdicts.page.verdict === 'INVALID' ? verdicts.page.reason : verdicts.video?.reason}`)
+          sweep.record(pair, verdicts.page.verdict, verdicts.video?.verdict ?? null)
+          if (options.manual && results.length > oldLength) { update({ state: 'MANUAL', ...pairContext, completed, results }); await waitForManual(results.length - 1, signal) }
+          update({ state: 'NEXT', ...pairContext, completed, results })
+          if (sweep.next()) { update({ state: 'PAUSE', ...pairContext, completed, pause_seconds: 15 }); await delay(15000, signal) }
+        }
+        for (const strategy of sweep.uncheckedGV) {
+          results.push({ test_id: randomUUID(), site: redactURL(target.url), profile: 2, strategy, scenario: target.scenario, stage: 'video', tested: false, verdict: 'UNKNOWN', reason: 'VIDEO_NOT_TESTED_WITH_WORKING_PAGE', mode: 'router_socks_tcp', protocol_scope: 'TCP_HTTPS_IPV4', manual: null }); completed++
+        }
+        await saveResults()
+      } else {
       for (const [index, strategy] of sequence.entries()) {
         if (signal.aborted) throw new Error('CANCELLED')
         await closePreview()
@@ -206,6 +285,7 @@ async function run(options: RunOptions) {
         update({ state: 'NEXT', ...context, completed, strategy, results })
         if (result.verdict === 'INVALID') throw new Error(`SCAN_STOPPED_INVALID_TRANSPORT: ${result.reason}`)
         if (index < sequence.length - 1) { update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: pause / 1000 }); await delay(pause, signal) }
+      }
       }
       if (heartbeat) clearInterval(heartbeat)
       heartbeat = undefined
@@ -243,7 +323,7 @@ app.whenReady().then(async () => {
     if (command === 'export') {
       const picked = await dialog.showSaveDialog(win, { defaultPath: 'zator-probe.json', filters: [{ name: 'JSON', extensions: ['json'] }, { name: 'Markdown', extensions: ['md'] }] })
       if (!picked.canceled && picked.filePath) {
-        const body = picked.filePath.toLowerCase().endsWith('.md') ? '# Zator Desktop Probe\n\nTCP/HTTPS IPv4, router_socks_tcp. Manual observations are separate.\n\n| Profile | Site | Strategy | Verdict | Reason | Manual |\n|---|---|---|---|---|---|\n' + results.map(r => `| ${r.profile} | ${String(r.site).replace(/[|\r\n]/g, ' ')} | ${r.strategy || 'DIRECT'} | ${r.verdict} | ${String(r.reason).replace(/[|\r\n]/g, ' ')} | ${r.manual || ''} |`).join('\n') : JSON.stringify({ schema: '0.1', created: new Date().toISOString(), coverage: coverageSummary(results), results }, null, 2)
+        const body = picked.filePath.toLowerCase().endsWith('.md') ? '# Zator Desktop Probe\n\nTCP/HTTPS IPv4, router_socks_tcp. Manual observations are separate.\n\n| Profile | Site | Strategy | Pair YT/GV | Stage | Tested | Verdict | Reason | Manual |\n|---|---|---|---|---|---|---|---|---|\n' + results.map(r => `| ${r.profile} | ${String(r.site).replace(/[|\r\n]/g, ' ')} | ${r.strategy || 'DIRECT'} | ${r.yt_strategy ?? '-'}/${r.gv_strategy ?? '-'} | ${r.stage || ''} | ${r.tested === false ? 'no' : 'yes'} | ${r.verdict} | ${String(r.reason).replace(/[|\r\n]/g, ' ')} | ${r.manual || ''} |`).join('\n') : JSON.stringify({ schema: '0.1', created: new Date().toISOString(), coverage: coverageSummary(results), results }, null, 2)
         await writeFile(picked.filePath, body)
       }; return
     }
@@ -284,8 +364,10 @@ app.whenReady().then(async () => {
     if (process.env.ZATOR_PROBE_TEST_IMAGE) {
       try { await writeFile(process.env.ZATOR_PROBE_TEST_IMAGE, (await win.capturePage()).toPNG()) } catch { console.log('UI_CAPTURE=UNAVAILABLE') }
     }
-    const passed = results.length === 2 && results.every(r => r.verdict === 'OK')
-    console.log(`BROWSER_INTEGRATION=${passed ? 'PASS' : 'FAIL'} results=${results.map(r => `${r.strategy}:${r.verdict}:${r.reason}`).join(',')}`)
+    const passed = options.scenario === 'youtube_video'
+      ? !results.some(r => r.verdict === 'INVALID') && [1, 2].every(profile => results.some(r => r.profile === profile && r.strategy > 0 && r.tested !== false && succeeded(r.verdict)))
+      : results.length === 2 && results.every(r => r.verdict === 'OK')
+    console.log(`BROWSER_INTEGRATION=${passed ? 'PASS' : 'FAIL'} results=${results.map(r => `P${r.profile}/${r.strategy}:${r.verdict}:${r.reason}`).join(',')}`)
     app.exit(passed ? 0 : 1)
   }
 }).catch(error => { console.error('APP_ERROR:', error.message); app.exit(1) })

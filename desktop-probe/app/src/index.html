@@ -17,12 +17,13 @@
       <label>HTTPS URL<input id="url" type="url" placeholder="https://example.org/" required autocomplete="off"></label>
       <div class="row"><label>Профиль<select id="profile"><option value="0">Авто по спискам</option><option value="1">1 · YouTube</option><option value="2">2 · Googlevideo</option><option value="3" selected>3 · RKN / сайт</option><option value="4">4 · Discord</option></select></label><label>Перебор<select id="strategy-mode"><option value="selected">Указанные номера</option><option value="all">Все стратегии</option></select></label></div>
       <label>Номера стратегий через запятую<input id="strategies" value="1" placeholder="1,2,3" required></label>
-      <label>Сценарий<select id="scenario"><option value="generic_page">Страница / DOM-условие</option><option value="youtube_video">YouTube: прогресс видео</option><option value="discord">Discord: DOM + WebSocket</option></select></label>
+      <label>Сценарий<select id="scenario"><option value="generic_page">Страница / DOM-условие</option><option value="youtube_video">YouTube: связка YT + GV</option><option value="discord">Discord: DOM + WebSocket</option></select></label>
+      <p class="note">Сценарий YouTube использует оба профиля: 1 — страница, 2 — видео. Список номеров применяется к каждому из них.</p>
       <label>Обязательный CSS selector (необязательно)<input id="selector" maxlength="128" placeholder="#content"></label>
       </div>
       <div id="sweep-options" hidden>
         <label>Прямая HTTPS-ссылка на YouTube-видео<input id="youtube-url" type="url" placeholder="https://www.youtube.com/watch?v=…" disabled required></label>
-        <p class="note">Видео проверяется отдельно с профилями 1 и 2. Нужны воспроизведение и данные Googlevideo.</p>
+        <p class="note">YT и GV включаются одновременно. Если страница не открылась, меняется только YT; GV ещё не проверена. Оставшиеся GV проверяются с успешной YT.</p>
         <label>Discord URL<input id="discord-url" type="url" value="https://discord.com/app" disabled required></label>
         <label>Discord DOM selector<input id="discord-selector" value="#app-mount" maxlength="128" disabled required></label>
         <label>RKN HTTPS-сайты · по одному на строку, до 32<textarea id="rkn-urls" rows="4" disabled required>https://xhamster.com/

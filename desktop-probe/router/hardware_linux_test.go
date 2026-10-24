@@ -121,6 +121,74 @@ func TestHardwareAgentFaults(t *testing.T) {
 	t.Log("90-second lease expiry removes test queue/proxy without changing production")
 }
 
+func TestHardwareYouTubePair(t *testing.T) {
+	if os.Getenv("ZATOR_PROBE_HARDWARE_PAIR") != "1" {
+		t.Skip("physical paired probe is opt-in")
+	}
+	c, err := readSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := "/opt/zator/bin/zator-desktop-probe"
+	call := func(r request) response {
+		body, _ := json.Marshal(r)
+		cmd := exec.Command(binary, r.Command, "--json")
+		cmd.Stdin = bytes.NewReader(body)
+		out, err := cmd.CombinedOutput()
+		var reply response
+		if json.Unmarshal(out, &reply) != nil || err != nil || reply["ok"] != true {
+			t.Fatalf("%s: %s %v", r.Command, out, err)
+		}
+		return reply
+	}
+	if call(request{Command: "capabilities"})["session_active"] == true {
+		t.Fatal("refusing to touch another session")
+	}
+	baseline := map[string][32]byte{}
+	for _, path := range []string{c.ZapretRoot + "/config", c.ZatorRoot + "/extra_strats/cache/orchestra/locked.tsv", c.ZatorRoot + "/extra_strats/cache/orchestra/locked.manual.tsv"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		baseline[path] = sha256.Sum256(raw)
+	}
+	owner := randomID() + randomID()
+	start := call(request{Command: "start", Owner: owner, Profile: 1, Paired: true})
+	id := start["session_id"].(string)
+	defer call(request{Command: "stop", Owner: owner, Session: id})
+	gv := 2
+	active := call(request{Command: "set-strategy", Owner: owner, Session: id, Strategy: 1, GVStrategy: &gv})
+	if active["paired"] != true || active["gv_strategy"] != float64(2) || active["transport_generation"] != start["transport_generation"] {
+		t.Fatal(active)
+	}
+	for _, host := range []string{"www.youtube.com", "redirector.googlevideo.com"} {
+		out, err := exec.Command("curl", "--socks5-hostname", fmt.Sprintf("127.0.0.1:%d", c.Port), "--max-time", "8", "-sS", "-o", "/dev/null", "https://"+host+"/").CombinedOutput()
+		if err != nil {
+			t.Logf("%s response not required for an intentionally unproven strategy: %s %v", host, out, err)
+		}
+	}
+	status := call(request{Command: "telemetry", Owner: owner, Session: id})
+	proof := status["proof"].(map[string]any)
+	hosts := map[string]bool{}
+	verified, ok := proof["verified_hosts"].([]any)
+	if !ok {
+		t.Fatal("missing pair invocation evidence", proof)
+	}
+	for _, host := range verified {
+		hosts[host.(string)] = true
+	}
+	if !hosts["www.youtube.com"] || !hosts["redirector.googlevideo.com"] {
+		t.Fatal("YT-1/GV-2 not independently proven", proof)
+	}
+	for path, expected := range baseline {
+		raw, err := os.ReadFile(path)
+		if err != nil || sha256.Sum256(raw) != expected {
+			t.Fatal("production changed", path, err)
+		}
+	}
+	t.Log("YT-1 and GV-2 verified simultaneously by tuple, Lua strategy/profile, conntrack and WAN; production config/locks unchanged")
+}
+
 func TestHardwareAgentLifecycle(t *testing.T) {
 	if os.Getenv("ZATOR_PROBE_HARDWARE_LIFECYCLE") != "1" {
 		t.Skip("physical router lifecycle is opt-in")

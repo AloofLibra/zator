@@ -1,17 +1,52 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions, withinTimeout } from './core'
+import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions, withinTimeout } from './core'
 
 const scan: ScanOptions = { url: 'https://example.org/', profile: 3, scenario: 'generic_page', selector: 'body', strategies: [1], scanMode: 'supersweep', youtubeURL: 'https://www.youtube.com/watch?v=test', discordURL: 'https://discord.com/app', discordSelector: '#app-mount', rknURLs: 'https://example.org/\nhttps://example.net/\nhttps://example.org/', rknSelector: 'body' }
-test('supersweep includes every profile and every selected RKN domain with live strategy numbers', () => {
+test('supersweep combines YouTube/GV into one target and keeps every RKN domain', () => {
   const targets = scanTargets(scan)
-  assert.deepEqual(targets.map(t => t.profile), [1, 2, 4, 3, 3])
-  assert.deepEqual(targets.map(t => t.scenario), ['youtube_video', 'youtube_video', 'discord', 'generic_page', 'generic_page'])
-  assert.equal(targets[1].url, targets[0].url)
+  assert.deepEqual(targets.map(t => t.profile), [1, 4, 3, 3])
+  assert.deepEqual(targets.map(t => t.scenario), ['youtube_video', 'discord', 'generic_page', 'generic_page'])
   assert.deepEqual(scanStrategies(scan, [1, 2, 3]), [1, 2, 3])
   assert.deepEqual(scanStrategies({ ...scan, scanMode: 'single', strategyMode: 'all' }, [1, 2]), [1, 2])
   assert.deepEqual(scanStrategies({ ...scan, scanMode: 'single' }, [1, 2]), [1])
   assert.deepEqual(scanTargets({ ...scan, scanMode: 'single' }), [{ url: scan.url, profile: 3, scenario: 'generic_page', selector: 'body' }])
+})
+test('paired sweep retains an untested GV after page failure and finishes GV with a successful YT', () => {
+  const sweep = new YouTubeSweep([1, 2, 3], [1, 2, 3])
+  sweep.record(sweep.next()!, 'FAIL', null)
+  assert.deepEqual([sweep.next()!.yt, sweep.next()!.gv], [1, 1])
+  sweep.record(sweep.next()!, 'OK', 'OK')
+  assert.deepEqual([sweep.next()!.yt, sweep.next()!.gv], [2, 2])
+  sweep.record(sweep.next()!, 'FAIL', null)
+  assert.deepEqual([sweep.next()!.yt, sweep.next()!.gv], [3, 2])
+  sweep.record(sweep.next()!, 'OK', 'OK')
+  const helper = sweep.next()!
+  assert.equal(helper.testYT, false); assert.equal(helper.gv, 3); assert.ok([1, 3].includes(helper.yt))
+  sweep.record(helper, 'OK', 'FAIL')
+  assert.equal(sweep.next(), undefined); assert.deepEqual(sweep.uncheckedGV, [])
+})
+test('no working page leaves GV untested; a missing player never advances GV or loops forever', () => {
+  const failed = new YouTubeSweep([1, 2], [1, 2])
+  for (let pair = failed.next(); pair; pair = failed.next()) failed.record(pair, 'FAIL', null)
+  assert.deepEqual(failed.uncheckedGV, [1, 2])
+  const noPlayer = new YouTubeSweep([1], [1, 2])
+  noPlayer.record(noPlayer.next()!, 'FAIL', null)
+  noPlayer.record(noPlayer.next()!, 'OK', null)
+  assert.equal(noPlayer.next()!.testYT, false)
+  noPlayer.record(noPlayer.next()!, 'OK', null)
+  assert.equal(noPlayer.next(), undefined); assert.deepEqual(noPlayer.uncheckedGV, [1, 2])
+})
+test('remaining YT are checked after GV finishes and a failed helper is replaced', () => {
+  const sweep = new YouTubeSweep([1, 2], [1])
+  sweep.record(sweep.next()!, 'FAIL', null); sweep.record(sweep.next()!, 'OK', 'OK')
+  assert.equal(sweep.next()!.testGV, false); assert.equal(sweep.next()!.gv, 1)
+  sweep.record(sweep.next()!, 'OK', null); assert.equal(sweep.next(), undefined)
+  const helpers = new YouTubeSweep([1, 2], [1, 2, 3])
+  helpers.record(helpers.next()!, 'FAIL', null)
+  helpers.record(helpers.next()!, 'OK', 'OK'); helpers.record(helpers.next()!, 'OK', 'OK')
+  const first = helpers.next()!.yt; helpers.record(helpers.next()!, 'FAIL', null)
+  assert.notEqual(helpers.next()!.yt, first); assert.equal(helpers.next()!.gv, 3)
 })
 test('scan validation rejects missing, unsafe, excessive and unsupported targets before starting', () => {
   for (const bad of [{ rknURLs: '' }, { youtubeURL: 'http://youtube.com/' }, { discordURL: 'https://user:pass@discord.com/' }, { rknURLs: Array.from({ length: 33 }, (_, n) => `https://site${n}.org/`).join('\n') }]) assert.throws(() => scanTargets({ ...scan, ...bad }))
@@ -68,6 +103,20 @@ test('HTTP2 reuse inside a fresh attempt is valid; document and media each requi
   assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['www.youtube.com'] } }, youtube).reason, 'MEDIA_FLOW_NOT_PROVEN')
   assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['video.googlevideo.com'] } }, youtube).reason, 'DOCUMENT_FLOW_NOT_PROVEN')
   assert.equal(classify({ ...start, proxy: { ...start.proxy, connections_started: 3 } }, end, youtube).verdict, 'INVALID')
+})
+test('paired verdicts credit the page independently and require real GV traffic before scoring video', () => {
+  const end = { ...after, proof: { ...after.proof, verified_hosts: ['www.youtube.com', 'video.googlevideo.com'] } }
+  const video = { ...observed, requested_host: 'www.youtube.com', required_hosts: ['video.googlevideo.com'], video_hosts: ['video.googlevideo.com'], page_functional: true }
+  assert.equal(classifyYouTube(before, end, video).page.verdict, 'OK')
+  assert.equal(classifyYouTube(before, end, video).video?.verdict, 'OK')
+  const auxiliaryError = classifyYouTube(before, end, { ...video, errors: ['net::ERR_ABORTED'] })
+  assert.equal(auxiliaryError.page.verdict, 'OK'); assert.equal(auxiliaryError.video?.verdict, 'OK')
+  const stopped = classifyYouTube(before, end, { ...video, functional: false, timed_out: true })
+  assert.equal(stopped.page.verdict, 'OK'); assert.equal(stopped.video?.verdict, 'FAIL')
+  assert.equal(stopped.video?.reason, 'VIDEO_PLAYBACK_TIMEOUT')
+  assert.equal(classifyYouTube(before, end, { ...video, video_hosts: [], functional: null }).video, null)
+  assert.equal(classifyYouTube(before, end, { ...video, page_functional: false, dom_loaded: false, http_status: null, timed_out: true }).video, null)
+  assert.equal(classifyYouTube(before, { ...end, gv_strategy: 2 }, video).page.verdict, 'INVALID')
 })
 test('generation, fresh connection, queue and route are required', () => {
   for (const value of [{ ...after, session_id: 'other' }, { ...after, route_generation: 2 }, { ...after, strategy_generation: 3 }, { ...after, transport_generation: 'changed' }, { ...after, queue: before.queue }]) assert.equal(classify(before, value, observed).verdict, 'INVALID')

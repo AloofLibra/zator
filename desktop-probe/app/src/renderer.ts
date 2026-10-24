@@ -12,9 +12,11 @@ function scanModeChanged() {
     group.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input,select,textarea').forEach(input => { input.disabled = !enabled })
   }
   field('strategies').disabled = sweep || field('strategy-mode').value === 'all'
+  field('profile').disabled = sweep || field('scenario').value === 'youtube_video'
 }
 field('scan-mode').addEventListener('change', scanModeChanged)
 field('strategy-mode').addEventListener('change', scanModeChanged)
+field('scenario').addEventListener('change', scanModeChanged)
 field('probe-form').addEventListener('submit', event => {
   event.preventDefault()
   const strategies = field('strategies').value.split(',').map(v => Number(v.trim()))
@@ -34,7 +36,7 @@ probe.onUpdate(data => {
     }
   }
   if (data.state) {
-    statusNode.textContent = [labels[data.state] || data.state, data.strategy !== undefined ? String(data.strategy || 'DIRECT') : '', data.pause_seconds ? `${data.pause_seconds} с` : '', data.error || data.cleanup_error || ''].filter(Boolean).join(' · ')
+    statusNode.textContent = [labels[data.state] || data.state, data.gv_strategy !== undefined ? `YT-${data.strategy || 'DIRECT'} / GV-${data.gv_strategy || 'DIRECT'}` : data.strategy !== undefined ? String(data.strategy || 'DIRECT') : '', data.pause_seconds ? `${data.pause_seconds} с` : '', data.error || data.cleanup_error || ''].filter(Boolean).join(' · ')
     const busy = !['IDLE', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR'].includes(data.state)
     if (data.total !== undefined) document.getElementById('progress')!.textContent = `${data.completed}/${data.total} | ${data.target_index || ''}/${data.target_count || ''} | P${data.profile || ''} | ${data.target || ''}`
     field('run').disabled = busy; field('cancel').disabled = !busy
@@ -52,15 +54,17 @@ probe.onUpdate(data => {
   data.results.forEach((result: any, index: number) => {
     const row = document.createElement('tr')
     const strategy = document.createElement('td'); strategy.textContent = `P${result.profile} | ${result.site} | ${result.strategy || 'DIRECT'}`
+    if (result.paired) { const pair = document.createElement('small'); pair.textContent = `YT-${result.yt_strategy || 'DIRECT'} / GV-${result.gv_strategy || 'DIRECT'}${result.helper ? ' · опорная YT' : ''}`; strategy.append(pair) }
     const observed = result.observation
     if (observed) {
       const detail = document.createElement('small')
       const page = observed.dom_loaded ? 'Страница открыта' : observed.http_status ? `HTTP ${observed.http_status}, DOM не готов` : 'Страница не открылась'
-      const functional = result.scenario === 'youtube_video' ? observed.functional === true ? 'Видео воспроизводится' : 'Видео не подтверждено' : observed.functional === true ? 'Условие выполнено' : 'Условие не подтверждено'
+      const functional = result.stage === 'page' ? observed.page_functional ? 'Открытие подтверждено' : 'Открытие не подтверждено' : result.scenario === 'youtube_video' ? observed.functional === true ? 'Видео воспроизводится' : 'Видео не подтверждено' : observed.functional === true ? 'Условие выполнено' : 'Условие не подтверждено'
       detail.textContent = `${page}. ${functional}.`; strategy.append(detail)
     }
     const verdict = document.createElement('td'); verdict.textContent = result.verdict; verdict.className = result.verdict; verdict.title = result.reason
     if (result.reason === 'FUNCTIONAL_CHECK_TIMED_OUT') { const explanation = document.createElement('small'); explanation.textContent = 'Не хватило времени на проверку функции'; verdict.append(explanation) }
+    if (result.tested === false) { const explanation = document.createElement('small'); explanation.textContent = 'Не проверялась: нет рабочей страницы/медиазапроса'; verdict.append(explanation) }
     const manual = document.createElement('td'), select = document.createElement('select'); select.setAttribute('aria-label', `Ручная оценка стратегии ${result.strategy || 'DIRECT'}`)
     for (const [value, text] of [['', '—'], ['passed', 'Работает'], ['failed', 'Не работает'], ['unknown', 'Неясно']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; select.append(option) }
     select.value = result.manual || ''; select.addEventListener('change', () => { void probe.command('manual', { index, value: select.value }).catch(showError) }); manual.append(select)

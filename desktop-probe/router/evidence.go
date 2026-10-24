@@ -40,7 +40,7 @@ func conntrackMark(snapshot string, f flow) (uint32, bool) {
 	return 0, false
 }
 
-func invoked(snapshot string, f flow, strategy int) bool {
+func invoked(snapshot string, f flow, strategy int, profile ...int) bool {
 	source, port, err := net.SplitHostPort(f.Local)
 	if err != nil {
 		return false
@@ -50,6 +50,9 @@ func invoked(snapshot string, f flow, strategy int) bool {
 		return false
 	}
 	row := strings.Join([]string{source, port, target, dport, strconv.Itoa(strategy)}, "\t")
+	if len(profile) != 0 {
+		row += "\t" + strconv.Itoa(profile[0])
+	}
 	for _, line := range strings.Split(snapshot, "\n") {
 		if line == row {
 			return true
@@ -58,7 +61,7 @@ func invoked(snapshot string, f flow, strategy int) bool {
 	return false
 }
 
-func flowProof(c settings, flows []flow, conntrack, events string, strategy int) (response, error) {
+func flowProof(c settings, flows []flow, conntrack, events string, strategy int, gvStrategy ...int) (response, error) {
 	proof := response{"connection_match": "unavailable", "strategy_invocation": "unavailable", "route": "unavailable"}
 	if len(flows) == 0 {
 		return proof, nil
@@ -72,6 +75,15 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 	seenHosts := map[string]bool{}
 	checkedRoutes := map[string]bool{}
 	for _, f := range flows {
+		wanted := strategy
+		var profile []int
+		if len(gvStrategy) != 0 {
+			profile = []int{1}
+			if hostMatches(f.Host, "googlevideo.com") {
+				wanted = gvStrategy[0]
+				profile[0] = 2
+			}
+		}
 		mark, matched := conntrackMark(conntrack, f)
 		if !matched {
 			continue
@@ -85,7 +97,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 		}
 		key := target + "/" + strconv.FormatUint(uint64(mark), 10)
 		if checkedRoutes[key] {
-			if invoked(events, f, strategy) && !seenHosts[f.Host] {
+			if invoked(events, f, wanted, profile...) && !seenHosts[f.Host] {
 				verifiedHosts = append(verifiedHosts, f.Host)
 				seenHosts[f.Host] = true
 			}
@@ -112,7 +124,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 			return nil, fmt.Errorf("ROUTE_MISMATCH: flow does not use active default uplink (%s)", strings.Join(wans, ","))
 		}
 		checkedRoutes[key] = true
-		if !invoked(events, f, strategy) {
+		if !invoked(events, f, wanted, profile...) {
 			continue
 		}
 		if !seenHosts[f.Host] {

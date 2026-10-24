@@ -155,7 +155,7 @@ func splitDesync(line string) []string {
 	return parts
 }
 
-func prepareConfig(c settings, dir string, profile, strategy int) ([]string, error) {
+func prepareConfig(c settings, dir string, profile, strategy int, gvStrategy ...int) ([]string, error) {
 	raw, err := os.ReadFile(filepath.Join(c.ZapretRoot, "config"))
 	if err != nil {
 		return nil, err
@@ -166,6 +166,26 @@ func prepareConfig(c settings, dir string, profile, strategy int) ([]string, err
 	}
 	if strategy != 0 && !contains(numbers, strategy) {
 		return nil, fmt.Errorf("STRATEGY_UNKNOWN")
+	}
+	locks := fmt.Sprintf("%d\ttls\t%d\n", profile, strategy)
+	evidenceProfile := ""
+	if len(gvStrategy) != 0 {
+		if profile != 1 || len(gvStrategy) != 1 {
+			return nil, fmt.Errorf("PROFILE_UNKNOWN")
+		}
+		gvPlan, gvNumbers, e := profilePlan(string(raw), 2)
+		if e != nil {
+			return nil, e
+		}
+		if gvStrategy[0] < 0 || (gvStrategy[0] != 0 && !contains(gvNumbers, gvStrategy[0])) {
+			return nil, fmt.Errorf("STRATEGY_UNKNOWN")
+		}
+		plan, err = youtubePairPlan(plan, gvPlan)
+		if err != nil {
+			return nil, err
+		}
+		locks += fmt.Sprintf("2\ttls\t%d\n", gvStrategy[0])
+		evidenceProfile = `.."\t"..tostring(profile)`
 	}
 	raw, err = os.ReadFile(filepath.Join(c.ZatorRoot, "lua", "locked.lua"))
 	if err != nil {
@@ -179,16 +199,16 @@ func prepareConfig(c settings, dir string, profile, strategy int) ([]string, err
 	if strings.Count(lua, "if locked == 0 then") != 1 || strings.Count(lua, "verdict = blob_override_execute(desync, verdict, instance, base_profile)") != 1 {
 		return nil, fmt.Errorf("LOCK_ADAPTER_UNSUPPORTED")
 	}
-	lua = strings.Replace(lua, "if locked == 0 then", "if locked == 0 then\n    zator_probe_record(desync, 0)", 1)
-	lua = strings.Replace(lua, "verdict = blob_override_execute(desync, verdict, instance, base_profile)", "verdict = blob_override_execute(desync, verdict, instance, base_profile)\n      zator_probe_record(desync, hrec.nstrategy)", 1)
+	lua = strings.Replace(lua, "if locked == 0 then", "if locked == 0 then\n    zator_probe_record(desync, 0, base_profile)", 1)
+	lua = strings.Replace(lua, "verdict = blob_override_execute(desync, verdict, instance, base_profile)", "verdict = blob_override_execute(desync, verdict, instance, base_profile)\n      zator_probe_record(desync, hrec.nstrategy, base_profile)", 1)
 	lua += fmt.Sprintf(`
 -- Private probe evidence contains only the upstream tuple and strategy number.
 local probe_seen = {}
 local probe_count = 0
-function zator_probe_record(desync, strategy)
+function zator_probe_record(desync, strategy, profile)
   local dis = desync and desync.dis
   if not dis or not dis.ip or not dis.tcp or dis.tcp.th_dport ~= 443 then return end
-  local row = ntop(dis.ip.ip_src).."\t"..dis.tcp.th_sport.."\t"..ntop(dis.ip.ip_dst).."\t"..dis.tcp.th_dport.."\t"..strategy
+  local row = ntop(dis.ip.ip_src).."\t"..dis.tcp.th_sport.."\t"..ntop(dis.ip.ip_dst).."\t"..dis.tcp.th_dport.."\t"..strategy%s
   if probe_seen[row] or probe_count >= 1024 then return end
   local f = assert(io.open(%q, "a"))
   assert(f:write(row.."\n"))
@@ -196,8 +216,8 @@ function zator_probe_record(desync, strategy)
   probe_seen[row] = true
   probe_count = probe_count + 1
 end
-`, filepath.Dir(dir)+"/evidence/invocations.tsv")
-	for name, body := range map[string][]byte{"locked.lua": []byte(lua), "locked.tsv": []byte(fmt.Sprintf("%d\ttls\t%d\n", profile, strategy)), "locked.manual.tsv": {}} {
+`, evidenceProfile, filepath.Dir(dir)+"/evidence/invocations.tsv")
+	for name, body := range map[string][]byte{"locked.lua": []byte(lua), "locked.tsv": []byte(locks), "locked.manual.tsv": {}} {
 		if err = os.WriteFile(filepath.Join(dir, name), body, 0644); err != nil {
 			return nil, err
 		}
@@ -223,4 +243,25 @@ end
 	}
 	args = append(args, "--lua-init=@"+dir+"/locked.lua", "--lua-init=@"+filepath.Join(c.ZatorRoot, "lua/fake-adapt.lua"))
 	return append(args, plan...), nil
+}
+
+func youtubePairPlan(yt, gv []string) ([]string, error) {
+	start := func(args []string) int {
+		for i, arg := range args {
+			if arg == "--filter-tcp=443" {
+				return i
+			}
+		}
+		return -1
+	}
+	y, g := start(yt), start(gv)
+	if y < 0 || g < 0 || strings.Join(yt[:y], "\n") != strings.Join(gv[:g], "\n") {
+		return nil, fmt.Errorf("CONFIG_UNSUPPORTED: incompatible YouTube templates")
+	}
+	args := append([]string{}, yt[:y]...)
+	// The specific media profile must precede the page/assets fallback.
+	args = append(args, "--hostlist-domains=googlevideo.com")
+	args = append(args, gv[g:]...)
+	args = append(args, "--new")
+	return append(args, yt[y:]...), nil
 }

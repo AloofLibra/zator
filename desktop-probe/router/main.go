@@ -29,12 +29,14 @@ const settingsFile = "/opt/zator/desktop-probe.json"
 const socketFile = stateRoot + "/control.sock"
 
 type request struct {
-	Hostname string `json:"hostname"`
-	Command  string `json:"command"`
-	Owner    string `json:"owner"`
-	Session  string `json:"session"`
-	Profile  int    `json:"profile"`
-	Strategy int    `json:"strategy"`
+	Hostname   string `json:"hostname"`
+	Command    string `json:"command"`
+	Owner      string `json:"owner"`
+	Session    string `json:"session"`
+	Profile    int    `json:"profile"`
+	Strategy   int    `json:"strategy"`
+	Paired     bool   `json:"paired"`
+	GVStrategy *int   `json:"gv_strategy,omitempty"`
 }
 type response map[string]any
 
@@ -75,7 +77,7 @@ func capabilities(c settings, active bool) response {
 	if err != nil {
 		reason = err.Error()
 	}
-	return response{"ok": true, "api_version": "0.1", "settings_id": c.identity(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "wan_interfaces": wans, "transport": []string{"router_socks_tcp"}, "profiles": profiles, "ipv6_supported": false, "quic_supported": false, "ssh_forwarding_supported": nil, "hardware_validated": false, "session_active": active, "isolation": response{"available": err == nil, "reason": reason}}
+	return response{"ok": true, "api_version": "0.1", "youtube_pair_supported": true, "settings_id": c.identity(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "wan_interfaces": wans, "transport": []string{"router_socks_tcp"}, "profiles": profiles, "ipv6_supported": false, "quic_supported": false, "ssh_forwarding_supported": nil, "hardware_validated": false, "session_active": active, "isolation": response{"available": err == nil, "reason": reason}}
 }
 
 type agent struct {
@@ -86,6 +88,8 @@ type agent struct {
 	session                       string
 	owner                         [32]byte
 	profile, strategy, generation int
+	paired                        bool
+	gvStrategy                    int
 	fingerprint                   string
 	lease                         time.Time
 	nfq, proxy                    *exec.Cmd
@@ -142,7 +146,11 @@ func (a *agent) startChildren() error {
 			return err
 		}
 	}
-	args, err := prepareConfig(a.config, public, a.profile, a.strategy)
+	var gv []int
+	if a.paired {
+		gv = []int{a.gvStrategy}
+	}
+	args, err := prepareConfig(a.config, public, a.profile, a.strategy, gv...)
 	if err != nil {
 		return err
 	}
@@ -316,7 +324,11 @@ func (a *agent) status() (response, error) {
 		conntrack, _ = readLimited("/proc/net/ip_conntrack", 2*1024*1024)
 	}
 	events, _ := readLimited(stateRoot+"/"+a.session+"/evidence/invocations.tsv", 256*1024)
-	proof, err := flowProof(a.config, flows, string(conntrack), string(events), a.strategy)
+	var gv []int
+	if a.paired {
+		gv = []int{a.gvStrategy}
+	}
+	proof, err := flowProof(a.config, flows, string(conntrack), string(events), a.strategy, gv...)
 	if err != nil {
 		return nil, err
 	}
@@ -332,6 +344,7 @@ func (a *agent) status() (response, error) {
 		"ok": true, "api_version": "0.1", "agent_pid": os.Getpid(), "session_id": a.session, "state": "ready",
 		"route_generation": routeGeneration, "firewall_generation": firewallGeneration,
 		"profile": a.profile, "strategy": a.strategy, "strategy_generation": a.generation, "transport_generation": a.fingerprint,
+		"paired": a.paired, "gv_strategy": a.gvStrategy,
 		"lease_expires_at": a.lease.UTC().Format(time.RFC3339), "mode": "router_socks_tcp", "protocol_scope": "TCP_HTTPS_IPV4",
 		"nfqws": response{"pid": a.nfq.Process.Pid, "alive": true, "lua_errors": 0},
 		"proxy": response{"host": "127.0.0.1", "port": a.config.Port, "alive": true, "pid": a.proxy.Process.Pid, "connections_started": len(flows)},
@@ -377,6 +390,9 @@ func (a *agent) handle(r request) (response, error) {
 	}
 	switch r.Command {
 	case "start":
+		if r.Paired && r.Profile != 1 {
+			return nil, fmt.Errorf("PROFILE_UNKNOWN")
+		}
 		if _, err := discoverWANs(); err != nil {
 			return nil, err
 		}
@@ -408,6 +424,8 @@ func (a *agent) handle(r request) (response, error) {
 		a.session = randomID()
 		a.owner = token
 		a.profile = r.Profile
+		a.paired = r.Paired
+		a.gvStrategy = 0
 		a.strategy = 0
 		a.generation = 1
 		a.lease = time.Now().Add(90 * time.Second)
@@ -458,8 +476,20 @@ func (a *agent) handle(r request) (response, error) {
 		if r.Strategy < 0 || (r.Strategy != 0 && !contains(numbers, r.Strategy)) {
 			return nil, fmt.Errorf("STRATEGY_UNKNOWN")
 		}
+		if a.paired {
+			_, gvNumbers, e := profilePlan(string(raw), 2)
+			if e != nil {
+				return nil, e
+			}
+			if r.GVStrategy == nil || *r.GVStrategy < 0 || (*r.GVStrategy != 0 && !contains(gvNumbers, *r.GVStrategy)) {
+				return nil, fmt.Errorf("STRATEGY_UNKNOWN")
+			}
+		}
 		a.stopChildren()
 		a.strategy = r.Strategy
+		if a.paired {
+			a.gvStrategy = *r.GVStrategy
+		}
 		a.generation++
 		a.lease = time.Now().Add(90 * time.Second)
 		// Restart only test children: guarantees no cached circular_locked host state.

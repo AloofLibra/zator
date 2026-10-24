@@ -65,4 +65,24 @@ func TestFlowEvidence(t *testing.T) {
 	if _, err = flowProof(testSettings(), []flow{f}, strings.ReplaceAll(snapshot, "mark=67138866", "mark=0"), event, 7); err == nil {
 		t.Fatal("known unmarked flow accepted")
 	}
+	media := f
+	media.Host = "video.googlevideo.com"
+	pairedEvent := strings.TrimSpace(event) + "\t1\n"
+	proof, err = flowProof(testSettings(), []flow{f}, snapshot, pairedEvent, 7, 8)
+	if err != nil || proof["connection_match"] != "verified" {
+		t.Fatal("YT pair evidence rejected", proof, err)
+	}
+	proof, err = flowProof(testSettings(), []flow{media}, snapshot, pairedEvent, 7, 8)
+	if err != nil || proof["connection_match"] == "verified" {
+		t.Fatal("YT strategy was accepted for GV", proof, err)
+	}
+	pairedEvent = strings.Replace(pairedEvent, "\t7\t1", "\t8\t2", 1)
+	proof, err = flowProof(testSettings(), []flow{media}, snapshot, pairedEvent, 7, 8)
+	if err != nil || proof["connection_match"] != "verified" {
+		t.Fatal("independent GV evidence rejected", proof, err)
+	}
+	proof, err = flowProof(testSettings(), []flow{media}, snapshot, strings.Replace(pairedEvent, "\t8\t2", "\t8\t1", 1), 7, 8)
+	if err != nil || proof["connection_match"] == "verified" {
+		t.Fatal("correct number under wrong profile was accepted", proof, err)
+	}
 }
