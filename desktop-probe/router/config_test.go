@@ -37,7 +37,7 @@ func TestShippedProfiles(t *testing.T) {
 }
 
 func testSettings() settings {
-	return settings{Backend: "nft", Queue: 65534, ProxyUID: 65531, NfqUID: 65532, Port: 41081, Mark: 0x04000000, RawMark: 0x40000000, WAN: "pppoe-wan", ZatorRoot: "/opt/zator", ZapretRoot: "/opt/zapret2"}
+	return settings{Backend: "nft", Queue: 65534, ProxyUID: 65531, NfqUID: 65532, Port: 41081, Mark: 0x04000000, RawMark: 0x40000000, ZatorRoot: "/opt/zator", ZapretRoot: "/opt/zapret2"}
 }
 
 func TestResourceValidation(t *testing.T) {
@@ -45,7 +45,7 @@ func TestResourceValidation(t *testing.T) {
 	if err := c.validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, change := range []func(*settings){func(c *settings) { c.Queue = 65535 }, func(c *settings) { c.ProxyUID = c.NfqUID }, func(c *settings) { c.NfqUID = 65533 }, func(c *settings) { c.Mark = 0x08000000 }, func(c *settings) { c.Mark = 0x04000001 }, func(c *settings) { c.WAN = "wan;reboot" }, func(c *settings) { c.ZatorRoot = "/tmp/a\";bad" }} {
+	for _, change := range []func(*settings){func(c *settings) { c.Queue = 65535 }, func(c *settings) { c.ProxyUID = c.NfqUID }, func(c *settings) { c.NfqUID = 65533 }, func(c *settings) { c.Mark = 0x08000000 }, func(c *settings) { c.Mark = 0x04000001 }, func(c *settings) { c.ZatorRoot = "/tmp/a\";bad" }} {
 		bad := c
 		change(&bad)
 		if bad.validate() == nil {

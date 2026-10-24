@@ -6,7 +6,6 @@
   "port": 41081,
   "mark": 67108864,
   "raw_mark": 1073741824,
-  "wan": "pppoe-wan",
   "zator_root": "/opt/zator",
   "zapret_root": "/opt/zapret2"
 }

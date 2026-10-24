@@ -63,6 +63,11 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 	if len(flows) == 0 {
 		return proof, nil
 	}
+	wans, err := discoverWANs()
+	if err != nil {
+		return nil, err
+	}
+	egress := ""
 	checkedRoutes := map[string]bool{}
 	for _, f := range flows {
 		mark, matched := conntrackMark(conntrack, f)
@@ -88,17 +93,22 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 		wan := false
 		for i := 0; i+1 < len(fields); i++ {
 			if fields[i] == "dev" {
-				wan = fields[i+1] == c.WAN
+				for _, allowed := range wans {
+					if fields[i+1] == allowed {
+						wan = true
+						egress = allowed
+					}
+				}
 				break
 			}
 		}
 		if !wan {
-			return nil, fmt.Errorf("ROUTE_MISMATCH")
+			return nil, fmt.Errorf("ROUTE_MISMATCH: flow does not use active default uplink (%s)", strings.Join(wans, ","))
 		}
 		checkedRoutes[key] = true
 		if !invoked(events, f, strategy) {
 			return proof, nil
 		}
 	}
-	return response{"connection_match": "verified", "strategy_invocation": "verified", "route": "kernel_route_verified", "egress_interface": c.WAN}, nil
+	return response{"connection_match": "verified", "strategy_invocation": "verified", "route": "kernel_route_verified", "egress_interface": egress, "wan_interfaces": wans}, nil
 }

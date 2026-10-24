@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -22,6 +23,9 @@ func TestFlowEvidence(t *testing.T) {
 	original := runCommand
 	defer func() { runCommand = original }()
 	runCommand = func(name string, args ...string) ([]byte, error) {
+		if reflect.DeepEqual(args, []string{"-4", "route", "show", "table", "main", "default"}) {
+			return []byte("default dev pppoe-wan"), nil
+		}
 		return []byte("93.184.216.34 dev work src 192.0.2.1"), nil
 	}
 	if _, err := flowProof(testSettings(), []flow{f}, snapshot, event, 7); err == nil {
@@ -29,6 +33,9 @@ func TestFlowEvidence(t *testing.T) {
 	}
 	queries := 0
 	runCommand = func(name string, args ...string) ([]byte, error) {
+		if reflect.DeepEqual(args, []string{"-4", "route", "show", "table", "main", "default"}) {
+			return []byte("default dev pppoe-wan"), nil
+		}
 		queries++
 		return []byte("93.184.216.34 dev pppoe-wan src 192.0.2.1"), nil
 	}

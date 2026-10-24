@@ -22,7 +22,7 @@
 | Listener | Existing services не занимали порт | Только `127.0.0.1:41081` |
 | PC forward | Отдельный SSH process | Случайный свободный loopback port |
 | Kernel ephemeral range | **32768–60999** | Исходящий source port выбирает ядро; нет привязки к Supersweep ports |
-| WAN / VPN | `pppoe-wan`; policy tables 30000–30006, marks 0x7530–0x7536; есть явные VPN routes | Проверяется наблюдаемый mark/route; mismatch не становится OK |
+| WAN / VPN | Первый PoC: `pppoe-wan`; сейчас DHCP `wan`. Есть отдельные VPN policy routes | Активный uplink определяется из default routes ядра автоматически; маркированный маршрут сверяется с ним. Ручное имя WAN не требуется |
 
 UID/GID сверяются с `/etc/passwd`, `/etc/group` и `/proc/*/status`; queue — с procfs и чужими firewall rules; mark — с config/firewall/policy. Порт проверяется до запуска и затем по UID listener. При конфликте отказ, автоматической смены ресурса нет.
 

@@ -67,11 +67,15 @@ func capabilities(c settings, active bool) response {
 		}
 	}
 	_, err := transportFingerprint(c)
+	wans, wanErr := discoverWANs()
+	if err == nil {
+		err = wanErr
+	}
 	reason := ""
 	if err != nil {
 		reason = err.Error()
 	}
-	return response{"ok": true, "api_version": "0.1", "settings_id": c.identity(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "transport": []string{"router_socks_tcp"}, "profiles": profiles, "ipv6_supported": false, "quic_supported": false, "ssh_forwarding_supported": nil, "hardware_validated": false, "session_active": active, "isolation": response{"available": err == nil, "reason": reason}}
+	return response{"ok": true, "api_version": "0.1", "settings_id": c.identity(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "wan_interfaces": wans, "transport": []string{"router_socks_tcp"}, "profiles": profiles, "ipv6_supported": false, "quic_supported": false, "ssh_forwarding_supported": nil, "hardware_validated": false, "session_active": active, "isolation": response{"available": err == nil, "reason": reason}}
 }
 
 type agent struct {
@@ -373,6 +377,9 @@ func (a *agent) handle(r request) (response, error) {
 	}
 	switch r.Command {
 	case "start":
+		if _, err := discoverWANs(); err != nil {
+			return nil, err
+		}
 		if _, e := os.Stat(stateRoot + "/disabled"); e == nil {
 			return nil, fmt.Errorf("COMPONENT_DISABLED")
 		}

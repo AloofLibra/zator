@@ -23,7 +23,6 @@ type settings struct {
 	Port       int    `json:"port"`
 	Mark       uint32 `json:"mark"`
 	RawMark    uint32 `json:"raw_mark"`
-	WAN        string `json:"wan"`
 	ZatorRoot  string `json:"zator_root"`
 	ZapretRoot string `json:"zapret_root"`
 }
@@ -66,7 +65,7 @@ func (c settings) validate() error {
 	if c.Queue < 1 || c.Queue > 65534 || c.ProxyUID < 1 || c.NfqUID < 1 || c.ProxyUID > 65534 || c.NfqUID > 65534 || c.ProxyUID == c.NfqUID || c.ProxyUID == 65533 || c.NfqUID == 65533 {
 		return fmt.Errorf("RESOURCE_COLLISION")
 	}
-	if c.Port < 1024 || c.Port > 61999 || !ifacePattern.MatchString(c.WAN) || !rootPattern.MatchString(c.ZatorRoot) || !rootPattern.MatchString(c.ZapretRoot) {
+	if c.Port < 1024 || c.Port > 61999 || !rootPattern.MatchString(c.ZatorRoot) || !rootPattern.MatchString(c.ZapretRoot) {
 		return fmt.Errorf("INVALID_SETTINGS")
 	}
 	if c.Mark == 0 || c.Mark&(c.Mark-1) != 0 || c.Mark&0x7800ff00 != 0 || c.RawMark != 0x40000000 {

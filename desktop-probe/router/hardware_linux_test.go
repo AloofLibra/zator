@@ -129,6 +129,11 @@ func TestHardwareAgentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wans, err := discoverWANs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wan := wans[0]
 	binary := "/opt/zator/bin/zator-desktop-probe"
 	call := func(r request) response {
 		body, _ := json.Marshal(r)
@@ -216,7 +221,7 @@ func TestHardwareAgentLifecycle(t *testing.T) {
 		_, port, _ := net.SplitHostPort(f["local"].(string))
 		remote, _, _ := net.SplitHostPort(f["remote"].(string))
 		captureCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		capture := exec.CommandContext(captureCtx, "tcpdump", "-nn", "-S", "-l", "-i", c.WAN, "tcp and host "+remote+" and port "+port)
+		capture := exec.CommandContext(captureCtx, "tcpdump", "-nn", "-S", "-l", "-i", wan, "tcp and host "+remote+" and port "+port)
 		var trace bytes.Buffer
 		capture.Stdout = &trace
 		capture.Stderr = &trace
@@ -248,7 +253,7 @@ func TestHardwareAgentLifecycle(t *testing.T) {
 		_ = capture.Wait()
 		post := status()
 		proof := post["proof"].(map[string]any)
-		if proof["connection_match"] != "verified" || proof["strategy_invocation"] != "verified" || proof["egress_interface"] != c.WAN {
+		if proof["connection_match"] != "verified" || proof["strategy_invocation"] != "verified" || proof["egress_interface"] != wan {
 			t.Fatal(post)
 		}
 		if post["transport_generation"] != fingerprint {
@@ -285,7 +290,7 @@ func TestHardwareAgentLifecycle(t *testing.T) {
 			}
 			t.Log("strategy-1 raw fake observed on test WAN: TCP sequence offset -3000")
 		}
-		t.Logf("strategy=%d http=%d queue=%v WAN=%s packet_lines=%d proof=verified", strategy, resp.StatusCode, post["queue"], c.WAN, strings.Count(trace.String(), "Flags"))
+		t.Logf("strategy=%d http=%d queue=%v WAN=%s packet_lines=%d proof=verified", strategy, resp.StatusCode, post["queue"], wan, strings.Count(trace.String(), "Flags"))
 	}
 	// An ordinary local-root socket must never enter the proxy's test queue.
 	time.Sleep(time.Second)
