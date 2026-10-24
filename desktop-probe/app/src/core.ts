@@ -58,7 +58,7 @@ export interface RouterStatus {
   route_generation: number;
   firewall_generation: number;
   proxy: { host: string; port: number; alive: boolean; connections_started?: number }; queue: { number: number; counter: number; alive: boolean };
-  proof: { connection_match: string; strategy_invocation: string; route: string };
+  proof: { connection_match: string; strategy_invocation: string; route: string; verified_hosts?: string[] };
   flows?: { host: string; local: string; remote: string; started: number }[];
 }
 export interface Observation {
@@ -67,6 +67,7 @@ export interface Observation {
   evidence_complete?: boolean;
   requested_host?: string; expected_origin?: boolean;
   timed_out?: boolean;
+  required_hosts?: string[];
 }
 export function safeURL(raw: string): string {
   const u = new URL(raw)
@@ -78,9 +79,10 @@ export function redactURL(raw: string): string {
 }
 export function classify(before: RouterStatus, after: RouterStatus, o: Observation): { verdict: Verdict; reason: string } {
   if (!Number.isSafeInteger(before.route_generation) || !Number.isSafeInteger(before.firewall_generation) || before.firewall_generation !== after.firewall_generation || before.route_generation !== after.route_generation || before.session_id !== after.session_id || before.strategy_generation !== after.strategy_generation || before.strategy !== after.strategy || before.transport_generation !== after.transport_generation) return { verdict: 'INVALID', reason: 'SESSION_OR_GENERATION_CHANGED' }
-  const fresh = o.fresh_connection === true || (o.fresh_connection === null && before.proxy.connections_started === 0 && (after.proxy.connections_started || 0) > 0)
+  const fresh = o.fresh_connection === true || (before.proxy.connections_started === 0 && (after.proxy.connections_started || 0) > 0)
   if (o.evidence_complete === false || !after.queue.alive || !after.proxy.alive || after.queue.counter <= before.queue.counter || after.proof.connection_match !== 'verified' || after.proof.strategy_invocation !== 'verified' || after.proof.route !== 'kernel_route_verified' || !fresh) return { verdict: 'INVALID', reason: 'FLOW_OR_STRATEGY_NOT_PROVEN' }
-  if (o.requested_host && !after.flows?.some(flow => flow.host === o.requested_host)) return { verdict: 'INVALID', reason: 'DOCUMENT_FLOW_NOT_PROVEN' }
+  if (o.requested_host && !after.proof.verified_hosts?.includes(o.requested_host)) return { verdict: 'INVALID', reason: 'DOCUMENT_FLOW_NOT_PROVEN' }
+  if (o.required_hosts?.some(host => !after.proof.verified_hosts?.includes(host))) return { verdict: 'INVALID', reason: 'MEDIA_FLOW_NOT_PROVEN' }
   if (o.expected_origin === false) return { verdict: 'UNKNOWN', reason: 'UNEXPECTED_REDIRECT' }
   if (o.auth_required) return { verdict: 'UNKNOWN', reason: 'AUTH_REQUIRED' }
   if (o.functional === null) return { verdict: 'UNKNOWN', reason: 'FUNCTIONAL_CONDITION_NOT_PROVEN' }

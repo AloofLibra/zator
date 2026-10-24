@@ -52,6 +52,15 @@ test('bounded browser work times out, cancels and preserves failures', async () 
 })
 test('DIRECT brackets strategy changes with a repeated reference on longer sweeps', () => { assert.deepEqual(strategySequence([1, 1]), [0, 1]); assert.deepEqual(strategySequence([1, 2, 3]), [0, 1, 0, 2, 3]) })
 test('HTTP 200 alone never proves a strategy', () => { assert.equal(classify(before, after, { ...observed, functional: null }).verdict, 'UNKNOWN'); assert.equal(classify(before, { ...after, proof: { ...after.proof, connection_match: 'unavailable' } }, observed).verdict, 'INVALID') })
+test('HTTP2 reuse inside a fresh attempt is valid; document and media each require host proof', () => {
+  const start = { ...before, proxy: { ...before.proxy, connections_started: 0 } }
+  const end = { ...after, proxy: { ...after.proxy, connections_started: 3 }, proof: { ...after.proof, verified_hosts: ['www.youtube.com', 'video.googlevideo.com'] } }
+  const youtube = { ...observed, requested_host: 'www.youtube.com', required_hosts: ['video.googlevideo.com'], fresh_connection: false }
+  assert.equal(classify(start, end, youtube).verdict, 'OK')
+  assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['www.youtube.com'] } }, youtube).reason, 'MEDIA_FLOW_NOT_PROVEN')
+  assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['video.googlevideo.com'] } }, youtube).reason, 'DOCUMENT_FLOW_NOT_PROVEN')
+  assert.equal(classify({ ...start, proxy: { ...start.proxy, connections_started: 3 } }, end, youtube).verdict, 'INVALID')
+})
 test('generation, fresh connection, queue and route are required', () => {
   for (const value of [{ ...after, session_id: 'other' }, { ...after, route_generation: 2 }, { ...after, strategy_generation: 3 }, { ...after, transport_generation: 'changed' }, { ...after, queue: before.queue }]) assert.equal(classify(before, value, observed).verdict, 'INVALID')
   assert.equal(classify(before, after, { ...observed, fresh_connection: true }).verdict, 'OK')

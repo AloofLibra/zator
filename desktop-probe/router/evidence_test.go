@@ -2,11 +2,12 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestFlowEvidence(t *testing.T) {
-	f := flow{Local: "192.0.2.1:37024", Remote: "93.184.216.34:443"}
+	f := flow{Host: "www.youtube.com", Local: "192.0.2.1:37024", Remote: "93.184.216.34:443"}
 	snapshot := "ipv4 2 tcp 6 113 TIME_WAIT src=192.0.2.1 dst=93.184.216.34 sport=37024 dport=443 packets=15 src=93.184.216.34 dst=192.0.2.1 sport=443 dport=37024 mark=67138866"
 	if mark, ok := conntrackMark(snapshot, f); !ok || mark != 67138866 {
 		t.Fatal("tuple not matched", mark, ok)
@@ -50,5 +51,18 @@ func TestFlowEvidence(t *testing.T) {
 	proof, err = flowProof(testSettings(), []flow{f}, snapshot, "", 7)
 	if err != nil || proof["connection_match"] == "verified" {
 		t.Fatal("missing Lua evidence accepted")
+	}
+	other.Host = "i.ytimg.com"
+	proof, err = flowProof(testSettings(), []flow{other, f}, snapshot, event, 7)
+	if err != nil || !reflect.DeepEqual(proof["verified_hosts"], []string{f.Host}) {
+		t.Fatal("expired auxiliary flow invalidated document", proof, err)
+	}
+	auxiliary := strings.ReplaceAll(snapshot, "sport=37024", "sport=37025")
+	proof, err = flowProof(testSettings(), []flow{f, other}, snapshot+"\n"+auxiliary, event, 7)
+	if err != nil || !reflect.DeepEqual(proof["verified_hosts"], []string{f.Host}) {
+		t.Fatal("auxiliary flow without Lua was trusted or invalidated document", proof, err)
+	}
+	if _, err = flowProof(testSettings(), []flow{f}, strings.ReplaceAll(snapshot, "mark=67138866", "mark=0"), event, 7); err == nil {
+		t.Fatal("known unmarked flow accepted")
 	}
 }

@@ -72,6 +72,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
   const observation: Observation = { http_status: null, dom_loaded: false, fresh_connection: null, functional: null, auth_required: false, errors: [], requested_host: new URL(options.url).hostname }
   const requests = new Map<string, any>()
   const gatewayRequests = new Set<string>()
+  const requiredHosts = new Set<string>()
   let mediaBytes = 0, socketFrames = 0, mainFrame = '', lastNetworkUpdate = 0
   wc.debugger.attach('1.3')
   await wc.debugger.sendCommand('Network.enable')
@@ -90,7 +91,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
       const row = requests.get(p.requestId)
       if (row) { row.bytes = p.encodedDataLength; row.duration_ms = Math.round((p.timestamp - row.started) * 1000) }
     }
-    if (method === 'Network.dataReceived') { const row = requests.get(p.requestId); if (row) { row.bytes += p.encodedDataLength; if (/^https:\/\/([a-z0-9-]+\.)?googlevideo\.com\//.test(row.url)) mediaBytes += p.encodedDataLength } }
+    if (method === 'Network.dataReceived') { const row = requests.get(p.requestId); if (row) { row.bytes += p.encodedDataLength; if (/^https:\/\/([a-z0-9-]+\.)?googlevideo\.com\//.test(row.url) && p.encodedDataLength > 0) { mediaBytes += p.encodedDataLength; requiredHosts.add(new URL(row.url).hostname) } } }
     if (method === 'Network.loadingFailed') {
       const row = requests.get(p.requestId)
       const error = /^net::ERR_[A-Z_]+$/.test(p.errorText) ? p.errorText : 'NETWORK_ERROR'
@@ -98,7 +99,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
       if (observation.errors.length < 100) observation.errors.push(error)
     }
     if (method === 'Network.webSocketCreated') { try { if (new URL(p.url).hostname === 'gateway.discord.gg') gatewayRequests.add(p.requestId) } catch {} }
-    if (method === 'Network.webSocketFrameReceived' && gatewayRequests.has(p.requestId)) socketFrames++
+    if (method === 'Network.webSocketFrameReceived' && gatewayRequests.has(p.requestId)) { socketFrames++; requiredHosts.add('gateway.discord.gg') }
     if (Date.now() - lastNetworkUpdate > 250) { lastNetworkUpdate = Date.now(); update({ network: [...requests.values()].slice(-50) }) }
   })
   const domReady = new Promise<void>(resolve => wc.once('dom-ready', () => { observation.dom_loaded = true; resolve() }))
@@ -107,7 +108,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
   const aborted = () => { if (!wc.isDestroyed()) { wc.stop(); wc.close() } }
   signal.addEventListener('abort', aborted, { once: true })
   try {
-    const navigation = wc.loadURL(options.url).catch(() => { observation.errors.push('NAVIGATION_FAILED') })
+    const navigation = wc.loadURL(options.url).catch(error => { if (error.code === 'ERR_ABORTED') return domReady; observation.errors.push('NAVIGATION_FAILED') })
     await bounded(Promise.race([navigation, domReady]))
     if (signal.aborted) throw new Error('CANCELLED')
     const finalURL = new URL(wc.getURL())
@@ -131,11 +132,13 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
       }
       observation.functional = options.scenario === 'discord' ? (found && socketFrames > 0 ? true : null) : found
     }
+    observation.required_hosts = [...requiredHosts]
     return { attempt_id: attempt, observation, requests: [...requests.values()], media_bytes: mediaBytes, websocket_frames: socketFrames }
   } catch (e) {
     if (signal.aborted || (e as Error).message !== 'ATTEMPT_TIMEOUT') throw e
     wc.stop()
     observation.timed_out = true
+    observation.required_hosts = [...requiredHosts]
     observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null
     return { attempt_id: attempt, observation, requests: [...requests.values()] }
   } finally { signal.removeEventListener('abort', aborted) }
@@ -197,7 +200,7 @@ async function run(options: RunOptions) {
           await waitForManual(results.length - 1, signal)
         }
         update({ state: 'NEXT', ...context, completed, strategy, results })
-        if (result.verdict === 'INVALID') throw new Error('SCAN_STOPPED_INVALID_TRANSPORT')
+        if (result.verdict === 'INVALID') throw new Error(`SCAN_STOPPED_INVALID_TRANSPORT: ${result.reason}`)
         if (index < sequence.length - 1) { update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: pause / 1000 }); await delay(pause, signal) }
       }
       if (heartbeat) clearInterval(heartbeat)

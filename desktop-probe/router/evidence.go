@@ -68,11 +68,16 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 		return nil, err
 	}
 	egress := ""
+	verifiedHosts := []string{}
+	seenHosts := map[string]bool{}
 	checkedRoutes := map[string]bool{}
 	for _, f := range flows {
 		mark, matched := conntrackMark(conntrack, f)
-		if !matched || mark&c.Mark == 0 || mark&c.RawMark != 0 {
-			return proof, nil
+		if !matched {
+			continue
+		}
+		if mark&c.Mark == 0 || mark&c.RawMark != 0 {
+			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
 		}
 		target, _, err := net.SplitHostPort(f.Remote)
 		if err != nil {
@@ -80,14 +85,15 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 		}
 		key := target + "/" + strconv.FormatUint(uint64(mark), 10)
 		if checkedRoutes[key] {
-			if !invoked(events, f, strategy) {
-				return proof, nil
+			if invoked(events, f, strategy) && !seenHosts[f.Host] {
+				verifiedHosts = append(verifiedHosts, f.Host)
+				seenHosts[f.Host] = true
 			}
 			continue
 		}
 		route, err := runCommand("ip", "-4", "route", "get", target, "mark", strconv.FormatUint(uint64(mark), 10))
 		if err != nil {
-			return proof, nil
+			continue
 		}
 		fields := strings.Fields(string(route))
 		wan := false
@@ -107,8 +113,15 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int)
 		}
 		checkedRoutes[key] = true
 		if !invoked(events, f, strategy) {
-			return proof, nil
+			continue
+		}
+		if !seenHosts[f.Host] {
+			verifiedHosts = append(verifiedHosts, f.Host)
+			seenHosts[f.Host] = true
 		}
 	}
-	return response{"connection_match": "verified", "strategy_invocation": "verified", "route": "kernel_route_verified", "egress_interface": egress, "wan_interfaces": wans}, nil
+	if len(verifiedHosts) == 0 {
+		return proof, nil
+	}
+	return response{"connection_match": "verified", "strategy_invocation": "verified", "route": "kernel_route_verified", "egress_interface": egress, "wan_interfaces": wans, "verified_hosts": verifiedHosts}, nil
 }
