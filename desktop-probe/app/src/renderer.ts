@@ -52,7 +52,15 @@ probe.onUpdate(data => {
   data.results.forEach((result: any, index: number) => {
     const row = document.createElement('tr')
     const strategy = document.createElement('td'); strategy.textContent = `P${result.profile} | ${result.site} | ${result.strategy || 'DIRECT'}`
+    const observed = result.observation
+    if (observed) {
+      const detail = document.createElement('small')
+      const page = observed.dom_loaded ? 'Страница открыта' : observed.http_status ? `HTTP ${observed.http_status}, DOM не готов` : 'Страница не открылась'
+      const functional = result.scenario === 'youtube_video' ? observed.functional === true ? 'Видео воспроизводится' : 'Видео не подтверждено' : observed.functional === true ? 'Условие выполнено' : 'Условие не подтверждено'
+      detail.textContent = `${page}. ${functional}.`; strategy.append(detail)
+    }
     const verdict = document.createElement('td'); verdict.textContent = result.verdict; verdict.className = result.verdict; verdict.title = result.reason
+    if (result.reason === 'FUNCTIONAL_CHECK_TIMED_OUT') { const explanation = document.createElement('small'); explanation.textContent = 'Не хватило времени на проверку функции'; verdict.append(explanation) }
     const manual = document.createElement('td'), select = document.createElement('select'); select.setAttribute('aria-label', `Ручная оценка стратегии ${result.strategy || 'DIRECT'}`)
     for (const [value, text] of [['', '—'], ['passed', 'Работает'], ['failed', 'Не работает'], ['unknown', 'Неясно']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; select.append(option) }
     select.value = result.manual || ''; select.addEventListener('change', () => { void probe.command('manual', { index, value: select.value }).catch(showError) }); manual.append(select)

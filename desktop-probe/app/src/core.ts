@@ -68,6 +68,7 @@ export interface Observation {
   requested_host?: string; expected_origin?: boolean;
   timed_out?: boolean;
   required_hosts?: string[];
+  playback_progress_seconds?: number;
 }
 export function safeURL(raw: string): string {
   const u = new URL(raw)
@@ -86,7 +87,9 @@ export function classify(before: RouterStatus, after: RouterStatus, o: Observati
   if (o.expected_origin === false) return { verdict: 'UNKNOWN', reason: 'UNEXPECTED_REDIRECT' }
   if (o.auth_required) return { verdict: 'UNKNOWN', reason: 'AUTH_REQUIRED' }
   if (o.functional === null) return { verdict: 'UNKNOWN', reason: 'FUNCTIONAL_CONDITION_NOT_PROVEN' }
-  if (o.timed_out) return { verdict: 'FAIL', reason: 'ATTEMPT_TIMEOUT' }
+  if (o.timed_out) return o.dom_loaded || (o.http_status !== null && o.http_status >= 200 && o.http_status < 400)
+    ? { verdict: 'UNKNOWN', reason: 'FUNCTIONAL_CHECK_TIMED_OUT' }
+    : { verdict: 'FAIL', reason: 'ATTEMPT_TIMEOUT' }
   if (!o.dom_loaded) return { verdict: 'FAIL', reason: 'PAGE_LOAD_FAILED' }
   if (!o.functional || !o.dom_loaded || !o.http_status || o.http_status >= 400) return { verdict: 'UNKNOWN', reason: 'RETRY_REQUIRED' }
   return o.errors.length ? { verdict: 'WARN', reason: 'FUNCTION_PASSED_WITH_RESOURCE_ERRORS' } : { verdict: 'OK', reason: 'DECLARED_SCENARIO_PASSED' }

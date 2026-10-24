@@ -33,12 +33,20 @@ const before: RouterStatus = { ok: true, session_id: 'one', strategy: 1, strateg
 const after = { ...before, queue: { ...before.queue, counter: 20 } }
 const observed: Observation = { http_status: 200, dom_loaded: true, fresh_connection: true, functional: true, auth_required: false, errors: [] }
 test('attempt timeout and definitive navigation failure skip retries without bypassing isolation checks', () => {
-  const timeout = { ...observed, dom_loaded: false, functional: false, timed_out: true }
+  const timeout = { ...observed, http_status: null, dom_loaded: false, functional: false, timed_out: true }
   assert.deepEqual(classify(before, after, timeout), { verdict: 'FAIL', reason: 'ATTEMPT_TIMEOUT' })
   assert.equal(classify(before, after, { ...timeout, timed_out: false }).reason, 'PAGE_LOAD_FAILED')
   assert.equal(classify(before, after, { ...timeout, functional: null }).verdict, 'UNKNOWN')
   assert.equal(classify(before, { ...after, queue: before.queue }, timeout).verdict, 'INVALID')
   assert.equal(classify(before, after, { ...observed, functional: false }).reason, 'RETRY_REQUIRED')
+})
+test('an opened page with an unfinished playback check is UNKNOWN, never a failed strategy', () => {
+  const timeout = { ...observed, timed_out: true, functional: false }
+  assert.deepEqual(classify(before, after, timeout), { verdict: 'UNKNOWN', reason: 'FUNCTIONAL_CHECK_TIMED_OUT' })
+  assert.equal(classify(before, after, { ...timeout, dom_loaded: false }).verdict, 'UNKNOWN')
+  assert.equal(classify(before, after, { ...timeout, dom_loaded: false, http_status: null }).verdict, 'FAIL')
+  assert.equal(classify(before, { ...after, queue: before.queue }, timeout).verdict, 'INVALID')
+  assert.equal(classify(before, after, { ...observed, timed_out: false }).verdict, 'OK')
 })
 test('bounded browser work times out, cancels and preserves failures', async () => {
   const never = new Promise<never>(() => {})

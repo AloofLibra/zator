@@ -117,12 +117,16 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     const auth = await bounded(wc.executeJavaScript(`!!document.querySelector('input[type="password"], iframe[src*="captcha"], #captcha') || /just a moment|captcha|verify you are human|sign in|войдите/i.test(document.title)`).catch(() => true))
     observation.auth_required = auth
     if (options.scenario === 'youtube_video') {
-      await bounded(wc.executeJavaScript(`(() => { const v=document.querySelector('video'); if (!v) return false; v.muted=true; return v.play().then(()=>true).catch(()=>false) })()`, true).catch(() => false))
-      const time = () => bounded(wc.executeJavaScript(`(() => { const v=document.querySelector('video'); return v && !v.paused ? v.currentTime : null })()`).catch(() => null))
-      const start = await time()
-      await bounded(delay(5000, signal))
-      const end = await time()
-      observation.functional = typeof start === 'number' && typeof end === 'number' && end - start >= 1 && mediaBytes > 0 ? true : null
+      let start: number | null = null
+      while (Date.now() < deadline) {
+        const time: number | null = await bounded(wc.executeJavaScript(`(() => { const v=document.querySelector('video'); if (!v) return null; v.muted=true; if(v.paused) void v.play().catch(()=>{}); return !v.paused && v.readyState>=2 ? v.currentTime : null })()`, true).catch(() => null))
+        if (typeof time === 'number') {
+          if (start === null || time < start) start = time
+          observation.playback_progress_seconds = time - start
+          if (time - start >= 2 && mediaBytes > 0) { observation.functional = true; break }
+        }
+        await bounded(delay(500, signal))
+      }
     } else if (options.selector) {
       let found: boolean | null = null
       for (let n = 0; n < 10; n++) {
@@ -140,7 +144,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     observation.timed_out = true
     observation.required_hosts = [...requiredHosts]
     observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null
-    return { attempt_id: attempt, observation, requests: [...requests.values()] }
+    return { attempt_id: attempt, observation, requests: [...requests.values()], media_bytes: mediaBytes, websocket_frames: socketFrames }
   } finally { signal.removeEventListener('abort', aborted) }
 }
 
