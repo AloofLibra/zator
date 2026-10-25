@@ -83,6 +83,21 @@ jobs:
         working-directory: desktop-probe/app
       - run: npm run pack
         working-directory: desktop-probe/app
+      - name: Packaged Windows smoke with hidden window
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $profile = Join-Path $env:RUNNER_TEMP 'desktop-probe-smoke'
+          New-Item -ItemType Directory -Force $profile | Out-Null
+          $output = Join-Path $env:RUNNER_TEMP 'desktop-probe-smoke.log'
+          $errors = Join-Path $env:RUNNER_TEMP 'desktop-probe-smoke.err'
+          $app = "$PWD/desktop-probe/app/release/ZatorDesktopProbe-win32-x64/ZatorDesktopProbe.exe"
+          $process = Start-Process -FilePath $app -ArgumentList "--probe-smoke --user-data-dir=`"$profile`"" -WindowStyle Hidden -RedirectStandardOutput $output -RedirectStandardError $errors -Wait -PassThru
+          Get-Content $output
+          if ($process.ExitCode -ne 0 -or !(Get-Content $output -Raw).Contains('UI_SMOKE=PASS')) {
+            Get-Content $errors
+            throw 'Packaged Windows smoke failed'
+          }
       - name: Package desktop and router component
         shell: pwsh
         env:

@@ -6,7 +6,7 @@ let layoutPending = false
 function previewLayout() {
   if (layoutPending) return
   layoutPending = true
-  requestAnimationFrame(() => {
+  queueMicrotask(() => {
     layoutPending = false
     const rect = document.getElementById('preview-slot')!.getBoundingClientRect()
     document.documentElement.style.setProperty('--journal-top', `${Math.max(0, Math.round(document.getElementById('result-scroll')!.getBoundingClientRect().top))}px`)
@@ -50,6 +50,7 @@ field('probe-form').addEventListener('submit', event => {
 })
 for (const name of ['cancel', 'export', 'screenshot']) field(name).addEventListener('click', () => { void probe.command(name).catch(showError) })
 probe.onUpdate(data => {
+  if (data.state || data.results || data.collapse_preview) previewLayout()
   if (data.collapse_preview) togglePreview(false)
   if (data.network) {
     const container = document.getElementById('network')!; container.replaceChildren()
@@ -116,3 +117,4 @@ probe.onUpdate(data => {
   log.scrollTop = follow ? log.scrollHeight : scrollTop
   document.getElementById('details')!.textContent = data.results.length ? JSON.stringify(data.results[data.results.length - 1], null, 2) : ''
 })
+previewLayout()
