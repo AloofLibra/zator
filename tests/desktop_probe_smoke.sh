@@ -20,7 +20,7 @@ sed 's@^/opt/zapret2/init.d/sysv/zapret2 restart-fw$@printf "restart\\n" >> "$DP
 export table=mangle type=iptables
 bash "$tmp/hook.sh"
 diff -u <(printf 'restart\nclient\nmangle:iptables:reconcile-transport\n') "$DP_LOG"
-for pair in 'mangle ip6tables' 'nat iptables' 'filter iptables'; do
+for pair in 'mangle ip6tables' 'nat ip6tables' 'filter iptables'; do
   read -r table type <<< "$pair"
   : > "$DP_LOG"
   bash "$tmp/hook.sh"
@@ -40,6 +40,10 @@ table=mangle type=iptables
 bash "$tmp/late-hook.sh"
 diff -u <(printf 'mangle:iptables:reconcile-transport\n') "$DP_LOG"
 table=nat
+: > "$DP_LOG"
+bash "$tmp/late-hook.sh"
+diff -u <(printf 'nat:iptables:reconcile-transport\n') "$DP_LOG"
+table=filter
 : > "$DP_LOG"
 bash "$tmp/late-hook.sh"
 [ ! -s "$DP_LOG" ]
