@@ -137,6 +137,8 @@ test('HTTP2 reuse inside a fresh attempt is valid; document and media each requi
   assert.equal(classify(start, end, youtube).verdict, 'OK')
   assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['www.youtube.com'] } }, youtube).reason, 'MEDIA_FLOW_NOT_PROVEN')
   assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['video.googlevideo.com'] } }, youtube).reason, 'DOCUMENT_FLOW_NOT_PROVEN')
+  assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['www.youtube.com'] } }, youtube).verdict, 'UNKNOWN')
+  assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['video.googlevideo.com'] } }, youtube).verdict, 'UNKNOWN')
   assert.equal(classify({ ...start, proxy: { ...start.proxy, connections_started: 3 } }, end, youtube).verdict, 'INVALID')
 })
 test('paired verdicts credit the page independently and require real GV traffic before scoring video', () => {
@@ -160,7 +162,7 @@ test('generation, fresh connection, queue and route are required', () => {
   assert.equal(classify(before, after, { ...observed, evidence_complete: false }).verdict, 'INVALID')
   assert.equal(classify(before, after, { ...observed, auth_required: true }).verdict, 'UNKNOWN')
   assert.equal(classify(before, after, { ...observed, errors: ['net::ERR_FAILED'] }).verdict, 'WARN')
-  assert.equal(classify(before, after, { ...observed, requested_host: 'example.org' }).verdict, 'INVALID')
+  assert.equal(classify(before, after, { ...observed, requested_host: 'example.org' }).verdict, 'UNKNOWN')
   assert.equal(classify(before, after, { ...observed, expected_origin: false }).verdict, 'UNKNOWN')
 })
 test('private URL components and unsupported transports are rejected/redacted', () => {

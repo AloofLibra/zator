@@ -515,6 +515,14 @@ func TestHardwareAgentLifecycle(t *testing.T) {
 		if proof["connection_match"] != "verified" || proof["strategy_invocation"] != "verified" || proof["egress_interface"] != wan {
 			t.Fatal(post)
 		}
+		events, err := os.ReadFile(stateRoot + "/" + id + "/evidence/invocations.tsv")
+		if err != nil {
+			t.Fatal(err)
+		}
+		historical, err := flowProof(c, []flow{{Host: host, Local: f["local"].(string), Remote: f["remote"].(string)}}, "", string(events), strategy)
+		if err != nil || historical["connection_match"] != "verified" || historical["packet_snapshot_flows"] != 1 {
+			t.Fatal("packet-time evidence did not survive missing conntrack", historical, err, string(events))
+		}
 		if post["transport_generation"] != fingerprint {
 			t.Fatal("runtime firewall mutation")
 		}

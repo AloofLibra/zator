@@ -202,13 +202,18 @@ func prepareConfig(c settings, dir string, profile, strategy int, gvStrategy ...
 	lua = strings.Replace(lua, "if locked == 0 then", "if locked == 0 then\n    zator_probe_record(desync, 0, base_profile)", 1)
 	lua = strings.Replace(lua, "verdict = blob_override_execute(desync, verdict, instance, base_profile)", "verdict = blob_override_execute(desync, verdict, instance, base_profile)\n      zator_probe_record(desync, hrec.nstrategy, base_profile)", 1)
 	lua += fmt.Sprintf(`
--- Private probe evidence contains only the upstream tuple and strategy number.
+-- Keep the original packet mark even when conntrack has expired before telemetry.
 local probe_seen = {}
 local probe_count = 0
 function zator_probe_record(desync, strategy, profile)
   local dis = desync and desync.dis
   if not dis or not dis.ip or not dis.tcp or dis.tcp.th_dport ~= 443 then return end
   local row = ntop(dis.ip.ip_src).."\t"..dis.tcp.th_sport.."\t"..ntop(dis.ip.ip_dst).."\t"..dis.tcp.th_dport.."\t"..strategy%s
+  local mark = tonumber(desync.fwmark)
+  if mark then
+    if mark < 0 then mark = mark + 4294967296 end
+    row = row.."\tmark="..string.format("%%.0f", mark).."\tegress="..tostring(desync.ifout or "")
+  end
   if probe_seen[row] or probe_count >= 1024 then return end
   local f = assert(io.open(%q, "a"))
   assert(f:write(row.."\n"))

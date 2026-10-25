@@ -77,6 +77,9 @@ func TestPairedYouTubeConfig(t *testing.T) {
 	if !strings.Contains(string(adapter), `.."\t"..tostring(profile)`) {
 		t.Fatal("profile identity missing from private evidence")
 	}
+	if !strings.Contains(string(adapter), "tonumber(desync.fwmark)") || !strings.Contains(string(adapter), `egress="..tostring(desync.ifout`) {
+		t.Fatal("packet-time mark/egress not recorded")
+	}
 	production, _ := os.ReadFile(filepath.Join(c.ZatorRoot, "extra_strats/cache/orchestra/locked.tsv"))
 	if string(production) != "production\n" {
 		t.Fatal("production lock changed")

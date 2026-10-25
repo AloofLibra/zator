@@ -41,14 +41,14 @@ func conntrackMark(snapshot string, f flow) (uint32, bool) {
 	return 0, false
 }
 
-func invoked(snapshot string, f flow, strategy int, profile ...int) bool {
+func invocationEvidence(snapshot string, f flow, strategy int, profile ...int) (bool, uint32, string, bool) {
 	source, port, err := net.SplitHostPort(f.Local)
 	if err != nil {
-		return false
+		return false, 0, "", false
 	}
 	target, dport, err := net.SplitHostPort(f.Remote)
 	if err != nil {
-		return false
+		return false, 0, "", false
 	}
 	row := strings.Join([]string{source, port, target, dport, strconv.Itoa(strategy)}, "\t")
 	if len(profile) != 0 {
@@ -56,10 +56,35 @@ func invoked(snapshot string, f flow, strategy int, profile ...int) bool {
 	}
 	for _, line := range strings.Split(snapshot, "\n") {
 		if line == row {
-			return true
+			return true, 0, "", false
+		}
+		if strings.HasPrefix(line, row+"\tmark=") {
+			fields := strings.Split(strings.TrimPrefix(line, row+"\tmark="), "\t")
+			if len(fields) > 2 {
+				continue
+			}
+			mark, err := strconv.ParseUint(fields[0], 10, 32)
+			egress := ""
+			if len(fields) == 2 {
+				if !strings.HasPrefix(fields[1], "egress=") {
+					continue
+				}
+				egress = strings.TrimPrefix(fields[1], "egress=")
+				if egress != "" && !ifacePattern.MatchString(egress) {
+					continue
+				}
+			}
+			if err == nil {
+				return true, uint32(mark), egress, true
+			}
 		}
 	}
-	return false
+	return false, 0, "", false
+}
+
+func invoked(snapshot string, f flow, strategy int, profile ...int) bool {
+	ok, _, _, _ := invocationEvidence(snapshot, f, strategy, profile...)
+	return ok
 }
 
 func flowProof(c settings, flows []flow, conntrack, events string, strategy int, gvStrategy ...int) (response, error) {
@@ -73,6 +98,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 	}
 	egress := ""
 	matchedFlows, invokedFlows, routedFlows := 0, 0, 0
+	packetSnapshots := 0
 	verifiedHosts := []string{}
 	seenHosts := map[string]bool{}
 	checkedRoutes := map[string]bool{}
@@ -87,14 +113,38 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 			}
 		}
 		mark, matched := conntrackMark(conntrack, f)
+		executed, packetMark, packetEgress, recorded := invocationEvidence(events, f, wanted, profile...)
+		if recorded && (packetMark&c.Mark == 0 || packetMark&c.RawMark != 0) {
+			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
+		}
 		if !matched {
+			if !executed || !recorded || packetEgress == "" {
+				continue
+			}
+			wan := false
+			for _, allowed := range wans {
+				if packetEgress == allowed {
+					wan = true
+				}
+			}
+			if !wan {
+				return nil, fmt.Errorf("ROUTE_MISMATCH: recorded egress is not an active uplink")
+			}
+			egress = packetEgress
+			packetSnapshots++
+			matchedFlows++
+			invokedFlows++
+			routedFlows++
+			if !seenHosts[f.Host] {
+				verifiedHosts = append(verifiedHosts, f.Host)
+				seenHosts[f.Host] = true
+			}
 			continue
 		}
 		if mark&c.Mark == 0 || mark&c.RawMark != 0 {
 			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
 		}
 		matchedFlows++
-		executed := invoked(events, f, wanted, profile...)
 		if executed {
 			invokedFlows++
 		}
@@ -142,6 +192,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 		}
 	}
 	proof["matched_flows"], proof["invoked_flows"], proof["routed_flows"] = matchedFlows, invokedFlows, routedFlows
+	proof["packet_snapshot_flows"] = packetSnapshots
 	if len(verifiedHosts) == 0 {
 		switch {
 		case matchedFlows == 0:

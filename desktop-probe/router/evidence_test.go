@@ -93,6 +93,36 @@ func TestFlowEvidence(t *testing.T) {
 	if err != nil || proof["connection_match"] == "verified" {
 		t.Fatal("correct number under wrong profile was accepted", proof, err)
 	}
+	marked := strings.TrimSpace(event) + "\tmark=604009778\tegress=pppoe-wan\n"
+	proof, err = flowProof(testSettings(), []flow{f}, "", marked, 7)
+	if err != nil || proof["connection_match"] != "verified" || proof["packet_snapshot_flows"] != 1 {
+		t.Fatal("expired flow lost its packet-time proof", proof, err)
+	}
+	for _, unproven := range []string{event, strings.ReplaceAll(marked, "\tegress=pppoe-wan", ""), strings.ReplaceAll(marked, "\t7\tmark", "\t8\tmark")} {
+		proof, err = flowProof(testSettings(), []flow{f}, "", unproven, 7)
+		if err != nil || proof["connection_match"] == "verified" {
+			t.Fatal("incomplete/wrong historical evidence accepted", proof, err)
+		}
+	}
+	for _, unsafe := range []string{strings.ReplaceAll(marked, "604009778", "0"), strings.ReplaceAll(marked, "604009778", "1140850688"), strings.ReplaceAll(marked, "pppoe-wan", "work")} {
+		if _, err = flowProof(testSettings(), []flow{f}, "", unsafe, 7); err == nil {
+			t.Fatal("bad recorded mark/egress accepted", unsafe)
+		}
+	}
+	auxEvent := strings.ReplaceAll(marked, "\t37024\t", "\t37025\t")
+	proof, err = flowProof(testSettings(), []flow{f, other}, auxiliary, marked+auxEvent, 7)
+	if err != nil || proof["packet_snapshot_flows"] != 1 || !reflect.DeepEqual(proof["verified_hosts"], []string{f.Host, other.Host}) {
+		t.Fatal("closed document could not be combined with live auxiliary flow", proof, err)
+	}
+	pairedMarked := strings.TrimSpace(event) + "\t2\tmark=604009778\tegress=pppoe-wan\n"
+	proof, err = flowProof(testSettings(), []flow{media}, "", pairedMarked, 9, 7)
+	if err != nil || proof["packet_snapshot_flows"] != 1 || proof["connection_match"] != "verified" {
+		t.Fatal("closed GV flow lost its independent profile proof", proof, err)
+	}
+	proof, err = flowProof(testSettings(), []flow{media}, "", strings.Replace(pairedMarked, "\t7\t2\t", "\t7\t1\t", 1), 9, 7)
+	if err != nil || proof["connection_match"] == "verified" {
+		t.Fatal("historical mark bypassed profile identity", proof, err)
+	}
 }
 
 func TestSettledTelemetry(t *testing.T) {

@@ -131,8 +131,8 @@ export function classify(before: RouterStatus, after: RouterStatus, o: Observati
   if (after.queue.counter <= before.queue.counter) return { verdict: 'INVALID', reason: 'NO_TEST_QUEUE_TRAFFIC' }
   if (!fresh) return { verdict: 'INVALID', reason: 'FRESH_CONNECTION_NOT_PROVEN' }
   if (after.proof.connection_match !== 'verified' || after.proof.strategy_invocation !== 'verified' || after.proof.route !== 'kernel_route_verified') return { verdict: 'UNKNOWN', reason: 'FLOW_EVIDENCE_INCOMPLETE' }
-  if (o.requested_host && !after.proof.verified_hosts?.includes(o.requested_host)) return { verdict: 'INVALID', reason: 'DOCUMENT_FLOW_NOT_PROVEN' }
-  if (o.required_hosts?.some(host => !after.proof.verified_hosts?.includes(host))) return { verdict: 'INVALID', reason: 'MEDIA_FLOW_NOT_PROVEN' }
+  if (o.requested_host && !after.proof.verified_hosts?.includes(o.requested_host)) return { verdict: 'UNKNOWN', reason: 'DOCUMENT_FLOW_NOT_PROVEN' }
+  if (o.required_hosts?.some(host => !after.proof.verified_hosts?.includes(host))) return { verdict: 'UNKNOWN', reason: 'MEDIA_FLOW_NOT_PROVEN' }
   if (o.expected_origin === false) return { verdict: 'UNKNOWN', reason: 'UNEXPECTED_REDIRECT' }
   if (o.auth_required) return { verdict: 'UNKNOWN', reason: 'AUTH_REQUIRED' }
   if (o.functional === null) return { verdict: 'UNKNOWN', reason: 'FUNCTIONAL_CONDITION_NOT_PROVEN' }
