@@ -1,4 +1,19 @@
 export type Verdict = 'OK' | 'FAIL' | 'WARN' | 'UNKNOWN' | 'INVALID'
+export interface Capabilities {
+  isolation?: { available: boolean; reason?: string }; session_active?: boolean;
+  prepare_transport_supported?: boolean; youtube_pair_supported?: boolean; profiles?: Record<string, number[]>;
+}
+export async function ensureIsolation(call: (command: string) => Promise<Capabilities>) {
+  let capabilities = await call('capabilities')
+  if (capabilities.session_active) throw new Error('SESSION_BUSY')
+  if (!capabilities.isolation?.available && capabilities.isolation?.reason === 'TRANSPORT_CHANGED') {
+    if (!capabilities.prepare_transport_supported) throw new Error('UPDATE_ROUTER_AGENT_REQUIRED: automatic transport recovery')
+    await call('prepare-transport')
+    capabilities = await call('capabilities')
+  }
+  if (!capabilities.isolation?.available) throw new Error(`ISOLATION_UNAVAILABLE: ${capabilities.isolation?.reason || 'UNKNOWN'}`)
+  return capabilities
+}
 export const succeeded = (verdict: Verdict) => verdict === 'OK' || verdict === 'WARN'
 export interface YouTubePair { yt: number; gv: number; testYT: boolean; testGV: boolean; baseline: boolean }
 export class YouTubeSweep {

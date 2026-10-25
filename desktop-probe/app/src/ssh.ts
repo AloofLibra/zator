@@ -3,7 +3,7 @@ import { createServer, connect } from 'node:net'
 import { randomBytes } from 'node:crypto'
 import { SSHOptions, RouterStatus, validateSSH } from './core'
 
-const COMMANDS = new Set(['capabilities', 'resolve-profile', 'start', 'set-strategy', 'status', 'telemetry', 'heartbeat', 'stop'])
+const COMMANDS = new Set(['capabilities', 'prepare-transport', 'resolve-profile', 'start', 'set-strategy', 'status', 'telemetry', 'heartbeat', 'stop'])
 export class Router {
   readonly owner = randomBytes(32).toString('hex')
   session = ''

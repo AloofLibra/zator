@@ -1,6 +1,32 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions, withinTimeout } from './core'
+import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
+
+test('preflight restores missing transport once and rechecks isolation', async () => {
+  const calls: string[] = []
+  const broken: Capabilities = { session_active: false, prepare_transport_supported: true, isolation: { available: false, reason: 'TRANSPORT_CHANGED' } }
+  const ready: Capabilities = { ...broken, isolation: { available: true } }
+  const result = await ensureIsolation(async command => { calls.push(command); return calls.length === 1 ? broken : command === 'prepare-transport' ? {} : ready })
+  assert.equal(result.isolation?.available, true)
+  assert.deepEqual(calls, ['capabilities', 'prepare-transport', 'capabilities'])
+  calls.length = 0
+  await ensureIsolation(async command => { calls.push(command); return ready })
+  assert.deepEqual(calls, ['capabilities'])
+})
+test('preflight never repairs active sessions or configuration failures and does not loop on failed repair', async () => {
+  for (const [capabilities, error] of [
+    [{ session_active: true, isolation: { available: false, reason: 'TRANSPORT_CHANGED' } }, /SESSION_BUSY/],
+    [{ isolation: { available: false, reason: 'MARK_COLLISION' } }, /ISOLATION_UNAVAILABLE/],
+    [{ isolation: { available: false, reason: 'TRANSPORT_CHANGED' } }, /UPDATE_ROUTER_AGENT_REQUIRED/]
+  ] as [Capabilities, RegExp][]) {
+    const calls: string[] = []
+    await assert.rejects(ensureIsolation(async command => { calls.push(command); return capabilities }), error)
+    assert.deepEqual(calls, ['capabilities'])
+  }
+  const calls: string[] = []
+  await assert.rejects(ensureIsolation(async command => { calls.push(command); return { session_active: false, prepare_transport_supported: true, isolation: { available: false, reason: 'TRANSPORT_CHANGED' } } }), /ISOLATION_UNAVAILABLE/)
+  assert.deepEqual(calls, ['capabilities', 'prepare-transport', 'capabilities'])
+})
 
 const scan: ScanOptions = { url: 'https://example.org/', profile: 3, scenario: 'generic_page', selector: 'body', strategies: [1], scanMode: 'supersweep', youtubeURL: 'https://www.youtube.com/watch?v=test', discordURL: 'https://discord.com/app', discordSelector: '#app-mount', rknURLs: 'https://example.org/\nhttps://example.net/\nhttps://example.org/', rknSelector: 'body' }
 test('supersweep combines YouTube/GV into one target and keeps every RKN domain', () => {

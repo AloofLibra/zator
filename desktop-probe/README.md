@@ -39,7 +39,9 @@ sh install-router.sh install ./zator-desktop-probe-linux-arm64 ./settings.json
 
 На Keenetic восстановление подключено к существующему `Entware/000-zapret2.sh` после рабочего firewall/client scope/Supersweep, только для IPv4 `mangle`. Перед установкой компонента нужен Zator с этим обновлённым hook.
 
-Для OpenWrt предоставлен `firewall-openwrt.sh`: его можно вызывать из firewall4 script include **после создания таблицы zapret2** (`type=script`, `fw4_compatible=1`). Автоматическая правка UCI и перезагрузка firewall установщиком не выполняются. В первичных испытаниях потеря собственных правил моделировалась адресно; полный reload/reboot OpenWrt не проверялся. Пока hook не настроен, после пересоздания таблицы потребуется явный `reconcile-transport`; приложение отклонит прежнюю попытку.
+Для OpenWrt предоставлен `firewall-openwrt.sh`: его можно вызывать из firewall4 script include **после создания таблицы zapret2** (`type=script`, `fw4_compatible=1`). Автоматическая правка UCI и перезагрузка firewall установщиком не выполняются. В первичных испытаниях потеря собственных правил моделировалась адресно; полный reload/reboot OpenWrt не проверялся. Если перед запуском потеряны тестовые правила (`TRANSPORT_CHANGED`), приложение автоматически выполняет отдельный `prepare-transport` и заново проверяет capabilities. Для старого агента потребуется обновление. При потере транспорта во время измерения попытка по-прежнему INVALID; автоматического продолжения старого прогона нет.
+
+`prepare-transport` отказывает при активной сессии, блокирует параллельный старт через manager lock, проверяет конфликты и восстанавливает только собственные правила. Исправный транспорт не переписывается, generation не меняется; disabled-компонент не включается обратно. Если штатная таблица zapret2 ещё не создана, конфликтуют ресурсы или изменился несовместимый конфиг, подготовка возвращает ошибку. В интерфейсе восстановление показано отдельным состоянием.
 
 ## Работа приложения
 
@@ -84,6 +86,8 @@ stop / recover        {command, owner, session}
 
 Привилегированные локальные install-команды: `install-transport`, `reconcile-transport`, `uninstall-transport`; `admin-stop` завершает только сессию компонента. Они не входят в allowlist desktop SSH adapter. Unix control socket имеет mode 0600; управляющего HTTP-порта нет.
 
+Отдельный `prepare-transport` доступен в фиксированном SSH allowlist только для подготовки между прогонами; он не является командой активной сессии и не заменяет её owner checks.
+
 Lease — 90 секунд, heartbeat — 15. Linux guardian/subreaper завершает осиротевших тестовых детей при SIGKILL контроллера: собственный `setuid` nfqws2 сбрасывает обычный parent-death signal. После краша `recover` снимает stale socket только под lock; PID рабочего zapret2 не ищется и не завершается.
 
 Удаление компонента:
@@ -111,6 +115,7 @@ Linux: дополнительно `go test -race ./...`. Физические т
 ZATOR_PROBE_HARDWARE_BENCH=1 ./router-tests -test.v -test.run TestHardwareSingBoxCandidate
 ZATOR_PROBE_HARDWARE_LIFECYCLE=1 ZATOR_PROBE_HARDWARE_FAULTS=1 ./router-tests -test.v -test.run TestHardwareAgent -test.timeout 150s
 ZATOR_PROBE_HARDWARE_PAIR=1 ./router-tests -test.v -test.run TestHardwareYouTubePair -test.timeout 35s
+ZATOR_PROBE_HARDWARE_PREPARE=1 ./router-tests -test.v -test.run TestHardwarePrepareTransport -test.timeout 35s
 ```
 
 `go test -c` создаёт `router-tests` под нужную GOOS/GOARCH. Эти проверки адресно меняют **только собственные** правила и завершают **только собственные** процессы; рабочие конфиги/локи проверяются по hash. Не запускайте opt-in hardware tests параллельно с приложением.

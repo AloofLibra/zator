@@ -256,6 +256,50 @@ func installTransport(c settings, reconcile bool) error {
 	return nil
 }
 
+// Preparation is a separate preflight, never a repair inside a measured session.
+func prepareTransport(c settings) error {
+	if out, err := rpc(request{Command: "capabilities"}); err == nil {
+		if out["ok"] != true || out["session_active"] != false {
+			return fmt.Errorf("SESSION_BUSY")
+		}
+		out, err = rpc(request{Command: "shutdown"})
+		if err != nil || out["ok"] != true {
+			return fmt.Errorf("SESSION_BUSY")
+		}
+	}
+	// Holding the manager lock prevents another start between the idle check and repair.
+	var release func()
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		release, err = managerLock()
+		if err == nil {
+			break
+		}
+		if err.Error() != "SESSION_BUSY" {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		return err
+	}
+	defer release()
+	releaseTransport, err := fileLock("transport.lock")
+	if err != nil {
+		return err
+	}
+	defer releaseTransport()
+	if _, err := os.Stat(stateRoot + "/disabled"); err == nil {
+		return fmt.Errorf("COMPONENT_DISABLED")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if _, err := transportFingerprint(c); err == nil {
+		return nil
+	}
+	return installTransport(c, true)
+}
+
 func resourceConflicts(c settings, procRoot string) error {
 	if err := c.validate(); err != nil {
 		return err

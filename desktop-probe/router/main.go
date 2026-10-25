@@ -77,7 +77,7 @@ func capabilities(c settings, active bool) response {
 	if err != nil {
 		reason = err.Error()
 	}
-	return response{"ok": true, "api_version": "0.1", "youtube_pair_supported": true, "settings_id": c.identity(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "wan_interfaces": wans, "transport": []string{"router_socks_tcp"}, "profiles": profiles, "ipv6_supported": false, "quic_supported": false, "ssh_forwarding_supported": nil, "hardware_validated": false, "session_active": active, "isolation": response{"available": err == nil, "reason": reason}}
+	return response{"ok": true, "api_version": "0.1", "prepare_transport_supported": true, "youtube_pair_supported": true, "settings_id": c.identity(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "wan_interfaces": wans, "transport": []string{"router_socks_tcp"}, "profiles": profiles, "ipv6_supported": false, "quic_supported": false, "ssh_forwarding_supported": nil, "hardware_validated": false, "session_active": active, "isolation": response{"available": err == nil, "reason": reason}}
 }
 
 type agent struct {
@@ -665,6 +665,12 @@ func entry() error {
 	}
 	if os.Args[1] == "--guard" {
 		return guardSupervisor()
+	}
+	if os.Args[1] == "prepare-transport" {
+		if err := prepareTransport(c); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(response{"ok": true, "state": "prepared"})
 	}
 	if os.Args[1] == "install-transport" || os.Args[1] == "reconcile-transport" || os.Args[1] == "uninstall-transport" {
 		unlock, e := fileLock("transport.lock")

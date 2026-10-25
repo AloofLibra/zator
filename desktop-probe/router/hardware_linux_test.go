@@ -189,6 +189,109 @@ func TestHardwareYouTubePair(t *testing.T) {
 	t.Log("YT-1 and GV-2 verified simultaneously by tuple, Lua strategy/profile, conntrack and WAN; production config/locks unchanged")
 }
 
+func TestHardwarePrepareTransport(t *testing.T) {
+	if os.Getenv("ZATOR_PROBE_HARDWARE_PREPARE") != "1" {
+		t.Skip("physical transport recovery is opt-in")
+	}
+	c, err := readSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Backend != "nft" {
+		t.Skip("physical nft recovery test")
+	}
+	call := func(r request) response {
+		body, _ := json.Marshal(r)
+		cmd := exec.Command("/opt/zator/bin/zator-desktop-probe", r.Command, "--json")
+		cmd.Stdin = bytes.NewReader(body)
+		out, _ := cmd.CombinedOutput()
+		var reply response
+		if json.Unmarshal(out, &reply) != nil {
+			t.Fatal(string(out))
+		}
+		return reply
+	}
+	if call(request{Command: "capabilities"})["session_active"] == true {
+		t.Fatal("another session is active")
+	}
+	baseline := map[string][32]byte{}
+	for _, path := range []string{c.ZapretRoot + "/config", c.ZatorRoot + "/extra_strats/cache/orchestra/locked.tsv", c.ZatorRoot + "/extra_strats/cache/orchestra/locked.manual.tsv"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		baseline[path] = sha256.Sum256(raw)
+	}
+	owner := randomID() + randomID()
+	started := call(request{Command: "start", Owner: owner, Profile: 1})
+	if started["ok"] != true {
+		t.Fatal(started)
+	}
+	id := started["session_id"].(string)
+	defer func() {
+		if id != "" {
+			call(request{Command: "stop", Owner: owner, Session: id})
+		}
+	}()
+	before, err := transportFingerprint(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy := call(request{Command: "prepare-transport"})
+	if busy["ok"] != false || busy["error"].(map[string]any)["code"] != "SESSION_BUSY" {
+		t.Fatal("active session repaired", busy)
+	}
+	after, err := transportFingerprint(c)
+	if err != nil || after != before {
+		t.Fatal("active transport mutated", err)
+	}
+	if stopped := call(request{Command: "stop", Owner: owner, Session: id}); stopped["ok"] != true {
+		t.Fatal(stopped)
+	}
+	id = ""
+	listing, err := runCommand("nft", "-a", "list", "table", "inet", "zapret2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove, err := transportRemoveRules(string(listing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { call(request{Command: "prepare-transport"}) }()
+	if err := nftApply(remove); err != nil {
+		t.Fatal(err)
+	}
+	broken := call(request{Command: "capabilities"})
+	if broken["isolation"].(map[string]any)["available"] != false {
+		t.Fatal("missing rules accepted", broken)
+	}
+	if repaired := call(request{Command: "prepare-transport"}); repaired["ok"] != true {
+		t.Fatal(repaired)
+	}
+	ready := call(request{Command: "capabilities"})
+	if ready["isolation"].(map[string]any)["available"] != true {
+		t.Fatal(ready)
+	}
+	before, err = transportFingerprint(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second := call(request{Command: "prepare-transport"}); second["ok"] != true {
+		t.Fatal(second)
+	}
+	after, err = transportFingerprint(c)
+	if err != nil || after != before {
+		t.Fatal("healthy prepare changed generation/rules", err)
+	}
+	for path, expected := range baseline {
+		raw, err := os.ReadFile(path)
+		if err != nil || sha256.Sum256(raw) != expected {
+			t.Fatal("production config/locks changed", path, err)
+		}
+	}
+	t.Log("prepare refuses active sessions, restores only missing own rules and leaves healthy transport unchanged; production config/locks preserved")
+}
+
 func TestHardwareAgentLifecycle(t *testing.T) {
 	if os.Getenv("ZATOR_PROBE_HARDWARE_LIFECYCLE") != "1" {
 		t.Skip("physical router lifecycle is opt-in")

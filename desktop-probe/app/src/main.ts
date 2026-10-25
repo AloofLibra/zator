@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, coverageSummary, withinTimeout } from './core'
+import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, coverageSummary, withinTimeout, ensureIsolation } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
@@ -184,8 +184,7 @@ async function run(options: RunOptions) {
   let heartbeat: ReturnType<typeof setInterval> | undefined, heartbeatError: Error | undefined, beating = false
   try {
     update({ state: 'PREPARING', results })
-    const capabilities = await router.call('capabilities', {}, signal)
-    if (!capabilities.isolation?.available) throw new Error(`ISOLATION_UNAVAILABLE: ${capabilities.isolation?.reason || 'UNKNOWN'}`)
+    const capabilities = await ensureIsolation(command => { if (command === 'prepare-transport') update({ state: 'REPAIRING', results }); return router.call(command, {}, signal) })
     const plan: (ScanTarget & { strategies: number[]; gvStrategies?: number[] })[] = []
     for (const target of targets) {
       if (target.scenario === 'youtube_video') {

@@ -4,6 +4,7 @@ const statusNode = document.getElementById('status')!
 const labels: Record<string, string> = { IDLE: 'Готов', PREPARING: 'Подготовка', BASELINE: 'DIRECT', SWITCHING: 'Смена стратегии', LOADING: 'Загрузка сайта', ANALYZING: 'Проверка доказательств', MANUAL: 'Оцените сайт в строке результата', NEXT: 'Следующая стратегия', REPORTING: 'Отчёт', CANCELLED: 'Отменено', ERROR: 'Ошибка', CLEANUP_ERROR: 'Не удалось завершить сессию; действует TTL роутера' }
 function showError(error: unknown) { statusNode.textContent = String(error) }
 labels.PAUSE = 'Пауза между проверками'
+labels.REPAIRING = 'Восстановление тестовых правил'
 function scanModeChanged() {
   const sweep = field('scan-mode').value === 'supersweep'
   for (const [id, enabled] of [['single-options', !sweep], ['sweep-options', sweep]] as const) {
