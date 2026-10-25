@@ -44,25 +44,140 @@ on:
         description: 'Версия zapret2 для офлайн-сборки (пусто = свежий релиз форка)'
         required: false
         default: ''
+      include_desktop:
+        description: 'Включить Windows-приложение и опциональный router agent (только pre-release)'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Пометить номерной релиз как pre-release'
+        type: boolean
+        default: false
+      release_title:
+        description: 'Название номерного релиза (пусто = тег)'
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
+  desktop:
+    if: ${{ inputs.include_desktop }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop-probe/app/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - run: ./desktop-probe/scripts/build-router.ps1
+      - run: npm ci
+        working-directory: desktop-probe/app
+      - run: npm test
+        working-directory: desktop-probe/app
+      - run: npm run smoke
+        working-directory: desktop-probe/app
+      - run: npm run pack
+        working-directory: desktop-probe/app
+      - name: Package desktop and router component
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force release-assets, router-release/zator-desktop-probe-router | Out-Null
+          $notes = [IO.File]::ReadAllText("$PWD/desktop-probe/TESTING-RELEASE.md").Replace('@RELEASE_TAG@', $env:RELEASE_TAG).Replace('@COMMIT@', $env:GITHUB_SHA)
+          [IO.File]::WriteAllText("$PWD/desktop-probe/app/release/ZatorDesktopProbe-win32-x64/TESTING.md", $notes)
+          Copy-Item desktop-probe/THIRD_PARTY_NOTICES.md desktop-probe/app/release/ZatorDesktopProbe-win32-x64/
+          Compress-Archive -LiteralPath desktop-probe/app/release/ZatorDesktopProbe-win32-x64 -DestinationPath release-assets/zator-desktop-probe-windows-x64.zip
+          foreach ($arch in @('arm64','arm','mipsle','mips','amd64')) {
+            Copy-Item "desktop-probe/dist/zator-desktop-probe-linux-$arch" router-release/zator-desktop-probe-router/
+          }
+          Copy-Item desktop-probe/dist/GO-LICENSE.txt router-release/zator-desktop-probe-router/
+          foreach ($file in @('install-router.sh','firewall-openwrt.sh','settings.example.json','README.md','THIRD_PARTY_NOTICES.md')) {
+            $text = [IO.File]::ReadAllText("$PWD/desktop-probe/$file").Replace("`r`n", "`n")
+            [IO.File]::WriteAllText("$PWD/router-release/zator-desktop-probe-router/$file", $text)
+          }
+          tar -czf release-assets/zator-desktop-probe-router.tar.gz -C router-release zator-desktop-probe-router
+          if ($LASTEXITCODE -ne 0) { throw 'Router archive failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release
+          path: release-assets/*
+          if-no-files-found: error
   pack-and-release:
+    needs: desktop
+    if: ${{ !cancelled() && (!inputs.include_desktop || needs.desktop.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
+      - name: Validate test release settings
+        env:
+          VERSION_ARG: ${{ inputs.version }}
+          INCLUDE_DESKTOP: ${{ inputs.include_desktop }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          UPDATE_LATEST: ${{ inputs.update_latest }}
+          MAKE_NUMBERED: ${{ inputs.make_numbered }}
+        run: |
+          if [ -n "$VERSION_ARG" ] && ! [[ "$VERSION_ARG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo 'Некорректный тег релиза' >&2; exit 1
+          fi
+          [ "$PRERELEASE" != true ] || test -n "$VERSION_ARG"
+          if [ "$INCLUDE_DESKTOP" = true ]; then
+            test -n "$VERSION_ARG"
+            test "$PRERELEASE" = true
+            test "$UPDATE_LATEST" = false
+            test "$MAKE_NUMBERED" = true
+          fi
+
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
+
+      - uses: actions/setup-go@v5
+        if: ${{ inputs.include_desktop }}
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - name: Check and build WebUI
+        if: ${{ inputs.include_desktop }}
+        working-directory: webui-src
+        run: npm ci && npm run check && npm run build
+
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.include_desktop }}
+        with:
+          name: desktop-release
+          path: webui-src/dist
 
       - name: Pack variants
         working-directory: webui-src
         env:
           VERSION_ARG: ${{ inputs.version }}
         run: node scripts/pack-zator-tar.mjs --variant=all --repo "$GITHUB_REPOSITORY" ${VERSION_ARG:+--version="$VERSION_ARG"}
+
+      - name: Pin pre-release metadata URLs
+        if: ${{ inputs.prerelease }}
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          node -e 'const fs=require("node:fs"),p="webui-src/dist/latest.json",m=JSON.parse(fs.readFileSync(p)); for(const a of Object.values(m.assets)) a.url=`https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/${process.env.RELEASE_TAG}/${a.name}`; fs.writeFileSync(p,JSON.stringify(m,null,2)+"\n")'
+
+      - name: Router and full update regression tests
+        if: ${{ inputs.include_desktop }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y busybox lua5.1
+          sudo mkdir -p /opt/zator/files/fake /opt/zapret2
+          sudo chown -R "$USER:" /opt/zator /opt/zapret2
+          (cd desktop-probe/router && go test -race ./... && go vet ./...)
+          SMOKE_DIST="$PWD/webui-src/dist" bash tests/run.sh full
 
       - name: Verify outputs
         run: |
@@ -113,12 +228,23 @@ jobs:
 
       - name: Release version tag
         id: rel
+        env:
+          VERSION_ARG: ${{ inputs.version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          if [ -n "$VERSION_ARG" ]; then
+            echo "tag=$VERSION_ARG" >> "$GITHUB_OUTPUT"
           else
             echo "tag=stable-$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Test release instructions and checksums
+        if: ${{ inputs.include_desktop }}
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          sed -e "s/@RELEASE_TAG@/$TAG/g" -e "s/@COMMIT@/$GITHUB_SHA/g" desktop-probe/TESTING-RELEASE.md > webui-src/dist/TESTING.md
+          (cd webui-src/dist && sha256sum * > "$RUNNER_TEMP/SHA256SUMS")
+          mv "$RUNNER_TEMP/SHA256SUMS" webui-src/dist/SHA256SUMS
 
       - name: Recreate rolling release latest
         if: ${{ inputs.update_latest }}
@@ -138,12 +264,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.rel.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
+          INCLUDE_DESKTOP: ${{ inputs.include_desktop }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Релиз $TAG уже существует — пропускаю (номерные релизы неизменяемы)." >&2
             exit 1
           fi
-          gh release create "$TAG" webui-src/dist/* \
+          flags=()
+          [ "$PRERELEASE" != true ] || flags+=(--prerelease --latest=false)
+          if [ "$INCLUDE_DESKTOP" = true ]; then
+            flags+=(--notes-file webui-src/dist/TESTING.md)
+          else
+            flags+=(--notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG.")
+          fi
+          gh release create "$TAG" webui-src/dist/* "${flags[@]}" \
             --target "$GITHUB_SHA" \
-            --title "$TAG" \
-            --notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG."
+            --title "${RELEASE_TITLE:-$TAG}"
