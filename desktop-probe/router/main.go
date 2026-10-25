@@ -319,11 +319,17 @@ func (a *agent) status() (response, error) {
 		}
 		f.Close()
 	}
-	conntrack, _ := readLimited("/proc/net/nf_conntrack", 2*1024*1024)
-	if len(conntrack) == 0 {
-		conntrack, _ = readLimited("/proc/net/ip_conntrack", 2*1024*1024)
+	conntrack, err := readLimited("/proc/net/nf_conntrack", 2*1024*1024)
+	if os.IsNotExist(err) {
+		conntrack, err = readLimited("/proc/net/ip_conntrack", 2*1024*1024)
 	}
-	events, _ := readLimited(stateRoot+"/"+a.session+"/evidence/invocations.tsv", 256*1024)
+	if err != nil {
+		return nil, fmt.Errorf("CONNTRACK_EVIDENCE_UNAVAILABLE: %w", err)
+	}
+	events, err := readLimited(stateRoot+"/"+a.session+"/evidence/invocations.tsv", 256*1024)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
 	var gv []int
 	if a.paired {
 		gv = []int{a.gvStrategy}
@@ -503,6 +509,9 @@ func (a *agent) handle(r request) (response, error) {
 			return nil, fmt.Errorf("SESSION_EXPIRED")
 		}
 		a.lease = time.Now().Add(90 * time.Second)
+		if r.Command == "telemetry" {
+			return settledTelemetry(a.status)
+		}
 		return a.status()
 	default:
 		return nil, fmt.Errorf("UNKNOWN_COMMAND")

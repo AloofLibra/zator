@@ -96,6 +96,7 @@ export function strategySequence(strategies: number[]): number[] {
   return sequence
 }
 export interface RouterStatus {
+  telemetry_reads?: number;
   paired?: boolean; gv_strategy?: number;
   ok: true; session_id: string; strategy: number; strategy_generation: number; transport_generation: string;
   route_generation: number;
@@ -125,7 +126,11 @@ export function redactURL(raw: string): string {
 export function classify(before: RouterStatus, after: RouterStatus, o: Observation): { verdict: Verdict; reason: string } {
   if (before.paired !== after.paired || before.gv_strategy !== after.gv_strategy || !Number.isSafeInteger(before.route_generation) || !Number.isSafeInteger(before.firewall_generation) || before.firewall_generation !== after.firewall_generation || before.route_generation !== after.route_generation || before.session_id !== after.session_id || before.strategy_generation !== after.strategy_generation || before.strategy !== after.strategy || before.transport_generation !== after.transport_generation) return { verdict: 'INVALID', reason: 'SESSION_OR_GENERATION_CHANGED' }
   const fresh = o.fresh_connection === true || (before.proxy.connections_started === 0 && (after.proxy.connections_started || 0) > 0)
-  if (o.evidence_complete === false || !after.queue.alive || !after.proxy.alive || after.queue.counter <= before.queue.counter || after.proof.connection_match !== 'verified' || after.proof.strategy_invocation !== 'verified' || after.proof.route !== 'kernel_route_verified' || !fresh) return { verdict: 'INVALID', reason: 'FLOW_OR_STRATEGY_NOT_PROVEN' }
+  if (o.evidence_complete === false) return { verdict: 'INVALID', reason: 'BROWSER_EVIDENCE_INCOMPLETE' }
+  if (!after.queue.alive || !after.proxy.alive) return { verdict: 'INVALID', reason: 'TEST_PROCESS_NOT_RUNNING' }
+  if (after.queue.counter <= before.queue.counter) return { verdict: 'INVALID', reason: 'NO_TEST_QUEUE_TRAFFIC' }
+  if (!fresh) return { verdict: 'INVALID', reason: 'FRESH_CONNECTION_NOT_PROVEN' }
+  if (after.proof.connection_match !== 'verified' || after.proof.strategy_invocation !== 'verified' || after.proof.route !== 'kernel_route_verified') return { verdict: 'UNKNOWN', reason: 'FLOW_EVIDENCE_INCOMPLETE' }
   if (o.requested_host && !after.proof.verified_hosts?.includes(o.requested_host)) return { verdict: 'INVALID', reason: 'DOCUMENT_FLOW_NOT_PROVEN' }
   if (o.required_hosts?.some(host => !after.proof.verified_hosts?.includes(host))) return { verdict: 'INVALID', reason: 'MEDIA_FLOW_NOT_PROVEN' }
   if (o.expected_origin === false) return { verdict: 'UNKNOWN', reason: 'UNEXPECTED_REDIRECT' }

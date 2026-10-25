@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -52,6 +53,13 @@ func TestFlowEvidence(t *testing.T) {
 	if err != nil || proof["connection_match"] == "verified" {
 		t.Fatal("missing Lua evidence accepted")
 	}
+	if proof["unavailable_reason"] != "STRATEGY_INVOCATION_NOT_FOUND" || proof["matched_flows"] != 1 {
+		t.Fatal("missing evidence cannot be diagnosed", proof)
+	}
+	missing, err := flowProof(testSettings(), []flow{f}, "", event, 7)
+	if err != nil || missing["unavailable_reason"] != "CONNTRACK_NOT_FOUND" {
+		t.Fatal(missing, err)
+	}
 	other.Host = "i.ytimg.com"
 	proof, err = flowProof(testSettings(), []flow{other, f}, snapshot, event, 7)
 	if err != nil || !reflect.DeepEqual(proof["verified_hosts"], []string{f.Host}) {
@@ -84,5 +92,38 @@ func TestFlowEvidence(t *testing.T) {
 	proof, err = flowProof(testSettings(), []flow{media}, snapshot, strings.Replace(pairedEvent, "\t8\t2", "\t8\t1", 1), 7, 8)
 	if err != nil || proof["connection_match"] == "verified" {
 		t.Fatal("correct number under wrong profile was accepted", proof, err)
+	}
+}
+
+func TestSettledTelemetry(t *testing.T) {
+	reads := 0
+	out, err := settledTelemetry(func() (response, error) {
+		reads++
+		state := "unavailable"
+		if reads == 2 {
+			state = "verified"
+		}
+		route := "unavailable"
+		if state == "verified" {
+			route = "kernel_route_verified"
+		}
+		return response{"proof": response{"connection_match": state, "strategy_invocation": state, "route": route}}, nil
+	})
+	if err != nil || reads != 2 || out["telemetry_reads"] != 2 || out["proof"].(response)["connection_match"] != "verified" {
+		t.Fatal(out, err, reads)
+	}
+	reads = 0
+	out, err = settledTelemetry(func() (response, error) {
+		reads++
+		return response{"proof": response{"connection_match": "unavailable"}}, nil
+	})
+	if err != nil || reads != 3 || out["proof"].(response)["connection_match"] != "unavailable" {
+		t.Fatal("missing evidence was fabricated or retry unbounded", out, err, reads)
+	}
+	reads = 0
+	breach := errors.New("FLOW_MARK_MISMATCH")
+	_, err = settledTelemetry(func() (response, error) { reads++; return nil, breach })
+	if err != breach || reads != 1 {
+		t.Fatal("transport violation retried", err, reads)
 	}
 }

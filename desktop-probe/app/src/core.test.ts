@@ -120,7 +120,16 @@ test('bounded browser work times out, cancels and preserves failures', async () 
   await assert.rejects(pending, /CANCELLED/)
 })
 test('DIRECT brackets strategy changes with a repeated reference on longer sweeps', () => { assert.deepEqual(strategySequence([1, 1]), [0, 1]); assert.deepEqual(strategySequence([1, 2, 3]), [0, 1, 0, 2, 3]) })
-test('HTTP 200 alone never proves a strategy', () => { assert.equal(classify(before, after, { ...observed, functional: null }).verdict, 'UNKNOWN'); assert.equal(classify(before, { ...after, proof: { ...after.proof, connection_match: 'unavailable' } }, observed).verdict, 'INVALID') })
+test('HTTP 200 alone never proves a strategy', () => { assert.equal(classify(before, after, { ...observed, functional: null }).verdict, 'UNKNOWN'); assert.equal(classify(before, { ...after, proof: { ...after.proof, connection_match: 'unavailable' } }, observed).verdict, 'UNKNOWN') })
+test('an incomplete flow snapshot is unscored, while broken transport still stops the scan', () => {
+  const missing = { ...after, proof: { ...after.proof, connection_match: 'unavailable' } }
+  assert.deepEqual(classify(before, missing, observed), { verdict: 'UNKNOWN', reason: 'FLOW_EVIDENCE_INCOMPLETE' })
+  for (const o of [{ ...observed, functional: false, timed_out: true }, observed]) assert.equal(classify(before, missing, o).verdict, 'UNKNOWN')
+  for (const broken of [{ ...missing, queue: { ...missing.queue, alive: false } }, { ...missing, proxy: { ...missing.proxy, alive: false } }, { ...missing, transport_generation: 'changed' }, { ...missing, queue: before.queue }]) assert.equal(classify(before, broken, observed).verdict, 'INVALID')
+  const youtube = { ...observed, page_functional: true, video_hosts: ['video.googlevideo.com'] }
+  const pair = classifyYouTube(before, missing, youtube)
+  assert.equal(pair.page.verdict, 'UNKNOWN'); assert.equal(pair.video, null)
+})
 test('HTTP2 reuse inside a fresh attempt is valid; document and media each require host proof', () => {
   const start = { ...before, proxy: { ...before.proxy, connections_started: 0 } }
   const end = { ...after, proxy: { ...after.proxy, connections_started: 3 }, proof: { ...after.proof, verified_hosts: ['www.youtube.com', 'video.googlevideo.com'] } }

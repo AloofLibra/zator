@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func conntrackMark(snapshot string, f flow) (uint32, bool) {
@@ -62,7 +63,7 @@ func invoked(snapshot string, f flow, strategy int, profile ...int) bool {
 }
 
 func flowProof(c settings, flows []flow, conntrack, events string, strategy int, gvStrategy ...int) (response, error) {
-	proof := response{"connection_match": "unavailable", "strategy_invocation": "unavailable", "route": "unavailable"}
+	proof := response{"connection_match": "unavailable", "strategy_invocation": "unavailable", "route": "unavailable", "observed_flows": len(flows), "unavailable_reason": "NO_PROXY_FLOW"}
 	if len(flows) == 0 {
 		return proof, nil
 	}
@@ -71,6 +72,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 		return nil, err
 	}
 	egress := ""
+	matchedFlows, invokedFlows, routedFlows := 0, 0, 0
 	verifiedHosts := []string{}
 	seenHosts := map[string]bool{}
 	checkedRoutes := map[string]bool{}
@@ -91,13 +93,19 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 		if mark&c.Mark == 0 || mark&c.RawMark != 0 {
 			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
 		}
+		matchedFlows++
+		executed := invoked(events, f, wanted, profile...)
+		if executed {
+			invokedFlows++
+		}
 		target, _, err := net.SplitHostPort(f.Remote)
 		if err != nil {
 			return proof, err
 		}
 		key := target + "/" + strconv.FormatUint(uint64(mark), 10)
 		if checkedRoutes[key] {
-			if invoked(events, f, wanted, profile...) && !seenHosts[f.Host] {
+			routedFlows++
+			if executed && !seenHosts[f.Host] {
 				verifiedHosts = append(verifiedHosts, f.Host)
 				seenHosts[f.Host] = true
 			}
@@ -124,7 +132,8 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 			return nil, fmt.Errorf("ROUTE_MISMATCH: flow does not use active default uplink (%s)", strings.Join(wans, ","))
 		}
 		checkedRoutes[key] = true
-		if !invoked(events, f, wanted, profile...) {
+		routedFlows++
+		if !executed {
 			continue
 		}
 		if !seenHosts[f.Host] {
@@ -132,8 +141,37 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 			seenHosts[f.Host] = true
 		}
 	}
+	proof["matched_flows"], proof["invoked_flows"], proof["routed_flows"] = matchedFlows, invokedFlows, routedFlows
 	if len(verifiedHosts) == 0 {
+		switch {
+		case matchedFlows == 0:
+			proof["unavailable_reason"] = "CONNTRACK_NOT_FOUND"
+		case invokedFlows == 0:
+			proof["unavailable_reason"] = "STRATEGY_INVOCATION_NOT_FOUND"
+		default:
+			proof["unavailable_reason"] = "ROUTE_NOT_PROVEN"
+		}
 		return proof, nil
 	}
-	return response{"connection_match": "verified", "strategy_invocation": "verified", "route": "kernel_route_verified", "egress_interface": egress, "wan_interfaces": wans, "verified_hosts": verifiedHosts}, nil
+	proof["connection_match"], proof["strategy_invocation"], proof["route"] = "verified", "verified", "kernel_route_verified"
+	proof["egress_interface"], proof["wan_interfaces"], proof["verified_hosts"] = egress, wans, verifiedHosts
+	delete(proof, "unavailable_reason")
+	return proof, nil
+}
+
+func settledTelemetry(read func() (response, error)) (response, error) {
+	for attempt := 0; ; attempt++ {
+		out, err := read()
+		if err != nil {
+			return out, err
+		}
+		out["telemetry_reads"] = attempt + 1
+		proof, ok := out["proof"].(response)
+		complete := proof["connection_match"] == "verified" && proof["strategy_invocation"] == "verified" && proof["route"] == "kernel_route_verified"
+		if !ok || complete || attempt == 2 {
+			return out, nil
+		}
+		// Conntrack and Lua publish separately; never retry an explicit transport error.
+		time.Sleep(100 * time.Millisecond)
+	}
 }

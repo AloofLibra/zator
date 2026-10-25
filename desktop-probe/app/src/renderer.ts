@@ -65,6 +65,7 @@ probe.onUpdate(data => {
     }
     const verdict = document.createElement('td'); verdict.textContent = result.verdict; verdict.className = result.verdict; verdict.title = result.reason
     if (result.reason === 'FUNCTIONAL_CHECK_TIMED_OUT') { const explanation = document.createElement('small'); explanation.textContent = 'Не хватило времени на проверку функции'; verdict.append(explanation) }
+    if (result.reason === 'FLOW_EVIDENCE_INCOMPLETE') { const explanation = document.createElement('small'); explanation.textContent = 'Проба не подтверждена; результат не учитывается как успех'; verdict.append(explanation) }
     if (result.tested === false) { const explanation = document.createElement('small'); explanation.textContent = 'Не проверялась: нет рабочей страницы/медиазапроса'; verdict.append(explanation) }
     const manual = document.createElement('td'), select = document.createElement('select'); select.setAttribute('aria-label', `Ручная оценка стратегии ${result.strategy || 'DIRECT'}`)
     for (const [value, text] of [['', '—'], ['passed', 'Работает'], ['failed', 'Не работает'], ['unknown', 'Неясно']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; select.append(option) }
