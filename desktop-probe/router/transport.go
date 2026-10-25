@@ -210,9 +210,6 @@ func installTransport(c settings, reconcile bool) error {
 		}
 	}
 	if _, err := transportFingerprint(c); err == nil {
-		if reconcile {
-			return os.WriteFile(stateRoot+"/transport-generation", []byte(randomID()), 0600)
-		}
 		if !reconcile {
 			if err = os.Remove(stateRoot + "/disabled"); err != nil && !os.IsNotExist(err) {
 				return err

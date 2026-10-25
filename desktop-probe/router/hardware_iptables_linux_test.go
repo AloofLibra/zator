@@ -78,6 +78,12 @@ func TestHardwareIPTablesCoexistence(t *testing.T) {
 		}
 	}()
 	status := func() response { return call(request{Command: "status", Owner: owner, Session: id}) }
+	for n := 0; n < 2; n++ {
+		command("/opt/zator/bin/zator-desktop-probe", "reconcile-transport")
+		if status()["transport_generation"] != started["transport_generation"] {
+			t.Fatal("healthy reconcile invalidated active session")
+		}
+	}
 	count := func(s response) float64 { return s["queue"].(map[string]any)["counter"].(float64) }
 	before := count(status())
 	command("curl", "-fsS", "--max-time", "15", "-o", "/dev/null", "https://example.org/")
@@ -115,6 +121,14 @@ func TestHardwareIPTablesCoexistence(t *testing.T) {
 	}
 	call(request{Command: "stop", Owner: owner, Session: id})
 	id = ""
+	hook := "/opt/etc/ndm/netfilter.d/999-zator-desktop-probe.sh"
+	if _, err := os.Stat(hook); err == nil {
+		command("iptables", "-t", "mangle", "-D", "OUTPUT", "-p", "tcp", "-m", "owner", "--uid-owner", fmt.Sprint(c.NfqUID), "-m", "comment", "--comment", "zator_desktop_probe", "-j", "Z2R_DP_RAW")
+		command("env", "table=nat", "type=iptables", "sh", hook)
+		if call(request{Command: "capabilities"})["isolation"].(map[string]any)["available"] != true {
+			t.Fatal("installed NAT hook did not restore isolation")
+		}
+	}
 	if foreign() != rules || command("ip", "-4", "rule") != policies || command("pidof", "nfqws2") != pids {
 		t.Fatal("foreign firewall, policy routes or production process changed")
 	}

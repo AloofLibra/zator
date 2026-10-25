@@ -1,5 +1,13 @@
 # Desktop Probe: результаты реализации
 
+## TRANSPORT_CHANGED после обновления агента — 25.10.2026
+
+Причина аппаратного отказа: при установке исправленного бинарника из рабочей /tmp-папки установщик повторно скопировал старый mangle-only hook. На nat-событии production правила снова вставали перед private hooks; отказ изоляции был корректным. На устройство заново установлен целый актуальный архив, SHA256 stage installer/hook и установленных binary/hook сверены с локальными файлами. Дополнительно здоровый reconcile больше не переписывает transport-generation: проверка целых правил является no-op; восстановление действительно повреждённых правил по-прежнему меняет поколение и не подтверждает старую попытку.
+
+Аппаратная регрессия расширена: два здоровых reconcile в активной сессии не меняют поколение; после удаления собственного OUTPUT правила установленный nat-hook восстанавливает isolation.available; DIRECT/strategy 1 подтверждаются по queue/tuple/strategy/route, production PID/config/locks и чужие firewall/policy rules сохранены. Linux tests с -race и vet PASS; пять архитектур собраны.
+
+Дополнительный живой прогон: восемь переключений YT-n/GV-n (1…8), HTTPS-пробы через private SOCKS и вызовы установленного nat-hook между status/telemetry. Session/strategy/route/firewall/transport generations совпали до/после каждой пробы; тест завершился штатным stop. Это проверка устойчивости транспорта, не открытия YouTube или воспроизведения видео; полного Chromium sweep в этом тесте нет.
+
 ## Ложная смена поколения на Keenetic — 25.10.2026
 
 Воспроизведён SESSION_OR_GENERATION_CHANGED: при стабильном snapshot маршрутов и transport fingerprint route_generation вырос с 4 до 269. Трассировка показала RTM_NEWLINK от Wi-Fi ra0/rai0: нулевой change mask, только IFLA_IFNAME и IFLA_WIRELESS. Это уведомления драйвера, а не смена маршрута. Монитор исключает только такой набор; изменения флагов, MTU, operstate, адресов, маршрутов и policy rules продолжают повышать поколение, malformed события делают монитор unhealthy.
