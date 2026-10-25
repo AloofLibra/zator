@@ -49,20 +49,32 @@ field('probe-form').addEventListener('submit', event => {
   void probe.command('run', { scanMode: field('scan-mode').value, strategyMode: field('strategy-mode').value, youtubeURL: field('youtube-url').value, discordURL: field('discord-url').value, discordSelector: field('discord-selector').value, rknURLs: field('rkn-urls').value, rknSelector: field('rkn-selector').value, ssh: { host: field('host').value.trim(), user: field('user').value.trim(), port: Number(field('port').value), identity: field('identity').value.trim() }, url: field('url').value, profile: Number(field('profile').value), strategies, scenario: field('scenario').value, selector: field('selector').value.trim(), timeout: Number(field('timeout').value), manual: field('manual').checked }).catch(showError)
 })
 for (const name of ['cancel', 'export', 'screenshot']) field(name).addEventListener('click', () => { void probe.command(name).catch(showError) })
+let latestNetwork: any[] = []
+const networkPanel = document.getElementById('network')!.closest('details')!
+function renderNetwork() {
+  if (!networkPanel.open) return
+  const container = document.getElementById('network')!; container.replaceChildren()
+  const domains = new Map<string, any[]>()
+  for (const row of latestNetwork) { const host = row.url; if (!domains.has(host)) domains.set(host, []); domains.get(host)!.push(row) }
+  for (const [host, rows] of domains) {
+    const group = document.createElement('details'), title = document.createElement('summary'), list = document.createElement('ul')
+    title.textContent = host
+    for (const row of rows) { const item = document.createElement('li'); item.textContent = [row.type, row.status || '…', row.protocol || '', row.duration_ms !== null ? `${row.duration_ms}ms` : '', row.error || ''].filter(Boolean).join(' · '); list.append(item) }
+    group.append(title, list); container.append(group)
+  }
+}
+networkPanel.addEventListener('toggle', renderNetwork)
 probe.onUpdate(data => {
+  if ('preview_image' in data) {
+    const picture = document.getElementById('preview-image') as HTMLImageElement
+    const valid = typeof data.preview_image === 'string' && data.preview_image.startsWith('data:image/png;base64,')
+    picture.hidden = !valid
+    if (valid) picture.src = data.preview_image
+    else picture.removeAttribute('src')
+  }
   if (data.state || data.results || data.collapse_preview) previewLayout()
   if (data.collapse_preview) togglePreview(false)
-  if (data.network) {
-    const container = document.getElementById('network')!; container.replaceChildren()
-    const domains = new Map<string, any[]>()
-    for (const row of data.network) { const host = row.url; if (!domains.has(host)) domains.set(host, []); domains.get(host)!.push(row) }
-    for (const [host, rows] of domains) {
-      const group = document.createElement('details'), title = document.createElement('summary'), list = document.createElement('ul')
-      title.textContent = host
-      for (const row of rows) { const item = document.createElement('li'); item.textContent = [row.type, row.status || '…', row.protocol || '', row.duration_ms !== null ? `${row.duration_ms}ms` : '', row.error || ''].filter(Boolean).join(' · '); list.append(item) }
-      group.append(title, list); container.append(group)
-    }
-  }
+  if (data.network) { latestNetwork = data.network; renderNetwork() }
   if (data.state) {
     statusNode.textContent = [labels[data.state] || data.state, data.gv_strategy !== undefined ? `YT-${data.strategy || 'DIRECT'} / GV-${data.gv_strategy || 'DIRECT'}` : data.strategy !== undefined ? String(data.strategy || 'DIRECT') : '', data.pause_seconds ? `${data.pause_seconds} с` : '', data.error || data.cleanup_error || ''].filter(Boolean).join(' · ')
     const busy = !['IDLE', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR'].includes(data.state)
@@ -115,6 +127,6 @@ probe.onUpdate(data => {
     row.append(strategy, stage, verdict, manual); body.append(row)
   })
   log.scrollTop = follow ? log.scrollHeight : scrollTop
-  document.getElementById('details')!.textContent = data.results.length ? JSON.stringify(data.results[data.results.length - 1], null, 2) : ''
+  document.getElementById('details')!.textContent = data.detail_text ?? (data.results.length ? JSON.stringify(data.results[data.results.length - 1], null, 2) : '')
 })
 previewLayout()

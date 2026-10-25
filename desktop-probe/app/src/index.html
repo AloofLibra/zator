@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'"><title>Zator Desktop Probe</title><link rel="stylesheet" href="style.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src data:"><title>Zator Desktop Probe</title><link rel="stylesheet" href="style.css"></head>
 <body>
 <main>
   <header><div><p class="eyebrow">ZATOR / DESKTOP PROBE</p><h1>Проверка стратегий</h1></div><p class="muted">Отдельная очередь и браузер · TCP / HTTPS / IPv4</p></header>
@@ -46,7 +46,7 @@ https://amnezia.org/</textarea></label>
     <h2>Журнал проверок</h2><p class="note">Страница и видео одной попытки показаны отдельными строками. DIRECT — контрольная проверка.</p>
     <div id="result-scroll"><table><thead><tr><th>Сайт / стратегия</th><th>Проверка</th><th>Результат</th><th>Ручная оценка</th></tr></thead><tbody id="results"></tbody></table></div>
   </section><aside>
-    <section id="preview-panel"><div class="panel-heading"><h2>Предпросмотр</h2><button id="preview-toggle" type="button" class="secondary" aria-expanded="false">Раскрыть</button></div><div id="preview-slot"><div id="placeholder">Здесь откроется сайт<br>Звук выключен</div></div></section>
+    <section id="preview-panel"><div class="panel-heading"><h2>Предпросмотр</h2><button id="preview-toggle" type="button" class="secondary" aria-expanded="false">Раскрыть</button></div><div id="preview-slot"><div id="placeholder">Здесь откроется сайт<br>Звук выключен</div><img id="preview-image" alt="Последний кадр проверки" hidden></div><p class="note">После автоматической проверки остаётся последний кадр. Для наблюдения за воспроизведением включите ручную оценку.</p></section>
     <details><summary>Сеть текущей пробы · до 50 запросов</summary><div id="network"></div></details>
     <details><summary>Детали последнего результата</summary><pre id="details"></pre></details>
   </aside></div>

@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, classifyYouTube, YouTubeSweep, succeeded, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, withinTimeout, ensureIsolation, recoverableTransportError, withTransportRecovery } from './core'
+import { classify, classifyYouTube, YouTubeSweep, succeeded, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, withinTimeout, ensureIsolation, recoverableTransportError, withTransportRecovery, journalRows } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
@@ -14,6 +14,7 @@ if (process.argv.includes('--probe-integration') && process.env.ZATOR_PROBE_TEST
 let win: BrowserWindow
 let preview: WebContentsView | undefined
 let previewSession: Electron.Session | undefined
+let previewPNG: Buffer | undefined
 let previewBounds = { x: 0, y: 0, width: 0, height: 0 }
 let previewExpanded = false
 let controller: AbortController | undefined
@@ -23,7 +24,20 @@ let quitting = false
 let running: Promise<boolean> | undefined
 let integrationFull = false
 let manualWait: { index: number; finish: () => void } | undefined
-function update(data: Record<string, unknown>) { if (process.argv.includes('--probe-integration') && data.error) console.log(`INTEGRATION_ERROR=${data.error}`); if (integrationFull && ['NEXT', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR', 'REPORTING'].includes(String(data.state))) console.log(`FULLSCAN_PROGRESS=${JSON.stringify({ state: data.state, completed: data.completed, total: data.total, profile: data.profile, strategy: data.strategy, gv_strategy: data.gv_strategy, target: data.target, error: data.error })}`); if (Array.isArray(data.results)) data = { ...data, coverage: coverageSummary(data.results), summary: verdictSummary(data.results) }; if (win && !win.isDestroyed()) win.webContents.send('probe-update', data) }
+let publishedResults: any[] | undefined, publishedLength = -1
+function update(data: Record<string, unknown>) {
+  if (process.argv.includes('--probe-integration') && data.error) console.log(`INTEGRATION_ERROR=${data.error}`)
+  if (integrationFull && ['NEXT', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR', 'REPORTING'].includes(String(data.state))) console.log(`FULLSCAN_PROGRESS=${JSON.stringify({ state: data.state, completed: data.completed, total: data.total, profile: data.profile, strategy: data.strategy, gv_strategy: data.gv_strategy, target: data.target, error: data.error })}`)
+  if (Array.isArray(data.results)) {
+    const rows = data.results
+    if (rows === publishedResults && rows.length === publishedLength) { data = { ...data }; delete data.results }
+    else {
+      publishedResults = rows; publishedLength = rows.length
+      data = { ...data, results: journalRows(rows), detail_text: rows.length ? JSON.stringify(rows[rows.length - 1], null, 2) : '', coverage: coverageSummary(rows), summary: verdictSummary(rows) }
+    }
+  }
+  if (win && !win.isDestroyed()) win.webContents.send('probe-update', data)
+}
 let saving = Promise.resolve()
 function saveResults(): Promise<void> {
   saving = saving.catch(() => {}).then(async () => {
@@ -45,8 +59,26 @@ async function closePreview() {
   const old = preview, ses = previewSession; preview = undefined; previewSession = undefined
   if (!old) return
   if (win && !win.isDestroyed()) win.contentView.removeChildView(old)
-  if (!old.webContents.isDestroyed()) { old.webContents.stop(); if (old.webContents.debugger.isAttached()) old.webContents.debugger.detach(); old.webContents.close() }
-  if (ses) { await ses.closeAllConnections(); await ses.clearStorageData() }
+  if (!old.webContents.isDestroyed()) {
+    const wc = old.webContents
+    wc.debugger.removeAllListeners('message'); wc.stop()
+    if (wc.debugger.isAttached()) wc.debugger.detach()
+    const destroyed = new Promise<void>(resolve => wc.once('destroyed', () => resolve()))
+    wc.close()
+    await withinTimeout(destroyed, 2000, new AbortController().signal)
+  }
+  if (ses) { await ses.closeAllConnections(); await Promise.all([ses.clearStorageData(), ses.clearCache()]) }
+}
+async function retainPreviewFrame(signal: AbortSignal) {
+  const wc = preview?.webContents
+  if (!wc || wc.isDestroyed()) return
+  wc.debugger.removeAllListeners('message')
+  try {
+    const image = await withinTimeout(wc.capturePage(), 500, signal)
+    previewPNG = image.isEmpty() ? undefined : image.toPNG()
+  } catch { previewPNG = undefined }
+  update({ preview_image: previewPNG ? `data:image/png;base64,${previewPNG.toString('base64')}` : '' })
+  await closePreview()
 }
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => { const done = () => { signal.removeEventListener('abort', abort); resolve() }; const timer = setTimeout(done, ms); const abort = () => { clearTimeout(timer); reject(new Error('CANCELLED')) }; signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort() })
@@ -68,6 +100,8 @@ function waitForManual(index: number, signal: AbortSignal): Promise<void> {
 
 async function observe(options: RunOptions, proxyPort: number, signal: AbortSignal) {
   await closePreview()
+  previewPNG = undefined
+  update({ preview_image: null })
   const attempt = randomUUID()
   const ses = session.fromPartition(`probe-${attempt}`, { cache: false })
   previewSession = ses
@@ -128,7 +162,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     }
     if (method === 'Network.webSocketCreated') { try { if (new URL(p.url).hostname === 'gateway.discord.gg') gatewayRequests.add(p.requestId) } catch {} }
     if (method === 'Network.webSocketFrameReceived' && gatewayRequests.has(p.requestId)) { socketFrames++; requiredHosts.add('gateway.discord.gg') }
-    if (Date.now() - lastNetworkUpdate > 250) { lastNetworkUpdate = Date.now(); update({ network: [...requests.values()].slice(-50) }) }
+    if (['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished', 'Network.loadingFailed'].includes(method) && Date.now() - lastNetworkUpdate > 1000) { lastNetworkUpdate = Date.now(); update({ network: [...requests.values()].slice(-50) }) }
   })
   const domReady = new Promise<void>(resolve => wc.once('dom-ready', () => { observation.dom_loaded = true; resolve() }))
   const deadline = Date.now() + options.timeout * 1000
@@ -188,7 +222,13 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     observation.video_hosts = [...videoHosts]
     observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null
     return { attempt_id: attempt, observation, requests: [...requests.values()], media_bytes: mediaBytes, websocket_frames: socketFrames }
-  } finally { signal.removeEventListener('abort', aborted) }
+  } finally {
+    signal.removeEventListener('abort', aborted)
+    if (!wc.isDestroyed()) wc.debugger.removeAllListeners('message')
+    if (!options.manual && !signal.aborted && !wc.isDestroyed()) {
+      await retainPreviewFrame(signal)
+    }
+  }
 }
 
 async function run(options: RunOptions) {
@@ -371,7 +411,7 @@ app.whenReady().then(async () => {
     }
     if (command === 'run') { if (controller) throw new Error('RUN_BUSY'); running = run(payload).catch(e => { update({ state: 'ERROR', error: e.message }); return false }); return }
     if (command === 'cancel') { controller?.abort(); return }
-    if (command === 'manual') { if (Number.isInteger(payload.index) && results[payload.index] && ['passed', 'failed', 'unknown'].includes(payload.value)) { results[payload.index].manual = payload.value; await saveResults(); const waiting = manualWait; if (waiting && waiting.index === payload.index) waiting.finish(); update({ results }) }; return }
+    if (command === 'manual') { if (Number.isInteger(payload.index) && results[payload.index] && ['passed', 'failed', 'unknown'].includes(payload.value)) { results[payload.index].manual = payload.value; await saveResults(); const waiting = manualWait; if (waiting && waiting.index === payload.index) waiting.finish(); publishedResults = undefined; update({ results }) }; return }
     if (command === 'export') {
       const picked = await dialog.showSaveDialog(win, { defaultPath: 'zator-probe.json', filters: [{ name: 'JSON', extensions: ['json'] }, { name: 'Markdown', extensions: ['md'] }] })
       if (!picked.canceled && picked.filePath) {
@@ -379,9 +419,10 @@ app.whenReady().then(async () => {
         await writeFile(picked.filePath, body)
       }; return
     }
-    if (command === 'screenshot' && preview && !preview.webContents.isDestroyed()) {
+    if (command === 'screenshot' && (previewPNG || (preview && !preview.webContents.isDestroyed()))) {
+      const image = previewPNG ?? (await preview!.webContents.capturePage()).toPNG()
       const picked = await dialog.showSaveDialog(win, { defaultPath: 'probe.png', filters: [{ name: 'PNG', extensions: ['png'] }] })
-      if (!picked.canceled && picked.filePath && preview) await writeFile(picked.filePath, (await preview.webContents.capturePage()).toPNG())
+      if (!picked.canceled && picked.filePath) await writeFile(picked.filePath, image)
       return
     }
     throw new Error('UNKNOWN_COMMAND')
@@ -419,7 +460,8 @@ app.whenReady().then(async () => {
       all.value='selected'; all.dispatchEvent(new Event('change'));
       return sweep && single && !document.getElementById('strategies').disabled;
     })()`)
-    preview = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
+    previewSession = session.fromPartition('probe-smoke', { cache: false })
+    preview = new WebContentsView({ webPreferences: { session: previewSession, sandbox: true, contextIsolation: true, nodeIntegration: false } })
     win.contentView.addChildView(preview); await preview.webContents.loadURL('about:blank'); fit()
     update({ state: 'PREPARING', results: ['OK', 'WARN', 'FAIL', 'UNKNOWN', 'INVALID'].map((verdict, index) => ({ profile: 3, strategy: index + 1, site: 'https://example.org/', verdict, reason: 'SMOKE', manual: null })) })
     const safe = await win.webContents.executeJavaScript(`new Promise(resolve => setTimeout(async () => { try { await window.probe.command('cancel'); resolve(typeof require === 'undefined' && document.querySelector('#run').disabled && document.querySelector('#status').textContent.includes('Подготовка')) } catch { resolve(false) } }, 30))`)
@@ -443,8 +485,16 @@ app.whenReady().then(async () => {
     update({ state: 'IDLE' })
     const unlocked = await win.webContents.executeJavaScript(`new Promise(resolve=>setTimeout(()=>resolve(!document.getElementById('run').disabled && [...document.querySelectorAll('#settings fieldset')].every(group=>!group.disabled)),30))`)
     const previewFits = compact.width > 0 && compact.width <= 360 && expanded.width > compact.width * 2 && restored.width === compact.width && narrow.width > 0 && narrow.x + narrow.width <= 960 && narrow.y + narrow.height <= 700 && preview.webContents.getURL() === 'about:blank'
-    const passed = safe && controls && layout && previewFits && unlocked && badBoundsRejected && authGate
-    console.log(`UI_SMOKE=${passed ? 'PASS' : 'FAIL'} ${JSON.stringify({ controls, layout, previewFits, unlocked, badBoundsRejected, authGate })}`); app.exit(passed ? 0 : 1)
+    const oldPreview = preview.webContents
+    await oldPreview.executeJavaScript('globalThis.probeMemory = new Uint8Array(64 * 1024 * 1024).fill(1)')
+    const previewPID = oldPreview.getOSProcessId()
+    const previewMemoryKB = app.getAppMetrics().find(metric => metric.pid === previewPID)?.memory.workingSetSize
+    await retainPreviewFrame(new AbortController().signal)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    const releasedPreview = !preview && oldPreview.isDestroyed()
+    const rendererReleased = !app.getAppMetrics().some(metric => metric.pid === previewPID)
+    const passed = safe && controls && layout && previewFits && unlocked && badBoundsRejected && authGate && releasedPreview
+    console.log(`UI_SMOKE=${passed ? 'PASS' : 'FAIL'} ${JSON.stringify({ controls, layout, previewFits, unlocked, badBoundsRejected, authGate, releasedPreview, rendererReleased, previewMemoryKB, snapshotAvailable: !!previewPNG })}`); app.exit(passed ? 0 : 1)
   }
   if (process.argv.includes('--probe-integration')) {
     if (!process.env.ZATOR_PROBE_TEST_CONFIG || !process.env.ZATOR_PROBE_TEST_REPORT) throw new Error('TEST_PATHS_REQUIRED')

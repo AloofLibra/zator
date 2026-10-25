@@ -1,4 +1,7 @@
 export type Verdict = 'OK' | 'FAIL' | 'WARN' | 'UNKNOWN' | 'INVALID'
+export function journalRows(rows: Record<string, unknown>[]) {
+  return rows.map(({ requests, flows, ...row }) => row)
+}
 export const recoverableTransportError = (error: unknown) => error instanceof Error && ['TRANSPORT_CHANGED', 'SESSION_OR_GENERATION_CHANGED'].includes(error.message)
 export async function withTransportRecovery<T>(attempt: () => Promise<T>, recover: (retry: number, error: unknown) => Promise<void>, signal: AbortSignal): Promise<T> {
   for (let retry = 0; ; retry++) {

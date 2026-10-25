@@ -1,6 +1,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, classifyYouTube, YouTubeSweep, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, ScanOptions, withinTimeout, ensureIsolation, Capabilities, withTransportRecovery } from './core'
+import { classify, classifyYouTube, YouTubeSweep, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, ScanOptions, withinTimeout, ensureIsolation, Capabilities, withTransportRecovery, journalRows } from './core'
+
+test('journal IPC omits bulk evidence without changing full reports or verdicts', () => {
+  const requests = Array.from({ length: 100 }, () => ({ url: 'https://example.org/', type: 'Document', status: 200, protocol: 'h2', bytes: 1000 }))
+  const full = Array.from({ length: 200 }, (_, strategy) => ({ profile: 1, strategy, site: 'https://example.org/', verdict: 'OK', reason: 'DECLARED_SCENARIO_PASSED', requests, flows: [{ local: '192.0.2.1:1234', remote: '192.0.2.2:443' }], manual: null }))
+  const rows = journalRows(full)
+  assert.equal(JSON.stringify(rows).length < JSON.stringify(full).length / 20, true)
+  assert.equal(rows.length, full.length)
+  assert.equal(rows[199].strategy, full[199].strategy)
+  assert.equal(rows[199].verdict, full[199].verdict)
+  assert.equal('requests' in rows[0], false)
+  assert.equal('flows' in rows[0], false)
+  assert.equal(full[0].requests, requests)
+})
 
 test('transport reload repeats the same pair in a fresh session and discards the broken attempt', async () => {
   for (const reason of ['TRANSPORT_CHANGED', 'SESSION_OR_GENERATION_CHANGED']) {
