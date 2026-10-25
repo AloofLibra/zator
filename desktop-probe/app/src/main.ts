@@ -375,10 +375,10 @@ app.whenReady().then(async () => {
     const compact = preview.getBounds()
     const layout = await win.webContents.executeJavaScript(`(() => {
       const folded=!document.getElementById('settings').open && [...document.querySelectorAll('#settings fieldset')].every(group=>group.disabled);
-      const summary=document.querySelector('#coverage .summary-card'); summary.open=true;
+      const summary=document.querySelector('#coverage .summary-card');
       const summaries=['Сработали: 1','С замечаниями: 2','Не сработали: 3','Не подтверждены: 4','Ошибка проверки: 5'].every(text=>summary.textContent.includes(text));
       const log=document.getElementById('result-scroll').getBoundingClientRect(), slot=document.getElementById('preview-slot').getBoundingClientRect();
-      return folded && summaries && document.querySelectorAll('#results tr').length===5 && log.right<slot.left && slot.right<=innerWidth;
+      return folded && summaries && !document.querySelector('#coverage-panel details') && document.querySelectorAll('#results tr').length===5 && log.right<slot.left && slot.right<=innerWidth;
     })()`)
     await win.webContents.executeJavaScript(`new Promise(resolve=>{document.getElementById('preview-toggle').click();setTimeout(resolve,80)})`)
     const expanded = preview.getBounds()

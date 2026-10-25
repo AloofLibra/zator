@@ -73,15 +73,13 @@ probe.onUpdate(data => {
   }
   if (data.summary) {
     const container = document.getElementById('coverage')!
-    const expanded = new Set([...container.querySelectorAll<HTMLDetailsElement>('details[open]')].map(item => item.dataset.key))
     container.replaceChildren()
     const names: Record<string, string> = { OK: 'Сработали', WARN: 'С замечаниями', FAIL: 'Не сработали', UNKNOWN: 'Не подтверждены', INVALID: 'Ошибка проверки' }
     for (const item of data.summary) {
-      const card = document.createElement('details'), title = document.createElement('summary'), counts = document.createElement('span')
-      card.className = 'summary-card'; card.dataset.key = `${item.profile}:${item.site}`; card.open = expanded.has(card.dataset.key)
+      const card = document.createElement('section'), title = document.createElement('h3')
+      card.className = 'summary-card'
       title.textContent = `P${item.profile} · ${String(item.site).replace(/^https:\/\//, '').replace(/\/$/, '')}`
-      counts.className = 'counts'; counts.textContent = Object.entries(names).filter(([key]) => item.verdicts[key].length).map(([key, name]) => `${name}: ${item.verdicts[key].length}`).join(' · ')
-      title.append(counts); card.append(title)
+      card.append(title)
       for (const [key, name] of Object.entries(names)) if (item.verdicts[key].length) { const line = document.createElement('p'); line.className = key; line.textContent = `${name}: ${item.verdicts[key].join(', ')}`; card.append(line) }
       container.append(card)
     }
