@@ -1,5 +1,13 @@
 # Desktop Probe: результаты реализации
 
+## Ложная смена поколения на Keenetic — 25.10.2026
+
+Воспроизведён SESSION_OR_GENERATION_CHANGED: при стабильном snapshot маршрутов и transport fingerprint route_generation вырос с 4 до 269. Трассировка показала RTM_NEWLINK от Wi-Fi ra0/rai0: нулевой change mask, только IFLA_IFNAME и IFLA_WIRELESS. Это уведомления драйвера, а не смена маршрута. Монитор исключает только такой набор; изменения флагов, MTU, operstate, адресов, маршрутов и policy rules продолжают повышать поколение, malformed события делают монитор unhealthy.
+
+Исправление установлено на физический Keenetic. Повторная 40-секундная парная сессия с HTTPS-трафиком: сотни Wi-Fi notifications, route_generation 0/0/0, transport generation неизменен, snapshot маршрутов до/после совпадает. Unit test прошёл на ARM64 роутере; Linux Go tests с -race и vet PASS, все пять Linux бинарников собраны. Production PID/config/locks сохранены. Полный sweep и reboot для этой правки не выполнялись.
+
+Chromium через SSH-туннель: DIRECT/strategy 1 получили HTTP 200, fresh connection и verified tuple/strategy/route, route/firewall generations 0→0; INVALID отсутствует. Общий generic harness вернул FAIL из-за функционального DOM-условия (DECLARED_SCENARIO_FAILED_TWICE), поэтому это подтверждение исправления транспорта, а не успешности сценария страницы.
+
 ## Keenetic и MagiTrickle — 25.10.2026
 
 Проверен Netcraze Ultra NC-1812, KeeneticOS 5.2 Beta 1, Linux 4.9, Entware ARM64, WAN ppp0, установленный MagiTrickle. Прежняя побитовая классификация пересекалась с его метками; теперь iptables использует точный tag 0x04000000/0x0f000000. Полные маски чужих MARK/CONNMARK разрешены только при отсутствии конфликта с tag; частичные опасные записи и перехватывающие policy rules отклоняются. Неподдерживаемый BusyBox marked route lookup заменяется подтверждённым NFQUEUE egress для того же tuple/strategy/mark.
