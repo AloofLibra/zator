@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, withinTimeout, ensureIsolation } from './core'
+import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, withinTimeout, ensureIsolation } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
@@ -14,6 +14,8 @@ if (process.argv.includes('--probe-integration') && process.env.ZATOR_PROBE_TEST
 let win: BrowserWindow
 let preview: WebContentsView | undefined
 let previewSession: Electron.Session | undefined
+let previewBounds = { x: 0, y: 0, width: 0, height: 0 }
+let previewExpanded = false
 let controller: AbortController | undefined
 let activeRouter: Router | undefined
 let results: any[] = []
@@ -21,7 +23,7 @@ let quitting = false
 let running: Promise<boolean> | undefined
 let integrationFull = false
 let manualWait: { index: number; finish: () => void } | undefined
-function update(data: Record<string, unknown>) { if (process.argv.includes('--probe-integration') && data.error) console.log(`INTEGRATION_ERROR=${data.error}`); if (integrationFull && ['NEXT', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR', 'REPORTING'].includes(String(data.state))) console.log(`FULLSCAN_PROGRESS=${JSON.stringify({ state: data.state, completed: data.completed, total: data.total, profile: data.profile, strategy: data.strategy, gv_strategy: data.gv_strategy, target: data.target, error: data.error })}`); if (Array.isArray(data.results)) data = { ...data, coverage: coverageSummary(data.results) }; if (win && !win.isDestroyed()) win.webContents.send('probe-update', data) }
+function update(data: Record<string, unknown>) { if (process.argv.includes('--probe-integration') && data.error) console.log(`INTEGRATION_ERROR=${data.error}`); if (integrationFull && ['NEXT', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR', 'REPORTING'].includes(String(data.state))) console.log(`FULLSCAN_PROGRESS=${JSON.stringify({ state: data.state, completed: data.completed, total: data.total, profile: data.profile, strategy: data.strategy, gv_strategy: data.gv_strategy, target: data.target, error: data.error })}`); if (Array.isArray(data.results)) data = { ...data, coverage: coverageSummary(data.results), summary: verdictSummary(data.results) }; if (win && !win.isDestroyed()) win.webContents.send('probe-update', data) }
 let saving = Promise.resolve()
 function saveResults(): Promise<void> {
   saving = saving.catch(() => {}).then(async () => {
@@ -32,7 +34,13 @@ function saveResults(): Promise<void> {
   })
   return saving
 }
-function fit() { if (!preview) return; const [w, h] = win.getContentSize(); preview.setBounds({ x: 410, y: 0, width: Math.max(100, w - 410), height: h }) }
+function fit() {
+  if (!preview) return
+  const [w, h] = win.getContentSize()
+  const x = Math.min(previewBounds.x, w), y = Math.min(previewBounds.y, h)
+  const width = Math.min(previewBounds.width, w - x), height = Math.min(previewBounds.height, h - y)
+  preview.setBounds({ x, y, width, height }); preview.setVisible(width > 0 && height > 0)
+}
 async function closePreview() {
   const old = preview, ses = previewSession; preview = undefined; previewSession = undefined
   if (!old) return
@@ -65,9 +73,10 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
   ses.webRequest.onBeforeRequest((details, callback) => {
     try { const u = new URL(details.url); callback({ cancel: !['https:', 'wss:', 'data:', 'blob:', 'about:'].includes(u.protocol) }) } catch { callback({ cancel: true }) }
   })
-  preview = new WebContentsView({ webPreferences: { session: ses, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false } })
+  preview = new WebContentsView({ webPreferences: { session: ses, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: false } })
   const view = preview, wc = view.webContents
   wc.setAudioMuted(true)
+  wc.on('before-input-event', (event, input) => { if (input.type === 'keyDown' && input.key === 'Escape' && previewExpanded) { event.preventDefault(); update({ collapse_preview: true }) } })
   wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
   wc.setWindowOpenHandler(() => ({ action: 'deny' }))
   wc.on('will-navigate', (event, url) => { try { safeURL(url) } catch { event.preventDefault() } })
@@ -253,7 +262,10 @@ async function run(options: RunOptions) {
           sweep.record(pair, verdicts.page.verdict, verdicts.video?.verdict ?? null)
           if (options.manual && results.length > oldLength) { update({ state: 'MANUAL', ...pairContext, completed, results }); await waitForManual(results.length - 1, signal) }
           update({ state: 'NEXT', ...pairContext, completed, results })
-          if (sweep.next()) { update({ state: 'PAUSE', ...pairContext, completed, pause_seconds: 15 }); await delay(15000, signal) }
+          if (sweep.next()) {
+            const pause = strategyPause(1, pair.testGV ? [verdicts.page.verdict, verdicts.video?.verdict] : [verdicts.page.verdict])
+            update({ state: 'PAUSE', ...pairContext, completed, pause_seconds: pause / 1000 }); await delay(pause, signal)
+          }
         }
         for (const strategy of sweep.uncheckedGV) {
           results.push({ test_id: randomUUID(), site: redactURL(target.url), profile: 2, strategy, scenario: target.scenario, stage: 'video', tested: false, verdict: 'UNKNOWN', reason: 'VIDEO_NOT_TESTED_WITH_WORKING_PAGE', mode: 'router_socks_tcp', protocol_scope: 'TCP_HTTPS_IPV4', manual: null }); completed++
@@ -288,7 +300,7 @@ async function run(options: RunOptions) {
         }
         update({ state: 'NEXT', ...context, completed, strategy, results })
         if (result.verdict === 'INVALID') throw new Error(`SCAN_STOPPED_INVALID_TRANSPORT: ${result.reason}`)
-        if (index < sequence.length - 1) { update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: pause / 1000 }); await delay(pause, signal) }
+        if (index < sequence.length - 1) { const nextPause = strategyPause(target.profile, [result.verdict]); update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: nextPause / 1000 }); await delay(nextPause, signal) }
       }
       }
       if (heartbeat) clearInterval(heartbeat)
@@ -321,6 +333,10 @@ app.whenReady().then(async () => {
   win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
   ipcMain.handle('probe-command', async (event, command, payload) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || event.senderFrame.url !== 'zator-ui://app/index.html') throw new Error('IPC_DENIED')
+    if (command === 'preview-bounds') {
+      if (!payload || typeof payload.expanded !== 'boolean' || !['x', 'y', 'width', 'height'].every(key => Number.isSafeInteger(payload[key]) && payload[key] >= 0 && payload[key] <= 32768)) throw new Error('INVALID_PREVIEW_BOUNDS')
+      previewBounds = { x: payload.x, y: payload.y, width: payload.width, height: payload.height }; previewExpanded = payload.expanded; fit(); return
+    }
     if (command === 'run') { if (controller) throw new Error('RUN_BUSY'); running = run(payload).catch(e => { update({ state: 'ERROR', error: e.message }); return false }); return }
     if (command === 'cancel') { controller?.abort(); return }
     if (command === 'manual') { if (Number.isInteger(payload.index) && results[payload.index] && ['passed', 'failed', 'unknown'].includes(payload.value)) { results[payload.index].manual = payload.value; await saveResults(); const waiting = manualWait; if (waiting && waiting.index === payload.index) waiting.finish(); update({ results }) }; return }
@@ -352,9 +368,32 @@ app.whenReady().then(async () => {
       all.value='selected'; all.dispatchEvent(new Event('change'));
       return sweep && single && !document.getElementById('strategies').disabled;
     })()`)
-    update({ state: 'PREPARING' })
+    preview = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
+    win.contentView.addChildView(preview); await preview.webContents.loadURL('about:blank'); fit()
+    update({ state: 'PREPARING', results: ['OK', 'WARN', 'FAIL', 'UNKNOWN', 'INVALID'].map((verdict, index) => ({ profile: 3, strategy: index + 1, site: 'https://example.org/', verdict, reason: 'SMOKE', manual: null })) })
     const safe = await win.webContents.executeJavaScript(`new Promise(resolve => setTimeout(async () => { try { await window.probe.command('cancel'); resolve(typeof require === 'undefined' && document.querySelector('#run').disabled && document.querySelector('#status').textContent.includes('Подготовка')) } catch { resolve(false) } }, 30))`)
-    console.log(`UI_SMOKE=${safe && controls ? 'PASS' : 'FAIL'}`); app.exit(safe && controls ? 0 : 1)
+    const compact = preview.getBounds()
+    const layout = await win.webContents.executeJavaScript(`(() => {
+      const folded=!document.getElementById('settings').open && [...document.querySelectorAll('#settings fieldset')].every(group=>group.disabled);
+      const summary=document.querySelector('#coverage .summary-card'); summary.open=true;
+      const summaries=['Сработали: 1','С замечаниями: 2','Не сработали: 3','Не подтверждены: 4','Ошибка проверки: 5'].every(text=>summary.textContent.includes(text));
+      const log=document.getElementById('result-scroll').getBoundingClientRect(), slot=document.getElementById('preview-slot').getBoundingClientRect();
+      return folded && summaries && document.querySelectorAll('#results tr').length===5 && log.right<slot.left && slot.right<=innerWidth;
+    })()`)
+    await win.webContents.executeJavaScript(`new Promise(resolve=>{document.getElementById('preview-toggle').click();setTimeout(resolve,80)})`)
+    const expanded = preview.getBounds()
+    await win.webContents.executeJavaScript(`new Promise(resolve=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));setTimeout(resolve,80)})`)
+    const restored = preview.getBounds()
+    let badBoundsRejected = false
+    try { await win.webContents.executeJavaScript(`window.probe.command('preview-bounds',{x:-1,y:0,width:100,height:100})`) } catch { badBoundsRejected = true }
+    win.setContentSize(960, 700)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const narrow = preview.getBounds()
+    update({ state: 'IDLE' })
+    const unlocked = await win.webContents.executeJavaScript(`new Promise(resolve=>setTimeout(()=>resolve(!document.getElementById('run').disabled && [...document.querySelectorAll('#settings fieldset')].every(group=>!group.disabled)),30))`)
+    const previewFits = compact.width > 0 && compact.width <= 360 && expanded.width > compact.width * 2 && restored.width === compact.width && narrow.width > 0 && narrow.x + narrow.width <= 960 && narrow.y + narrow.height <= 700 && preview.webContents.getURL() === 'about:blank'
+    const passed = safe && controls && layout && previewFits && unlocked && badBoundsRejected
+    console.log(`UI_SMOKE=${passed ? 'PASS' : 'FAIL'} ${JSON.stringify({ controls, layout, previewFits, unlocked, badBoundsRejected })}`); app.exit(passed ? 0 : 1)
   }
   if (process.argv.includes('--probe-integration')) {
     if (!process.env.ZATOR_PROBE_TEST_CONFIG || !process.env.ZATOR_PROBE_TEST_REPORT) throw new Error('TEST_PATHS_REQUIRED')
@@ -369,7 +408,7 @@ app.whenReady().then(async () => {
     const finished = await running
     await writeFile(process.env.ZATOR_PROBE_TEST_REPORT, JSON.stringify(results, null, 2))
     if (process.env.ZATOR_PROBE_TEST_IMAGE) {
-      try { await writeFile(process.env.ZATOR_PROBE_TEST_IMAGE, (await win.capturePage()).toPNG()) } catch { console.log('UI_CAPTURE=UNAVAILABLE') }
+      try { await new Promise(resolve => setTimeout(resolve, 100)); await writeFile(process.env.ZATOR_PROBE_TEST_IMAGE, (await win.capturePage()).toPNG()) } catch { console.log('UI_CAPTURE=UNAVAILABLE') }
     }
     if (integrationFull) {
       const completion = scanCompletion(results, options, expectedCapabilities)

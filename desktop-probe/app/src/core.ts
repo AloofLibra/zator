@@ -15,6 +15,22 @@ export async function ensureIsolation(call: (command: string) => Promise<Capabil
   return capabilities
 }
 export const succeeded = (verdict: Verdict) => verdict === 'OK' || verdict === 'WARN'
+export function strategyPause(profile: number, verdicts: (Verdict | undefined)[]) {
+  return verdicts.length > 0 && verdicts.every(verdict => verdict === 'OK') ? 5000 : profile === 3 ? 30000 : 15000
+}
+export function verdictSummary(rows: { profile: number; strategy: number; site: string; verdict: Verdict; tested?: boolean; helper?: boolean }[]) {
+  const groups = new Map<string, { profile: number; site: string; strategies: Map<number, Verdict> }>()
+  for (const row of rows) {
+    if (!row.strategy || row.helper) continue
+    const key = `${row.profile}:${row.site}`
+    if (!groups.has(key)) groups.set(key, { profile: row.profile, site: row.site, strategies: new Map() })
+    groups.get(key)!.strategies.set(row.strategy, row.tested === false ? 'UNKNOWN' : row.verdict)
+  }
+  return [...groups.values()].map(group => ({ profile: group.profile, site: group.site,
+    verdicts: Object.fromEntries((['OK', 'WARN', 'FAIL', 'UNKNOWN', 'INVALID'] as Verdict[]).map(verdict => [verdict,
+      [...group.strategies].filter(([, value]) => value === verdict).map(([strategy]) => strategy).sort((a, b) => a - b)]))
+  })).sort((a, b) => a.profile - b.profile || a.site.localeCompare(b.site))
+}
 export interface YouTubePair { yt: number; gv: number; testYT: boolean; testGV: boolean; baseline: boolean }
 export class YouTubeSweep {
   private baseline = true

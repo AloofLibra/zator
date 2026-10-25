@@ -3,9 +3,9 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'"><title>Zator Desktop Probe</title><link rel="stylesheet" href="style.css"></head>
 <body>
 <main>
-  <p class="eyebrow">ZATOR / DESKTOP PROBE</p><h1>Проверка стратегий</h1>
-  <p class="muted">Отдельная очередь и браузер.<br>TCP · HTTPS · IPv4</p>
+  <header><div><p class="eyebrow">ZATOR / DESKTOP PROBE</p><h1>Проверка стратегий</h1></div><p class="muted">Отдельная очередь и браузер · TCP / HTTPS / IPv4</p></header>
   <form id="probe-form">
+    <details id="settings" open><summary>Настройки запуска</summary><div class="settings-grid">
     <fieldset><legend>Роутер по SSH</legend>
       <label>Адрес или SSH alias<input id="host" required placeholder="192.168.10.1" autocomplete="off"></label>
       <div class="row"><label>Пользователь<input id="user" value="root" required autocomplete="off"></label><label>Порт<input id="port" type="number" min="1" max="65535" value="22" required></label></div>
@@ -33,19 +33,22 @@ https://amnezia.org/</textarea></label>
         <p class="note">Все стратегии берутся из живого конфига. Проход последовательный; каждый RKN-сайт проверяется всеми номерами. Авторизация Discord может дать UNKNOWN; body подтверждает только загрузку DOM.</p>
       </div>
       <label>Лимит всей пробы, секунд<input id="timeout" type="number" min="5" max="60" value="10" required></label>
-      <p class="note">Таймаут и отказ загрузки не повторяются. Паузы между стратегиями: 15 с, RKN — 30 с.</p>
+      <p class="note">После OK — пауза 5 с. Иначе 15 с, RKN — 30 с. Для YT/GV ускорение требует успеха обеих проверок. Таймаут и отказ загрузки не повторяются.</p>
       <label><span><input id="manual" type="checkbox"> Ожидать ручную оценку сайта (до 5 минут)</span></label>
     </fieldset>
-    <p class="note">DIRECT проверяется первым. Без доказанной изоляции результат INVALID; без функционального условия — UNKNOWN. QUIC, UDP, IPv6 и WebRTC не проверяются.</p>
-    <div class="row"><button id="run" type="submit">Начать</button><button id="cancel" type="button" class="secondary" disabled>Отменить</button></div>
+    </div><p class="note">DIRECT проверяется первым. Без доказанной изоляции результат INVALID; без функционального условия — UNKNOWN. QUIC, UDP, IPv6 и WebRTC не проверяются.</p></details>
+    <div class="toolbar"><div class="row"><button id="run" type="submit">Начать</button><button id="cancel" type="button" class="secondary" disabled>Отменить</button></div><p id="status" role="status" aria-live="polite">Готов к запуску</p><div class="row"><button id="export" class="secondary" type="button">Экспорт</button><button id="screenshot" class="secondary" type="button">Снимок</button></div></div>
   </form>
-  <p id="status" role="status" aria-live="polite">Готов к запуску</p>
   <p id="progress" role="status" aria-live="polite"></p>
-  <div class="row"><button id="export" class="secondary" type="button">Экспорт</button><button id="screenshot" class="secondary" type="button">Снимок</button></div>
-  <table><caption>Покрытие · OK / проверено сайтов</caption><thead><tr><th>Профиль</th><th>Стратегия</th><th>OK</th></tr></thead><tbody id="coverage"></tbody></table>
-  <table><caption>Результаты · ручная оценка отдельно</caption><thead><tr><th>Цель / стратегия</th><th>Вердикт</th><th>Оценка</th></tr></thead><tbody id="results"></tbody></table>
-  <details><summary>Детали последнего результата</summary><pre id="details"></pre></details>
-  <details><summary>Сеть текущей пробы · последние 50 запросов</summary><div id="network"></div></details>
-</main><section id="placeholder" aria-label="Область браузера"><div><span>→</span><h2>Здесь откроется сайт</h2><p>Новый контекст для каждой стратегии.<br>Ключи, cookie и тела запросов в отчёт не попадают.</p></div></section>
+  <div class="workspace"><section class="journal" aria-label="Результаты сканирования">
+    <details id="coverage-panel" open><summary>Сводка по профилям и сайтам</summary><div id="coverage"><p class="muted">Результатов пока нет</p></div></details>
+    <h2>Журнал проверок</h2><p class="note">Страница и видео одной попытки показаны отдельными строками. DIRECT — контрольная проверка.</p>
+    <div id="result-scroll"><table><thead><tr><th>Сайт / стратегия</th><th>Проверка</th><th>Результат</th><th>Ручная оценка</th></tr></thead><tbody id="results"></tbody></table></div>
+  </section><aside>
+    <section id="preview-panel"><div class="panel-heading"><h2>Предпросмотр</h2><button id="preview-toggle" type="button" class="secondary" aria-expanded="false">Раскрыть</button></div><div id="preview-slot"><div id="placeholder">Здесь откроется сайт<br>Звук выключен</div></div></section>
+    <details><summary>Сеть текущей пробы · до 50 запросов</summary><div id="network"></div></details>
+    <details><summary>Детали последнего результата</summary><pre id="details"></pre></details>
+  </aside></div>
+</main>
 <script src="renderer.js"></script>
 </body></html>

@@ -1,6 +1,33 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
+import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
+
+test('only confirmed success accelerates the next pause, including both stages of a pair', () => {
+  assert.equal(strategyPause(1, ['OK', 'OK']), 5000)
+  assert.equal(strategyPause(3, ['OK']), 5000)
+  for (const verdict of ['FAIL', 'WARN', 'UNKNOWN', 'INVALID', undefined] as const) {
+    assert.equal(strategyPause(1, ['OK', verdict]), 15000)
+    assert.equal(strategyPause(3, [verdict]), 30000)
+  }
+  assert.equal(strategyPause(4, []), 15000)
+})
+
+test('compact summaries separate sites and uncertain results, excluding DIRECT and helpers', () => {
+  const rows = [
+    { profile: 1, strategy: 0, site: 'a', verdict: 'OK' as const },
+    { profile: 1, strategy: 1, site: 'a', verdict: 'OK' as const, helper: true },
+    { profile: 3, strategy: 2, site: 'b', verdict: 'FAIL' as const },
+    { profile: 3, strategy: 2, site: 'a', verdict: 'OK' as const },
+    { profile: 3, strategy: 1, site: 'a', verdict: 'WARN' as const },
+    { profile: 2, strategy: 1, site: 'a', verdict: 'OK' as const, tested: false },
+    { profile: 3, strategy: 3, site: 'a', verdict: 'INVALID' as const }
+  ]
+  const summary = verdictSummary(rows)
+  assert.equal(summary.length, 3)
+  assert.deepEqual(summary[0].verdicts.UNKNOWN, [1]); assert.deepEqual(summary[0].verdicts.OK, [])
+  assert.deepEqual(summary[1].verdicts.OK, [2]); assert.deepEqual(summary[1].verdicts.WARN, [1]); assert.deepEqual(summary[1].verdicts.INVALID, [3])
+  assert.deepEqual(summary[2].verdicts.FAIL, [2])
+})
 
 test('preflight restores missing transport once and rechecks isolation', async () => {
   const calls: string[] = []
