@@ -368,7 +368,10 @@ ok "entware do_restart: старые маркеры сняты до рестар
 
 # --- Entware: жизненный цикл реального скрипта — start ждёт готовности демона ---
 
-ENT_REAL="$REPO_DIR/Entware/zapret2-watchdog"
+ENT_REAL="$TMP_DIR/ent/zapret2-watchdog-real"
+# Installed scripts are executable; Git stores this source as 0644.
+tr -d '\r' < "$REPO_DIR/Entware/zapret2-watchdog" > "$ENT_REAL"
+chmod +x "$ENT_REAL"
 ENT_PIDFILE="$TMP_DIR/ent/wd.pid"
 ENT_LOG="$TMP_DIR/ent/wd.log"
 export Z2R_WATCHDOG_PIDFILE="$ENT_PIDFILE"
