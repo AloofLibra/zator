@@ -19,6 +19,7 @@ func ipRules(c settings) ([]string, []ipRule, []ipRule) {
 		rule("POSTROUTING", "-p", "tcp", "-m", "mark", "--mark", m, "-m", "mark", "!", "--mark", raw, "-j", "Z2R_DP_POST"),
 		rule("PREROUTING", "-p", "tcp", "-m", "conntrack", "--ctdir", "REPLY", "-m", "connmark", "--mark", m, "-j", "Z2R_DP_PRE"),
 		rule("INPUT", "-p", "tcp", "-m", "conntrack", "--ctdir", "REPLY", "-m", "connmark", "--mark", m, "-j", "ACCEPT"),
+		rule("OUTPUT", "-p", "tcp", "-m", "connmark", "--mark", m, "-j", "Z2R_DP_OUT"),
 		rule("OUTPUT", "-p", "tcp", "--dport", "443", "-m", "owner", "--uid-owner", fmt.Sprint(c.ProxyUID), "-j", "Z2R_DP_OUT"),
 		rule("OUTPUT", "-p", "tcp", "-m", "owner", "--uid-owner", fmt.Sprint(c.NfqUID), "-j", "Z2R_DP_RAW"),
 		rule("POSTROUTING", "-p", "tcp", "-m", "mark", "--mark", m, "-m", "mark", "--mark", raw, "-j", "ACCEPT"),

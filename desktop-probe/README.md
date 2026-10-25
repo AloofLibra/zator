@@ -64,6 +64,8 @@ YouTube всегда использует два профиля одноврем
 
 Потеря очереди/процесса/SSH, смена поколения firewall или маршрутов, отсутствие связи конкретного browser host → proxy tuple → conntrack → Lua invocation дают `INVALID`. Неожиданный переход на другой домен — `UNKNOWN`. Один HTTP 200 не даёт `OK`.
 
+Тестовый packet mark восстанавливается из собственного conntrack bit даже для TCP-пакетов, которые ядро создаёт после закрытия сокета и которые уже не имеют UID прокси. Восстанавливается только тестовый бит, остальные mark bits сохраняются. Это исключает попадание поздних RST/ACK в production NFQUEUE. При отсутствии тестового conntrack bit или появлении production bit `FLOW_MARK_MISMATCH` по-прежнему останавливает прогон.
+
 Доказательство собирается по конкретным хостам: обязательно подтверждаются документ и хосты, от которых получены Googlevideo data или Discord gateway frames. Незавершённый вспомогательный запрос не обнуляет подтверждённые соединения, но сам подтверждённым не считается. HTTP/2 reuse внутри свежей пробы допустим, когда router proxy доказывает новые соединения после переключения. При INVALID сообщение об остановке содержит конкретную причину.
 
 JSON/Markdown экспортируются кнопкой. URL очищаются до origin, заголовки/cookie/тела запросов не собираются. Последний частичный отчёт сохраняется локально в Electron `userData/last-report.json`; SSH-настройки и owner token в него не входят. Снимок страницы сохраняется только по кнопке.
@@ -116,6 +118,7 @@ ZATOR_PROBE_HARDWARE_BENCH=1 ./router-tests -test.v -test.run TestHardwareSingBo
 ZATOR_PROBE_HARDWARE_LIFECYCLE=1 ZATOR_PROBE_HARDWARE_FAULTS=1 ./router-tests -test.v -test.run TestHardwareAgent -test.timeout 150s
 ZATOR_PROBE_HARDWARE_PAIR=1 ./router-tests -test.v -test.run TestHardwareYouTubePair -test.timeout 35s
 ZATOR_PROBE_HARDWARE_PREPARE=1 ./router-tests -test.v -test.run TestHardwarePrepareTransport -test.timeout 35s
+ZATOR_PROBE_HARDWARE_OWNERLESS=1 ./router-tests -test.v -test.run TestHardwareOwnerlessPacket -test.timeout 20s
 ```
 
 `go test -c` создаёт `router-tests` под нужную GOOS/GOARCH. Эти проверки адресно меняют **только собственные** правила и завершают **только собственные** процессы; рабочие конфиги/локи проверяются по hash. Не запускайте opt-in hardware tests параллельно с приложением.

@@ -85,6 +85,8 @@ func transportRules(c settings) string {
 		"add chain inet zapret2 zator_dp_in",
 		fmt.Sprintf("add rule inet zapret2 zator_dp_output meta nfproto ipv4 meta skuid %d tcp dport 443 ct mark set ct mark | %s meta mark set meta mark | %s%s", c.ProxyUID, m, m, suffix),
 		fmt.Sprintf("add rule inet zapret2 zator_dp_output meta nfproto ipv4 meta skuid %d meta l4proto tcp meta mark set meta mark | %s | %s%s", c.NfqUID, m, raw, suffix),
+		// Kernel RST/ACK after socket teardown have no proxy UID but retain conntrack identity.
+		fmt.Sprintf("add rule inet zapret2 zator_dp_output meta nfproto ipv4 meta l4proto tcp ct mark & %s != 0 meta mark set meta mark | %s%s", m, m, suffix),
 		fmt.Sprintf("add rule inet zapret2 zator_dp_out meta mark & %s == 0 meta mark set meta mark | 0x20000000 counter queue num %d bypass%s", raw, c.Queue, suffix),
 		"add rule inet zapret2 zator_dp_out return" + suffix,
 		fmt.Sprintf("add rule inet zapret2 zator_dp_in counter queue num %d bypass%s", c.Queue, suffix),
@@ -129,10 +131,13 @@ func nftFingerprint(c settings) (string, error) {
 		}
 		all = append(all, out...)
 	}
-	if strings.Count(string(all), `comment "zator_desktop_probe"`) != 10 {
+	if strings.Count(string(all), `comment "zator_desktop_probe"`) != 11 {
 		return "", fmt.Errorf("TRANSPORT_CHANGED")
 	}
 	text := string(all)
+	if !strings.Contains(text, fmt.Sprintf("ct mark & 0x%08x != 0x00000000 meta mark set meta mark | 0x%08x", c.Mark, c.Mark)) {
+		return "", fmt.Errorf("TRANSPORT_CHANGED")
+	}
 	if !strings.Contains(text, "meta mark set meta mark | 0x20000000") {
 		return "", fmt.Errorf("TRANSPORT_SETTINGS_MISMATCH")
 	}

@@ -117,6 +117,9 @@ func TestStaticTransport(t *testing.T) {
 	if strings.Contains(rules, "65535") || strings.Contains(rules, "62000") || strings.Contains(rules, "flush") {
 		t.Fatal("production/Supersweep interference")
 	}
+	if !strings.Contains(rules, "meta l4proto tcp ct mark & 0x4000000 != 0 meta mark set meta mark | 0x4000000") || strings.Contains(rules, "ct mark set meta mark") {
+		t.Fatal("conntrack fallback missing or foreign mark bits overwritten")
+	}
 	jump := strings.LastIndex(rules, "jump zator_dp_out")
 	ret := strings.Index(rules, "postnat_hook meta nfproto ipv4 meta l4proto tcp meta mark & 0x4000000 != 0 return")
 	if ret < 0 || jump < ret {

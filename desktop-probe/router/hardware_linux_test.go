@@ -292,6 +292,94 @@ func TestHardwarePrepareTransport(t *testing.T) {
 	t.Log("prepare refuses active sessions, restores only missing own rules and leaves healthy transport unchanged; production config/locks preserved")
 }
 
+func TestHardwareOwnerlessPacket(t *testing.T) {
+	if os.Getenv("ZATOR_PROBE_HARDWARE_OWNERLESS") != "1" {
+		t.Skip("physical ownerless packet test is opt-in")
+	}
+	c, err := readSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Backend != "nft" {
+		t.Skip("physical nft test")
+	}
+	call := func(r request) response {
+		body, _ := json.Marshal(r)
+		cmd := exec.Command("/opt/zator/bin/zator-desktop-probe", r.Command, "--json")
+		cmd.Stdin = bytes.NewReader(body)
+		out, err := cmd.CombinedOutput()
+		var reply response
+		if json.Unmarshal(out, &reply) != nil || err != nil || reply["ok"] != true {
+			t.Fatalf("%s: %s %v", r.Command, out, err)
+		}
+		return reply
+	}
+	if call(request{Command: "capabilities"})["session_active"] == true {
+		t.Fatal("another session is active")
+	}
+	// Bootstrap only this fixture's marked socket; clearing SO_MARK then simulates loss of socket ownership.
+	rules := fmt.Sprintf("add table inet zator_dp_fixture\nadd chain inet zator_dp_fixture out { type filter hook output priority -2; policy accept; }\nadd rule inet zator_dp_fixture out meta nfproto ipv4 tcp dport 443 meta mark & 0x%x != 0 ct mark set ct mark | 0x%x comment \"zator_desktop_probe\"\n", c.Mark, c.Mark)
+	if err := nftApply(rules); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := nftApply("delete table inet zator_dp_fixture\n"); err != nil {
+			t.Error(err)
+		}
+	}()
+	owner := randomID() + randomID()
+	start := call(request{Command: "start", Owner: owner, Profile: 1})
+	id := start["session_id"].(string)
+	defer call(request{Command: "stop", Owner: owner, Session: id})
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: func(network, address string, raw syscall.RawConn) error {
+		var setting error
+		if err := raw.Control(func(fd uintptr) {
+			setting = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, int(c.Mark))
+		}); err != nil {
+			return err
+		}
+		return setting
+	}}
+	conn, err := dialer.Dial("tcp4", "example.org:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	f := flow{Host: "example.org", Local: conn.LocalAddr().String(), Remote: conn.RemoteAddr().String()}
+	readMark := func() uint32 {
+		raw, err := readLimited("/proc/net/nf_conntrack", 2*1024*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mark, ok := conntrackMark(string(raw), f)
+		if !ok {
+			t.Fatal("missing fixture conntrack entry")
+		}
+		return mark
+	}
+	if mark := readMark(); mark&c.Mark == 0 || mark&c.RawMark != 0 {
+		t.Fatalf("fixture bootstrap mark=0x%x", mark)
+	}
+	socket, err := conn.(*net.TCPConn).SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var setting error
+	if err := socket.Control(func(fd uintptr) { setting = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, 0) }); err != nil || setting != nil {
+		t.Fatal(err, setting)
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	client := tls.Client(conn, &tls.Config{ServerName: "example.org"})
+	if err := client.Handshake(); err != nil {
+		t.Log("TLS result is separate from mark isolation:", err)
+	}
+	mark := readMark()
+	if mark&c.Mark == 0 || mark&c.RawMark != 0 {
+		t.Fatalf("unmarked root-owned packet leaked to production: conntrack=0x%x", mark)
+	}
+	t.Logf("test conntrack mark 0x%x retained after root-owned socket sends with SO_MARK=0", mark)
+}
+
 func TestHardwareAgentLifecycle(t *testing.T) {
 	if os.Getenv("ZATOR_PROBE_HARDWARE_LIFECYCLE") != "1" {
 		t.Skip("physical router lifecycle is opt-in")
@@ -500,7 +588,7 @@ func TestHardwareAgentLifecycle(t *testing.T) {
 			}
 		}
 		listing, e = runCommand("nft", "-s", "list", "table", "inet", "zapret2")
-		if e != nil || strings.Count(string(listing), `comment "zator_desktop_probe"`) != 10 {
+		if e != nil || strings.Count(string(listing), `comment "zator_desktop_probe"`) != 11 {
 			t.Fatal("duplicate/missing rules after 10 reconciles")
 		}
 		if status()["ok"] != false {
