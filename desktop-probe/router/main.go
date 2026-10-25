@@ -631,6 +631,17 @@ func entry() error {
 	if len(os.Args) < 2 {
 		return fmt.Errorf("USAGE: capabilities|start|set-strategy|status|telemetry|heartbeat|stop|recover; JSON request on stdin")
 	}
+	if os.Args[1] == "--default-settings" {
+		raw, err := readLimited("/opt/zapret2/config", 1024*1024)
+		if err != nil {
+			return err
+		}
+		c, err := defaultSettings(string(raw))
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(c)
+	}
 	if os.Args[1] == "--check-settings" {
 		if len(os.Args) != 3 {
 			return fmt.Errorf("INVALID_REQUEST")

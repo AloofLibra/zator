@@ -36,6 +36,7 @@ jobs:
             desktop-probe/dist/
             desktop-probe/install-router.sh
             desktop-probe/firewall-openwrt.sh
+            desktop-probe/firewall-keenetic.sh
             desktop-probe/settings.example.json
             desktop-probe/README.md
             desktop-probe/THIRD_PARTY_NOTICES.md

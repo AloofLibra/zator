@@ -145,8 +145,13 @@ func TestHardwareYouTubePair(t *testing.T) {
 		t.Fatal("refusing to touch another session")
 	}
 	baseline := map[string][32]byte{}
+	missing := ""
 	for _, path := range []string{c.ZapretRoot + "/config", c.ZatorRoot + "/extra_strats/cache/orchestra/locked.tsv", c.ZatorRoot + "/extra_strats/cache/orchestra/locked.manual.tsv"} {
 		raw, err := os.ReadFile(path)
+		if os.IsNotExist(err) && strings.HasSuffix(path, "/locked.manual.tsv") {
+			missing = path
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -187,6 +192,11 @@ func TestHardwareYouTubePair(t *testing.T) {
 		}
 	}
 	t.Log("YT-1 and GV-2 verified simultaneously by tuple, Lua strategy/profile, conntrack and WAN; production config/locks unchanged")
+	if missing != "" {
+		if _, err := os.Stat(missing); !os.IsNotExist(err) {
+			t.Fatal("probe created optional production lock file", err)
+		}
+	}
 }
 
 func TestHardwarePrepareTransport(t *testing.T) {

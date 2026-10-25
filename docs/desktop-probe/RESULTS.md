@@ -1,5 +1,13 @@
 # Desktop Probe: результаты реализации
 
+## Keenetic и MagiTrickle — 25.10.2026
+
+Проверен Netcraze Ultra NC-1812, KeeneticOS 5.2 Beta 1, Linux 4.9, Entware ARM64, WAN ppp0, установленный MagiTrickle. Прежняя побитовая классификация пересекалась с его метками; теперь iptables использует точный tag 0x04000000/0x0f000000. Полные маски чужих MARK/CONNMARK разрешены только при отсутствии конфликта с tag; частичные опасные записи и перехватывающие policy rules отклоняются. Неподдерживаемый BusyBox marked route lookup заменяется подтверждённым NFQUEUE egress для того же tuple/strategy/mark.
+
+PASS: установка без ручного JSON (backend из FWTYPE, сохранение настроек при обновлении); отдельный поздний NDM hook; восстановление после удаления собственного OUTPUT hook; обычный HTTPS и TCP с SO_MARK MagiTrickle не увеличивают тестовую очередь; DIRECT и strategy 1 HTTPS 200 с ростом своей очереди и verified connection/strategy/route. Config, locked.tsv, production PID/queue и чужие firewall/policy rules сохранены. Парный YT-1/GV-2 тест подтверждает обе стратегии независимо; HTTP Googlevideo завершился таймаутом, воспроизведение этим тестом не проверяется.
+
+Go tests/vet и сборка пяти Linux архитектур PASS; shell quick 8/8 и desktop_probe_smoke PASS. Fixtures проверяют iptables с MagiTrickle и без него, отклонение чужих совпадений/опасных масок/маршрутов и отсутствие доказательства при неполных данных. MagiTrickle на физическом устройстве не отключался. Полный Chromium sweep, reboot, полный NDM/WAN reload и 128 МБ/OOM для этой версии не проверены. Изменения идут после опубликованного beta 1.
+
 Дата: 24.10.2026. Реализован TCP MVP в `desktop-probe/`: Windows Electron UI, SSH adapter, изолированные Go agent/SOCKS/nfqws2, native nft и legacy iptables transport, отчёты и lifecycle. Инструкция: [README](../../desktop-probe/README.md); решения и аудит зависимостей: [ADR](ADR.md); ресурсы и ограничения: [compatibility](compatibility.md).
 
 Пользователь перенёс физические Keenetic-тесты до получения устройства и предоставил OpenWrt 192.168.10.1 для первичных испытаний. Это позволяет проверить технический контур на OpenWrt, но не закрывает аппаратные критерии Keenetic и 128 МБ.

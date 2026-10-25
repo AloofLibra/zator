@@ -114,7 +114,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 		}
 		mark, matched := conntrackMark(conntrack, f)
 		executed, packetMark, packetEgress, recorded := invocationEvidence(events, f, wanted, profile...)
-		if recorded && (packetMark&c.Mark == 0 || packetMark&c.RawMark != 0) {
+		if recorded && (!c.ownsMark(packetMark) || packetMark&c.RawMark != 0) {
 			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
 		}
 		if !matched {
@@ -141,7 +141,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 			}
 			continue
 		}
-		if mark&c.Mark == 0 || mark&c.RawMark != 0 {
+		if !c.ownsMark(mark) || mark&c.RawMark != 0 {
 			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
 		}
 		matchedFlows++
@@ -163,7 +163,11 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 		}
 		route, err := runCommand("ip", "-4", "route", "get", target, "mark", strconv.FormatUint(uint64(mark), 10))
 		if err != nil {
-			continue
+			// Entware BusyBox ip lacks marked lookups; NFQUEUE records actual kernel egress.
+			if !executed || !recorded || packetEgress == "" {
+				continue
+			}
+			route = []byte("dev " + packetEgress)
 		}
 		fields := strings.Fields(string(route))
 		wan := false

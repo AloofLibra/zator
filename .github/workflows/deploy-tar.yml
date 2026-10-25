@@ -113,7 +113,7 @@ jobs:
             Copy-Item "desktop-probe/dist/zator-desktop-probe-linux-$arch" router-release/zator-desktop-probe-router/
           }
           Copy-Item desktop-probe/dist/GO-LICENSE.txt router-release/zator-desktop-probe-router/
-          foreach ($file in @('install-router.sh','firewall-openwrt.sh','settings.example.json','README.md','THIRD_PARTY_NOTICES.md')) {
+          foreach ($file in @('install-router.sh','firewall-openwrt.sh','firewall-keenetic.sh','settings.example.json','README.md','THIRD_PARTY_NOTICES.md')) {
             $text = [IO.File]::ReadAllText("$PWD/desktop-probe/$file").Replace("`r`n", "`n")
             [IO.File]::WriteAllText("$PWD/router-release/zator-desktop-probe-router/$file", $text)
           }

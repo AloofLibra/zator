@@ -323,7 +323,7 @@ func resourceConflicts(c settings, procRoot string) error {
 		return fmt.Errorf("UNSUPPORTED_CAPABILITY: nft ruleset")
 	}
 	for _, line := range strings.Split(string(rules), "\n") {
-		if strings.Contains(line, `comment "zator_desktop_probe"`) {
+		if ownIPComment.MatchString(line) || strings.Contains(line, `comment "zator_desktop_probe"`) {
 			continue
 		}
 		if strings.Contains(strings.ToLower(line), "queue") {
@@ -339,6 +339,9 @@ func resourceConflicts(c settings, procRoot string) error {
 			}
 		}
 		for _, text := range hexPattern.FindAllString(line, -1) {
+			if c.Backend == "iptables" && c.markMask() != c.Mark {
+				continue
+			}
 			value, e := strconv.ParseUint(text[2:], 16, 32)
 			if e != nil || uint32(value)&c.Mark != 0 {
 				return fmt.Errorf("MARK_COLLISION")
@@ -349,7 +352,15 @@ func resourceConflicts(c settings, procRoot string) error {
 	if e != nil {
 		return fmt.Errorf("ROUTE_UNAVAILABLE")
 	}
+	if c.Backend == "iptables" && c.markMask() != c.Mark {
+		if err := ipMarkConflicts(c, string(rules), string(policies)); err != nil {
+			return err
+		}
+	}
 	for _, text := range hexPattern.FindAllString(string(policies), -1) {
+		if c.Backend == "iptables" && c.markMask() != c.Mark {
+			continue
+		}
 		bits, e := strconv.ParseUint(text[2:], 16, 32)
 		if e != nil || uint32(bits)&c.Mark != 0 {
 			return fmt.Errorf("MARK_COLLISION")

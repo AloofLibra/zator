@@ -125,6 +125,33 @@ func TestFlowEvidence(t *testing.T) {
 	}
 }
 
+func TestBusyBoxRouteEvidence(t *testing.T) {
+	original := runCommand
+	defer func() { runCommand = original }()
+	runCommand = func(_ string, args ...string) ([]byte, error) {
+		if reflect.DeepEqual(args, []string{"-4", "route", "show", "table", "main", "default"}) {
+			return []byte("default dev ppp0"), nil
+		}
+		return nil, errors.New("ip: need at least destination address")
+	}
+	f := flow{Host: "example.org", Local: "192.0.2.1:37024", Remote: "93.184.216.34:443"}
+	snapshot := "src=192.0.2.1 dst=93.184.216.34 sport=37024 dport=443 mark=67108864"
+	event := "192.0.2.1\t37024\t93.184.216.34\t443\t7\tmark=67108864"
+	proof, err := flowProof(testSettings(), []flow{f}, snapshot, event+"\tegress=ppp0\n", 7)
+	if err != nil || proof["route"] != "kernel_route_verified" {
+		t.Fatal(proof, err)
+	}
+	if _, err = flowProof(testSettings(), []flow{f}, snapshot, event+"\tegress=tun1\n", 7); err == nil {
+		t.Fatal("VPN accepted")
+	}
+	for _, unproven := range []string{event + "\n", strings.Replace(event, "\t7\t", "\t8\t", 1) + "\tegress=ppp0\n"} {
+		proof, err = flowProof(testSettings(), []flow{f}, snapshot, unproven, 7)
+		if err != nil || proof["route"] == "kernel_route_verified" {
+			t.Fatal(proof, err)
+		}
+	}
+}
+
 func TestSettledTelemetry(t *testing.T) {
 	reads := 0
 	out, err := settledTelemetry(func() (response, error) {

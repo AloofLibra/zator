@@ -2,8 +2,118 @@ package main
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
+
+var ownIPComment = regexp.MustCompile(`(?:^|\s)--comment\s+(?:"zator_desktop_probe"|zator_desktop_probe)(?:\s|$)`)
+
+func (c settings) markMask() uint32 {
+	if c.Backend == "iptables" && c.Mark&0x07000000 != 0 {
+		return 0x0f000000
+	}
+	return c.Mark
+}
+
+func (c settings) ownsMark(mark uint32) bool { return mark&c.markMask() == c.Mark }
+
+func parseIPMark(value string) (uint32, uint32, error) {
+	parts := strings.Split(value, "/")
+	if len(parts) > 2 {
+		return 0, 0, fmt.Errorf("MARK_COLLISION: invalid mark")
+	}
+	v, err := strconv.ParseUint(parts[0], 0, 32)
+	mask := uint64(0xffffffff)
+	if err == nil && len(parts) == 2 {
+		mask, err = strconv.ParseUint(parts[1], 0, 32)
+	}
+	return uint32(v), uint32(mask), err
+}
+
+var ipQuoted = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+// Full-word assignments/copies outside our tag are safe: probe hooks terminate
+// each mangle path before foreign rules. Partial tag writes remain unsupported.
+func ipMarkConflicts(c settings, rules, policies string) error {
+	ns := c.markMask()
+	bad := func() error { return fmt.Errorf("MARK_COLLISION: foreign rule can produce the probe tag") }
+	for _, line := range strings.Split(rules, "\n") {
+		if ownIPComment.MatchString(line) {
+			continue
+		}
+		fields := strings.Fields(ipQuoted.ReplaceAllString(line, `""`))
+		nfmask, ctmask := uint32(0xffffffff), uint32(0xffffffff)
+		copyMark := false
+		markTarget, operation := false, false
+		for i, word := range fields {
+			if word == "--save-mark" || word == "--restore-mark" {
+				copyMark = true
+				operation = true
+			}
+			if word == "HMARK" || word == "--map-mark" {
+				return bad()
+			}
+			if i+1 == len(fields) {
+				continue
+			}
+			if (word == "-j" || word == "--jump") && (fields[i+1] == "MARK" || fields[i+1] == "CONNMARK" || fields[i+1] == "TPROXY") {
+				markTarget = true
+			}
+			switch word {
+			case "--set-mark", "--set-xmark", "--or-mark", "--and-mark", "--xor-mark", "--tproxy-mark", "--nfmask", "--ctmask":
+				value, mask, err := parseIPMark(fields[i+1])
+				if err != nil {
+					return bad()
+				}
+				if word != "--nfmask" && word != "--ctmask" {
+					operation = true
+				}
+				switch word {
+				case "--nfmask":
+					nfmask = value
+				case "--ctmask":
+					ctmask = value
+				case "--and-mark":
+					if value&ns != ns && value&c.Mark == c.Mark {
+						return bad()
+					}
+				case "--or-mark":
+					if value&ns == c.Mark {
+						return bad()
+					}
+				case "--xor-mark":
+					if value&ns != 0 {
+						return bad()
+					}
+				default:
+					if mask&ns != 0 && (mask&ns != ns || value&ns == c.Mark) {
+						return bad()
+					}
+				}
+			}
+		}
+		if markTarget && !operation {
+			return bad()
+		}
+		if copyMark && ((nfmask&ns != 0 && nfmask&ns != ns) || (ctmask&ns != 0 && ctmask&ns != ns) || nfmask&ns != ctmask&ns) {
+			return bad()
+		}
+	}
+	for _, line := range strings.Split(policies, "\n") {
+		fields := strings.Fields(line)
+		for i, word := range fields {
+			if word != "fwmark" || i+1 == len(fields) {
+				continue
+			}
+			value, mask, err := parseIPMark(fields[i+1])
+			if err != nil || (mask&ns != 0 && c.Mark&mask == value&mask) {
+				return fmt.Errorf("MARK_COLLISION: policy selects probe tag")
+			}
+		}
+	}
+	return nil
+}
 
 type ipRule struct {
 	chain string
@@ -11,7 +121,7 @@ type ipRule struct {
 }
 
 func ipRules(c settings) ([]string, []ipRule, []ipRule) {
-	m := fmt.Sprintf("0x%x/0x%x", c.Mark, c.Mark)
+	m := fmt.Sprintf("0x%x/0x%x", c.Mark, c.markMask())
 	raw := fmt.Sprintf("0x%x/0x%x", c.RawMark, c.RawMark)
 	comment := []string{"-m", "comment", "--comment", "zator_desktop_probe"}
 	rule := func(chain string, args ...string) ipRule { return ipRule{chain, append(args, comment...)} }
@@ -25,10 +135,10 @@ func ipRules(c settings) ([]string, []ipRule, []ipRule) {
 		rule("POSTROUTING", "-p", "tcp", "-m", "mark", "--mark", m, "-m", "mark", "--mark", raw, "-j", "ACCEPT"),
 	}
 	body := []ipRule{
-		rule("Z2R_DP_OUT", "-j", "MARK", "--or-mark", fmt.Sprintf("0x%x", c.Mark)),
-		rule("Z2R_DP_OUT", "-j", "CONNMARK", "--or-mark", fmt.Sprintf("0x%x", c.Mark)),
+		rule("Z2R_DP_OUT", "-j", "MARK", "--set-xmark", m),
+		rule("Z2R_DP_OUT", "-j", "CONNMARK", "--set-xmark", m),
 		rule("Z2R_DP_OUT", "-j", "ACCEPT"),
-		rule("Z2R_DP_RAW", "-j", "MARK", "--or-mark", fmt.Sprintf("0x%x", c.Mark|c.RawMark)),
+		rule("Z2R_DP_RAW", "-j", "MARK", "--set-xmark", fmt.Sprintf("0x%x/0x%x", c.Mark|c.RawMark, c.markMask()|c.RawMark)),
 		rule("Z2R_DP_RAW", "-j", "ACCEPT"),
 		rule("Z2R_DP_POST", "-j", "NFQUEUE", "--queue-num", fmt.Sprint(c.Queue), "--queue-bypass"),
 		rule("Z2R_DP_POST", "-j", "ACCEPT"),
@@ -163,8 +273,16 @@ func ipFingerprint(c settings) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		expected := map[string]int{"OUTPUT": 2, "POSTROUTING": 2, "PREROUTING": 1, "INPUT": 1}[chain]
+		expected := map[string]int{"OUTPUT": 3, "POSTROUTING": 2, "PREROUTING": 1, "INPUT": 1}[chain]
+		private := strings.HasPrefix(chain, "Z2R_DP_")
+		privateCount := 0
 		for _, line := range strings.Split(string(out), "\n") {
+			if private && strings.HasPrefix(line, "-A ") {
+				if !strings.Contains(line, "zator_desktop_probe") {
+					return "", fmt.Errorf("TRANSPORT_CHANGED")
+				}
+				privateCount++
+			}
 			if expected > 0 && strings.HasPrefix(line, "-A ") {
 				if !strings.Contains(line, "zator_desktop_probe") {
 					return "", fmt.Errorf("TRANSPORT_CHANGED")
@@ -174,6 +292,17 @@ func ipFingerprint(c settings) (string, error) {
 		}
 		if expected != 0 {
 			return "", fmt.Errorf("TRANSPORT_CHANGED")
+		}
+		if private {
+			wanted := 0
+			for _, r := range body {
+				if r.chain == chain {
+					wanted++
+				}
+			}
+			if privateCount != wanted {
+				return "", fmt.Errorf("TRANSPORT_CHANGED")
+			}
 		}
 		state.Write(out)
 	}

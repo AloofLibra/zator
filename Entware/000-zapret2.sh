@@ -23,7 +23,7 @@ fi
 
 # Статический Desktop Probe восстанавливается только на IPv4 mangle-событии.
 _dp_agent="${ZATOR_ROOT:-/opt/zator}/bin/zator-desktop-probe"
-if [ "$table" = mangle ] && [ "${type:-iptables}" = iptables ] && [ -x "$_dp_agent" ] && [ -f "${ZATOR_ROOT:-/opt/zator}/desktop-probe.json" ]; then
+if [ ! -f /opt/etc/ndm/netfilter.d/999-zator-desktop-probe.sh ] && [ "$table" = mangle ] && [ "${type:-iptables}" = iptables ] && [ -x "$_dp_agent" ] && [ -f "${ZATOR_ROOT:-/opt/zator}/desktop-probe.json" ]; then
   "$_dp_agent" reconcile-transport >>/tmp/zator-desktop-probe-hook.log 2>&1 || true
 fi
 

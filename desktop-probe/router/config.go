@@ -11,6 +11,19 @@ import (
 
 var strategyPattern = regexp.MustCompile(`:strategy=([0-9]+)(?:\s|:|$)`)
 
+func defaultSettings(config string) (settings, error) {
+	c := settings{Queue: 65534, ProxyUID: 65531, NfqUID: 65532, Port: 41081, Mark: 0x04000000, RawMark: 0x40000000, ZatorRoot: "/opt/zator", ZapretRoot: "/opt/zapret2"}
+	switch configValue(config, "FWTYPE") {
+	case "iptables":
+		c.Backend = "iptables"
+	case "nft", "nftables":
+		c.Backend = "nft"
+	default:
+		return c, fmt.Errorf("CONFIG_UNSUPPORTED: firewall backend")
+	}
+	return c, c.validate()
+}
+
 func configValue(config, key string) string {
 	for _, line := range strings.Split(config, "\n") {
 		line = strings.TrimSpace(line)

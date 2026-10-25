@@ -4,12 +4,26 @@ set -eu
 cd "$(dirname "$0")"
 case "${1:-}" in
   install)
-    [ "$#" = 3 ] || { echo 'usage: sh install-router.sh install <binary> <audited-settings.json>' >&2; exit 2; }
+    [ "$#" = 2 ] || [ "$#" = 3 ] || { echo 'usage: sh install-router.sh install <binary> [settings.json]' >&2; exit 2; }
     [ "$(id -u)" = 0 ] || exit 1
+    _hook=/opt/etc/ndm/netfilter.d/999-zator-desktop-probe.sh
+    if [ -d /opt/etc/ndm/netfilter.d ]; then
+      [ -f firewall-keenetic.sh ] || { echo 'Missing firewall-keenetic.sh' >&2; exit 1; }
+      if [ -e "$_hook" ] && ! grep -q '^# zator-desktop-probe owned hook$' "$_hook"; then
+        echo 'Foreign file at desktop probe hook path; refusing overwrite.' >&2
+        exit 1
+      fi
+    fi
     mkdir -p /opt/zator/bin
     cp "$2" /opt/zator/bin/zator-desktop-probe.new
     chmod 755 /opt/zator/bin/zator-desktop-probe.new
-    cp "$3" /opt/zator/desktop-probe.json.new
+    if [ "$#" = 3 ]; then
+      cp "$3" /opt/zator/desktop-probe.json.new
+    elif [ -f /opt/zator/desktop-probe.json ]; then
+      cp /opt/zator/desktop-probe.json /opt/zator/desktop-probe.json.new
+    else
+      /opt/zator/bin/zator-desktop-probe.new --default-settings > /opt/zator/desktop-probe.json.new
+    fi
     chmod 600 /opt/zator/desktop-probe.json.new
     /opt/zator/bin/zator-desktop-probe.new --check-settings /opt/zator/desktop-probe.json.new
     # A running session must be stopped before replacing its executable/config.
@@ -36,12 +50,19 @@ case "${1:-}" in
       echo 'Installation failed; previous component restored when available.' >&2
       exit 1
     fi
+    if [ -d /opt/etc/ndm/netfilter.d ]; then
+      cp firewall-keenetic.sh "$_hook.new"
+      chmod 755 "$_hook.new"
+      mv "$_hook.new" "$_hook"
+    fi
     /opt/zator/bin/zator-desktop-probe capabilities
     ;;
   uninstall)
     [ -x /opt/zator/bin/zator-desktop-probe ] || exit 0
     /opt/zator/bin/zator-desktop-probe uninstall-transport
+    _hook=/opt/etc/ndm/netfilter.d/999-zator-desktop-probe.sh
+    if [ -f "$_hook" ] && grep -q '^# zator-desktop-probe owned hook$' "$_hook"; then rm -f "$_hook"; fi
     rm -f /opt/zator/bin/zator-desktop-probe /opt/zator/desktop-probe.json
     ;;
-  *) echo 'usage: sh install-router.sh install <binary> <audited-settings.json> | uninstall' >&2; exit 2 ;;
+  *) echo 'usage: sh install-router.sh install <binary> [settings.json] | uninstall' >&2; exit 2 ;;
 esac

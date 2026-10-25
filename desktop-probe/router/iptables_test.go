@@ -61,7 +61,7 @@ func TestIPTablesInstallationAndRollback(t *testing.T) {
 		if !fault && !strings.Contains(strings.Join(log, "\n"), "--ctdir REPLY") {
 			t.Fatal("reply identity missing")
 		}
-		if !fault && !strings.Contains(strings.Join(log, "\n"), "-I OUTPUT -p tcp -m connmark --mark 0x4000000/0x4000000 -j Z2R_DP_OUT") {
+		if !fault && !strings.Contains(strings.Join(log, "\n"), "-I OUTPUT -p tcp -m connmark --mark 0x4000000/0xf000000 -j Z2R_DP_OUT") {
 			t.Fatal("ownerless packets can escape test queue")
 		}
 	}
