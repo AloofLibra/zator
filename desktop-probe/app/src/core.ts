@@ -1,4 +1,14 @@
 export type Verdict = 'OK' | 'FAIL' | 'WARN' | 'UNKNOWN' | 'INVALID'
+export const recoverableTransportError = (error: unknown) => error instanceof Error && ['TRANSPORT_CHANGED', 'SESSION_OR_GENERATION_CHANGED'].includes(error.message)
+export async function withTransportRecovery<T>(attempt: () => Promise<T>, recover: (retry: number, error: unknown) => Promise<void>, signal: AbortSignal): Promise<T> {
+  for (let retry = 0; ; retry++) {
+    if (signal.aborted) throw new Error('CANCELLED')
+    try { return await attempt() } catch (error) {
+      if (signal.aborted || retry === 2 || !recoverableTransportError(error)) throw error
+      await recover(retry + 1, error)
+    }
+  }
+}
 export interface Capabilities {
   isolation?: { available: boolean; reason?: string }; session_active?: boolean;
   prepare_transport_supported?: boolean; youtube_pair_supported?: boolean; profiles?: Record<string, number[]>;

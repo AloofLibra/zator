@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, classifyYouTube, YouTubeSweep, succeeded, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, withinTimeout, ensureIsolation } from './core'
+import { classify, classifyYouTube, YouTubeSweep, succeeded, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, withinTimeout, ensureIsolation, recoverableTransportError, withTransportRecovery } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
@@ -201,6 +201,7 @@ async function run(options: RunOptions) {
   let finalState = 'IDLE', runError: string | undefined
   let cleanupError: string | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined, heartbeatError: Error | undefined, beating = false
+  let heartbeatPending: Promise<void> = Promise.resolve()
   try {
     update({ state: 'PREPARING', results })
     const capabilities = await ensureIsolation(command => { if (command === 'prepare-transport') update({ state: 'REPAIRING', results }); return router.call(command, {}, signal) })
@@ -221,34 +222,62 @@ async function run(options: RunOptions) {
       const attemptOptions = { ...options, ...target }
       const context = { target: redactURL(target.url), profile: target.profile, target_index: targetIndex + 1, target_count: plan.length, completed, total }
       update({ state: 'PREPARING', ...context, results })
-      let status: RouterStatus = await router.call('start', { profile: target.profile, paired: !!target.gvStrategies }, signal)
-      heartbeat = setInterval(async () => { if (beating || signal.aborted) return; beating = true; try { await router.call('heartbeat', {}, signal) } catch (e) { heartbeatError = e as Error; controller?.abort() } finally { beating = false } }, 15000)
-      const port = await router.tunnel(status.proxy)
+      const startHeartbeat = () => {
+        heartbeat = setInterval(() => {
+          if (beating || signal.aborted) return
+          beating = true
+          heartbeatPending = router.call('heartbeat', {}, signal).then(() => {}).catch(e => {
+            if (!signal.aborted && !recoverableTransportError(e)) { heartbeatError = e as Error; controller?.abort() }
+          }).finally(() => { beating = false })
+        }, 15000)
+      }
+      let port = 0, sessionReady = false
+      let freshBaseline = true
+      const measure = async (fields: { strategy: number; gv_strategy?: number }, observationOptions: RunOptions, progress: Record<string, unknown>) => {
+        const recoveryReasons: string[] = []
+        const measured = await withTransportRecovery(async () => {
+          if (!sessionReady) {
+            const started: RouterStatus = await router.call('start', { profile: target.profile, paired: !!target.gvStrategies }, signal)
+            port = await router.tunnel(started.proxy)
+            freshBaseline = true
+            sessionReady = true
+            startHeartbeat()
+          }
+          await closePreview()
+          if (!freshBaseline || fields.strategy !== 0 || (fields.gv_strategy ?? 0) !== 0) await router.call('set-strategy', fields, signal)
+          freshBaseline = false
+          const before: RouterStatus = await router.call('status', {}, signal)
+          if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
+          update({ state: 'LOADING', ...progress })
+          const observed = await observe(observationOptions, port, signal)
+          update({ state: 'ANALYZING', ...progress })
+          if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
+          const after: RouterStatus = await router.call('telemetry', {}, signal)
+          if (classify(before, after, observed.observation).reason === 'SESSION_OR_GENERATION_CHANGED') throw new Error('SESSION_OR_GENERATION_CHANGED')
+          return { before, after, observed }
+        }, async (retry, error) => {
+          recoveryReasons.push((error as Error).message)
+          update({ state: 'REPAIRING', ...progress, transport_retry: retry, error: undefined })
+          if (heartbeat) clearInterval(heartbeat)
+          await heartbeatPending
+          await closePreview()
+          await router.stop()
+          sessionReady = false
+          await delay(2000, signal)
+          await ensureIsolation(command => router.call(command, {}, signal))
+        }, signal)
+        return { ...measured, observed: { ...measured.observed, transport_recovery_reasons: recoveryReasons } }
+      }
       const sequence = strategySequence(target.strategies)
       const pause = target.profile === 3 ? 30000 : 15000
       if (target.gvStrategies) {
         const sweep = new YouTubeSweep(target.strategies, target.gvStrategies)
-        let first = true
         for (let pair = sweep.next(); pair; pair = sweep.next()) {
           if (signal.aborted) throw new Error('CANCELLED')
           await closePreview()
           const pairContext = { ...context, completed, strategy: pair.yt, gv_strategy: pair.gv }
           update({ state: pair.baseline ? 'BASELINE' : 'SWITCHING', ...pairContext, results })
-          if (!first) status = await router.call('set-strategy', { strategy: pair.yt, gv_strategy: pair.gv }, signal)
-          first = false
-          const before: RouterStatus = await router.call('status', {}, signal)
-          if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
-          update({ state: 'LOADING', ...pairContext })
-          const observed = await observe({ ...attemptOptions, youtubePair: true, checkVideo: pair.testGV }, port, signal)
-          update({ state: 'ANALYZING', ...pairContext })
-          let after: RouterStatus
-          try {
-            if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
-            after = await router.call('telemetry', {}, signal)
-          } catch (e) {
-            results.push({ test_id: randomUUID(), site: redactURL(target.url), profile: 1, strategy: pair.yt, yt_strategy: pair.yt, gv_strategy: pair.gv, stage: 'page', scenario: target.scenario, ...observed, verdict: 'INVALID', reason: (e as Error).message })
-            await saveResults(); throw e
-          }
+          const { before, after, observed } = await measure({ strategy: pair.yt, gv_strategy: pair.gv }, { ...attemptOptions, youtubePair: true, checkVideo: pair.testGV }, pairContext)
           const verdicts = classifyYouTube(before, after, observed.observation)
           const evidence = { ...observed, session_id: before.session_id, strategy_generation: before.strategy_generation, transport_generation_start: before.transport_generation, transport_generation_end: after.transport_generation, route_generation_start: before.route_generation, route_generation_end: after.route_generation, firewall_generation_start: before.firewall_generation, firewall_generation_end: after.firewall_generation, telemetry_reads: after.telemetry_reads, queue_number: before.queue.number, queue_counter_start: before.queue.counter, queue_counter_end: after.queue.counter, queue_delta: after.queue.counter - before.queue.counter, flows: after.flows || [], proof: after.proof }
           const row = { ...evidence, site: redactURL(target.url), scenario: target.scenario, mode: 'router_socks_tcp', protocol_scope: 'TCP_HTTPS_IPV4', yt_strategy: pair.yt, gv_strategy: pair.gv, paired: true, manual: null, tested: true }
@@ -281,17 +310,13 @@ async function run(options: RunOptions) {
         if (signal.aborted) throw new Error('CANCELLED')
         await closePreview()
         update({ state: strategy === 0 ? 'BASELINE' : 'SWITCHING', ...context, completed, strategy, results })
-        if (index > 0) status = await router.call('set-strategy', { strategy }, signal)
         let result: any
         for (let retry = 0; retry < 2; retry++) {
-          if (retry) { await closePreview(); status = await router.call('set-strategy', { strategy }, signal); update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: pause / 1000 }); await delay(pause, signal) }
-          const before: RouterStatus = await router.call('status', {}, signal)
-          if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE')
-          update({ state: 'LOADING', ...context, completed, strategy, retry, results })
-          const observed = await observe(attemptOptions, port, signal)
-          update({ state: 'ANALYZING', ...context, completed, strategy, results })
-          let after: RouterStatus
-          try { if (!router.tunnelAlive) throw new Error('SSH_FORWARDING_UNAVAILABLE'); after = await router.call('telemetry', {}, signal) } catch (e) { result = { ...observed, verdict: 'INVALID', reason: (e as Error).message }; break }
+          if (retry) { update({ state: 'PAUSE', ...context, completed, strategy, pause_seconds: pause / 1000 }); await delay(pause, signal) }
+          let measured: Awaited<ReturnType<typeof measure>>
+          try { measured = await measure({ strategy }, attemptOptions, { ...context, completed, strategy, retry, results }) }
+          catch (e) { result = { verdict: 'INVALID', reason: (e as Error).message }; break }
+          const { before, after, observed } = measured
           result = { ...observed, ...classify(before, after, observed.observation), session_id: before.session_id, strategy_generation: before.strategy_generation, transport_generation_start: before.transport_generation, transport_generation_end: after.transport_generation, route_generation_start: before.route_generation, route_generation_end: after.route_generation, firewall_generation_start: before.firewall_generation, firewall_generation_end: after.firewall_generation, telemetry_reads: after.telemetry_reads, queue_number: before.queue.number, queue_counter_start: before.queue.counter, queue_counter_end: after.queue.counter, queue_delta: after.queue.counter - before.queue.counter, flows: after.flows || [], proof: after.proof }
           if (result.reason !== 'RETRY_REQUIRED') break
           if (retry === 1) result = { ...result, verdict: 'FAIL', reason: 'DECLARED_SCENARIO_FAILED_TWICE' }
@@ -310,6 +335,7 @@ async function run(options: RunOptions) {
       }
       if (heartbeat) clearInterval(heartbeat)
       heartbeat = undefined
+      await heartbeatPending
       await closePreview()
       await router.stop()
       if (targetIndex < plan.length - 1) { update({ state: 'PAUSE', ...context, completed, pause_seconds: 30 }); await delay(30000, signal) }
@@ -318,6 +344,7 @@ async function run(options: RunOptions) {
   } catch (e) { finalState = signal.aborted && !heartbeatError ? 'CANCELLED' : 'ERROR'; runError = heartbeatError?.message || (e as Error).message }
   finally {
     if (heartbeat) clearInterval(heartbeat)
+    await heartbeatPending
     try { await closePreview() } catch (e) { cleanupError = (e as Error).message }
     try { await router.stop() } catch (e) { cleanupError = (e as Error).message }
     controller = undefined; activeRouter = undefined

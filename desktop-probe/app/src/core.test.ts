@@ -1,6 +1,39 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, classifyYouTube, YouTubeSweep, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
+import { classify, classifyYouTube, YouTubeSweep, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, ScanOptions, withinTimeout, ensureIsolation, Capabilities, withTransportRecovery } from './core'
+
+test('transport reload repeats the same pair in a fresh session and discards the broken attempt', async () => {
+  for (const reason of ['TRANSPORT_CHANGED', 'SESSION_OR_GENERATION_CHANGED']) {
+    const sweep = new YouTubeSweep([1, 2], [3, 4])
+    sweep.record(sweep.next()!, 'FAIL', null)
+    const pair = sweep.next()!
+    let session = 'old', attempts = 0
+    const selected: unknown[] = []
+    const row = await withTransportRecovery(async () => {
+      selected.push(sweep.next()); attempts++
+      if (session === 'old') throw new Error(reason)
+      return { session, pair, verdict: 'OK' }
+    }, async () => { session = 'fresh' }, new AbortController().signal)
+    assert.equal(attempts, 2)
+    assert.deepEqual(selected, [pair, pair])
+    assert.equal(row.session, 'fresh')
+    assert.deepEqual(sweep.next(), pair)
+    sweep.record(pair, 'FAIL', null)
+    assert.equal(sweep.next()?.gv, pair.gv)
+  }
+})
+
+test('transport recovery is bounded and never retries unsafe proofs or cancellation', async () => {
+  let attempts = 0, recoveries = 0
+  await assert.rejects(withTransportRecovery(async () => { attempts++; throw new Error('TRANSPORT_CHANGED') }, async () => { recoveries++ }, new AbortController().signal), /TRANSPORT_CHANGED/)
+  assert.equal(attempts, 3); assert.equal(recoveries, 2)
+  for (const reason of ['FLOW_MARK_MISMATCH', 'QUEUE_COLLISION', 'ROUTE_MISMATCH', 'SSH_FORWARDING_UNAVAILABLE', 'SESSION_NOT_OWNER', 'NFQWS_EXITED', 'CANCELLED']) {
+    await assert.rejects(withTransportRecovery(async () => { throw new Error(reason) }, async () => { assert.fail('unsafe error retried') }, new AbortController().signal), new RegExp(reason))
+  }
+  const controller = new AbortController()
+  await assert.rejects(withTransportRecovery(async () => { throw new Error('TRANSPORT_CHANGED') }, async () => { controller.abort() }, controller.signal), /CANCELLED/)
+  await assert.rejects(withTransportRecovery(async () => { throw new Error('TRANSPORT_CHANGED') }, async () => { throw new Error('ISOLATION_UNAVAILABLE') }, new AbortController().signal), /ISOLATION_UNAVAILABLE/)
+})
 
 test('only confirmed success accelerates the next pause, including both stages of a pair', () => {
   assert.equal(strategyPause(1, ['OK', 'OK']), 5000)
