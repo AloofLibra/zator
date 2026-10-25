@@ -52,6 +52,11 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => { const done = () => { signal.removeEventListener('abort', abort); resolve() }; const timer = setTimeout(done, ms); const abort = () => { clearTimeout(timer); reject(new Error('CANCELLED')) }; signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort() })
 }
 interface RunOptions extends ScanOptions { ssh: SSHOptions; timeout: number; manual?: boolean; youtubePair?: boolean; checkVideo?: boolean }
+const authRequiredScript = `(() => {
+  const visibleGate = [...document.querySelectorAll('input[type="password"], iframe[src*="captcha"], #captcha')].some(element =>
+    element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0));
+  return visibleGate || /just a moment|captcha|verify you are human|sign in|войдите/i.test(document.title);
+})()`
 function waitForManual(index: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); manualWait = undefined; resolve() }
@@ -137,7 +142,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
     const finalURL = new URL(wc.getURL())
     if (finalURL.protocol === 'https:') { const original = new URL(options.url).hostname; observation.requested_host = finalURL.hostname; observation.expected_origin = finalURL.hostname === original || finalURL.hostname.endsWith(`.${original}`) }
     if (!observation.dom_loaded) { observation.functional = options.selector || options.scenario !== 'generic_page' ? false : null; return { attempt_id: attempt, observation, requests: [...requests.values()] } }
-    const auth = await bounded(evaluate(`!!document.querySelector('input[type="password"], iframe[src*="captcha"], #captcha') || /just a moment|captcha|verify you are human|sign in|войдите/i.test(document.title)`).catch(() => true))
+    const auth = await bounded(evaluate(authRequiredScript).catch(() => true))
     observation.auth_required = auth
     if (options.scenario === 'youtube_video') {
       if (options.youtubePair) {
@@ -359,6 +364,25 @@ app.whenReady().then(async () => {
   await win.loadURL('zator-ui://app/index.html')
   try { const previous = JSON.parse(await readFile(join(app.getPath('userData'), 'last-report.json'), 'utf8')); if (Array.isArray(previous)) { results = previous; update({ results }) } } catch { /* First launch has no local report. */ }
   if (process.argv.includes('--probe-smoke')) {
+    const authGate = await win.webContents.executeJavaScript(`(() => {
+      const fixture=document.createElement('div'), originalTitle=document.title; document.body.append(fixture);
+      const check=(html,title='Public page',hiddenStyle='')=>{
+        fixture.innerHTML=html; document.title=title;
+        fixture.style.visibility=hiddenStyle==='visibility'?'hidden':''; fixture.style.opacity=hiddenStyle==='opacity'?'0':'';
+        const zero=fixture.querySelector('[data-zero]'); if(zero){zero.style.width='0px';zero.style.height='0px';zero.style.border='0'}
+        return ${authRequiredScript}
+      };
+      try {
+        return !check('<div hidden><input type="password"></div>')
+          && !check('<div><input type="password"></div>', 'Public page', 'visibility')
+          && !check('<div><input type="password"></div>', 'Public page', 'opacity')
+          && !check('<div id="captcha" hidden>Challenge</div>')
+          && !check('<iframe src="about:blank#captcha" data-zero></iframe>')
+          && check('<input type="password">') && check('<div id="captcha">Challenge</div>')
+          && check('<iframe src="about:blank#captcha"></iframe>')
+          && check('', 'Just a moment…') && check('', 'Sign in') && !check('<main>Public content</main>');
+      } finally { fixture.remove(); document.title=originalTitle }
+    })()`)
     const controls = await win.webContents.executeJavaScript(`(() => {
       const mode=document.getElementById('scan-mode'), all=document.getElementById('strategy-mode');
       mode.value='supersweep'; mode.dispatchEvent(new Event('change'));
@@ -392,8 +416,8 @@ app.whenReady().then(async () => {
     update({ state: 'IDLE' })
     const unlocked = await win.webContents.executeJavaScript(`new Promise(resolve=>setTimeout(()=>resolve(!document.getElementById('run').disabled && [...document.querySelectorAll('#settings fieldset')].every(group=>!group.disabled)),30))`)
     const previewFits = compact.width > 0 && compact.width <= 360 && expanded.width > compact.width * 2 && restored.width === compact.width && narrow.width > 0 && narrow.x + narrow.width <= 960 && narrow.y + narrow.height <= 700 && preview.webContents.getURL() === 'about:blank'
-    const passed = safe && controls && layout && previewFits && unlocked && badBoundsRejected
-    console.log(`UI_SMOKE=${passed ? 'PASS' : 'FAIL'} ${JSON.stringify({ controls, layout, previewFits, unlocked, badBoundsRejected })}`); app.exit(passed ? 0 : 1)
+    const passed = safe && controls && layout && previewFits && unlocked && badBoundsRejected && authGate
+    console.log(`UI_SMOKE=${passed ? 'PASS' : 'FAIL'} ${JSON.stringify({ controls, layout, previewFits, unlocked, badBoundsRejected, authGate })}`); app.exit(passed ? 0 : 1)
   }
   if (process.argv.includes('--probe-integration')) {
     if (!process.env.ZATOR_PROBE_TEST_CONFIG || !process.env.ZATOR_PROBE_TEST_REPORT) throw new Error('TEST_PATHS_REQUIRED')
