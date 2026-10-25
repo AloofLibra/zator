@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
+import { classify, classifyYouTube, YouTubeSweep, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
 
 test('only confirmed success accelerates the next pause, including both stages of a pair', () => {
   assert.equal(strategyPause(1, ['OK', 'OK']), 5000)
@@ -55,7 +55,7 @@ test('preflight never repairs active sessions or configuration failures and does
   assert.deepEqual(calls, ['capabilities', 'prepare-transport', 'capabilities'])
 })
 
-const scan: ScanOptions = { url: 'https://example.org/', profile: 3, scenario: 'generic_page', selector: 'body', strategies: [1], scanMode: 'supersweep', youtubeURL: 'https://www.youtube.com/watch?v=test', discordURL: 'https://discord.com/app', discordSelector: '#app-mount', rknURLs: 'https://example.org/\nhttps://example.net/\nhttps://example.org/', rknSelector: 'body' }
+const scan: ScanOptions = { url: 'https://example.org/', profile: 3, scenario: 'generic_page', selector: 'body', strategies: [1], scanMode: 'supersweep', youtubeURL: 'https://www.youtube.com/watch?v=test', discordURL: 'https://discord.com/download', discordSelector: 'a[href*="/api/download"]', rknURLs: 'https://example.org/\nhttps://example.net/\nhttps://example.org/', rknSelector: 'body' }
 test('full scan completion detects missing cases and reports untested GV separately', () => {
   const capabilities = { profiles: { '1': [1, 2], '2': [1, 2], '3': [1, 2], '4': [1, 2] } }
   const rows = scanTargets(scan).flatMap(target => (target.scenario === 'youtube_video' ? [1, 2] : [target.profile]).flatMap(profile => [1, 2].map(strategy => ({ profile, strategy, site: redactURL(target.url), tested: true, helper: false }))))
@@ -70,7 +70,8 @@ test('full scan completion detects missing cases and reports untested GV separat
 test('supersweep combines YouTube/GV into one target and keeps every RKN domain', () => {
   const targets = scanTargets(scan)
   assert.deepEqual(targets.map(t => t.profile), [1, 4, 3, 3])
-  assert.deepEqual(targets.map(t => t.scenario), ['youtube_video', 'discord', 'generic_page', 'generic_page'])
+  assert.deepEqual(targets.map(t => t.scenario), ['youtube_video', 'generic_page', 'generic_page', 'generic_page'])
+  assert.equal(scanTargets({ ...scan, scanMode: 'single', profile: 4, scenario: 'discord', url: 'https://discord.com/app', selector: '#app-mount' })[0].scenario, 'discord')
   assert.deepEqual(scanStrategies(scan, [1, 2, 3]), [1, 2, 3])
   assert.deepEqual(scanStrategies({ ...scan, scanMode: 'single', strategyMode: 'all' }, [1, 2]), [1, 2])
   assert.deepEqual(scanStrategies({ ...scan, scanMode: 'single' }, [1, 2]), [1])
@@ -222,4 +223,8 @@ test('private URL components and unsupported transports are rejected/redacted', 
 test('SSH options cannot become options or shell syntax', () => {
   for (const host of ['-oProxyCommand=evil', 'router;reboot', 'x\nreboot', 'root@router']) assert.throws(() => validateSSH({ host, user: 'root', port: 22, identity: '' }))
   validateSSH({ host: '192.168.10.1', user: 'root', port: 22, identity: 'C:\\Users\\someone\\.ssh\\router key' })
+})
+test('internal browser resources cannot downgrade a network strategy', () => {
+  for (const url of ['https://discord.com/', 'http://example.org/', 'wss://gateway.discord.gg/', 'ws://example.org/']) assert.equal(isNetworkResource(url), true)
+  for (const url of ['data:///', 'blob:https://discord.com/', 'about:blank', 'javascript:void(0)']) assert.equal(isNetworkResource(url), false)
 })

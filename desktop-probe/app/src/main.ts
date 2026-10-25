@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, withinTimeout, ensureIsolation } from './core'
+import { classify, classifyYouTube, YouTubeSweep, succeeded, isNetworkResource, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, verdictSummary, strategyPause, withinTimeout, ensureIsolation } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
@@ -124,7 +124,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
       const row = requests.get(p.requestId)
       const error = /^net::ERR_[A-Z_]+$/.test(p.errorText) ? p.errorText : 'NETWORK_ERROR'
       if (row) row.error = error
-      if (observation.errors.length < 100) observation.errors.push(error)
+      if ((!row || isNetworkResource(row.url)) && observation.errors.length < 100) observation.errors.push(error)
     }
     if (method === 'Network.webSocketCreated') { try { if (new URL(p.url).hostname === 'gateway.discord.gg') gatewayRequests.add(p.requestId) } catch {} }
     if (method === 'Network.webSocketFrameReceived' && gatewayRequests.has(p.requestId)) { socketFrames++; requiredHosts.add('gateway.discord.gg') }
@@ -386,7 +386,7 @@ app.whenReady().then(async () => {
     const controls = await win.webContents.executeJavaScript(`(() => {
       const mode=document.getElementById('scan-mode'), all=document.getElementById('strategy-mode');
       mode.value='supersweep'; mode.dispatchEvent(new Event('change'));
-      const sweep=document.getElementById('url').disabled && !document.getElementById('youtube-url').disabled && !document.getElementById('rkn-urls').disabled && !document.getElementById('sweep-options').hidden;
+      const sweep=document.getElementById('url').disabled && !document.getElementById('youtube-url').disabled && !document.getElementById('rkn-urls').disabled && !document.getElementById('sweep-options').hidden && document.getElementById('discord-url').value==='https://discord.com/download' && document.getElementById('discord-selector').value==='a[href*="/api/download"]';
       mode.value='single'; mode.dispatchEvent(new Event('change')); all.value='all'; all.dispatchEvent(new Event('change'));
       const single=!document.getElementById('url').disabled && document.getElementById('youtube-url').disabled && document.getElementById('strategies').disabled;
       all.value='selected'; all.dispatchEvent(new Event('change'));

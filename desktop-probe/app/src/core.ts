@@ -15,6 +15,7 @@ export async function ensureIsolation(call: (command: string) => Promise<Capabil
   return capabilities
 }
 export const succeeded = (verdict: Verdict) => verdict === 'OK' || verdict === 'WARN'
+export const isNetworkResource = (url: string) => /^(https?|wss?):/.test(url)
 export function strategyPause(profile: number, verdicts: (Verdict | undefined)[]) {
   return verdicts.length > 0 && verdicts.every(verdict => verdict === 'OK') ? 5000 : profile === 3 ? 30000 : 15000
 }
@@ -79,7 +80,7 @@ export function scanTargets(options: ScanOptions): ScanTarget[] {
   if (options.scanMode !== undefined && !['single', 'supersweep'].includes(options.scanMode)) throw new Error('INVALID_SCAN_MODE')
   const targets: ScanTarget[] = options.scanMode !== 'supersweep' ? [options] : [
     { url: options.youtubeURL || '', profile: 1, scenario: 'youtube_video', selector: '' },
-    { url: options.discordURL || '', profile: 4, scenario: 'discord', selector: options.discordSelector || '' },
+    { url: options.discordURL || '', profile: 4, scenario: 'generic_page', selector: options.discordSelector || '' },
     ...[...new Set((options.rknURLs || '').split(/[\s,]+/).filter(Boolean))].map(url => ({ url, profile: 3, scenario: 'generic_page' as const, selector: options.rknSelector || '' }))
   ]
   if (!targets.length || targets.length > 34 || (options.scanMode === 'supersweep' && targets.length < 3)) throw new Error('REQUIRE_1_TO_32_RKN_URLS')

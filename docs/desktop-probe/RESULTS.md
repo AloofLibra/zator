@@ -107,6 +107,14 @@ Integration harness теперь проверяет весь ожидаемый 
 
 Уточнение интерфейса 25.10.2026: убрано сворачивание общей сводки и отдельных профилей, номера стратегий видны сразу. Electron smoke подтверждает все пять категорий без details в панели покрытия. Portable: desktop-probe/app/release/compact-summary/ZatorDesktopProbe-win32-x64/. Сетевой прогон для этой правки отображения не повторялся.
 
+## Публичная страница Discord — 25.10.2026
+
+Полное сканирование профиля 4 теперь использует официальную публичную страницу https://discord.com/download и DOM-условие `a[href*="/api/download"]`. Проверяется наличие ссылок, без перехода по ним и скачивания установщика. Это generic_page: открытие страницы не подтверждает работу клиента, gateway и голоса. Отдельный сценарий discord (DOM + WebSocket) сохранён с прежними строгими требованиями.
+
+Первый живой тест стратегий 1/5 подтвердил HTTP 200, auth_required=false, functional=true и трафик discord.com, но дал WARN из-за внутреннего data:-ресурса. Ошибки data:/blob:/about: теперь сохраняются в requests, не понижая сетевой verdict; HTTP(S)/WS и неизвестные запросы учитываются как прежде. Повторный DISCORD_PUBLIC_PAGE=PASS: стратегии 1 и 5 — OK с подтверждёнными flow/strategy, DIRECT — FAIL/ATTEMPT_TIMEOUT. Общий generic harness вернул FAIL из-за требования двух OK; отдельная проверка ожидаемых результатов JSON прошла. Отчёт: desktop-probe/dist/discord-public-final.json.
+
+Frontend 24/24, Electron smoke PASS. Smoke проверяет новые URL/selector; unit tests — схемы ресурсов, generic_page полного режима и сохранение отдельного discord-сценария. Production PID 3132/queue 300 сохранён, тестовая очередь очищена. Portable: desktop-probe/app/release/discord-public/ZatorDesktopProbe-win32-x64/. Полный перебор 28 стратегий не повторялся.
+
 ## Ложный AUTH_REQUIRED на anidub.com — 25.10.2026
 
 В полном прогоне 16 из 17 UNKNOWN на anidub.com имели причину AUTH_REQUIRED при HTTP 200, выполненном DOM-условии и подтверждённом flow; ещё один был FUNCTIONAL_CHECK_TIMED_OUT. Повторный живой тест strategy 1 воспроизвёл AUTH_REQUIRED. Диагностика обнаружила одно поле авторизации, но ноль отображаемых полей, без признака входа/challenge в title: скрытая форма входа публичной страницы ошибочно считалась обязательной авторизацией. Ошибки дополнительных TLS-ресурсов не были причиной этих AUTH_REQUIRED.

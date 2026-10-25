@@ -24,13 +24,14 @@
       <div id="sweep-options" hidden>
         <label>Прямая HTTPS-ссылка на YouTube-видео<input id="youtube-url" type="url" placeholder="https://www.youtube.com/watch?v=…" disabled required></label>
         <p class="note">YT и GV включаются одновременно. Если страница не открылась, меняется только YT; GV ещё не проверена. Оставшиеся GV проверяются с успешной YT.</p>
-        <label>Discord URL<input id="discord-url" type="url" value="https://discord.com/app" disabled required></label>
-        <label>Discord DOM selector<input id="discord-selector" value="#app-mount" maxlength="128" disabled required></label>
+        <label>Публичная страница Discord<input id="discord-url" type="url" value="https://discord.com/download" disabled required></label>
+        <label>Discord DOM selector<input id="discord-selector" value='a[href*="/api/download"]' maxlength="128" disabled required></label>
+        <p class="note">Проверяется открытие страницы загрузки без входа. Работа клиента, WebSocket и голос здесь не проверяются.</p>
         <label>RKN HTTPS-сайты · по одному на строку, до 32<textarea id="rkn-urls" rows="4" disabled required>https://xhamster.com/
 https://anidub.com/
 https://amnezia.org/</textarea></label>
         <label>Общее DOM-условие RKN<input id="rkn-selector" value="body" maxlength="128" disabled required></label>
-        <p class="note">Все стратегии берутся из живого конфига. Проход последовательный; каждый RKN-сайт проверяется всеми номерами. Авторизация Discord может дать UNKNOWN; body подтверждает только загрузку DOM.</p>
+        <p class="note">Все стратегии берутся из живого конфига. Проход последовательный; каждый RKN-сайт проверяется всеми номерами. body подтверждает только загрузку DOM.</p>
       </div>
       <label>Лимит всей пробы, секунд<input id="timeout" type="number" min="5" max="60" value="10" required></label>
       <p class="note">После OK — пауза 5 с. Иначе 15 с, RKN — 30 с. Для YT/GV ускорение требует успеха обеих проверок. Таймаут и отказ загрузки не повторяются.</p>
