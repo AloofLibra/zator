@@ -56,6 +56,11 @@ func readSettings() (settings, error) {
 	if err == nil {
 		err = c.validate()
 	}
+	if err == nil && c.Backend == "iptables" {
+		if config, readErr := readLimited(c.ZapretRoot+"/config", 1024*1024); readErr == nil {
+			c.packetOut, c.packetIn, _ = tcpPacketWindow(string(config))
+		}
+	}
 	return c, err
 }
 
@@ -275,7 +280,8 @@ func (a *agent) status() (response, error) {
 	if !healthy {
 		return nil, fmt.Errorf("ROUTE_MONITOR_LOST")
 	}
-	fingerprint, err := transportFingerprint(a.config)
+	// The session baseline already validated every rule; compare one coherent snapshot.
+	fingerprint, err := fingerprintTransport(a.config, false)
 	if err != nil || fingerprint != a.fingerprint {
 		return nil, fmt.Errorf("TRANSPORT_CHANGED")
 	}
@@ -319,16 +325,19 @@ func (a *agent) status() (response, error) {
 		}
 		f.Close()
 	}
-	conntrack, err := readLimited("/proc/net/nf_conntrack", 2*1024*1024)
-	if os.IsNotExist(err) {
-		conntrack, err = readLimited("/proc/net/ip_conntrack", 2*1024*1024)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("CONNTRACK_EVIDENCE_UNAVAILABLE: %w", err)
-	}
-	events, err := readLimited(stateRoot+"/"+a.session+"/evidence/invocations.tsv", 256*1024)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	var conntrack, events []byte
+	if len(flows) > 0 {
+		conntrack, err = readLimited("/proc/net/nf_conntrack", 2*1024*1024)
+		if os.IsNotExist(err) {
+			conntrack, err = readLimited("/proc/net/ip_conntrack", 2*1024*1024)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("CONNTRACK_EVIDENCE_UNAVAILABLE: %w", err)
+		}
+		events, err = readLimited(stateRoot+"/"+a.session+"/evidence/invocations.tsv", 256*1024)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
 	var gv []int
 	if a.paired {

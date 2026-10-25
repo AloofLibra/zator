@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+func TestIPTablesTCPWindowKeepsBulkTrafficIsolated(t *testing.T) {
+	c := testSettings()
+	c.Backend = "iptables"
+	c.packetOut = 20
+	c.packetIn = 10
+	_, body, _ := ipRules(c)
+	for _, pair := range []struct{ chain, direction, count string }{{"Z2R_DP_POST", "original", "1:20"}, {"Z2R_DP_PRE", "reply", "1:10"}} {
+		var rules []string
+		for _, r := range body {
+			if r.chain == pair.chain {
+				rules = append(rules, strings.Join(r.args, " "))
+			}
+		}
+		if len(rules) != 2 || !strings.Contains(rules[0], "--connbytes "+pair.count) || !strings.Contains(rules[0], "--connbytes-dir "+pair.direction) || !strings.Contains(rules[0], "-j NFQUEUE") || !strings.Contains(rules[1], "-j ACCEPT") {
+			t.Fatal("bulk must bypass both NFQUEUEs", rules)
+		}
+	}
+}
+
 func TestIPTablesInstallationAndRollback(t *testing.T) {
 	saved := runCommand
 	defer func() { runCommand = saved }()

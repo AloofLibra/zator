@@ -34,12 +34,37 @@ func configValue(config, key string) string {
 	return ""
 }
 
+func tcpPacketWindow(config string) (int, int, error) {
+	limits := [2]int{}
+	for i, key := range []string{"NFQWS2_TCP_PKT_OUT", "NFQWS2_TCP_PKT_IN"} {
+		value := configValue(config, key)
+		if value == "" {
+			continue
+		}
+		n, err := strconv.ParseUint(value, 10, 16)
+		if err != nil {
+			return 0, 0, fmt.Errorf("CONFIG_UNSUPPORTED: %s", key)
+		}
+		limits[i] = int(n)
+	}
+	return limits[0], limits[1], nil
+}
+
 func configCompatible(c settings) error {
 	raw, err := readLimited(filepath.Join(c.ZapretRoot, "config"), 1024*1024)
 	if err != nil {
 		return err
 	}
 	cfg := string(raw)
+	if c.Backend == "iptables" {
+		out, in, err := tcpPacketWindow(cfg)
+		if err != nil {
+			return err
+		}
+		if out != c.packetOut || in != c.packetIn {
+			return fmt.Errorf("CONFIG_CHANGED: TCP packet window")
+		}
+	}
 	fw := configValue(cfg, "FWTYPE")
 	if (c.Backend == "nft" && fw != "nftables" && fw != "nft") || (c.Backend == "iptables" && fw != "iptables") || configValue(cfg, "POSTNAT") == "0" {
 		return fmt.Errorf("CONFIG_UNSUPPORTED: firewall backend or pre-NAT layout")

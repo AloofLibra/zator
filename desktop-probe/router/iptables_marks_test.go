@@ -95,7 +95,21 @@ func TestIPTablesFingerprintRequiresAllHooksBeforeForeignRules(t *testing.T) {
 		r := hooks[i]
 		listing[r.chain] += "-A " + r.chain + " " + strings.Join(r.args, " ") + "\n"
 	}
+	calls := 0
 	runCommand = func(name string, args ...string) ([]byte, error) {
+		calls++
+		if name == "iptables-save" {
+			var snapshot strings.Builder
+			for chain, value := range listing {
+				snapshot.WriteString(":" + chain + " - [0:0]\n")
+				for _, line := range strings.Split(value, "\n") {
+					if strings.HasPrefix(line, "-A ") {
+						snapshot.WriteString(line + "\n")
+					}
+				}
+			}
+			return []byte(snapshot.String()), nil
+		}
 		for i, word := range args {
 			if word == "-S" {
 				return []byte(listing[args[i+1]]), nil
@@ -104,9 +118,22 @@ func TestIPTablesFingerprintRequiresAllHooksBeforeForeignRules(t *testing.T) {
 		return nil, nil
 	}
 	listing["OUTPUT"] += "-A OUTPUT -j MT_TEST\n"
-	if _, err := ipFingerprint(c); err != nil {
+	baseline, err := ipFingerprint(c)
+	if err != nil {
 		t.Fatal("foreign rules after owned hooks rejected", err)
 	}
+	calls = 0
+	quick, err := ipFingerprintWithChecks(c, false)
+	if err != nil || quick != baseline || calls != 1 {
+		t.Fatal("status must compare the same snapshot in one command", calls, err)
+	}
+	privateBody := listing["Z2R_DP_OUT"]
+	listing["Z2R_DP_OUT"] = strings.Replace(privateBody, "0x4000000/0xf000000", "0x1000000/0xf000000", 1)
+	changed, err := ipFingerprintWithChecks(c, false)
+	if err != nil || changed == baseline {
+		t.Fatal("modified private mark was not detected", err)
+	}
+	listing["Z2R_DP_OUT"] = privateBody
 	good := listing["OUTPUT"]
 	lines := strings.Split(strings.TrimSpace(good), "\n")
 	listing["OUTPUT"] = strings.Join(append(append([]string{}, lines[:3]...), append([]string{"-A OUTPUT -j MT_TEST"}, lines[3:]...)...), "\n") + "\n"

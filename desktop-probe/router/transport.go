@@ -16,15 +16,16 @@ import (
 )
 
 type settings struct {
-	Backend    string `json:"backend"`
-	Queue      int    `json:"queue"`
-	ProxyUID   int    `json:"proxy_uid"`
-	NfqUID     int    `json:"nfq_uid"`
-	Port       int    `json:"port"`
-	Mark       uint32 `json:"mark"`
-	RawMark    uint32 `json:"raw_mark"`
-	ZatorRoot  string `json:"zator_root"`
-	ZapretRoot string `json:"zapret_root"`
+	packetOut, packetIn int
+	Backend             string `json:"backend"`
+	Queue               int    `json:"queue"`
+	ProxyUID            int    `json:"proxy_uid"`
+	NfqUID              int    `json:"nfq_uid"`
+	Port                int    `json:"port"`
+	Mark                uint32 `json:"mark"`
+	RawMark             uint32 `json:"raw_mark"`
+	ZatorRoot           string `json:"zator_root"`
+	ZapretRoot          string `json:"zapret_root"`
 }
 
 func (c settings) identity() string {
@@ -149,13 +150,17 @@ func nftFingerprint(c settings) (string, error) {
 }
 
 func transportFingerprint(c settings) (string, error) {
+	return fingerprintTransport(c, true)
+}
+
+func fingerprintTransport(c settings, verifyRules bool) (string, error) {
 	if err := configCompatible(c); err != nil {
 		return "", err
 	}
 	var state string
 	var err error
 	if c.Backend == "iptables" {
-		state, err = ipFingerprint(c)
+		state, err = ipFingerprintWithChecks(c, verifyRules)
 	} else {
 		state, err = nftFingerprint(c)
 	}

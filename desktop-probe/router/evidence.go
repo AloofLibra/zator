@@ -8,37 +8,81 @@ import (
 	"time"
 )
 
-func conntrackMark(snapshot string, f flow) (uint32, bool) {
+type tcpTuple [4]string
+type conntrackValue struct {
+	mark  uint32
+	valid bool
+}
+
+func proxyTuple(f flow) (tcpTuple, bool) {
 	source, port, err := net.SplitHostPort(f.Local)
 	if err != nil {
-		return 0, false
+		return tcpTuple{}, false
 	}
 	target, dport, err := net.SplitHostPort(f.Remote)
 	if err != nil {
-		return 0, false
+		return tcpTuple{}, false
+	}
+	return tcpTuple{source, target, port, dport}, true
+}
+
+func conntrackIndex(snapshot string, flows []flow) map[tcpTuple]conntrackValue {
+	wanted := map[tcpTuple]bool{}
+	for _, f := range flows {
+		if tuple, ok := proxyTuple(f); ok {
+			wanted[tuple] = true
+		}
+	}
+	index := map[tcpTuple]conntrackValue{}
+	if len(wanted) == 0 {
+		return index
 	}
 	for _, line := range strings.Split(snapshot, "\n") {
 		fields := strings.Fields(line)
-		tuple := map[string]string{}
+		var tuple tcpTuple
+		seen := uint8(0)
 		mark := ""
 		for _, field := range fields {
-			pair := strings.SplitN(field, "=", 2)
-			if len(pair) != 2 {
+			key, value, ok := strings.Cut(field, "=")
+			if !ok {
 				continue
 			}
-			if pair[0] == "mark" {
-				mark = pair[1]
+			slot := -1
+			switch key {
+			case "src":
+				slot = 0
+			case "dst":
+				slot = 1
+			case "sport":
+				slot = 2
+			case "dport":
+				slot = 3
+			case "mark":
+				mark = value
 			}
-			if _, seen := tuple[pair[0]]; !seen {
-				tuple[pair[0]] = pair[1]
+			if slot >= 0 && seen&(1<<slot) == 0 {
+				tuple[slot] = value
+				seen |= 1 << slot
 			}
 		}
-		if tuple["src"] == source && tuple["dst"] == target && tuple["sport"] == port && tuple["dport"] == dport {
+		if _, exists := index[tuple]; wanted[tuple] && !exists {
 			value, err := strconv.ParseUint(mark, 10, 32)
-			return uint32(value), err == nil
+			index[tuple] = conntrackValue{uint32(value), err == nil}
+			if len(index) == len(wanted) {
+				break
+			}
 		}
 	}
-	return 0, false
+	return index
+}
+
+func conntrackMark(snapshot string, f flow) (uint32, bool) {
+	tuple, ok := proxyTuple(f)
+	if !ok {
+		return 0, false
+	}
+	value := conntrackIndex(snapshot, []flow{f})[tuple]
+	return value.mark, value.valid
 }
 
 func invocationEvidence(snapshot string, f flow, strategy int, profile ...int) (bool, uint32, string, bool) {
@@ -102,6 +146,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 	verifiedHosts := []string{}
 	seenHosts := map[string]bool{}
 	checkedRoutes := map[string]bool{}
+	marks := conntrackIndex(conntrack, flows)
 	for _, f := range flows {
 		wanted := strategy
 		var profile []int
@@ -112,15 +157,20 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 				profile[0] = 2
 			}
 		}
-		mark, matched := conntrackMark(conntrack, f)
+		tuple, _ := proxyTuple(f)
+		entry, present := marks[tuple]
+		if present && !entry.valid {
+			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
+		}
+		mark, matched := entry.mark, entry.valid
 		executed, packetMark, packetEgress, recorded := invocationEvidence(events, f, wanted, profile...)
 		if recorded && (!c.ownsMark(packetMark) || packetMark&c.RawMark != 0) {
 			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
 		}
-		if !matched {
-			if !executed || !recorded || packetEgress == "" {
-				continue
-			}
+		if matched && (!c.ownsMark(mark) || mark&c.RawMark != 0) {
+			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
+		}
+		if executed && recorded && packetEgress != "" {
 			wan := false
 			for _, allowed := range wans {
 				if packetEgress == allowed {
@@ -131,7 +181,9 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 				return nil, fmt.Errorf("ROUTE_MISMATCH: recorded egress is not an active uplink")
 			}
 			egress = packetEgress
-			packetSnapshots++
+			if !matched {
+				packetSnapshots++
+			}
 			matchedFlows++
 			invokedFlows++
 			routedFlows++
@@ -141,8 +193,8 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 			}
 			continue
 		}
-		if !c.ownsMark(mark) || mark&c.RawMark != 0 {
-			return nil, fmt.Errorf("FLOW_MARK_MISMATCH")
+		if !matched {
+			continue
 		}
 		matchedFlows++
 		if executed {
@@ -163,11 +215,7 @@ func flowProof(c settings, flows []flow, conntrack, events string, strategy int,
 		}
 		route, err := runCommand("ip", "-4", "route", "get", target, "mark", strconv.FormatUint(uint64(mark), 10))
 		if err != nil {
-			// Entware BusyBox ip lacks marked lookups; NFQUEUE records actual kernel egress.
-			if !executed || !recorded || packetEgress == "" {
-				continue
-			}
-			route = []byte("dev " + packetEgress)
+			continue
 		}
 		fields := strings.Fields(string(route))
 		wan := false

@@ -125,6 +125,13 @@ func ipRules(c settings) ([]string, []ipRule, []ipRule) {
 	raw := fmt.Sprintf("0x%x/0x%x", c.RawMark, c.RawMark)
 	comment := []string{"-m", "comment", "--comment", "zator_desktop_probe"}
 	rule := func(chain string, args ...string) ipRule { return ipRule{chain, append(args, comment...)} }
+	queue := func(chain, direction string, limit int) ipRule {
+		args := []string{}
+		if limit > 0 {
+			args = append(args, "-m", "connbytes", "--connbytes", fmt.Sprintf("1:%d", limit), "--connbytes-mode", "packets", "--connbytes-dir", direction)
+		}
+		return rule(chain, append(args, "-j", "NFQUEUE", "--queue-num", fmt.Sprint(c.Queue), "--queue-bypass")...)
+	}
 	hooks := []ipRule{
 		rule("POSTROUTING", "-p", "tcp", "-m", "mark", "--mark", m, "-m", "mark", "!", "--mark", raw, "-j", "Z2R_DP_POST"),
 		rule("PREROUTING", "-p", "tcp", "-m", "conntrack", "--ctdir", "REPLY", "-m", "connmark", "--mark", m, "-j", "Z2R_DP_PRE"),
@@ -140,9 +147,9 @@ func ipRules(c settings) ([]string, []ipRule, []ipRule) {
 		rule("Z2R_DP_OUT", "-j", "ACCEPT"),
 		rule("Z2R_DP_RAW", "-j", "MARK", "--set-xmark", fmt.Sprintf("0x%x/0x%x", c.Mark|c.RawMark, c.markMask()|c.RawMark)),
 		rule("Z2R_DP_RAW", "-j", "ACCEPT"),
-		rule("Z2R_DP_POST", "-j", "NFQUEUE", "--queue-num", fmt.Sprint(c.Queue), "--queue-bypass"),
+		queue("Z2R_DP_POST", "original", c.packetOut),
 		rule("Z2R_DP_POST", "-j", "ACCEPT"),
-		rule("Z2R_DP_PRE", "-j", "NFQUEUE", "--queue-num", fmt.Sprint(c.Queue), "--queue-bypass"),
+		queue("Z2R_DP_PRE", "reply", c.packetIn),
 		rule("Z2R_DP_PRE", "-j", "ACCEPT"),
 	}
 	return []string{"Z2R_DP_OUT", "Z2R_DP_RAW", "Z2R_DP_POST", "Z2R_DP_PRE"}, body, hooks
@@ -260,23 +267,46 @@ func ipRemove(c settings) error {
 }
 
 func ipFingerprint(c settings) (string, error) {
+	return ipFingerprintWithChecks(c, true)
+}
+
+func ipFingerprintWithChecks(c settings, verifyRules bool) (string, error) {
 	chains, body, hooks := ipRules(c)
-	wait := ipWait()
-	for _, r := range append(body, hooks...) {
-		if _, err := ipCall(wait, "-C", r); err != nil {
-			return "", fmt.Errorf("TRANSPORT_CHANGED")
+	if verifyRules {
+		wait := ipWait()
+		for _, r := range append(body, hooks...) {
+			if _, err := ipCall(wait, "-C", r); err != nil {
+				return "", fmt.Errorf("TRANSPORT_CHANGED")
+			}
+		}
+	}
+	snapshot, err := runCommand("iptables-save", "-t", "mangle")
+	if err != nil {
+		return "", err
+	}
+	definitions, rows := map[string]string{}, map[string][]string{}
+	for _, line := range strings.Split(string(snapshot), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.HasPrefix(fields[0], ":") {
+			name := strings.TrimPrefix(fields[0], ":")
+			definitions[name] = "-N " + name
+			if fields[1] != "-" {
+				definitions[name] = "-P " + name + " " + fields[1]
+			}
+		} else if len(fields) >= 3 && fields[0] == "-A" {
+			rows[fields[1]] = append(rows[fields[1]], line)
 		}
 	}
 	var state strings.Builder
 	for _, chain := range append(chains, "OUTPUT", "POSTROUTING", "PREROUTING", "INPUT") {
-		out, err := ipCall(wait, "-S", ipRule{chain: chain})
-		if err != nil {
-			return "", err
+		definition, found := definitions[chain]
+		if !found {
+			return "", fmt.Errorf("TRANSPORT_CHANGED")
 		}
 		expected := map[string]int{"OUTPUT": 3, "POSTROUTING": 2, "PREROUTING": 1, "INPUT": 1}[chain]
 		private := strings.HasPrefix(chain, "Z2R_DP_")
 		privateCount := 0
-		for _, line := range strings.Split(string(out), "\n") {
+		for _, line := range rows[chain] {
 			if private && strings.HasPrefix(line, "-A ") {
 				if !strings.Contains(line, "zator_desktop_probe") {
 					return "", fmt.Errorf("TRANSPORT_CHANGED")
@@ -304,7 +334,10 @@ func ipFingerprint(c settings) (string, error) {
 				return "", fmt.Errorf("TRANSPORT_CHANGED")
 			}
 		}
-		state.Write(out)
+		state.WriteString(definition + "\n")
+		for _, line := range rows[chain] {
+			state.WriteString(line + "\n")
+		}
 	}
 	return state.String(), nil
 }

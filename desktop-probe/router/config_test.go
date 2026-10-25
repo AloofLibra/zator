@@ -7,6 +7,46 @@ import (
 	"testing"
 )
 
+func TestTCPPacketWindow(t *testing.T) {
+	out, in, err := tcpPacketWindow("NFQWS2_TCP_PKT_OUT=20\nNFQWS2_TCP_PKT_IN='10'\n")
+	if err != nil || out != 20 || in != 10 {
+		t.Fatal(out, in, err)
+	}
+	for _, cfg := range []string{"", "NFQWS2_TCP_PKT_OUT=0\nNFQWS2_TCP_PKT_IN=0"} {
+		out, in, err = tcpPacketWindow(cfg)
+		if err != nil || out != 0 || in != 0 {
+			t.Fatal(out, in, err)
+		}
+	}
+	for _, value := range []string{"-1", "garbage", "65536"} {
+		if _, _, err := tcpPacketWindow("NFQWS2_TCP_PKT_OUT=" + value); err == nil {
+			t.Fatal(value)
+		}
+	}
+}
+
+func TestTCPPacketWindowCannotChangeUnderAnExistingSettingsSnapshot(t *testing.T) {
+	c := testSettings()
+	c.Backend = "iptables"
+	c.ZapretRoot = t.TempDir()
+	c.packetOut = 20
+	c.packetIn = 10
+	config := "FWTYPE=iptables\nDESYNC_MARK=0x40000000\nNFQWS2_TCP_PKT_OUT=20\nNFQWS2_TCP_PKT_IN=10\n"
+	path := filepath.Join(c.ZapretRoot, "config")
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := configCompatible(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(config, "PKT_OUT=20", "PKT_OUT=21", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := configCompatible(c); err == nil || !strings.HasPrefix(err.Error(), "CONFIG_CHANGED") {
+		t.Fatal("stale packet window accepted", err)
+	}
+}
+
 func TestShippedProfiles(t *testing.T) {
 	raw, err := os.ReadFile("../../config.default")
 	if err != nil {
