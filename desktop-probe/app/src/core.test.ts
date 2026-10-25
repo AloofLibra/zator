@@ -98,7 +98,7 @@ test('attempt timeout and definitive navigation failure skip retries without byp
   assert.deepEqual(classify(before, after, timeout), { verdict: 'FAIL', reason: 'ATTEMPT_TIMEOUT' })
   assert.equal(classify(before, after, { ...timeout, timed_out: false }).reason, 'PAGE_LOAD_FAILED')
   assert.equal(classify(before, after, { ...timeout, functional: null }).verdict, 'UNKNOWN')
-  assert.equal(classify(before, { ...after, queue: before.queue }, timeout).verdict, 'INVALID')
+  assert.equal(classify(before, { ...after, queue: { ...before.queue, alive: false } }, timeout).verdict, 'INVALID')
   assert.equal(classify(before, after, { ...observed, functional: false }).reason, 'RETRY_REQUIRED')
 })
 test('an opened page with an unfinished playback check is UNKNOWN, never a failed strategy', () => {
@@ -106,7 +106,7 @@ test('an opened page with an unfinished playback check is UNKNOWN, never a faile
   assert.deepEqual(classify(before, after, timeout), { verdict: 'UNKNOWN', reason: 'FUNCTIONAL_CHECK_TIMED_OUT' })
   assert.equal(classify(before, after, { ...timeout, dom_loaded: false }).verdict, 'UNKNOWN')
   assert.equal(classify(before, after, { ...timeout, dom_loaded: false, http_status: null }).verdict, 'FAIL')
-  assert.equal(classify(before, { ...after, queue: before.queue }, timeout).verdict, 'INVALID')
+  assert.equal(classify(before, { ...after, queue: { ...before.queue, alive: false } }, timeout).verdict, 'INVALID')
   assert.equal(classify(before, after, { ...observed, timed_out: false }).verdict, 'OK')
 })
 test('bounded browser work times out, cancels and preserves failures', async () => {
@@ -125,10 +125,21 @@ test('an incomplete flow snapshot is unscored, while broken transport still stop
   const missing = { ...after, proof: { ...after.proof, connection_match: 'unavailable' } }
   assert.deepEqual(classify(before, missing, observed), { verdict: 'UNKNOWN', reason: 'FLOW_EVIDENCE_INCOMPLETE' })
   for (const o of [{ ...observed, functional: false, timed_out: true }, observed]) assert.equal(classify(before, missing, o).verdict, 'UNKNOWN')
-  for (const broken of [{ ...missing, queue: { ...missing.queue, alive: false } }, { ...missing, proxy: { ...missing.proxy, alive: false } }, { ...missing, transport_generation: 'changed' }, { ...missing, queue: before.queue }]) assert.equal(classify(before, broken, observed).verdict, 'INVALID')
+  for (const broken of [{ ...missing, queue: { ...missing.queue, alive: false } }, { ...missing, proxy: { ...missing.proxy, alive: false } }, { ...missing, transport_generation: 'changed' }, { ...missing, queue: { ...before.queue, counter: 9 } }]) assert.equal(classify(before, broken, observed).verdict, 'INVALID')
   const youtube = { ...observed, page_functional: true, video_hosts: ['video.googlevideo.com'] }
   const pair = classifyYouTube(before, missing, youtube)
   assert.equal(pair.page.verdict, 'UNKNOWN'); assert.equal(pair.video, null)
+})
+test('failed TCP connect is unscored, not a transport failure or a successful error page', () => {
+  const start = { ...before, proxy: { ...before.proxy, connections_started: 0 }, queue: { ...before.queue, counter: 0 } }
+  const end = { ...start, queue: { ...start.queue, counter: 2 }, proof: { connection_match: 'unavailable', strategy_invocation: 'unavailable', route: 'unavailable' }, flows: [] }
+  const failed: Observation = { ...observed, http_status: null, fresh_connection: null, functional: false, timed_out: true, errors: ['net::ERR_SOCKS_CONNECTION_FAILED'] }
+  assert.deepEqual(classify(start, end, failed), { verdict: 'UNKNOWN', reason: 'CONNECTION_NOT_ESTABLISHED' })
+  assert.equal(classify(start, { ...end, queue: start.queue }, failed).reason, 'NO_TEST_QUEUE_TRAFFIC')
+  assert.equal(classify(start, end, { ...failed, functional: true }).verdict, 'UNKNOWN')
+  const pair = classifyYouTube(start, end, { ...failed, page_functional: false })
+  assert.equal(pair.page.verdict, 'UNKNOWN'); assert.equal(pair.video, null)
+  assert.equal(classify(start, { ...end, proxy: { ...end.proxy, alive: false } }, failed).verdict, 'INVALID')
 })
 test('HTTP2 reuse inside a fresh attempt is valid; document and media each require host proof', () => {
   const start = { ...before, proxy: { ...before.proxy, connections_started: 0 } }
@@ -139,7 +150,7 @@ test('HTTP2 reuse inside a fresh attempt is valid; document and media each requi
   assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['video.googlevideo.com'] } }, youtube).reason, 'DOCUMENT_FLOW_NOT_PROVEN')
   assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['www.youtube.com'] } }, youtube).verdict, 'UNKNOWN')
   assert.equal(classify(start, { ...end, proof: { ...end.proof, verified_hosts: ['video.googlevideo.com'] } }, youtube).verdict, 'UNKNOWN')
-  assert.equal(classify({ ...start, proxy: { ...start.proxy, connections_started: 3 } }, end, youtube).verdict, 'INVALID')
+  assert.equal(classify({ ...start, proxy: { ...start.proxy, connections_started: 3 } }, end, youtube).verdict, 'UNKNOWN')
 })
 test('paired verdicts credit the page independently and require real GV traffic before scoring video', () => {
   const end = { ...after, proof: { ...after.proof, verified_hosts: ['www.youtube.com', 'video.googlevideo.com'] } }
@@ -156,9 +167,9 @@ test('paired verdicts credit the page independently and require real GV traffic 
   assert.equal(classifyYouTube(before, { ...end, gv_strategy: 2 }, video).page.verdict, 'INVALID')
 })
 test('generation, fresh connection, queue and route are required', () => {
-  for (const value of [{ ...after, session_id: 'other' }, { ...after, route_generation: 2 }, { ...after, strategy_generation: 3 }, { ...after, transport_generation: 'changed' }, { ...after, queue: before.queue }]) assert.equal(classify(before, value, observed).verdict, 'INVALID')
+  for (const value of [{ ...after, session_id: 'other' }, { ...after, route_generation: 2 }, { ...after, strategy_generation: 3 }, { ...after, transport_generation: 'changed' }, { ...after, queue: { ...before.queue, counter: 9 } }]) assert.equal(classify(before, value, observed).verdict, 'INVALID')
   assert.equal(classify(before, after, { ...observed, fresh_connection: true }).verdict, 'OK')
-  assert.equal(classify(before, after, { ...observed, fresh_connection: false }).verdict, 'INVALID')
+  assert.equal(classify(before, after, { ...observed, fresh_connection: false }).verdict, 'UNKNOWN')
   assert.equal(classify(before, after, { ...observed, evidence_complete: false }).verdict, 'INVALID')
   assert.equal(classify(before, after, { ...observed, auth_required: true }).verdict, 'UNKNOWN')
   assert.equal(classify(before, after, { ...observed, errors: ['net::ERR_FAILED'] }).verdict, 'WARN')

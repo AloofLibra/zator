@@ -128,8 +128,9 @@ export function classify(before: RouterStatus, after: RouterStatus, o: Observati
   const fresh = o.fresh_connection === true || (before.proxy.connections_started === 0 && (after.proxy.connections_started || 0) > 0)
   if (o.evidence_complete === false) return { verdict: 'INVALID', reason: 'BROWSER_EVIDENCE_INCOMPLETE' }
   if (!after.queue.alive || !after.proxy.alive) return { verdict: 'INVALID', reason: 'TEST_PROCESS_NOT_RUNNING' }
-  if (after.queue.counter <= before.queue.counter) return { verdict: 'INVALID', reason: 'NO_TEST_QUEUE_TRAFFIC' }
-  if (!fresh) return { verdict: 'INVALID', reason: 'FRESH_CONNECTION_NOT_PROVEN' }
+  if (after.queue.counter < before.queue.counter) return { verdict: 'INVALID', reason: 'TEST_QUEUE_COUNTER_RESET' }
+  if (after.queue.counter === before.queue.counter) return { verdict: 'UNKNOWN', reason: 'NO_TEST_QUEUE_TRAFFIC' }
+  if (!fresh) return { verdict: 'UNKNOWN', reason: !after.proxy.connections_started && !o.http_status ? 'CONNECTION_NOT_ESTABLISHED' : 'FRESH_CONNECTION_NOT_PROVEN' }
   if (after.proof.connection_match !== 'verified' || after.proof.strategy_invocation !== 'verified' || after.proof.route !== 'kernel_route_verified') return { verdict: 'UNKNOWN', reason: 'FLOW_EVIDENCE_INCOMPLETE' }
   if (o.requested_host && !after.proof.verified_hosts?.includes(o.requested_host)) return { verdict: 'UNKNOWN', reason: 'DOCUMENT_FLOW_NOT_PROVEN' }
   if (o.required_hosts?.some(host => !after.proof.verified_hosts?.includes(host))) return { verdict: 'UNKNOWN', reason: 'MEDIA_FLOW_NOT_PROVEN' }
