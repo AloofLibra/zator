@@ -119,6 +119,8 @@ npm run smoke
 
 Linux: дополнительно `go test -race ./...`. Физические тесты opt-in, требуют подготовленного компонента и свободной сессии:
 
+Полный browser integration запускается как `electron . --probe-integration` с `ZATOR_PROBE_TEST_CONFIG` (JSON параметров формы с `scanMode: "supersweep"`), `ZATOR_PROBE_TEST_REPORT` (путь JSON) и отдельным `ZATOR_PROBE_TEST_USER_DATA` (существующий каталог). Он использует обычные таймауты и паузы приложения, сохраняет результаты после каждой попытки и пишет `<report>.summary.json`. PASS требует штатного завершения, отсутствия INVALID и строк для всех стратегий из capabilities; `untested` отдельно перечисляет GV, до которых не удалось дойти через рабочую страницу. FAIL/UNKNOWN отдельных стратегий не означают сбой сканера. Не запускайте одновременно с аппаратными тестами или другим сканированием.
+
 ```sh
 ZATOR_PROBE_HARDWARE_BENCH=1 ./router-tests -test.v -test.run TestHardwareSingBoxCandidate
 ZATOR_PROBE_HARDWARE_LIFECYCLE=1 ZATOR_PROBE_HARDWARE_FAULTS=1 ./router-tests -test.v -test.run TestHardwareAgent -test.timeout 150s

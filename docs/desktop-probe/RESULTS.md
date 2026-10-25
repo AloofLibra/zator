@@ -72,6 +72,27 @@ FRESH_CONNECTION_NOT_PROVEN 25.10.2026: реальный отчёт YT-5/GV-2 с
 
 Frontend 20/20 и Electron smoke PASS. Отдельный отрицательный browser-тест на 203.0.113.1 с лимитом 5 s прошёл DIRECT → strategy 5 → strategy 6: все UNKNOWN/CONNECTION_NOT_ESTABLISHED, ни одного INVALID/OK/WARN. Внешняя проверка CONNECT_FAILURE_SCAN=PASS подтверждает продолжение перебора и отсутствие ложных успехов; стандартный harness с требованием двух OK закономерно вернул FAIL для этого отрицательного сценария. Новая portable-сборка — release/connection-failure. Это клиентское исправление; агент не менялся. Полный набор стратегий и физический Keenetic не проверялись.
 
+## Полный живой проход 25.10.2026
+
+Electron UI integration на OpenWrt `192.168.1.37` завершился штатно: `FULLSCAN_INTEGRATION=PASS`, 258/258 строк, 248 проверок стратегий и 10 DIRECT. Все номера взяты из live capabilities: 44 YT, 44 GV, 28 Discord и по 44 на каждом из трёх RKN-сайтов. `missing=[]`, `untested=[]`, INVALID=0; отмены и перезапуска сканирования не было. Лимит браузерной попытки — 10 секунд, штатные паузы 15/30 секунд и межсайтовые паузы сохранены. Видео открывались без звука.
+
+Итоги стратегий (DIRECT в таблицу не включён):
+
+| Профиль / сайт | Проверено | OK | WARN | FAIL | UNKNOWN |
+|---|---:|---:|---:|---:|---:|
+| 1 / YouTube | 44 | 25 | 0 | 17 | 2 |
+| 2 / Googlevideo | 44 | 37 | 0 | 7 | 0 |
+| 4 / Discord | 28 | 0 | 0 | 2 | 26 |
+| 3 / xhamster.com | 44 | 25 | 13 | 2 | 4 |
+| 3 / anidub.com | 44 | 0 | 0 | 27 | 17 |
+| 3 / amnezia.org | 44 | 13 | 7 | 22 | 2 |
+
+Рабочая YT-44 использована для оставшихся GV-26–44 после окончания списка YT. Ни одна GV-стратегия не осталась непроверенной. Успешное завершение сканера не означает успех каждого сайта: Discord gateway не подтверждён, anidub не получил положительных результатов; TLS-проверка не отключалась. Для RKN проверялось DOM-условие `body`, не полная функциональность сервиса.
+
+После завершения `session_active=false`, тестовые nfqws2, queue 65534 и listener 41081 отсутствуют. Production nfqws2 сохранил PID 3132 и queue 300; SHA256 config (`561b85e7…829cc`) и locked.tsv (`4bd7aa60…fb94`) совпадают с исходными. Во время прогона дополнительных исправлений транспорта не потребовалось.
+
+Integration harness теперь проверяет весь ожидаемый охват, сохраняет промежуточный JSON и отдельную сводку, использует отдельный userData и не возвращает PASS после ошибки или неуспешной очистки. Frontend 21/21, Go tests/vet и smoke portable-сборки PASS. Сборка: `desktop-probe/app/release/full-scan/ZatorDesktopProbe-win32-x64/`. Локальные данные прогона: `desktop-probe/dist/fullscan-2026-10-25.json` и `.json.summary.json`; SHA256 JSON: `ee28c51cd500ab5bdcfe46f24353ae6fffc866fd16eb806fa2d43e61e5399df0`.
+
 Физический Keenetic/Entware, 128 МБ/OOM, MIPS ABI/старое ядро, полный firewall/WAN reload и reboot остаются непроверенными. OpenWrt firewall include поставляется отдельно и автоматически в UCI не регистрируется. После пересоздания таблицы нужен hook либо явный reconcile; потеря транспорта отклоняет попытку.
 
-Не выполнены живая авторизованная проверка YouTube/Discord, вся матрица стратегий, Windows packet capture для DNS/UDP/WebRTC leakage и подпись Windows executable. UI DOM/IPC проверены; пиксельная QA недоступна из-за `UnknownVizError` compositor capture в текущем окружении. SOCKS поддерживает только IPv4 TCP/443; результат router sockets не доказывает эквивалентность LAN forwarding. Автоматическое применение в production не входит в MVP.
+Не выполнены живая авторизованная проверка YouTube/Discord, Windows packet capture для DNS/UDP/WebRTC leakage и подпись Windows executable. UI DOM/IPC проверены; пиксельная QA недоступна из-за `UnknownVizError` compositor capture в текущем окружении. SOCKS поддерживает только IPv4 TCP/443; результат router sockets не доказывает эквивалентность LAN forwarding. Автоматическое применение в production не входит в MVP.

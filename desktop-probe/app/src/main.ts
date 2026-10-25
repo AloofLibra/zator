@@ -4,12 +4,13 @@ import { pathToFileURL } from 'node:url'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { Router } from './ssh'
-import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, coverageSummary, withinTimeout, ensureIsolation } from './core'
+import { classify, classifyYouTube, YouTubeSweep, succeeded, Observation, redactURL, RouterStatus, safeURL, SSHOptions, strategySequence, ScanOptions, ScanTarget, scanTargets, scanStrategies, scanCompletion, coverageSummary, withinTimeout, ensureIsolation } from './core'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'zator-ui', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 app.commandLine.appendSwitch('disable-quic')
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp')
 app.commandLine.appendSwitch('host-resolver-rules', 'MAP * ~NOTFOUND, EXCLUDE 127.0.0.1')
+if (process.argv.includes('--probe-integration') && process.env.ZATOR_PROBE_TEST_USER_DATA) app.setPath('userData', process.env.ZATOR_PROBE_TEST_USER_DATA)
 let win: BrowserWindow
 let preview: WebContentsView | undefined
 let previewSession: Electron.Session | undefined
@@ -17,15 +18,17 @@ let controller: AbortController | undefined
 let activeRouter: Router | undefined
 let results: any[] = []
 let quitting = false
-let running: Promise<void> | undefined
+let running: Promise<boolean> | undefined
+let integrationFull = false
 let manualWait: { index: number; finish: () => void } | undefined
-function update(data: Record<string, unknown>) { if (process.argv.includes('--probe-integration') && data.error) console.log(`INTEGRATION_ERROR=${data.error}`); if (Array.isArray(data.results)) data = { ...data, coverage: coverageSummary(data.results) }; if (win && !win.isDestroyed()) win.webContents.send('probe-update', data) }
+function update(data: Record<string, unknown>) { if (process.argv.includes('--probe-integration') && data.error) console.log(`INTEGRATION_ERROR=${data.error}`); if (integrationFull && ['NEXT', 'ERROR', 'CANCELLED', 'CLEANUP_ERROR', 'REPORTING'].includes(String(data.state))) console.log(`FULLSCAN_PROGRESS=${JSON.stringify({ state: data.state, completed: data.completed, total: data.total, profile: data.profile, strategy: data.strategy, gv_strategy: data.gv_strategy, target: data.target, error: data.error })}`); if (Array.isArray(data.results)) data = { ...data, coverage: coverageSummary(data.results) }; if (win && !win.isDestroyed()) win.webContents.send('probe-update', data) }
 let saving = Promise.resolve()
 function saveResults(): Promise<void> {
   saving = saving.catch(() => {}).then(async () => {
     const path = join(app.getPath('userData'), 'last-report.json')
     await mkdir(app.getPath('userData'), { recursive: true })
     await writeFile(`${path}.tmp`, JSON.stringify(results, null, 2)); await rename(`${path}.tmp`, path)
+    if (process.argv.includes('--probe-integration') && process.env.ZATOR_PROBE_TEST_REPORT) { const report = process.env.ZATOR_PROBE_TEST_REPORT; await writeFile(`${report}.tmp`, JSON.stringify(results, null, 2)); await rename(`${report}.tmp`, report) }
   })
   return saving
 }
@@ -182,6 +185,7 @@ async function run(options: RunOptions) {
   controller = new AbortController(); const signal = controller.signal
   activeRouter = router; results = []
   let finalState = 'IDLE', runError: string | undefined
+  let cleanupError: string | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined, heartbeatError: Error | undefined, beating = false
   try {
     update({ state: 'PREPARING', results })
@@ -297,12 +301,12 @@ async function run(options: RunOptions) {
   } catch (e) { finalState = signal.aborted && !heartbeatError ? 'CANCELLED' : 'ERROR'; runError = heartbeatError?.message || (e as Error).message }
   finally {
     if (heartbeat) clearInterval(heartbeat)
-    let cleanupError: string | undefined
     try { await closePreview() } catch (e) { cleanupError = (e as Error).message }
     try { await router.stop() } catch (e) { cleanupError = (e as Error).message }
     controller = undefined; activeRouter = undefined
     update({ state: cleanupError ? 'CLEANUP_ERROR' : finalState, error: runError, cleanup_error: cleanupError, results })
   }
+  return finalState === 'IDLE' && !cleanupError
 }
 
 app.whenReady().then(async () => {
@@ -317,7 +321,7 @@ app.whenReady().then(async () => {
   win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
   ipcMain.handle('probe-command', async (event, command, payload) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || event.senderFrame.url !== 'zator-ui://app/index.html') throw new Error('IPC_DENIED')
-    if (command === 'run') { if (controller) throw new Error('RUN_BUSY'); running = run(payload).catch(e => update({ state: 'ERROR', error: e.message })); return }
+    if (command === 'run') { if (controller) throw new Error('RUN_BUSY'); running = run(payload).catch(e => { update({ state: 'ERROR', error: e.message }); return false }); return }
     if (command === 'cancel') { controller?.abort(); return }
     if (command === 'manual') { if (Number.isInteger(payload.index) && results[payload.index] && ['passed', 'failed', 'unknown'].includes(payload.value)) { results[payload.index].manual = payload.value; await saveResults(); const waiting = manualWait; if (waiting && waiting.index === payload.index) waiting.finish(); update({ results }) }; return }
     if (command === 'export') {
@@ -355,18 +359,31 @@ app.whenReady().then(async () => {
   if (process.argv.includes('--probe-integration')) {
     if (!process.env.ZATOR_PROBE_TEST_CONFIG || !process.env.ZATOR_PROBE_TEST_REPORT) throw new Error('TEST_PATHS_REQUIRED')
     const options = JSON.parse(await readFile(process.env.ZATOR_PROBE_TEST_CONFIG, 'utf8'))
+    integrationFull = options.scanMode === 'supersweep'
+    const expectedCapabilities = integrationFull ? await new Router(options.ssh).call('capabilities') : undefined
     const fields = { host: options.ssh.host, user: options.ssh.user, port: String(options.ssh.port), identity: options.ssh.identity, url: options.url, profile: String(options.profile), strategies: options.strategies.join(','), scenario: options.scenario, selector: options.selector, timeout: String(options.timeout) }
-    await win.webContents.executeJavaScript(`(() => { for (const [id,value] of Object.entries(${JSON.stringify(fields)})) document.getElementById(id).value=value; document.getElementById('probe-form').requestSubmit() })()`)
+    const sweepFields = { 'youtube-url': options.youtubeURL, 'discord-url': options.discordURL, 'discord-selector': options.discordSelector, 'rkn-urls': options.rknURLs, 'rkn-selector': options.rknSelector }
+    await win.webContents.executeJavaScript(`(() => { for (const [id,value] of Object.entries(${JSON.stringify(fields)})) document.getElementById(id).value=value; for (const [id,value] of Object.entries(${JSON.stringify(sweepFields)})) if (value !== undefined) document.getElementById(id).value=value; const mode=document.getElementById('scan-mode'); mode.value=${JSON.stringify(options.scanMode || 'single')}; mode.dispatchEvent(new Event('change')); document.getElementById('scenario').dispatchEvent(new Event('change')); document.getElementById('probe-form').requestSubmit() })()`)
     for (let n = 0; n < 30 && !running; n++) await new Promise(resolve => setTimeout(resolve, 100))
     if (!running) throw new Error('UI_FORM_DID_NOT_START')
-    await running
+    const finished = await running
     await writeFile(process.env.ZATOR_PROBE_TEST_REPORT, JSON.stringify(results, null, 2))
     if (process.env.ZATOR_PROBE_TEST_IMAGE) {
       try { await writeFile(process.env.ZATOR_PROBE_TEST_IMAGE, (await win.capturePage()).toPNG()) } catch { console.log('UI_CAPTURE=UNAVAILABLE') }
     }
-    const passed = options.scenario === 'youtube_video'
+    if (integrationFull) {
+      const completion = scanCompletion(results, options, expectedCapabilities)
+      const counts: Record<string, number> = {}
+      for (const row of results) counts[row.verdict] = (counts[row.verdict] || 0) + 1
+      const passed = finished && completion.missing.length === 0 && !results.some(r => r.verdict === 'INVALID')
+      const summary = { completed: passed, ...completion, counts, rows: results.length, created: new Date().toISOString() }
+      await writeFile(`${process.env.ZATOR_PROBE_TEST_REPORT}.summary.json`, JSON.stringify(summary, null, 2))
+      console.log(`FULLSCAN_INTEGRATION=${passed ? 'PASS' : 'FAIL'} ${JSON.stringify(summary)}`)
+      app.exit(passed ? 0 : 1); return
+    }
+    const passed = finished && (options.scenario === 'youtube_video'
       ? !results.some(r => r.verdict === 'INVALID') && [1, 2].every(profile => results.some(r => r.profile === profile && r.strategy > 0 && r.tested !== false && succeeded(r.verdict)))
-      : results.length === 2 && results.every(r => r.verdict === 'OK')
+      : results.length === 2 && results.every(r => r.verdict === 'OK'))
     console.log(`BROWSER_INTEGRATION=${passed ? 'PASS' : 'FAIL'} results=${results.map(r => `P${r.profile}/${r.strategy}:${r.verdict}:${r.reason}`).join(',')}`)
     app.exit(passed ? 0 : 1)
   }

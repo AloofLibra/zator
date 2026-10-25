@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, coverageSummary, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
+import { classify, classifyYouTube, YouTubeSweep, Observation, redactURL, RouterStatus, safeURL, validateSSH, strategySequence, scanTargets, scanStrategies, scanCompletion, coverageSummary, ScanOptions, withinTimeout, ensureIsolation, Capabilities } from './core'
 
 test('preflight restores missing transport once and rechecks isolation', async () => {
   const calls: string[] = []
@@ -29,6 +29,17 @@ test('preflight never repairs active sessions or configuration failures and does
 })
 
 const scan: ScanOptions = { url: 'https://example.org/', profile: 3, scenario: 'generic_page', selector: 'body', strategies: [1], scanMode: 'supersweep', youtubeURL: 'https://www.youtube.com/watch?v=test', discordURL: 'https://discord.com/app', discordSelector: '#app-mount', rknURLs: 'https://example.org/\nhttps://example.net/\nhttps://example.org/', rknSelector: 'body' }
+test('full scan completion detects missing cases and reports untested GV separately', () => {
+  const capabilities = { profiles: { '1': [1, 2], '2': [1, 2], '3': [1, 2], '4': [1, 2] } }
+  const rows = scanTargets(scan).flatMap(target => (target.scenario === 'youtube_video' ? [1, 2] : [target.profile]).flatMap(profile => [1, 2].map(strategy => ({ profile, strategy, site: redactURL(target.url), tested: true, helper: false }))))
+  assert.deepEqual(scanCompletion(rows, scan, capabilities), { expected: 10, missing: [], untested: [] })
+  const partial = scanCompletion(rows.slice(0, -1), scan, capabilities)
+  assert.equal(partial.missing.length, 1)
+  rows[3].tested = false
+  assert.equal(scanCompletion(rows, scan, capabilities).untested.length, 1)
+  rows[0].helper = true
+  assert.equal(scanCompletion(rows, scan, capabilities).missing.length, 1)
+})
 test('supersweep combines YouTube/GV into one target and keeps every RKN domain', () => {
   const targets = scanTargets(scan)
   assert.deepEqual(targets.map(t => t.profile), [1, 4, 3, 3])

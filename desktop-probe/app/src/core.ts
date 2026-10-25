@@ -79,6 +79,21 @@ export function scanStrategies(options: Pick<ScanOptions, 'scanMode' | 'strategy
   if (!Array.isArray(chosen) || !chosen.length || chosen.length > 64 || chosen.some(n => !Number.isInteger(n) || !available.includes(n))) throw new Error('INVALID_STRATEGIES')
   return [...new Set(chosen)]
 }
+export function scanCompletion(rows: { site: string; profile: number; strategy: number; tested?: boolean; helper?: boolean }[], options: ScanOptions, capabilities: Capabilities) {
+  const missing: string[] = [], untested: string[] = []
+  let expected = 0
+  for (const target of scanTargets(options)) {
+    const profiles = target.scenario === 'youtube_video' ? [1, 2] : [target.profile]
+    for (const profile of profiles) for (const strategy of scanStrategies(options, capabilities.profiles?.[String(profile)])) {
+      expected++
+      const key = `P${profile}/${strategy}/${redactURL(target.url)}`
+      const found = rows.filter(r => !r.helper && r.profile === profile && r.strategy === strategy && r.site === redactURL(target.url))
+      if (!found.length) missing.push(key)
+      else if (!found.some(r => r.tested !== false)) untested.push(key)
+    }
+  }
+  return { expected, missing, untested }
+}
 export function coverageSummary(rows: { profile: number; strategy: number; site: string; verdict: string; tested?: boolean; helper?: boolean }[]) {
   const groups = new Map<string, { profile: number; strategy: number; sites: Map<string, string> }>()
   for (const row of rows) {
