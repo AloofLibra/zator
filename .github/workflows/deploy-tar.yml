@@ -190,9 +190,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y busybox lua5.1
           sudo mkdir -p /opt/zator/files/fake /opt/zapret2
-          sudo chown -R "$USER:" /opt/zator /opt/zapret2
           (cd desktop-probe/router && go test -race ./... && go vet ./...)
-          SMOKE_DIST="$PWD/webui-src/dist" bash tests/run.sh full
+          # Watchdog lifecycle fixtures verify root-owned log directories.
+          sudo env "PATH=$PATH" "SMOKE_DIST=$PWD/webui-src/dist" bash tests/run.sh full
 
       - name: Verify outputs
         run: |

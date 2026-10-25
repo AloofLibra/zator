@@ -413,7 +413,21 @@ printf '%s\n' "$out" | grep -q 'apk update && apk add uhttpd coreutils-nohup' \
   || fail "лечение для apk (OpenWrt 24.10+) должно использовать apk add"
 rm -f "$TMP_DIR/bin/apk"
 OSystem="VPS"
+printf '#!/bin/sh\nexit 0\n' > "$TMP_DIR/bin/apt-get"
+chmod +x "$TMP_DIR/bin/apt-get"
 out="$(webui_status_human 'stopped:none:17682')"
+printf '%s\n' "$out" | grep -q 'apt update && apt install -y busybox' \
+  || fail "лечение для apt должно предлагать busybox"
+rm -f "$TMP_DIR/bin/apt-get"
+out="$(
+  command() {
+    case "$*" in
+      '-v opkg'|'-v apk'|'-v apt-get') return 1 ;;
+      *) builtin command "$@" ;;
+    esac
+  }
+  webui_status_human 'stopped:none:17682'
+)"
 printf '%s\n' "$out" | grep -q 'пакетным менеджером системы' \
   || fail "нет нейтрального лечения при неизвестном менеджере"
 out="$(webui_status_human 'stopped:no-runner:17682')"
