@@ -64,6 +64,7 @@ async function observe(options: RunOptions, proxyPort: number, signal: AbortSign
   })
   preview = new WebContentsView({ webPreferences: { session: ses, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false } })
   const view = preview, wc = view.webContents
+  wc.setAudioMuted(true)
   wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
   wc.setWindowOpenHandler(() => ({ action: 'deny' }))
   wc.on('will-navigate', (event, url) => { try { safeURL(url) } catch { event.preventDefault() } })
