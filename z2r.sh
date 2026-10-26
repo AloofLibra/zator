@@ -2346,13 +2346,13 @@ webui_submenu() {
       "1")
         # Обновление существующей панели — из релизного архива webui (сверка
         # sha, рестарт); установка с нуля — webui_install (зависимости и
-        # службу archive не ставит, поэтому ниже — автовосстановление сервера).
+        # службу archive не ставит, поэтому ниже — восстановление остановленной панели).
         if [ -d "$WEBUI_WWW" ] && type deploy_from_tar >/dev/null 2>&1; then
           if deploy_from_tar "$(deploy_releases_base)/latest/zator-webui.tar.gz" webui latest; then
             case "$(webui_status_text)" in
-              stopped:none:*)
-                echo -e "${yellow}Веб-сервер не найден — устанавливаю недостающие пакеты и запускаю панель.${plain}"
-                if webui_ensure_server_binary && webui_ensure_runtime_deps && webui_start_service; then
+              stopped:*)
+                echo -e "${yellow}Web UI остановлен — проверяю пакеты, восстанавливаю службу и запускаю панель.${plain}"
+                if webui_ensure_server_binary && webui_ensure_runtime_deps && webui_install_service && webui_start_service; then
                   echo -e "${green}Панель восстановлена.${plain}"
                 else
                   echo -e "${red}Автовосстановление не удалось — запустите «Диагностика Web UI».${plain}"

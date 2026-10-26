@@ -110,6 +110,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))
             <li>Wusspoppin</li><li>Швейк</li><li>BestFridayxD</li>
             <li>a1ligat0r</li><li>Данил</li><li>DarkMaz</li>
           </ul>
+          <p class="modal-message">и ещё 5 анонимусов пожелавших остаться неизвестными</p>
         </section>
 
         <section class="support-cat" aria-labelledby="support-cat-title">

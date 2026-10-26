@@ -172,7 +172,7 @@ grep -qF 'submenu_item "5" "Диагностика Web UI"' "$REPO_DIR/z2r.sh" \
   || fail "при running нет пункта 5 (Диагностика)"
 grep -qF 'submenu_item "4" "Диагностика Web UI"' "$REPO_DIR/z2r.sh" \
   || fail "при stopped нет пункта 4 (Диагностика)"
-grep -qF 'webui_ensure_server_binary && webui_ensure_runtime_deps && webui_start_service' "$REPO_DIR/z2r.sh" \
+grep -qF 'webui_ensure_server_binary && webui_ensure_runtime_deps && webui_install_service && webui_start_service' "$REPO_DIR/z2r.sh" \
   || fail "ветка 1 не самолечит отсутствующий веб-сервер после deploy_from_tar"
 
 # remove_zapret (переустановка/удаление zapret2) НЕ трогает файлы Web-панели:
@@ -446,7 +446,7 @@ printf '%s\n' "$out" | grep -q 'index.html: есть' || fail "диагност�
 ok "диагностика: блоки на месте, сбои локализованы"
 
 # ===========================================================================
-# 11. Ветка «1»: самолечение отсутствующего веб-сервера после deploy (T3)
+# 11. Ветка «1»: восстановление остановленной панели после deploy (T3)
 # ===========================================================================
 echo "== 11. Самолечение ветки 1 =="
 HEAL_LOG="$TMP_DIR/heal.log"
@@ -455,16 +455,25 @@ mkdir -p "$WEBUI_WWW"
 deploy_from_tar() { echo "DEPLOY_OK"; return 0; }
 webui_ensure_server_binary() { echo ENSURE_SERVER >> "$HEAL_LOG"; return 0; }
 webui_ensure_runtime_deps() { echo ENSURE_DEPS >> "$HEAL_LOG"; return 0; }
+webui_install_service() { echo INSTALL_SERVICE >> "$HEAL_LOG"; return 0; }
 webui_start_service() { echo START_SERVICE >> "$HEAL_LOG"; return 0; }
 webui_status_text() { echo "stopped:none:17682"; }
 out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
 printf '%s\n' "$out" | grep -q 'DEPLOY_OK' || fail "deploy_from_tar не вызывался"
-printf '%s\n' "$out" | grep -q 'устанавливаю недостающие пакеты' || fail "нет сообщения о самолечении"
+printf '%s\n' "$out" | grep -q 'восстанавливаю службу' || fail "нет сообщения о самолечении"
 grep -q 'ENSURE_SERVER' "$HEAL_LOG" || fail "сервер не устанавливался при stopped:none"
 grep -q 'ENSURE_DEPS' "$HEAL_LOG" || fail "зависимости не проверялись при stopped:none"
+grep -q 'INSTALL_SERVICE' "$HEAL_LOG" || fail "служба не восстанавливалась при stopped:none"
 grep -q 'START_SERVICE' "$HEAL_LOG" || fail "сервис не запускался при stopped:none"
 printf '%s\n' "$out" | grep -q 'Панель восстановлена' || fail "нет итога самолечения"
 printf '%s\n' "$out" | grep -q 'Состояние: stopped:none:17682' || fail "статус не показан после самолечения"
+
+: > "$HEAL_LOG"
+webui_status_text() { echo "stopped:uhttpd:17682"; }
+out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
+[ "$(cat "$HEAL_LOG")" = "$(printf 'ENSURE_SERVER\nENSURE_DEPS\nINSTALL_SERVICE\nSTART_SERVICE')" ] \
+  || fail "остановленная панель с установленным uhttpd не восстановлена"
+printf '%s\n' "$out" | grep -q 'Панель восстановлена' || fail "нет итога восстановления при stopped:uhttpd"
 
 : > "$HEAL_LOG"
 webui_status_text() { echo "running:uhttpd:17682"; }
@@ -481,9 +490,9 @@ deploy_from_tar() { return 1; }
 webui_install() { echo "INSTALL_CALLED"; return 0; }
 out="$(printf '1\n\n0\n' | webui_submenu 2>&1)"
 printf '%s\n' "$out" | grep -q 'INSTALL_CALLED' || fail "сбой деплоя не откатывается на webui_install"
-unset -f deploy_from_tar webui_install webui_ensure_server_binary webui_ensure_runtime_deps webui_start_service
+unset -f deploy_from_tar webui_install webui_ensure_server_binary webui_ensure_runtime_deps webui_install_service webui_start_service
 load_real
-ok "самолечение: stopped:none лечится, running не трогается, сбои локализованы"
+ok "самолечение: stopped:none/uhttpd лечатся со службой, running не трогается, сбои локализованы"
 
 # ===========================================================================
 # 12. webui_start_service: не глотает мёртвый старт (T5)
