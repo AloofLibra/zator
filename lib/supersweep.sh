@@ -302,7 +302,7 @@ _supersweep_verdict_color() {
 # внешний firewall-фреймворк (ndm на Keenetic), транспорт
 # переустанавливается на месте — прогон продолжает работу.
 _supersweep_check_target() {
-    local out seq_before seq_after try attempt isolation_lost v12 v13
+    local out seq_before seq_after try attempt isolation_lost v12 v13 dl verdict
     for attempt in 1 2; do
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             for try in 1 2 3; do
@@ -341,13 +341,15 @@ _supersweep_check_target() {
             [ "$isolation_lost" = 0 ] || continue
             seq_after="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
             if [ "$seq_before" = "$seq_after" ]; then
-                # curl rc=6: DNS отказал до соединения, отсутствие HTTPS-пакетов ожидаемо.
-                { IFS= read -r v12; IFS= read -r v13; } <<< "$out"
-                if [[ "$v12" == '6|000|'* && "$v13" == '6|000|'* ]]; then
+                # Неуспешная проба могла не создать пакетов; доказательство нужно для победителей.
+                { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
+                verdict="$(z2r_tls_short_result "$v12" "$v13" "$dl" both)"
+                if [[ "$verdict" == fail\|* ]]; then
                     printf '%s\n' "$out"
                     return 0
                 fi
                 echo 'Пакеты не попали в тестовую NFQUEUE: проверьте маршрутизацию и DNS. Прогон остановлен.' >&2
+                printf 'Проба %s: TLS 1.2=%s; TLS 1.3=%s; download=%s\n' "$1" "$v12" "$v13" "$dl" >&2
                 : > "$Z2R_SUPERSWEEP_DIR/cancel"
                 return 1
             fi

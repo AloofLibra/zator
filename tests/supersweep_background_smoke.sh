@@ -60,27 +60,37 @@ if grep -nE 'sleep [0-9]+\.[0-9]+[[:space:]]*$' lib/supersweep_probe.sh lib/orch
     exit 1
 fi
 # Cleanup failures remain retryable and must prevent starting the next phase.
+for result in green warn http; do
 (
     supersweep_probe_healthy() { return 0; }
     supersweep_probe_sequence() { echo 0; }
-    z2r_tls_check_target() { printf '0|200|HTTP/2|0.1|192.0.2.1\n0|200|HTTP/2|0.1|192.0.2.1\nskip\n'; }
+    z2r_tls_check_target() {
+        case "$result" in
+            green) printf '0|200|HTTP/2|0.1|192.0.2.1\n0|200|HTTP/2|0.1|192.0.2.1\nskip\n' ;;
+            warn) printf '0|200|HTTP/2|0.1|192.0.2.1\n28|000|-|5|-\nskip\n' ;;
+            http) printf '0|404|HTTP/2|0.1|192.0.2.1\n0|404|HTTP/2|0.1|192.0.2.1\nskip\n' ;;
+        esac
+    }
     ! _supersweep_check_target https://example.com/
     [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
-# DNS failures send no HTTPS packets; record a red result instead of cancelling.
+done
+# Failed connections may send no packets; only successful results need proof.
+for rc in 6 7 28 35 45; do
 (
     supersweep_probe_healthy() { return 0; }
     supersweep_probe_sequence() { echo 0; }
-    z2r_tls_check_target() { printf '6|000|-|-|-\n6|000|-|-|-\nskip\n'; }
+    z2r_tls_check_target() { printf '%s|000|-|-|-\n%s|000|-|-|-\nskip\n' "$rc" "$rc"; }
     out="$(_supersweep_check_target https://example.com/)" || {
-        echo 'FAIL: DNS failure cancelled the sweep' >&2
+        echo "FAIL: curl rc=$rc cancelled the sweep" >&2
         exit 1
     }
     [ ! -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
-    [ "$out" = $'6|000|-|-|-\n6|000|-|-|-\nskip' ]
-    [[ "$(z2r_tls_short_result '6|000|-|-|-' '6|000|-|-|-' skip both)" = fail\|* ]]
+    [ "$out" = "$(z2r_tls_check_target)" ]
+    [[ "$(z2r_tls_short_result "$rc|000|-|-|-" "$rc|000|-|-|-" skip both)" = fail\|* ]]
 ) || exit 1
+done
 # A post-probe health failure invalidates the answer, even if health recovers.
 for health_failure in transient reinstall repeated; do
 (
