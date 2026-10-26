@@ -68,6 +68,19 @@ fi
     [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+# DNS failures send no HTTPS packets; record a red result instead of cancelling.
+(
+    supersweep_probe_healthy() { return 0; }
+    supersweep_probe_sequence() { echo 0; }
+    z2r_tls_check_target() { printf '6|000|-|-|-\n6|000|-|-|-\nskip\n'; }
+    out="$(_supersweep_check_target https://example.com/)" || {
+        echo 'FAIL: DNS failure cancelled the sweep' >&2
+        exit 1
+    }
+    [ ! -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    [ "$out" = $'6|000|-|-|-\n6|000|-|-|-\nskip' ]
+    [[ "$(z2r_tls_short_result '6|000|-|-|-' '6|000|-|-|-' skip both)" = fail\|* ]]
+) || exit 1
 # A post-probe health failure invalidates the answer, even if health recovers.
 for health_failure in transient reinstall repeated; do
 (
