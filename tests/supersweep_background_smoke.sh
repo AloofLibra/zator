@@ -39,6 +39,21 @@ z2r_tls_probe_download https://example.com/ >/dev/null
 [ "$(grep -c -- '--local-port' "$TMP/curl.args")" = 2 ]
 # Build from deployed source, not develop strategies or its adaptive extensions.
 source lib/supersweep_probe.sh
+# RKN must retain isolation errors in the run log, just like profile workers.
+(
+    Z2R_SUPERSWEEP_DIR="$TMP/rkn-error"
+    mkdir -p "$Z2R_SUPERSWEEP_DIR"
+    : > "$Z2R_SUPERSWEEP_DIR/coverage.tsv"
+    _supersweep_request_lock() { return 0; }
+    _supersweep_settle() { :; }
+    _supersweep_check_target() {
+        echo 'probe isolation failure' >&2
+        : > "$Z2R_SUPERSWEEP_DIR/cancel"
+        return 1
+    }
+    _supersweep_worker_rkn rkn 1 1 both 0 example.com 2> "$TMP/rkn-error.log"
+    grep -q 'probe isolation failure' "$TMP/rkn-error.log"
+) || { echo 'FAIL: RKN discarded the probe error' >&2; exit 1; }
 # Router BusyBox can reject fractional sleep; no unguarded fractional waits.
 if grep -nE 'sleep [0-9]+\.[0-9]+[[:space:]]*$' lib/supersweep_probe.sh lib/orchestra_state.sh; then
     echo 'FAIL: unguarded fractional sleep on router' >&2

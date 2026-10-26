@@ -625,7 +625,7 @@ _supersweep_worker_rkn() {
             round=$((round + 1))
             _supersweep_request_lock "$name" "$round" "domain|${d}|tls|${s}" || { ss_interrupted=1; break; }
             _supersweep_settle
-            _supersweep_check_target "https://${d}/" > "${tmpd}/r.0" 2>/dev/null </dev/null \
+            _supersweep_check_target "https://${d}/" > "${tmpd}/r.0" </dev/null \
                 || { ss_interrupted=1; break; }
             [ "$ss_interrupted" = 1 ] && break
             out="$(< "${tmpd}/r.0")"
