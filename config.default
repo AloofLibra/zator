@@ -1,4 +1,4 @@
-# Last modified: 2026-10-24 19:42:45 UTC
+# Last modified: 2026-10-26 15:50:37 UTC
 # this file is included from init scripts
 # change values here
 
@@ -170,6 +170,21 @@ NFQWS2_OPT="
 --new
 
 #Z2R_AUTO_STANDARD_BEGIN
+#Z2R_AUTO_STANDARD_3_BEGIN
+  #Стратегии для RKN
+--filter-tcp=443,2053,2083,2087,2096,8443 --filter-l7=tls
+--hostlist=/opt/zator/extra_strats/TCP_RKN_list.txt
+--hostlist=/opt/zator/extra_strats/TCP_Custom.txt
+--hostlist-exclude=/opt/zator/extra_strats/TCP_Discord.txt
+--hostlist-exclude=/opt/zator/lists/netrogat.txt
+--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
+--out-range=-s34228
+--in-range=-s32768 --lua-desync=circular_locked:key=3:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt:payload=tls_client_hello
+--import=z2r_tcp_tls_common
+#Z2R_AUTO_STANDARD_3_END
+
+--new
+
 #Z2R_AUTO_STANDARD_1_BEGIN
 #Стратегии для YT
 --filter-tcp=443 --filter-l7=tls
@@ -197,21 +212,6 @@ NFQWS2_OPT="
 --new
 
 #Z2R_TCP443_END
-
-#Z2R_AUTO_STANDARD_3_BEGIN
-  #Стратегии для RKN
---filter-tcp=443,2053,2083,2087,2096,8443 --filter-l7=tls
---hostlist=/opt/zator/extra_strats/TCP_RKN_list.txt
---hostlist=/opt/zator/extra_strats/TCP_Custom.txt
---hostlist-exclude=/opt/zator/extra_strats/TCP_Discord.txt
---hostlist-exclude=/opt/zator/lists/netrogat.txt
---payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
---out-range=-s34228
---in-range=-s32768 --lua-desync=circular_locked:key=3:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt:payload=tls_client_hello
---import=z2r_tcp_tls_common
-#Z2R_AUTO_STANDARD_3_END
-
---new
 
 #Отдельные стратегии для TCP_Discord
 #Z2R_AUTO_STANDARD_4_BEGIN

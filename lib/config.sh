@@ -188,7 +188,10 @@ config_auto_layout_valid() {
   cfg="$(config_get_file "$1")" || return 1
   standard_ids="$(config_auto_pair_ids "$cfg" standard)" || return 1
   auto_ids="$(config_auto_pair_ids "$cfg")" || return 1
-  [ "$(printf '%s\n' "$standard_ids" | tr '\n' ' ')" = "1 2 3 4 8 3S 9 " ] || return 1
+  case "$(printf '%s\n' "$standard_ids" | tr '\n' ' ')" in
+    "1 2 3 4 8 3S 9 "|"3 1 2 4 8 3S 9 ") ;;
+    *) return 1 ;;
+  esac
   [ "$(printf '%s\n' "$auto_ids" | tr '\n' ' ')" = "3 4 9 " ] || return 1
   [ "$(grep -c '^#Z2R_AUTO_FALLBACK_WAS=[01]$' "$cfg")" -eq 1 ]
 }
