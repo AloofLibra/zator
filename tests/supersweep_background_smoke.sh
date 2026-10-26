@@ -62,6 +62,11 @@ fi
 # Cleanup failures remain retryable and must prevent starting the next phase.
 for result in green warn http; do
 (
+    FWTYPE=iptables
+    Z2R_SUPERSWEEP_QUEUE_FILE="$TMP/snapshot-queue"
+    printf '65535 123 0 2 65531 0 0 0 1\n' > "$Z2R_SUPERSWEEP_QUEUE_FILE"
+    iptables-save() { echo 'mangle counters snapshot'; }
+    ip() { printf 'ip %s\n' "$*"; }
     supersweep_probe_healthy() { return 0; }
     supersweep_probe_sequence() { echo 0; }
     z2r_tls_check_target() {
@@ -73,23 +78,34 @@ for result in green warn http; do
     }
     ! _supersweep_check_target https://example.com/
     [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+    grep -q '^url=https://example.com/$' "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
+    grep -q '^sequence_before=0$' "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
+    grep -q '^sequence_after=0$' "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
+    grep -q '^0|' "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
+    grep -q '^65535 123 ' "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
+    grep -q '^mangle counters snapshot$' "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
+    grep -q '^ip route show table all$' "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
 )
 rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 done
-# Failed connections may send no packets; only successful results need proof.
+# Only a confirmed DNS failure is safe without traffic; other failures need evidence.
 for rc in 6 7 28 35 45; do
 (
     supersweep_probe_healthy() { return 0; }
     supersweep_probe_sequence() { echo 0; }
     z2r_tls_check_target() { printf '%s|000|-|-|-\n%s|000|-|-|-\nskip\n' "$rc" "$rc"; }
-    out="$(_supersweep_check_target https://example.com/)" || {
-        echo "FAIL: curl rc=$rc cancelled the sweep" >&2
-        exit 1
-    }
-    [ ! -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
-    [ "$out" = "$(z2r_tls_check_target)" ]
-    [[ "$(z2r_tls_short_result "$rc|000|-|-|-" "$rc|000|-|-|-" skip both)" = fail\|* ]]
+    if [ "$rc" = 6 ]; then
+        out="$(_supersweep_check_target https://example.com/)" || exit 1
+        [ ! -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+        [ "$out" = "$(z2r_tls_check_target)" ]
+        [[ "$(z2r_tls_short_result "$rc|000|-|-|-" "$rc|000|-|-|-" skip both)" = fail\|* ]]
+    else
+        ! _supersweep_check_target https://example.com/
+        [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+        grep -q "^$rc|000|" "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log"
+    fi
 ) || exit 1
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
 done
 # A post-probe health failure invalidates the answer, even if health recovers.
 for health_failure in transient reinstall repeated; do

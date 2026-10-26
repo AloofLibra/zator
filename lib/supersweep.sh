@@ -302,7 +302,7 @@ _supersweep_verdict_color() {
 # внешний firewall-фреймворк (ndm на Keenetic), транспорт
 # переустанавливается на месте — прогон продолжает работу.
 _supersweep_check_target() {
-    local out seq_before seq_after try attempt isolation_lost v12 v13 dl verdict
+    local out seq_before seq_after try attempt isolation_lost v12 v13 dl
     for attempt in 1 2; do
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             for try in 1 2 3; do
@@ -341,13 +341,23 @@ _supersweep_check_target() {
             [ "$isolation_lost" = 0 ] || continue
             seq_after="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
             if [ "$seq_before" = "$seq_after" ]; then
-                # Неуспешная проба могла не создать пакетов; доказательство нужно для победителей.
+                # Только rc=6 однозначно означает отказ DNS до HTTPS-соединения.
                 { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
-                verdict="$(z2r_tls_short_result "$v12" "$v13" "$dl" both)"
-                if [[ "$verdict" == fail\|* ]]; then
+                if [[ "$v12" == '6|000|'* && "$v13" == '6|000|'* ]]; then
                     printf '%s\n' "$out"
                     return 0
                 fi
+                # Снять состояние до cleanup: он удалит правила и остановит очередь.
+                {
+                    printf 'url=%s\nsequence_before=%s\nsequence_after=%s\n%s\n' "$1" "$seq_before" "$seq_after" "$out"
+                    cat "${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}"
+                    case "${FWTYPE:-}" in
+                        iptables) iptables-save -c -t mangle ;;
+                        nft|nftables) nft -a list table inet "${ZAPRET_NFT_TABLE:-zapret2}" ;;
+                    esac
+                    ip rule show
+                    ip route show table all
+                } > "$Z2R_SUPERSWEEP_DIR/probe/noqueue.log" 2>&1 || true
                 echo 'Пакеты не попали в тестовую NFQUEUE: проверьте маршрутизацию и DNS. Прогон остановлен.' >&2
                 printf 'Проба %s: TLS 1.2=%s; TLS 1.3=%s; download=%s\n' "$1" "$v12" "$v13" "$dl" >&2
                 : > "$Z2R_SUPERSWEEP_DIR/cancel"
