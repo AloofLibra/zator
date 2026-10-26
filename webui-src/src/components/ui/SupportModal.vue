@@ -4,38 +4,14 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 const open = ref(false)
 const visible = ref(false)
 const closeButton = ref<HTMLButtonElement | null>(null)
-const selectedJokes = ref<string[]>([])
-
-const jokes = [
-  '💸 Кнопка «задонатить» сломалась ещё до релиза.',
-  '🧙 Лучший донат — когда интернет снова работает, а авторы гадают почему.',
-  '☕ Ваше «спасибо» греет сильнее кофе и не требует настраивать платёжный шлюз.',
-  '🛠️ Каждый найденный баг уже считается материальной поддержкой проекта.',
-  '📡 Мы принимаем только сигналы, логи и рассказы о том, что опять заблокировали.',
-  '🎰 Ваш роутер сегодня особенно стабилен? Считайте, вы уже сделали большой вклад.',
-  '🦆 Денежные переводы не проходят проверку стратегий. А добрые слова — проходят.',
-  '🚀 Одна звезда на GitHub — и где-то один разработчик начинает верить в светлое будущее.',
-  '🧪 Мы тестировали приём денег, но тест внезапно стал бесконечным.',
-  '🧘 Поддержать проект можно мысленно. Но ещё лучше — написать «спасибо» в Telegram.',
-  '🧹 Расскажите друзьям — это бесплатный способ добавить проекту пропускной способности.',
-  '🐛 Если обход заработал, просто улыбнитесь. Для авторов это уже отличный гонорар.',
-  '💸 Переводы денег блокируются надёжнее, чем YouTube. Мы даже немного завидуем.',
-  '🧩 Донат-форма не прошла проверку стратегий: слишком много нулей в нужных местах.',
-  '🐢 Деньги до нас шли бы дольше, чем TLS-хендшейк через плохой маршрут.',
-  '🛰️ Ваша стратегия держится третью неделю подряд? Считайте это нашим совместным достижением.',
-  '📮 Напишите в Telegram, что у вас всё грузится. Такие сообщения мы храним бережнее бэкапов.',
-  '🎁 Лучший подарок — pull request с фиксом. Второй по ценности — issue с логом внутри.',
-  '🔊 Поставьте гимн на репит: каждый прослушанный байт уже считается вкладом.',
-  '🌍 Расскажите провайдеру, что у вас всё открывается. Ему будет очень интересно.',
-  '🚦 Локи бесплатно, RST-защита бесплатно, чувство контролируемого интернета — бесценно.',
-  '🧠 Разобрались, что такое безразборный режим? Поздравляем, вы теперь часть команды.',
+const catMood = ref(0)
+const catMoods = [
+  { face: '(=－ω－=)', text: 'Спит на тёплом роутере. Видит сны про свободный интернет.' },
+  { face: '(=＾ω＾=)', text: 'Мур-р-р. Ваш пакет принят на мягкую обработку.' },
+  { face: '(=⊙ω⊙=)', text: 'Увидел огурец в таблице маршрутизации.' },
+  { face: '(=ↀωↀ=)', text: 'Смотрит в пустоту. Пустота прислала SYN-ACK.' },
+  { face: '(=￣ω￣=)', text: 'Сбросил пакет со стола. Так и было задумано.' },
 ]
-
-function pickJokes() {
-  selectedJokes.value = [...jokes]
-    .sort(() => Math.random() - 0.5)
-    .slice(0, 3)
-}
 
 // Гимн Zator: стримится прямо в браузере, на роутер ничего не скачивается.
 // Зеркала перебираются по порядку, пока одно не ответит:
@@ -81,7 +57,7 @@ function toggleAnthem() {
 }
 
 function openModal() {
-  pickJokes()
+  catMood.value = 0
   open.value = true
   requestAnimationFrame(() => {
     visible.value = true
@@ -118,12 +94,33 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))
         <span class="support-emoji" aria-hidden="true">🫡</span>
         <div>
           <h2 id="support-modal-title" class="modal-title">Поддержать проект</h2>
-          <p class="modal-message">Денежку авторы не принимают: у нас и так достаточно богатства в виде логов, багов и внезапных идей.</p>
+          <p class="modal-message">Проект живёт благодаря людям. Спасибо всем, кто помогает ему становиться лучше!</p>
         </div>
       </div>
 
-      <div class="support-jokes" aria-label="Почему денежку не принимают">
-        <p v-for="joke in selectedJokes" :key="joke">{{ joke }}</p>
+      <div class="support-community">
+        <section class="support-credits" aria-labelledby="support-credits-title">
+          <h3 id="support-credits-title">Спасибо за поддержку</h3>
+          <h4>Помогли в разработке</h4>
+          <ul class="support-names">
+            <li>DarkMaz</li><li>Bank</li><li>a1ligat0r</li>
+          </ul>
+          <h4>Поддержали денежкой</h4>
+          <ul class="support-names">
+            <li>Wusspoppin</li><li>Швейк</li><li>BestFridayxD</li>
+            <li>a1ligat0r</li><li>Данил</li><li>DarkMaz</li>
+          </ul>
+        </section>
+
+        <section class="support-cat" aria-labelledby="support-cat-title">
+          <h3 id="support-cat-title">Кот в роутере</h3>
+          <div class="support-cat-mood" aria-live="polite" aria-atomic="true">
+            <span class="support-cat-face" aria-hidden="true">{{ catMoods[catMood].face }}</span>
+            <p>{{ catMoods[catMood].text }}</p>
+          </div>
+          <button type="button" class="ghost" @click="catMood = (catMood + 1) % catMoods.length">Погладить кота</button>
+          <small>Ни пользы. Ни смысла. Только мур.</small>
+        </section>
       </div>
 
       <p class="modal-message">Если проект пригодился, загляните в нашу Telegram-группу и скажите спасибо. А ещё можно поставить звёздочку на GitHub — это главный ритуал призыва новых контрибьюторов.</p>

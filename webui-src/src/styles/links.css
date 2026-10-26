@@ -15,7 +15,12 @@ a.tab, a.subtab { color: inherit; text-decoration: none; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
 }
 
-.support-modal-card { width: min(560px, 100%); }
+.support-modal-card {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
 
 .support-modal-heading {
   display: grid;
@@ -26,16 +31,58 @@ a.tab, a.subtab { color: inherit; text-decoration: none; }
 
 .support-emoji { font-size: 2rem; line-height: 1; }
 
-.support-jokes {
+.support-community {
   display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px dashed color-mix(in srgb, var(--warning) 45%, var(--line));
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--warning) 8%, var(--surface-muted));
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 16px;
 }
 
-.support-jokes p { line-height: 1.4; }
+.support-credits, .support-cat {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+
+.support-credits h3, .support-cat h3 { font-size: 1rem; }
+.support-credits h4 { margin: 14px 0 8px; font-size: 0.85rem; color: var(--muted); }
+
+.support-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.support-names li {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.support-cat { display: grid; gap: 12px; text-align: center; }
+.support-cat-mood { display: grid; gap: 10px; align-content: center; }
+.support-cat-mood p { min-height: 4.2em; font-size: 0.9rem; line-height: 1.4; }
+.support-cat small { color: var(--muted); }
+.support-cat-face {
+  display: block;
+  font-family: monospace;
+  font-size: clamp(1.5rem, 5vw, 2rem);
+  white-space: nowrap;
+  color: var(--accent);
+  animation: support-cat-breathe 3s ease-in-out infinite;
+}
+
+@keyframes support-cat-breathe {
+  50% { transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .support-cat-face { animation: none; }
+}
 
 .support-links {
   display: grid;
@@ -67,7 +114,7 @@ a.tab, a.subtab { color: inherit; text-decoration: none; }
 .github-link { background: linear-gradient(135deg, #59636e, #24292f); }
 
 @media (max-width: 640px) {
-  .support-links { grid-template-columns: 1fr; }
+  .support-community, .support-links { grid-template-columns: 1fr; }
 }
 
 .tab.is-locked, .subtab.is-locked { cursor: not-allowed; opacity: 0.5; }
