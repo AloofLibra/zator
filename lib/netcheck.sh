@@ -1170,6 +1170,17 @@ check_dns() {
     return 2
 }
 
+check_googlevideo_access() {
+   local rc=1
+   if type z2r_media_check_manual >/dev/null 2>&1; then
+      z2r_media_check_manual && return 0
+      rc=$?
+   fi
+   case "$rc" in 129|130|143) echo 'Googlevideo: медиапроверка прервана.'; return 0 ;; esac
+   echo 'Googlevideo: плюшевый TLS/CDN-тест; реальные медиаданные не проверены.'
+   check_access "https://$(get_yt_cluster_domain)"
+}
+
 check_access_list() {
    if ! check_dns "rutracker.org"; then
       echo -e "${yellow}DNS-проверка завершилась предупреждением, продолжаю остальные тесты.${plain}"
@@ -1177,8 +1188,7 @@ check_access_list() {
 
    echo "Проверка доступности youtube.com (YT TCP)"
    check_access "https://www.youtube.com/"
-   echo "Проверка доступности $(get_yt_cluster_domain) (YT TCP)"
-   check_access "https://$(get_yt_cluster_domain)"
+   check_googlevideo_access
    echo "Проверка доступности meduza.io (RKN list)"
    check_access "https://meduza.io"
    echo "Проверка доступности www.instagram.com (RKN list + нужен рабочий DNS)"

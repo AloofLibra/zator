@@ -455,6 +455,16 @@ deploy_post_apply() {
   fi
 }
 
+# Не спрашивать в CGI/автообновлении; свежая установка предложит jq в get_repo.
+deploy_offer_media_jq() {
+  [ -t 0 ] && [ -f "$ZAPRET2_ROOT/config" ] || return 0
+  [ -f "$ZATOR_ROOT/z2r_lib/youtube_media.sh" ] || return 0
+  (
+    . "$ZATOR_ROOT/z2r_lib/youtube_media.sh"
+    z2r_media_offer_jq
+  ) || true
+}
+
 # Режимы A/B: пофайловая установка из staging по классам манифеста.
 deploy_apply_staging() {
   local staging="$1" tracking="$2"
@@ -503,6 +513,7 @@ deploy_apply_staging() {
   # рестарт zapret2 при обычном обновлении панели).
   if [ -e "$staging/_root/z2r.sh" ] || [ -d "$staging/z2r_lib" ]; then
     deploy_apply_config_default || true
+    deploy_offer_media_jq
   fi
 }
 
@@ -577,6 +588,7 @@ deploy_apply_newdir() {
   type fake_files_refresh >/dev/null 2>&1 && fake_files_refresh
   if [ "$has_core" = 1 ]; then
     deploy_apply_config_default || true
+    deploy_offer_media_jq
   fi
 }
 

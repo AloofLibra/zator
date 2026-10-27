@@ -12,6 +12,11 @@ Z2R_SUPERSWEEP_ARCHIVE_KEEP="${Z2R_SUPERSWEEP_ARCHIVE_KEEP:-10}"
 Z2R_SUPERSWEEP_RKN_PAR_DEFAULT="${Z2R_SUPERSWEEP_RKN_PAR_DEFAULT:-2}"
 # Базовые домены уже в TCP_RKN_list.txt; добавление в TCP_Custom не требуется.
 Z2R_SUPERSWEEP_RKN_DOMAINS="${Z2R_SUPERSWEEP_RKN_DOMAINS:-xhamster.com anidub.com amnezia.org}"
+# 0 явно оставляет прежний TLS/CDN-тест; отсутствие jq не меняет установку.
+Z2R_SUPERSWEEP_MEDIA="${Z2R_SUPERSWEEP_MEDIA:-1}"
+if [ -f "${LIB_DIR:-${BASH_SOURCE[0]%/*}}/youtube_media.sh" ]; then
+    source "${LIB_DIR:-${BASH_SOURCE[0]%/*}}/youtube_media.sh"
+fi
 
 # Цвета для standalone-запуска; в меню их задаёт z2r.sh.
 [ -z "${plain:-}" ] && plain='\033[0m'
@@ -39,7 +44,7 @@ supersweep_report_tsv() {
     fi
     [ "${_Z2R_SS_REPORT_FINAL:-0}" != 1 ] || alive=0
     set --
-    for file in status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv \
+    for file in status media-status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv \
         best.yt best.gv best.ds best.rkn applied.yt applied.gv applied.ds applied.rkn applied.tsv; do
         [ ! -r "$dir/$file" ] || set -- "$@" "$dir/$file"
     done
@@ -54,12 +59,13 @@ supersweep_report_tsv() {
     }
     {
         file=FILENAME;sub(/^.*\//,"",file)
+        if(file=="media-status") {media=$1;next}
         if(file=="status") {i=index($0,"=");if(i)kv[substr($0,1,i-1)]=substr($0,i+1);next}
         if(file=="workers.tsv" && NF>=6 && $1 in labels) {
             w=$1;seen[w]=1;total[w]=num($6)*(w=="rkn"?split($5,ds,","):1);url[w]=$5;next
         }
-        if(file~/^progress\.(yt|gv|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail)$/) {
-            w=file;sub(/^progress\./,"",w);sub(/\.tsv$/,"",w);count[w]++;verdict[w,$4]++;next
+        if(file~/^progress\.(yt|gv|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail|unknown)$/) {
+            w=file;sub(/^progress\./,"",w);sub(/\.tsv$/,"",w);count[w]++;verdict[w,$4=="unknown"?"warn":$4]++;next
         }
         if(file~/^best\.(yt|gv|ds|rkn)$/) {
             w=file;sub(/^best\./,"",w);i=index($0,"=");key=substr($0,1,i-1);v=substr($0,i+1)
@@ -86,7 +92,8 @@ supersweep_report_tsv() {
         printf "R\t%s\t%d\t%.0f\t%.0f\t%s\t%s\t%d\t%d\tlive\n",state,active,num(kv["started"]),num(kv["updated"]),clean(kv["scope"]==""?"default":kv["scope"]),clean(phase),completed,sum
         for(i=1;i<=4;i++) {
             w=names[i];if(!seen[w])continue
-            print "W",w,labels[w],profiles[w],count[w]+0,total[w]+0,verdict[w,"ok"]+0,verdict[w,"warn"]+0,verdict[w,"fail"]+0,clean(active&&phase==w?current[w]:""),clean(target[w]),clean(lists[w,"greens"]),clean(lists[w,"warns"]),clean(winner[w])
+            label=labels[w];if(w=="gv" && media!="")label=label " [" (media=="ready"?"media TCP":"Media UNKNOWN: " clean(media)) "]"
+            print "W",w,label,profiles[w],count[w]+0,total[w]+0,verdict[w,"ok"]+0,verdict[w,"warn"]+0,verdict[w,"fail"]+0,clean(active&&phase==w?current[w]:""),clean(target[w]),clean(lists[w,"greens"]),clean(lists[w,"warns"]),clean(winner[w])
         }
         for(i=1;i<=na;i++){key=order[i];print "A",kind[key],clean(dest[key]),applied[key]}
     }' "$@" || return 1
@@ -397,6 +404,7 @@ _supersweep_print_line() {
     case "$token" in
         ok) disp="OK  "; color="$green" ;;
         warn) disp="WARN"; color="$yellow" ;;
+        unknown) disp="UNKNOWN"; color="$yellow" ;;
         *) disp="FAIL"; color="$red" ;;
     esac
     printf -v stamp '%(%H:%M:%S)T' -1 2>/dev/null || stamp="$(date '+%H:%M:%S')"
@@ -435,7 +443,8 @@ _supersweep_worker_profile() {
     local tls_pref="$7" pause_sec="$8"
     local s p round=0 out v12 v13 dl short token specs epoch
     local ok_list="" warn_list="" full_list="" ok_stats="" warn_stats=""
-    local n_ok=0 n_warn=0 n_fail=0
+    local n_ok=0 n_warn=0 n_fail=0 n_unknown=0 media_row media_state media_reason
+    local q12 q13 dlsize dltime rc code unused
     local ss_interrupted=0 psleep settle_v g
     # Settle входит в паузу; интервал проверок = пауза + время пробы.
     settle_v="${Z2R_SUPERSWEEP_SETTLE:-2}"
@@ -459,7 +468,24 @@ _supersweep_worker_profile() {
         short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
         token="${short%%|*}"; short="${short#*|}"
 
-        local q12=0 q13=0 dlsize dltime rc code unused
+        if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
+            if type supersweep_media_check >/dev/null 2>&1; then
+                media_row="$(supersweep_media_check "$s")" || media_row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
+            else
+                media_row='UNKNOWN|resolver_unavailable|0|000|0|0|0|0|0|0'
+            fi
+            IFS='|' read -r media_state media_reason rc code dlsize unused unused unused dltime unused <<< "$media_row"
+            short="Media ${media_state}: ${media_reason}; TLS/CDN: ${short}"
+            dl="$rc|$code|$dlsize|$dltime"
+            case "$media_state" in
+                OK) token=ok ;;
+                FAIL) token=fail ;;
+                *) token=unknown ;;
+            esac
+            _supersweep_cancelled && { ss_interrupted=1; break; }
+        fi
+
+        q12=0; q13=0
         IFS='|' read -r rc code unused <<< "$v12"
         z2r_tls_code_ok "$code" && q12=1
         IFS='|' read -r rc code unused <<< "$v13"
@@ -481,6 +507,7 @@ _supersweep_worker_profile() {
                     warn_stats="${warn_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
                 fi
                 ;;
+            unknown) n_unknown=$((n_unknown + 1)) ;;
             *)
                 token="fail"; n_fail=$((n_fail + 1))
                 ;;
@@ -543,6 +570,7 @@ _supersweep_worker_profile() {
         printf 'n_ok=%s\n' "$n_ok"
         printf 'n_warn=%s\n' "$n_warn"
         printf 'n_fail=%s\n' "$n_fail"
+        printf 'n_unknown=%s\n' "$n_unknown"
         printf 'interrupted=%s\n' "$ss_incomplete"
     } > "${dir}/best.${name}"
     : > "${dir}/done.${name}"
@@ -1021,6 +1049,10 @@ _supersweep_cleanup() {
             return 1
         }
     fi
+    if [[ "${Z2R_MEDIA_DIR:-}" =~ ^/tmp/zator-media\.[a-zA-Z0-9]{6}$ ]]; then
+        rm -rf "$Z2R_MEDIA_DIR"
+    fi
+    Z2R_MEDIA_DIR=""
     supersweep_report_save || echo 'Не удалось сохранить последний отчёт суперавтопрогона.' >&2
     rm -f "${Z2R_SUPERSWEEP_DIR}.lock/pid"
     rmdir "${Z2R_SUPERSWEEP_DIR}.lock" 2>/dev/null || true
@@ -1041,6 +1073,7 @@ supersweep_run() (
 )
 
 _supersweep_run() {
+    Z2R_MEDIA_DIR=""; Z2R_MEDIA_READY=0
     local tls_pref="$1" pause_sec="$2" ds_pause="$3" rkn_pause="$4" rkn_par="$5"
     printf '%s\n' "${BASHPID:-$$}" > "$Z2R_SUPERSWEEP_DIR.lock/pid" || return 1
     shift 5
@@ -1152,6 +1185,15 @@ _supersweep_run() {
     for phase in yt gv ds rkn; do
         [ "$cancelled" = 1 ] && break
         [ "$interrupted" = 1 ] && cancelled=1 && break
+        if [ "$phase" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
+            Z2R_MEDIA_READY=0
+            if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && type supersweep_media_prepare >/dev/null 2>&1; then
+                supersweep_media_prepare || echo resolver_unavailable > "$dir/media-status"
+            else
+                echo isolation_unavailable > "$dir/media-status"
+                echo 'Googlevideo: Media UNKNOWN, нет изолированного media probe; fallback TLS/CDN без автоматического применения профиля 2.' >&2
+            fi
+        fi
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             local probe_profile
             case "$phase" in yt) probe_profile=1 ;; gv) probe_profile=2 ;; ds) probe_profile=4 ;; rkn) probe_profile=3 ;; esac

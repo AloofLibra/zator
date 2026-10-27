@@ -118,6 +118,12 @@ class RecommendationsTest(unittest.TestCase):
                 self.assertEqual(rows(bad)[0][3], "9")
         self.assertEqual(rows([{"uuid": "x", "summary": json.dumps({"state": "done"})}])[0][3], "0")
 
+    def test_unknown_media_is_not_negative_strategy_evidence(self):
+        item = run("media-unknown")
+        item["raw:progress.gv.tsv"] = item["raw:progress.gv.tsv"].replace("\tok\t", "\tunknown\t", 1)
+        item["raw:best.gv"] = "interrupted=0\nn_ok=1\nn_warn=1\nn_fail=1\nn_unknown=1\n"
+        self.assertIsNone(MODULE.completed(item))
+
     def test_latest_uuid_prevents_upload_bias_but_preserves_mode_evidence(self):
         classic = [run(str(i), 1, verdicts=("ok", "fail", "fail", "fail")) for i in range(10)]
         clone = [run(str(i), 2, mode="clone") for i in range(3)]

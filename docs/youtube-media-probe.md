@@ -1,0 +1,389 @@
+# YouTube media probe: исследование и реализация
+
+Проверено 27.10.2026 на `192.168.1.37`: OpenWrt 6.12.87, aarch64,
+496716 КиБ RAM, curl 8.19.0 + mbedTLS 3.6.6. Это первичные измерения;
+отдельная проверка Keenetic/Entware приведена ниже. Испытаний на 128 МиБ нет.
+Рабочий zapret2 не переустанавливался и не перезапускался.
+
+## Источники и протокол
+
+Изучены актуальные исходники, сохранённые вне репозитория:
+
+- [yt-dlp _base.py](https://github.com/yt-dlp/yt-dlp/blob/f264a6cbd1f630894da0f368df00f8aae50140e0/yt_dlp/extractor/youtube/_base.py)
+  и [_video.py](https://github.com/yt-dlp/yt-dlp/blob/f264a6cbd1f630894da0f368df00f8aae50140e0/yt_dlp/extractor/youtube/_video.py).
+- [NewPipeExtractor](https://github.com/TeamNewPipe/NewPipeExtractor/tree/6faf40681eff7da6c7a45fb92e3eb633a60a062b/extractor/src/main/java/org/schabi/newpipe/extractor/services/youtube):
+  `YoutubeStreamHelper.java`, `YoutubeParsingHelper.java`,
+  `InnertubeClientRequestInfo.java`, `ClientsConstants.java`,
+  `extractors/YoutubeStreamExtractor.java`.
+
+На этой ревизии yt-dlp использует VISIONOS 1.02 / client ID 101,
+NewPipe — 1.04 / ID 101. Для PoC выбран запрос NewPipe:
+
+1. `POST https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false`.
+   JSON содержит `context.client`: `clientName=VISIONOS`, `clientVersion=1.04`,
+   `clientScreen=WATCH`, `platform=MOBILE`, Apple / `RealityDevice17,1`,
+   `osName=visionOS`, `osVersion=26.6.0.23O770`, `hl=en`, `gl=US`.
+   `context.request.useSsl=true`, `internalExperimentFlags=[]`,
+   `context.user.lockedSafetyMode=false`.
+2. `responseContext.visitorData` добавляется в `context.client`.
+3. `POST https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false&t=<12 chars>&id=<video ID>`.
+   Тот же context плюс `videoId`, `cpn`, `contentCheckOk=true`, `racyCheckOk=true`.
+   `$fields=playabilityStatus,videoDetails(videoId,lengthSeconds),streamingData`
+   исключает ненужную метаинформацию. Ответ ограничен 256 КиБ.
+4. Заголовки обоих запросов: `Content-Type: application/json`,
+   `X-Goog-Api-Format-Version: 2`, User-Agent
+   `com.google.visionos.youtube/1.04(RealityDevice17,1; U; CPU visionOS 26_6_0 like Mac OS X; US)`.
+   Числовой client ID не нужен в отправленных заголовках этого варианта NewPipe.
+5. Из `adaptiveFormats` выбираются прямые HTTPS audio/video URL без DRM.
+   Предпочитается низкий bitrate, но файл должен вместить ограниченные диапазоны:
+   audio от 1 МиБ, video от 8 МиБ; для коротких роликов остаётся меньший формат.
+6. `cpn` — 16 символов nonce воспроизведения, добавляется в URL как у NewPipe.
+   Реализация использует 16 hex-символов случайного kernel UUID;
+   это не PO-токен. `expire` берётся из каждого URL, а не из локального TTL.
+
+Для проверенных форматов не понадобились Player JS, signature decipher,
+`n`-преобразование, PO-токены, cookies, аккаунт или авторизация. Это результат
+опытов, а не гарантия на будущие версии Innertube. Другие клиенты в runtime
+не перебираются. Если YouTube изменит требования, resolver сообщает UNKNOWN.
+`signatureCipher` и `n` не обрабатываются: `unsupported_n` обозначает предел
+этой реализации, а не доказательство обязательности JS для любого URL с `n`.
+Generic 403 не выдаётся за доказанное требование PO-токена.
+
+## Живые результаты PoC
+
+На каждом успешном ID выполнены audio/video, начало/середина и повтор обоих
+диапазонов. Данные сразу направлялись в `/dev/null`. Получены HTTP 206,
+правильные media MIME, Content-Range и точное число байтов:
+
+| ID | Длительность | Аудио | Видео | Результат |
+|---|---:|---|---|---|
+| `jNQXAC9IVRw` | 19 с | WebM/Opus | WebM/VP9 | начало/середина, два прохода, 206 |
+| `aqz-KE-bpKQ` | 635 с | MP4/AAC | MP4/AV1 | 256 КиБ audio, 1 МиБ video, два прохода, 206 |
+| `M7lc1UVf-VE` | 1344 с | MP4/AAC | MP4/AV1 | 256 КиБ audio, 1 МиБ video, два прохода, 206 |
+| `BaW_jenozKc`, `dQw4w9WgXc` | — | — | — | Player: ERROR / This video is unavailable |
+
+Таблица отражает первые опыты. Финальный выбор с запасом длины для длинной
+проверки на `aqz-KE-bpKQ` дал audio itag 139 и video itag 242 (VP9/WebM).
+
+Примеры времени передачи без очереди: audio 256 КиБ — 0.44–0.65 с;
+video 1 МиБ — 0.78–0.86 с. Короткие файлы проверялись меньшими диапазонами;
+runtime дополнительно ограничивает каждый фрагмент четвертью длины файла.
+
+**Изолированная живая проверка:** текущая стратегия профиля 2 (1), отдельный
+nfqws2 / очередь 65535, зарезервированные source ports 62000–62999:
+
+| Проба | HTTP | Байт | TCP, с | TLS, с | TTFB, с | Передача, с | Байт/с |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| audio, начало | 206 | 262144 | .033343 | .103290 | .252946 | .405592 | 646324 |
+| video, начало | 206 | 1048576 | .033785 | .103126 | .183230 | .709071 | 1478802 |
+| video, середина | 206 | 2097152 | .033295 | .101155 | .303514 | 1.327699 | 1579538 |
+
+Sequence NFQUEUE: 0 → 3433. Health/sequence проверялись отдельно у каждой
+медиапробы. SHA256 рабочих `locked.tsv` до/после совпал; тестовый транспорт
+удалён. Один предыдущий опыт дал 302: поэтому теперь разрешены максимум два
+перенаправления исключительно на подписанный HTTPS `/videoplayback` Googlevideo.
+Каждый redirect запускает новый curl и проходит собственную проверку очереди.
+Hostname вручную не заменяется. Метрики относятся к конечному GET.
+
+Финально проверен и сам `_supersweep_worker_profile`: настоящий handshake локов
+через cmd-файл/родителя, затем TLS и три media GET. `best=1`, `n_ok=1`,
+`n_unknown=0`, `interrupted=0`, очередь 0 → 4602; SHA256 production locks совпал.
+TLS-корень при этом ответил 404, а положительный итог определила именно передача
+262144 + 1048576 + 2097152 байт media, не ответ корневого URL.
+
+yt-dlp **2026.10.26**, `--no-js-runtimes --extractor-args youtube:player_client=visionos`,
+через SOCKS SSH-туннель этого роутера успешно перечислил HTTPS audio/video форматы.
+Вариант `player_skip=webpage,configs` вернул bot-check; наличие корректного
+visitor context существенно. Полный ролик yt-dlp не скачивался.
+
+Ссылка, созданная на роутере, также дала audio/video 206 по 16 КиБ на ПК.
+У ПК и роутера оказался **одинаковый внешний IPv4**; независимый внешний IP
+не проверен, переносимость URL между IP не заявляется. Resolver и probe
+используют один router egress, IPv4, без proxy и пользовательского `.curlrc`.
+Смена внешнего адреса/маршрута и CDN 403 дают UNKNOWN, не штраф стратегии.
+
+Сравнение диапазонов на одном подписанном видео URL:
+
+- HTTP `Range: bytes=0-16383`: 206 / Content-Range / 16384 байта.
+- Добавление `range=0-16383`: 200 / без Content-Range / 16384 байта.
+- `range=0-16383&rn=0&rbuf=0`: то же 200 / 16384 байта.
+
+В runtime применяется только проверенный HTTP Range. `range/rn/rbuf` не добавляются.
+`200` и `sabr.malformed_config` не считаются подтверждением media probe.
+Естественное истечение URL (около 6 часов в ответах) не ожидалось;
+истёкшие timestamps проверены локальными фикстурами.
+
+## Runtime и зависимости
+
+`lib/youtube_media.sh` использует shell, curl **8.4+**, jq и базовые утилиты Linux.
+Не скачивает/не исполняет JS, не использует Python/Node/JVM/ffmpeg на устройстве.
+Установка jq предлагается **по выбору пользователя при установке/обновлении Zator**:
+`1` — установить, Enter — пропустить. Используется `opkg install jq`, `apk add jq`
+или `apt-get install -y jq`; для opkg/apt-get после неудачи обновляется индекс и
+делается один повтор. Установленный jq повторно не предлагается. На tar-обновлении
+диалог вызывается только для core/full и существующей установки; свежий инсталлятор
+предлагает пакет в `get_repo`. Неинтерактивный deploy/CGI не спрашивает и не устанавливает.
+
+Resolver, SuperSweep, PoC и пункт 1 меню **никогда не устанавливают пакеты**.
+При отсутствии jq — `parser_missing`, Media UNKNOWN и явно обозначенный плюшевый
+TLS/CDN-тест, без отрицательной оценки стратегии. Сообщения пакетного менеджера
+и установочный диалог идут в stderr.
+Версия curl проверяется до сети: до 8.4 `--max-filesize` не ограничивал ответы
+без известного Content-Length ([документация curl](https://curl.se/docs/manpage.html#--max-filesize)).
+На старом curl — `curl_too_old` и безопасный TLS/CDN fallback.
+
+Сравнение на этом OpenWrt (файлы без учёта общих libc-зависимостей):
+
+| Парсер | Размер | RSS при разборе ответа | Решение |
+|---|---:|---:|---|
+| jq + libjq | 65499 + 393289 байт | 1680 КиБ, .03 CPU с | необязательный, один проход выбора форматов |
+| jsonfilter + json-c | 65739 + 131126 байт | 1084 КиБ, <.01 CPU с | меньше, но JSONPath не выполняет весь выбор/преобразование за один вызов |
+| awk/sed | уже есть | не измерялся как JSON-парсер | не писать хрупкий самодельный разбор JSON/escaping |
+| отдельный бинарник / ucode | зависит от платформы | не измерялся | не добавлять сборки под архитектуры и второй движок |
+
+OpenWrt с jq использует новую проверку сразу. Без jq пользователь может выбрать
+установку при установке/обновлении Zator; необходим исправный curl/CA.
+Сравнение не доказывает одинаковые размеры/RSS на MIPS.
+
+Resolver сохраняет приватный `media.json` в отдельном `mktemp -d /tmp/zator-media.*`
+(umask 077), вне `$Z2R_SUPERSWEEP_DIR`. Поля: `video_id`, `audio_url`, `video_url`,
+`audio_itag`, `video_itag`, `mime_type`/`cdn_hostname` (объекты audio/video),
+`expires_at`, `resolver_status`, длины файлов и отдельные сроки audio/video.
+Обычный stdout PoC показывает только метаданные без URL.
+
+Подготовка происходит перед GV-фазой, до установки тестового транспорта:
+два Innertube-запроса и контрольные GET по 16 КиБ через рабочее соединение.
+API/visitor/исходный player JSON удаляются сразу после выбора форматов.
+Кеш используется всей фазой с запасом 120 с до expire. Проверка времени — перед
+каждым GET. Mid-phase URL не заменяется: истечение/403 дают UNKNOWN; для новых
+ссылок требуется новый прогон. Это сохраняет сравнение на одном наборе URL.
+Если рабочая стратегия не позволяет выполнить baseline, медиарейтинг не строится.
+
+Далее прежний TLS-тест и media GET выполняются последовательно. Все три media GET
+должны пройти: audio, video, более длинный удалённый video range. При первой
+ошибке следующие GET не запускаются. Для выбора победителя используются успешные
+медиапробы и скорость последнего диапазона; полная передача всех трёх фрагментов
+обязательна. Краткая просадка скорости сама по себе не является FAIL.
+
+- OK: валидный подписанный ресурс, 206, точный Content-Range (включая полный размер),
+  ожидаемый MIME, точное число байтов и curl rc=0.
+- FAIL: сервер прислал корректные media/range headers, но передача оборвалась
+  или не достигла полного объёма (rc 0/18/28/56). Это ошибка передачи, а не
+  доказательство, что именно DPI был причиной.
+- UNKNOWN: resolver, expiry, 403/429, DNS/TLS/сеть без корректного media-ответа,
+  неподдерживаемый формат/подпись/n, неверный диапазон/MIME, отмена или отсутствие
+  фактической обработки NFQUEUE. PO-токен выделяется только при явном сообщении API.
+
+Без готового resolver/изоляции выполняется прежний TLS/CDN fallback с пометкой
+Media UNKNOWN; автоматический победитель профиля 2 не применяется.
+`UNKNOWN` не попадает в greens/warns-кандидаты. Старый TSV прогресса сохраняет
+9 колонок; токен `unknown` конвертируется в предупреждение для старой JSON/WebUI
+схемы. Метка GV содержит режим media/причину fallback. Старые отчёты читаются.
+Текущий сервер рекомендаций принимает только полные матрицы `ok/warn/fail`:
+архив с `unknown` не используется как отрицательное свидетельство и не участвует
+в рекомендациях (регрессия в `recommendations_server_test.py`). Это сохраняет
+серверный контракт без обновления работающего stats-сервера.
+
+Подробные безопасные метрики: `media.tsv` — strategy, audio/video, middle flag,
+затем `state|reason|curl_rc|HTTP|bytes|TCP|TLS|TTFB|total|speed`.
+`media-status` и `media-meta.json` не содержат подписанных URL. Архивирование,
+откат, родительский single writer локов и остальные фазы сохранены.
+Кеш URL удаляется при cleanup; SIGKILL может оставить приватный каталог до ребута.
+
+Пункт **1 главного меню** (`check_access_list` → `check_googlevideo_access`) использует
+тот же resolver и media probe: audio 256 КиБ, video 1 МиБ и удалённый video range
+2 МиБ. Это проверка рабочего соединения, без изменения локов и без отдельного
+nfqws2. Выводит OK/FAIL/UNKNOWN, HTTP, байты, время и скорость, без подписанных URL.
+Нехватка jq/ошибка resolver включает явно подписанный «плюшевый» TLS/CDN-тест;
+ошибка уже начатой media-передачи не подменяется зелёным результатом TLS-корня.
+Отмена медиапробы не запускает fallback; старый cancel-файл SuperSweep игнорируется.
+
+## Параметры и затраты
+
+Экспортировать до запуска `z2r` (в том числе до detached re-exec):
+
+| Переменная | По умолчанию |
+|---|---|
+| `Z2R_MEDIA_VIDEO_ID` | `aqz-KE-bpKQ` |
+| `Z2R_MEDIA_AUDIO_BYTES` | 262144 |
+| `Z2R_MEDIA_VIDEO_BYTES` | 1048576 |
+| `Z2R_MEDIA_VERIFY_BYTES` | 2097152 |
+| `Z2R_SUPERSWEEP_MEDIA` | 1; явный 0 возвращает прежний алгоритм TLS/CDN |
+
+Размеры допустимы от 4096 до 4194304 байт; каждый GET дополнительно ограничен
+четвертью файла. Скорость не более 2 МиБ/с; connect timeout 5 с, GET timeout 15 с,
+low-speed 1024 Б/с в течение 5 с, без повторов GET (кроме bounded redirect).
+HTTP/1.1 over TCP выбран явно; HTTP/2 и **QUIC/HTTP3 не проверяются**.
+
+Замеры `/usr/bin/time -v`, без наблюдателя ресурсов:
+
+| Операция | Wall, с | User+system CPU, с | Max RSS отдельного процесса, КиБ |
+|---|---:|---:|---:|
+| resolver | .89 | .28 + .09 | 2840 |
+| video 1 МиБ | 1.07 (curl .84) | .10 + .08 | 2752 |
+| video 2 МиБ | 2.07 (curl 1.35) | .18 + .04 | 2924 |
+| прежний TLS target | 1.06 | .13 + .04 | 2400 |
+| TLS + audio + video + verify | 5.31 | .53 + .23 | 2928 |
+
+Отдельная выборка суммы RSS дерева процессов через `/proc/*/stat` примерно каждые
+50 мс: resolver 7092 КиБ, media 6548 КиБ, TLS 22768 КиБ, TLS+media 23240 КиБ.
+Добавка к наблюдавшемуся пику TLS — 472 КиБ. Это sampled RSS с двойным учётом
+общих страниц, не PSS и не гарантированный верхний предел; сам наблюдатель влияет
+на расписание. Для 128 МиБ/MIPS и других Entware-устройств ещё требуется hardware-прогон.
+
+Подсчёт через временные PATH wrappers, отдельно от измерения времени: resolver —
+15 внешних команд (9 jq, 2 curl, cat/tr/date/rm по одному); финальный guard версии
+добавляет один `curl --version` (итого 16). Один media GET —
+8 (3 jq, curl/awk/date/rm/sleep по одному). Количество sleep зависит от длительности.
+Shell forks/command substitutions и существующие firewall health-check helpers
+не включены в этот счётчик. Media GET не запускаются параллельно.
+
+Трафик: один ответ Player до 256 КиБ (наблюдалось около 64–80 КиБ до `$fields`),
+небольшой visitor JSON, 32 КиБ baseline; до 3.25 МиБ полезных данных на успешную
+стратегию плюс прежняя TLS-проверка. Цена в этом опыте — около 4.25 с дополнительно
+на зелёную стратегию; на медленной сети больше, максимум 15 с на GET.
+
+Кеш после resolve: 2 файла, `media.json` + status, около 2–4 КиБ логических данных
+(8 КиБ по `du`); во время API до 7 временных файлов, максимум один player JSON
+256 КиБ плюс компактные request/visitor/selected/cache. Во время media: cache/status
+и три маленьких файла curl config/headers/metrics; ни одного файла медиаданных.
+Новые runtime shell-исходники занимают несколько десятков КиБ, jq опционален.
+Подписанные URL не пишутся на flash; на flash попадают только обычный финальный
+архив с обезличенными метриками и прежняя ротация архивов.
+
+## Проверка Keenetic / Entware 192.168.1.1
+
+27.10.2026, SSH Entware на порту 222: Netcraze-3964, Linux 4.9-ndm-5,
+aarch64, 1014996 КиБ RAM (около 1 ГиБ), swap 1 ГиБ без использования.
+Curl 8.15.0 / OpenSSL 3.5.5, libc 2.27. `/tmp` — tmpfs.
+Этот результат также нельзя переносить на 128 МиБ или MIPS.
+
+При первой проверке в штатном окружении отсутствовали и jq, и jsonfilter. Независимый PoC корректно
+завершился с `resolver_status=parser_missing`, без попытки записать DPI FAIL.
+Для проверки скопирован временный официальный `jq-linux-arm64` 1.8.1 в `/tmp`;
+opkg-пакеты не устанавливались, постоянный PATH не менялся.
+
+С временным jq штатный shell PoC получил audio itag 139 (AAC/MP4) и video
+itag 242 (VP9/WebM). Начало и середина audio/video: четыре правильных 206,
+по 262144 байта audio и 1048576 байт video; все четыре пробы OK.
+
+Проверен живой изолированный `_supersweep_worker_profile`, профиль 2, стратегия 1:
+запрос лока через cmd/родителя, TLS и все три media GET. Результат:
+`best=1`, `n_ok=1`, `n_unknown=0`, `interrupted=0`. Sequence NFQUEUE: 0 → 3281.
+
+| Проба | HTTP | Байт | TCP, с | TLS, с | TTFB, с | Передача, с |
+|---|---:|---:|---:|---:|---:|---:|
+| audio, начало | 206 | 262144 | .033984 | .064530 | .071677 | .116250 |
+| video, начало | 206 | 1048576 | .002702 | .033116 | .038895 | .491026 |
+| video, середина | 206 | 2097152 | .002003 | .032317 | .696104 | .996783 |
+
+`youtube_media_smoke.sh` прошёл непосредственно на Keenetic, включая ошибки,
+отмену, отсутствие обработки очередью, UNKNOWN/рейтинг и cleanup. Найден и исправлен
+только дефект переносимости тестового mock curl: `/usr/bin/env` на устройстве
+отсутствует; POSIX-совместимый mock теперь использует `#!/bin/sh`.
+
+Ресурсы по Entware BusyBox `time -v`:
+
+| Операция | Wall, с | User+system CPU, с | Max RSS отдельного процесса, КиБ |
+|---|---:|---:|---:|
+| resolver | .66 | .13 + .01 | 10200 |
+| media video 1 МиБ | 2.03 (конечный GET .49) | .10 + .00 | 10164 |
+| curl, только `--version` | <.01 | <.01 | 6604 |
+| отдельный curl с TLS, ответ 302 | .19 | .03 + .00 | 10112 |
+| jq, `-n null` | <.01 | <.01 | 2048 |
+
+HTTP 302 в последней строке curl не считался успешным медиатестом: он использован
+только для проверки стоимости TLS. В штатных media GET перенаправления обработаны
+ограниченным механизмом resolver/probe. Основной процессный пик на этом устройстве
+создаёт curl/OpenSSL; замена jq сама по себе этот пик не устранит.
+
+Отдельные выборки суммы RSS дерева процессов через `/proc/*/stat`, примерно каждые
+50 мс: resolver 17040 КиБ (16 samples), media 21496 КиБ (50), старый TLS target
+42512 КиБ (17), TLS + три media GET 43528 КиБ (167). Разность пиков двух последних
+опытов — 1016 КиБ. Это sampled RSS с повторным учётом общих страниц, не физическая
+добавка памяти/PSS и не гарантированный максимум. Эти числа не являются
+опровержением меньших измерений OpenWrt: TLS-библиотека, libc и shell различаются.
+
+SHA256 рабочего config и `locked.tsv` до/после живого теста совпал. Production
+service не перезапускался; тестовый nfqws2/транспорт остановлен. Временные исходники,
+jq, подписанные URL и диагностика удалены из `/tmp`; постоянная установка не менялась.
+После явного запроса пользователя установочный helper проверен повторно на этом Keenetic:
+`opkg install jq` успешно установил штатный **jq 1.8.1-2** без обновления индекса.
+Пакет оставлен установленным; временный статический jq больше не нужен.
+Если пакет установить невозможно, остаётся явно обозначенный fallback.
+
+## Проверка и воспроизведение
+
+```sh
+sh tools/youtube-media-poc.sh aqz-KE-bpKQ
+bash tests/youtube_media_smoke.sh
+bash tests/youtube_media_http_smoke.sh
+bash tests/youtube_media_install_smoke.sh
+bash tests/youtube_media_manual_smoke.sh
+bash tests/run.sh quick
+```
+
+Первый тест проверяет JSON/status/expiry, cipher/n/PO, 403/429, partial/reset/timeout,
+redirect, отсутствие очереди, отмену, отсутствие парсера, выбор победителя и старый
+формат отчёта. Второй запускает Python HTTPS-сервер **только на машине разработки**:
+настоящий curl, локальный сертификат, Range, обрыв, текстовый ответ, игнорирование
+Range и отмена зависшего ответа. Фикстуры содержат только `REDACTED` и TEST-NET IP.
+
+Результаты проверки:
+
+- `tests/run.sh quick`: 8/8, включая shell syntax; `git diff --check` чистый.
+- `youtube_media_smoke.sh`, `youtube_media_http_smoke.sh`: PASS в WSL/Linux;
+  первый также проходил на OpenWrt. Настоящие media GET повторно прошли на роутере.
+- Существующие `supersweep_smoke`, `supersweep_background_smoke`,
+  `supersweep_transport_smoke`, `supersweep_status_smoke`, `supersweep_cpu_smoke`,
+  `supersweep_menu_input_smoke`, `supersweep_frontend_smoke`,
+  `deploy_tar_smoke`, `webui_settings_smoke`: PASS.
+- `recommendations_server_test.py`: 16 тестов, OK, 1 optional skip.
+- Предрелизный полный набор в WSL на содержимом Git index: 31 PASS / 4 FAIL из 35, 136 с.
+  Все четыре FAIL воспроизведены отдельно на исходном **HEAD ce676eb**:
+  `profile_lock_smoke` — `hardware: unbound variable` в actions.sh:1580;
+  `tls_check_smoke` — старый сценарий 14c не видит сообщение о прерывании;
+  `watchdog_smoke` — причина отказа start отсутствует в логе;
+  `webui_smoke` — ожидаемая подсказка неизвестного менеджера отсутствует.
+  Эти исходные ошибки здесь не исправлялись. Полный набор не объявляется зелёным.
+
+LF-копия потребовалась из-за CRLF в части существующих файлов Windows checkout;
+посторонние файлы репозитория не нормализовались. Для тестирования использовались
+временные Linux Node/jq на ПК. При первых проверках пакеты на роутерах не
+устанавливались; последующая установка jq на Keenetic описана выше.
+
+## Изменённые файлы
+
+- `lib/youtube_media.sh`: необязательный resolver, ограниченный media GET,
+  классификация и подготовка GV; `lib/supersweep.sh`: вызов, рейтинг, UNKNOWN,
+  безопасный cleanup и совместимый отчёт.
+- `z2r.sh`: библиотека добавлена в развёртывание.
+- `lib/netcheck.sh`: GV media probe в пункте 1 меню; `lib/deploy.sh` и `get_repo`:
+  опциональное предложение установить jq при установке/обновлении core/full.
+- `tools/youtube-media-poc.sh`: независимый воспроизводимый PoC без изменения firewall.
+- `tests/youtube_media_smoke.sh`, `tests/youtube_media_http_smoke.sh`,
+  `tests/youtube_media_install_smoke.sh`,
+  `tests/youtube_media_manual_smoke.sh`,
+  `tests/fixtures/youtube-media/{player.json,server.py}`: фикстуры и регрессии.
+- `tests/supersweep_smoke.sh`, `tests/supersweep_background_smoke.sh`: существующие
+  TLS fixtures явно выбирают прежний режим (`Z2R_SUPERSWEEP_MEDIA=0`).
+- `tests/recommendations_server_test.py`: UNKNOWN не становится отрицательной статистикой.
+- `docs/youtube-media-probe.md`: протокол, измерения, проверки и ограничения.
+
+Сборщик релизов автоматически включает `lib/` в `z2r_lib/`.
+`Z2R_LIB_FILES` дополнен новой библиотекой. Внешний launcher `AloofLibra/z4r:z2r`
+проверен: штатный tar/API-обход включает файл. Старый аварийный raw-bootstrap
+без API использует статический `LIB_FILES_FALLBACK`, где нового файла нет.
+Отсутствие только media-модуля поэтому не отправляет z2r обратно в bootstrap:
+CLI запускается с явным Media UNKNOWN; остальные обязательные библиотеки проверяются.
+Для доставки media через этот старый raw fallback во внешнем репозитории нужно
+добавить `youtube_media.sh` в `LIB_FILES_FALLBACK` (его существующий список также
+отстаёт по supersweep-модулям). Внешний launcher из этого workspace не изменялся.
+Штатный tar/API путь и runtime layout дополнительных изменений не требуют.
+
+Не проверено: естественное истечение URL на CDN, другой внешний IP, все стратегии
+на живом роутере, 128 МиБ/MIPS и остальные Entware-устройства, QUIC,
+декодирование/воспроизведение ролика.
+Успешные диапазоны подтверждают передачу подписанного медиа, а не поведение приложения
+YouTube на всех клиентах. При изменении клиентской политики Innertube понадобится
+повторить независимый PoC; JS/PO-эмуляция автоматически не подключается.

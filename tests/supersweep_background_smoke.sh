@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Изолированные пробы не меняют рабочие локи и не откатывают изменения меню.
 set -euo pipefail
+export Z2R_SUPERSWEEP_MEDIA=0 # Здесь mock TLS/iptables; подписанные media URL проверяются отдельно.
 cd "$(dirname "$0")/.."
 TMP="$(mktemp -d)"
 trap '[ "${SMOKE_KEEP:-0}" = 1 ] || rm -rf "$TMP"' EXIT

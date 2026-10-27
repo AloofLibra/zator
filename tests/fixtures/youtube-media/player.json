@@ -1,0 +1,11 @@
+{
+  "playabilityStatus": {"status": "OK"},
+  "videoDetails": {"videoId": "aqz-KE-bpKQ", "lengthSeconds": "635"},
+  "streamingData": {
+    "expiresInSeconds": "21600",
+    "adaptiveFormats": [
+      {"itag": 139, "mimeType": "audio/mp4; codecs=\"mp4a.40.5\"", "bitrate": 49000, "contentLength": "4000000", "url": "https://rr1---sn-example.googlevideo.com/videoplayback?expire=4102444800&ip=192.0.2.1&itag=139&sig=REDACTED_NOT_A_SIGNATURE"},
+      {"itag": 160, "mimeType": "video/mp4; codecs=\"avc1.4D400C\"", "bitrate": 55000, "contentLength": "12000000", "url": "https://rr1---sn-example.googlevideo.com/videoplayback?expire=4102444800&ip=192.0.2.1&itag=160&sig=REDACTED_NOT_A_SIGNATURE"}
+    ]
+  }
+}

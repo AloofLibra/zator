@@ -7,6 +7,7 @@
 # «воркер -> cmd-файл -> координатор -> orch_locked_set -> движок z2r_tls_*».
 
 set -euo pipefail
+export Z2R_SUPERSWEEP_MEDIA=0 # Этот fixture проверяет прежний TLS-движок; media имеет отдельный smoke.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
