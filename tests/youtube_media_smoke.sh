@@ -8,6 +8,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/cache" "$tmp/bin" "$tmp/run"
 export Z2R_SUPERSWEEP_DIR="$tmp/run"
+real_media_check=$(declare -f supersweep_media_check)
 fixture=tests/fixtures/youtube-media/player.json
 select_fixture() { z2r_media_select "$1" aqz-KE-bpKQ 0123456789abcdef "$tmp/cache"; }
 expect_status() { test "$(cat "$tmp/cache/status")" = "$1"; }
@@ -173,6 +174,7 @@ rm "$Z2R_SUPERSWEEP_DIR/cancel"
 )
 # Старые отчёты сохраняют число/порядок столбцов. UNKNOWN не считается fail.
 source lib/supersweep.sh
+media_check_wrapper=$(declare -f _supersweep_check_target)
 printf 'state=done\nstarted=1\nupdated=2\n' > "$tmp/run/status"
 printf 'gv\tgv\tprofile\t2\thttps://example.org/\t1\n' > "$tmp/run/workers.tsv"
 printf '1\t2\t1\tunknown\tfail\tfail\t0\t0\tMedia UNKNOWN\n' > "$tmp/run/progress.gv.tsv"
@@ -195,7 +197,12 @@ supersweep_media_check() {
         3) echo 'OK|media_range|0|206|2097152|.1|.2|.3|1|2097152' ;;
     esac
 }
-_supersweep_check_target() { echo 'FAIL: root during media' >&2; exit 1; }
+eval "$media_check_wrapper"
+supersweep_probe_sequence() {
+    local n=0
+    [ ! -f "$tmp/worker-seq" ] || read -r n < "$tmp/worker-seq"
+    echo $((n + 1)) > "$tmp/worker-seq"; cat "$tmp/worker-seq"
+}
 Z2R_MEDIA_READY=1 Z2R_SUPERSWEEP_MEDIA=1 Z2R_SUPERSWEEP_SETTLE=0 \
     _supersweep_worker_profile gv gv 2 tls https://example.org/ 3 any 0 > "$tmp/worker.log"
 grep -q '^best=3$' "$tmp/run/best.gv"
@@ -204,6 +211,43 @@ grep -q '^warns=$' "$tmp/run/best.gv"
 grep -q '^n_unknown=1$' "$tmp/run/best.gv"
 grep -q '^n_fail=1$' "$tmp/run/best.gv"
 awk -F '\t' '$3==2 && $4=="fail" && $7==99 {found=1} END {exit !found}' "$tmp/run/progress.gv.tsv"
+# Восстановление транспорта относится к изолированному SuperSweep, не к обычному A.
+for health_case in recovered dead; do
+    (
+        rm -f "$tmp/health-ready" "$Z2R_SUPERSWEEP_DIR/cancel"
+        sleep() { :; }
+        supersweep_probe_healthy() { test -e "$tmp/health-ready"; }
+        supersweep_transport_reinstall() {
+            [ "$health_case" = recovered ] || return 1
+            touch "$tmp/health-ready"
+        }
+        supersweep_media_check() { echo 'OK|media_range|0|206|2097152|.1|.2|.3|1|2097152'; }
+        Z2R_SUPERSWEEP_ISOLATED=1 Z2R_MEDIA_READY=1 Z2R_SUPERSWEEP_MEDIA=1 Z2R_SUPERSWEEP_SETTLE=0 \
+            _supersweep_worker_profile gv gv 2 tls https://example.org/ 1 both 0 > "$tmp/health.log" 2>&1
+        if [ "$health_case" = recovered ]; then
+            grep -q '^best=1$' "$tmp/run/best.gv"
+            test ! -e "$Z2R_SUPERSWEEP_DIR/cancel"
+        else
+            grep -q '^interrupted=1$' "$tmp/run/best.gv"
+            grep -q '^reason=transport_unavailable$' "$Z2R_SUPERSWEEP_DIR/probe/isolation-error"
+            grep -q '^n_ok=0$' "$tmp/run/best.gv"
+        fi
+    )
+done
+rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
+for isolated in 0 1; do
+    (
+        eval "$real_media_check"
+        z2r_media_probe() { test "$5" = "$isolated"; echo 'OK|media_range|0|206|1024|.1|.2|.3|1|1024'; }
+        Z2R_MEDIA_READY=1 Z2R_MEDIA_DIR="$tmp/cache" Z2R_SUPERSWEEP_ISOLATED=$isolated supersweep_media_check 1 > /dev/null
+    )
+done
+(
+    supersweep_media_target() { return 1; }
+    Z2R_MEDIA_READY=1 Z2R_SUPERSWEEP_MEDIA=1 _supersweep_worker_profile gv gv 2 tls https://example.org/ 1 both 0 > "$tmp/callback-error.log"
+    grep -q '^interrupted=1$' "$tmp/run/best.gv"
+    grep -q '^n_fail=0$' "$tmp/run/best.gv"
+)
 supersweep_media_check() { touch "$Z2R_SUPERSWEEP_DIR/cancel"; echo 'UNKNOWN|cancelled|0|000|0|0|0|0|0|0'; }
 Z2R_MEDIA_READY=1 Z2R_SUPERSWEEP_MEDIA=1 _supersweep_worker_profile gv gv 2 tls https://example.org/ 1 any 0 > "$tmp/worker.log"
 grep -q '^interrupted=1$' "$tmp/run/best.gv"

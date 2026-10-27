@@ -231,16 +231,13 @@ orch_run_auto_sweep() {
     pause_enter
 }
 
-# У GV свой изолированный транспорт; остальной интерактивный цикл общий.
+# Обычный GV-автопрогон использует рабочую очередь; ссылки общие для всего прогона.
 orch_gv_auto_sweep() (
     local shared_lock="${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}.lock"
     local Z2R_SUPERSWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
-    local Z2R_SUPERSWEEP_ISOLATED=1 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
-    local Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=0 Z2R_SUPERSWEEP_NFQ_PID=""
+    local Z2R_SUPERSWEEP_ISOLATED=0 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
     local Z2R_SUPERSWEEP_SETTLE="${Z2R_SUPERSWEEP_SETTLE:-2}"
-    local FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT POSTNAT POSTNAT_ALL
-    local ZAPRET_NFT_TABLE FILTER_MARK CLIENT_SCOPE_MARK_MASK cfg name value
-    local completed=0 fallback_touched=0 prior
+    local completed=0 trial_touched=0 prior
     case "$Z2R_SUPERSWEEP_SETTLE" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
     prior="$(orch_locked_state_get 2 tls)"
     (umask 077; mkdir "$shared_lock") 2>/dev/null || {
@@ -249,11 +246,7 @@ orch_gv_auto_sweep() (
     }
     printf '%s\n' "$BASHPID" > "$shared_lock/pid"
     trap 'trap "" INT TERM HUP
-        if [ -n "$Z2R_SUPERSWEEP_DIR" ] && type supersweep_probe_stop >/dev/null 2>&1 && ! supersweep_probe_stop; then
-            echo "Не удалось убрать тестовый транспорт; диагностика и lock сохранены: $Z2R_SUPERSWEEP_DIR" >&2
-            exit 1
-        fi
-        if [ "$completed" = 0 ] && [ "$fallback_touched" = 1 ]; then
+        if [ "$completed" = 0 ] && [ "$trial_touched" = 1 ]; then
             case "$prior" in ""|auto) orch_locked_clear 2 tls ;; *) orch_locked_set 2 tls "$prior" ;; esac
         fi
         [ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"
@@ -266,17 +259,6 @@ orch_gv_auto_sweep() (
         supersweep_media_prepare || return 1
     else
         echo 'Googlevideo Media UNKNOWN: нет media-модуля. Плюшевый TLS/CDN-тест, без выбора media-победителя.' >&2
-    fi
-    if [ "$Z2R_MEDIA_READY" = 1 ]; then
-        if ! type supersweep_transport_start >/dev/null 2>&1; then
-            source "${LIB_DIR:-${BASH_SOURCE[0]%/*}}/supersweep_transport.sh" || return 1
-        fi
-        cfg="$(get_config_file)" || return 1
-        for name in FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE FILTER_MARK CLIENT_SCOPE_MARK_MASK; do
-            value="$(config_get_var "$cfg" "$name" | tr -d '\"\047')"
-            printf -v "$name" '%s' "$value"
-        done
-        supersweep_probe_start 2 "$cfg" || return 1
     fi
     orch_auto_sweep "$@" || return 1
     completed=1
@@ -354,21 +336,22 @@ orch_auto_sweep() {
     zapret2_running && svc_was_running=1
 
     for ((s=start; s<=max; s++)); do
-        if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
-            (ORCH_LOCK_FILE="$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" ORCH_ACTIVE_SCOPE=default; orch_locked_set 2 tls "$s") || break
-            chmod 644 "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" || break
-            _supersweep_settle
-        elif [ "$kind" = "domain" ]; then
+        if [ "$kind" = "domain" ]; then
             orch_locked_set "$key" "tls" "$s"
         else
-            [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || fallback_touched=1
+            [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || trial_touched=1
             for p in $proto_list; do
                 orch_locked_set "$key" "$p" "$s"
             done
         fi
 
         if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
-            out="$(supersweep_media_target "$s" "$tls_pref")"
+            _supersweep_settle
+            out="$(supersweep_media_target "$s" "$tls_pref")" || {
+                echo 'Медиапроверка недействительна; автопрогон остановлен.' >&2
+                orch_auto_sweep_interrupted=1
+                break
+            }
             { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
         else
             out="$(z2r_tls_check_target "$test_url")"
@@ -460,9 +443,6 @@ orch_auto_sweep() {
             fi
         fi
     done
-    if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
-        supersweep_probe_stop || return 1
-    fi
     if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then trap ':' INT; else trap - INT; fi
     if [ "$had_e" = "1" ]; then set -e; fi
     Z2R_TLS_WAIT_BOTH="$wait_both_prev"
@@ -602,8 +582,6 @@ orch_auto_sweep() {
                 echo -e "${red}Не удалось сохранить стратегию ${answer} для профиля ${key}.${plain}"
             fi
             telemetry_notify
-        elif [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
-            echo 'Изменения отменены, рабочие стратегии не менялись.'
         else
             for p in $proto_list; do
                 # auto/пусто = профиль не имел лока (работала стратегия по

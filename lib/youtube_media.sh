@@ -247,7 +247,7 @@ supersweep_media_check() {
     fi
     for item in "audio:${Z2R_MEDIA_AUDIO_BYTES:-262144}:0" "video:${Z2R_MEDIA_VIDEO_BYTES:-1048576}:0" "video:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"; do
         kind=${item%%:*}; item=${item#*:}; count=${item%%:*}; middle=${item#*:}
-        row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" "$count" "$middle" 1) || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
+        row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" "$count" "$middle" "${Z2R_SUPERSWEEP_ISOLATED:-0}") || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
         printf '%s\t%s\t%s\t%s\t%s\n' "$strategy" "$kind" "$middle" "$row" "${Z2R_MEDIA_TLS_VERSION:-auto}" >> "$Z2R_SUPERSWEEP_DIR/media.tsv"
         state=${row%%|*}; reason=${row#*|}; reason=${reason%%|*}
         [ "$state" = OK ] || break
@@ -260,7 +260,7 @@ supersweep_media_target() {
     local strategy="$1" pref="${2:-both}" version row state reason rc code bytes tcp tls ttfb total speed
     local v12 v13 r12 r13 s12 s13 selected token label
     for version in 12 13; do
-        row=$(Z2R_MEDIA_TLS_VERSION=$version supersweep_media_check "$strategy") || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
+        row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" supersweep_media_check) || return 1
         IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
 $row
 EOF
@@ -286,7 +286,7 @@ EOF
 $selected
 EOF
     printf '%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
-        "$token|Media $label: $reason; $bytes байт за $total с; TLS 1.2=$s12, TLS 1.3=$s13"
+        "$token|Media $label: $reason; $bytes байт за $total с"
 }
 
 # OK/FAIL/UNKNOWN | reason | curl_rc | HTTP | bytes | TCP | TLS | TTFB | total | B/s.

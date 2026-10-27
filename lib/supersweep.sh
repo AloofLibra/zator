@@ -308,8 +308,19 @@ _supersweep_verdict_color() {
 # xtables lock даёт транзиентный отказ. Если правила транспорта снёс
 # внешний firewall-фреймворк (ndm на Keenetic), транспорт
 # переустанавливается на месте — прогон продолжает работу.
+_supersweep_probe_failure() {
+    mkdir -p "$Z2R_SUPERSWEEP_DIR/probe"
+    {
+        printf 'reason=%s\npid=%s\n' "$1" "${Z2R_SUPERSWEEP_NFQ_PID:-}"
+        if kill -0 "${Z2R_SUPERSWEEP_NFQ_PID:-}" 2>/dev/null; then echo process=running; else echo process=stopped; fi
+        cat "${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}" 2>/dev/null || :
+    } > "$Z2R_SUPERSWEEP_DIR/probe/isolation-error"
+    : > "$Z2R_SUPERSWEEP_DIR/cancel"
+}
+
 _supersweep_check_target() {
     local out seq_before seq_after try attempt isolation_lost v12 v13 dl noqueue_saved=0
+    local check="${2:-z2r_tls_check_target}"
     for attempt in 1 2; do
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             for try in 1 2 3; do
@@ -318,17 +329,17 @@ _supersweep_check_target() {
                     echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
                     if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
                         echo 'Транспорт не восстановлен; прогон остановлен.' >&2
-                        : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                        _supersweep_probe_failure transport_unavailable
                         return 1
                     fi
                     break
                 fi
                 sleep 1
             done
-            seq_before="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+            seq_before="$(supersweep_probe_sequence)" || { _supersweep_probe_failure queue_unavailable; return 1; }
         fi
         isolation_lost=0
-        out="$(z2r_tls_check_target "$1")" || return 1
+        out="$("$check" "$1")" || return 1
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             for try in 1 2 3; do
                 if supersweep_probe_healthy; then break; fi
@@ -337,7 +348,7 @@ _supersweep_check_target() {
                     echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
                     if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
                         echo 'Транспорт не восстановлен; прогон остановлен.' >&2
-                        : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                        _supersweep_probe_failure transport_unavailable
                         return 1
                     fi
                     break
@@ -346,7 +357,9 @@ _supersweep_check_target() {
             done
             # Ответ при потере изоляции недостоверен; повторяем всю пробу один раз.
             [ "$isolation_lost" = 0 ] || continue
-            seq_after="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+            seq_after="$(supersweep_probe_sequence)" || { _supersweep_probe_failure queue_unavailable; return 1; }
+            # Даже при общем росте счётчика один media GET мог пройти вне очереди.
+            case "$out" in UNKNOWN\|noqueue\|*|UNKNOWN\|isolation_unavailable\|*) seq_after="$seq_before" ;; esac
             if [ "$seq_before" = "$seq_after" ]; then
                 { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
                 # Снять состояние до cleanup: он удалит правила и остановит очередь.
@@ -370,7 +383,7 @@ _supersweep_check_target() {
                 fi
                 echo 'Пакеты не попали в тестовую NFQUEUE: проверьте маршрутизацию и DNS. Прогон остановлен.' >&2
                 printf 'Проба %s: TLS 1.2=%s; TLS 1.3=%s; download=%s\n' "$1" "$v12" "$v13" "$dl" >&2
-                : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                _supersweep_probe_failure noqueue
                 return 1
             fi
         fi
@@ -378,7 +391,7 @@ _supersweep_check_target() {
         return 0
     done
     echo 'Изоляция повторно нарушена во время проверки; прогон остановлен.' >&2
-    : > "$Z2R_SUPERSWEEP_DIR/cancel"
+    _supersweep_probe_failure isolation_lost
     return 1
 }
 
@@ -464,7 +477,7 @@ _supersweep_worker_profile() {
         _supersweep_settle
 
         if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
-            out="$(supersweep_media_target "$s" "$tls_pref")"
+            out="$(supersweep_media_target "$s" "$tls_pref")" || { ss_interrupted=1; break; }
             { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
         else
             out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }

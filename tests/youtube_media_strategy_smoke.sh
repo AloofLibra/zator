@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Реальный путь меню: профиль 2 -> A -> полный/первый, транспорт/сеть замоканы.
+# Реальный путь меню: профиль 2 -> A -> полный/первый, основная очередь, сеть замокана.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v jq >/dev/null
@@ -12,7 +12,7 @@ trap 'rc=$?; if [ "$rc" != 0 ]; then cat "$tmp/log" >&2; fi; rm -rf "$tmp"' EXIT
 export Z2R_SUPERSWEEP_DIR="$tmp/run" Z2R_SWEEP_PAUSE=0 Z2R_SUPERSWEEP_SETTLE=0
 export ORCH_LOCK_FILE="$tmp/locked.tsv"
 touch "$tmp/config"
-for scenario in full first fallback cancel startfail busy manual; do
+for scenario in full first fallback cancel busy manual probeerror; do
     (
         printf '2\ttls\t7\n' > "$ORCH_LOCK_FILE"
         : > "$tmp/trace"; : > "$tmp/saved"
@@ -47,23 +47,21 @@ for scenario in full first fallback cancel startfail busy manual; do
                 echo 'jq отсутствует: плюшевый TLS/CDN-тест.' >&2
             fi
         }
-        supersweep_transport_start() { :; }
-        supersweep_probe_start() {
-            [ "$scenario" != startfail ] || return 1
-            test "$1" = 2
-            echo start >> "$tmp/trace"
-            mkdir -p "$Z2R_SUPERSWEEP_DIR/probe"
-            : > "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
-            export Z2R_TLS_LOCAL_PORTS=62000-62999
-        }
-        supersweep_probe_stop() { echo stop >> "$tmp/trace"; unset Z2R_TLS_LOCAL_PORTS; }
+        probe_forbidden() { echo 'FAIL: isolated probe in ordinary auto sweep' >&2; exit 99; }
+        supersweep_transport_start() { probe_forbidden; }
+        supersweep_transport_reinstall() { probe_forbidden; }
+        supersweep_probe_start() { probe_forbidden; }
+        supersweep_probe_stop() { probe_forbidden; }
+        supersweep_probe_healthy() { probe_forbidden; }
+        supersweep_probe_sequence() { probe_forbidden; }
         z2r_tls_check_target() { echo root >> "$tmp/trace"; printf '0|404|HTTP/1.1|.1|192.0.2.1\n0|404|HTTP/1.1|.1|192.0.2.1\nskip\n'; }
-        _supersweep_check_target() { echo 'FAIL: root during media' >&2; exit 1; }
         supersweep_media_check() {
-            test "$Z2R_TLS_LOCAL_PORTS" = 62000-62999
-            test "$(cat "$ORCH_LOCK_FILE")" = $'2\ttls\t7'
+            test -z "$Z2R_TLS_LOCAL_PORTS"
+            test "$Z2R_SUPERSWEEP_ISOLATED" = 0
+            test "$(cat "$ORCH_LOCK_FILE")" = "$(printf '2\ttls\t%s' "$1")"
             test "$Z2R_MEDIA_TLS_VERSION" = 12 || test "$Z2R_MEDIA_TLS_VERSION" = 13
             echo "media|$1" >> "$tmp/trace"
+            [ "$scenario" != probeerror ] || return 1
             if [ "$scenario" = first ]; then echo 'OK|media_range|0|206|2097152|.1|.2|.3|1|2097152'; return; fi
             if [ "$scenario" = fallback ]; then echo 'UNKNOWN|parser_missing|0|000|0|0|0|0|0|0'; return; fi
             if [ "$scenario" = cancel ]; then touch "$Z2R_SUPERSWEEP_DIR/cancel"; echo 'UNKNOWN|cancelled|0|000|0|0|0|0|0|0'; return; fi
@@ -104,15 +102,19 @@ for scenario in full first fallback cancel startfail busy manual; do
                 grep -q 'плюшевый' "$tmp/log"
                 ! grep -q 'Лучшая ' "$tmp/log"
                 test ! -s "$tmp/saved" ;;
+            probeerror)
+                grep -q 'Медиапроверка недействительна' "$tmp/log"
+                ! grep -q 'Media FAIL' "$tmp/log"
+                test ! -s "$tmp/saved" ;;
             cancel) grep -qi 'прерван' "$tmp/log"; test ! -s "$tmp/saved" ;;
-            startfail) test ! -s "$tmp/saved"; ! grep -q '^media|' "$tmp/trace" ;;
             busy) test -d "$Z2R_SUPERSWEEP_DIR.lock"; test ! -s "$tmp/trace"; rmdir "$Z2R_SUPERSWEEP_DIR.lock" ;;
             manual) grep -q '^manual_media$' "$tmp/trace"; test ! -s "$tmp/saved" ;;
         esac
         if [ "$scenario" != first ]; then test "$(cat "$ORCH_LOCK_FILE")" = $'2\ttls\t7'; fi
-        if [ "$scenario" != fallback ] && [ "$scenario" != first ] && [ "$scenario" != manual ]; then
-            ! grep -Fq "set|$ORCH_LOCK_FILE|" "$tmp/trace"
-        fi
+        # Все временные локи и откат проходят через обычный production-файл.
+        while IFS='|' read -r event path value; do
+            [ "$event" != set ] || test "$path" = "$ORCH_LOCK_FILE"
+        done < "$tmp/trace"
         test ! -d "$Z2R_SUPERSWEEP_DIR.lock"
         if [ "$scenario" != manual ] && [ "$scenario" != busy ]; then test "$(grep -c '^prepare$' "$tmp/trace")" = 1; fi
         while IFS='|' read -r event path rest; do
