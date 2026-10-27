@@ -25,10 +25,11 @@ _supersweep_transport_mark_safe() {
       case "$digits" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
       [ "${#digits}" -le 8 ] || return 1 ;;
     *) case "$mark" in ''|*[!0-9]*|0*) return 1 ;; esac
-      [ "${#mark}" -le 10 ] || return 1 ;;
+      [ "${#mark}" -le 10 ] || return 1
+      # Штатный Keenetic test сравнивает числа как signed 32-bit: UINT32_MAX переполняется.
+      if [ "${#mark}" = 10 ] && [ "$mark" \> 4294967295 ]; then return 1; fi ;;
   esac
-  [ "$((mark))" -ge 0 ] && [ "$((mark))" -le 4294967295 ] &&
-    [ "$((mark & 0x08000000))" -eq 0 ]
+  [ "$((mark & 0x08000000))" -eq 0 ]
 }
 
 _supersweep_transport_hook() {
@@ -175,7 +176,7 @@ supersweep_transport_start() {
       _supersweep_transport_error 'invalid firewall mark or collision with reserved mark 0x08000000'; return 1;
     }
   done
-  [ "$((_Z2R_SS_DESYNC))" -gt 0 ] || {
+  [ "$((_Z2R_SS_DESYNC))" -ne 0 ] || {
     _supersweep_transport_error 'DESYNC_MARK must not be zero'; return 1;
   }
   if [ "$FWTYPE" != iptables ]; then
@@ -212,10 +213,26 @@ supersweep_transport_reinstall() {
   supersweep_transport_start
 }
 
+_supersweep_transport_order_check() {
+  local listing
+  listing="$(_supersweep_transport_ipt -S)" || return 1
+  printf '%s\n' "$listing" | awk '
+    $1 == "-A" && ($2 == "POSTROUTING" || $2 == "INPUT") {
+      for (i=3; i<NF; i++) if ($i == "-j") {
+        target=$(i+1)
+        if (($2 == "POSTROUTING" && target == "Z2R_SS_POST") ||
+            ($2 == "INPUT" && target == "Z2R_SS_IN")) probe[$2]=1
+        if (target == "NFQUEUE" && !probe[$2]) blocked=1
+        break
+      }
+    }
+    END { exit blocked || !probe["POSTROUTING"] || !probe["INPUT"] }'
+}
+
 supersweep_transport_reconcile() {
   [ "${FWTYPE:-}" = iptables ] || return 0
   _Z2R_SS_DESYNC="${DESYNC_MARK:-0x40000000}"
-  if _supersweep_transport_hook -C SOCKETOUTPUT 2>/dev/null; then
+  if _supersweep_transport_hook -C SOCKETOUTPUT 2>/dev/null && _supersweep_transport_order_check; then
     return 0
   fi
   local t=0
@@ -243,7 +260,8 @@ supersweep_transport_check() {
   done
   _supersweep_transport_ipt -C Z2R_SS_RAW -j MARK --or-mark "$((_Z2R_SS_DESYNC | 0x08000000))" >/dev/null 2>&1 &&
     _supersweep_transport_ipt -C Z2R_SS_RAW -j ACCEPT >/dev/null 2>&1 || return 1
-  return 0
+  # restart-fw может вставить рабочую очередь перед сохранившимися пробными правилами.
+  _supersweep_transport_order_check
 }
 
 supersweep_transport_stop() {

@@ -8,6 +8,14 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 [[ -r "$REPO_DIR/lib/supersweep_transport.sh" ]] || fail 'isolated transport module is missing'
 . "$REPO_DIR/lib/supersweep_transport.sh"
 
+# Keep unsigned mark validation portable to the vendor's signed 32-bit test.
+for mark in 0 0x40000000 0x20000000 0x80000000 2147483648 4160749567; do
+  _supersweep_transport_mark_safe "$mark" || fail "rejected valid mark $mark"
+done
+for mark in 4294967296 0x100000000 0x08000000 4294967295 08 -1 invalid; do
+  ! _supersweep_transport_mark_safe "$mark" || fail "accepted unsafe mark $mark"
+done
+
 # Model only the mangle table; built-in production rules must survive.
 declare -A MOCK_CHAINS=() rules=()
 log=()
@@ -17,7 +25,7 @@ iptables() {
   if [[ ${MOCK_FAIL_AT:-0} == "${#log[@]}" ]]; then return 1; fi
   if [[ ${MOCK_NO_WAIT:-0} == 1 && " $* " == *' -w '* ]]; then return 2; fi
   if [[ ${MOCK_BARE_WAIT:-0} == 1 && "$1" == -w && "${2:-}" == 5 ]]; then return 2; fi
-  if [[ "$1 $2 $3 $4" == '-w 5 -t mangle' ]]; then
+  if [[ "$1 $2 ${3:-} ${4:-}" == '-w 5 -t mangle' ]]; then
     shift 4
   elif [[ ${MOCK_BARE_WAIT:-0} == 1 && "$1 $2" == '-w -t' && "${3:-}" == mangle ]]; then
     shift 3
@@ -27,6 +35,16 @@ iptables() {
     fail 'unexpected table or no xtables lock'
   fi
   local op=$1 chain=${2:-} text key
+  if [[ $op == -S ]]; then
+    for chain in POSTROUTING INPUT; do
+      [[ ${MOCK_PREEMPT_CHAIN:-} != "$chain" ]] || printf -- '-A %s -j NFQUEUE --queue-num 300\n' "$chain"
+      for key in "${!rules[@]}"; do
+        [[ $key != "$chain|"* || $key != *' -j Z2R_SS_'* ]] || printf -- '-A %s %s\n' "$chain" "${key#*|}"
+      done
+      [[ ${MOCK_PREEMPT_CHAIN:-} == "$chain" ]] || printf -- '-A %s -j NFQUEUE --queue-num 300\n' "$chain"
+    done
+    return 0
+  fi
   if [[ $op == -nL && -z $chain ]]; then
     for chain in "${!MOCK_CHAINS[@]}"; do printf 'Chain %s (0 references)\n' "$chain"; done
     return 0
@@ -43,7 +61,11 @@ iptables() {
       done
       return 0 ;;
     -N) [[ ! ${MOCK_CHAINS[$chain]+yes} ]] || return 1; MOCK_CHAINS[$chain]=1 ;;
-    -A|-I) [[ ${MOCK_CHAINS[$chain]+yes} ]] || return 1; rules[$key]=1 ;;
+    -A|-I)
+      [[ ${MOCK_CHAINS[$chain]+yes} ]] || return 1
+      rules[$key]=1
+      if [[ $op == -I && ${MOCK_PREEMPT_CHAIN:-} == "$chain" && $text == *' -j Z2R_SS_'* ]]; then MOCK_PREEMPT_CHAIN=; fi
+      ;;
     -D) [[ ${rules[$key]+yes} ]] || return 1; unset 'rules[$key]' ;;
     -C) [[ ${rules[$key]+yes} ]] ;;
     -F) [[ $chain == Z2R_SS_* ]] || fail 'production flush'; for key in "${!rules[@]}"; do [[ $key != "$chain|"* ]] || unset 'rules[$key]'; done ;;
@@ -218,13 +240,24 @@ supersweep_transport_stop || fail 'reconcile stop'
 [[ ${#MOCK_CHAINS[@]} == 4 && ${#rules[@]} == 4 ]] || fail 'reconcile leaked'
 unset DESYNC_MARK
 
+# restart-fw prepends production NFQUEUE rules without deleting probe hooks.
+for chain in POSTROUTING INPUT; do
+  supersweep_transport_start || fail 'setup reordered hooks'
+  MOCK_PREEMPT_CHAIN="$chain"
+  ! supersweep_transport_check || fail "production queue before probe in $chain was accepted"
+  supersweep_transport_reconcile || fail 'reconcile reordered hooks'
+  [[ -z $MOCK_PREEMPT_CHAIN ]] || fail 'reconcile kept production queue first'
+  supersweep_transport_check || fail 'repaired hook order rejected'
+  supersweep_transport_stop || fail 'reordered hooks cleanup'
+done
+
 # A live and correct transport must be a no-op for reconcile.
 log=()
 supersweep_transport_start || fail 'setup noop'
 before=${#log[@]}
 DESYNC_MARK=0x40000000
 supersweep_transport_reconcile || fail 'reconcile noop'
-[[ ${#log[@]} -le $((before + 1)) ]] || fail 'reconcile touched live rules'
+[[ ${#log[@]} -le $((before + 2)) ]] || fail 'reconcile touched live rules'
 supersweep_transport_stop || fail 'reconcile noop stop'
 unset DESYNC_MARK
 

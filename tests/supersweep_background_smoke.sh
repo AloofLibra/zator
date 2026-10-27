@@ -292,6 +292,9 @@ MOCK
 cat > "$TMP/bin/iptables" <<'MOCK'
 #!/bin/sh
 echo "$*" >> "$TMP/iptables.args"
+case "$*" in
+    *' -S') printf '%s\n' '-A POSTROUTING -j Z2R_SS_POST' '-A INPUT -j Z2R_SS_IN' ;;
+esac
 MOCK
 # OpenWrt may have setsid but no nohup; inherited ignored HUP is sufficient.
 cat > "$TMP/bin/nohup" <<'MOCK'
