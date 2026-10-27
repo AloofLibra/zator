@@ -4,6 +4,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v jq >/dev/null || { echo 'FAIL: test prerequisite jq missing'; exit 1; }
 source lib/youtube_media.sh
+test "$Z2R_MEDIA_DEFAULT_VIDEO_ID" = BPk1uJ4txPc
+for value in BPk1uJ4txPc 'https://www.youtube.com/watch?v=BPk1uJ4txPc' 'https://m.youtube.com/watch?si=public&v=BPk1uJ4txPc&t=5#part' 'https://youtu.be/BPk1uJ4txPc?si=public' 'https://youtube.com/shorts/BPk1uJ4txPc' 'https://youtube.com/live/BPk1uJ4txPc'; do
+    test "$(z2r_media_video_id "$value")" = BPk1uJ4txPc
+done
+for value in bad 'https://evil.example/watch?v=BPk1uJ4txPc' 'https://youtube.com.evil.example/watch?v=BPk1uJ4txPc' 'https://youtube.com@evil.example/watch?v=BPk1uJ4txPc' 'https://youtube.com/watch?v=bad' 'BPk1uJ4txPc;id'; do
+    ! z2r_media_video_id "$value"
+done
+test "$(printf '\n' | z2r_media_ask_video 2>/dev/null)" = BPk1uJ4txPc
+test "$(printf 'bad\nhttps://youtu.be/M7lc1UVf-VE\n' | z2r_media_ask_video 2>/dev/null)" = M7lc1UVf-VE
+! printf '0\n' | z2r_media_ask_video >/dev/null 2>&1
+! z2r_media_ask_video </dev/null >/dev/null 2>&1
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/cache" "$tmp/bin" "$tmp/run"

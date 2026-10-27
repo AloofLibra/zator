@@ -12,8 +12,10 @@ trap 'rc=$?; if [ "$rc" != 0 ]; then cat "$tmp/log" >&2; fi; rm -rf "$tmp"' EXIT
 export Z2R_SUPERSWEEP_DIR="$tmp/run" Z2R_SWEEP_PAUSE=0 Z2R_SUPERSWEEP_SETTLE=0
 export ORCH_LOCK_FILE="$tmp/locked.tsv"
 touch "$tmp/config"
-for scenario in full first fallback cancel busy manual probeerror; do
+for scenario in full first fallback cancel busy manual probeerror custom; do
     (
+        expected_video=BPk1uJ4txPc
+        case "$scenario" in manual|custom) expected_video=M7lc1UVf-VE ;; esac
         printf '2\ttls\t7\n' > "$ORCH_LOCK_FILE"
         : > "$tmp/trace"; : > "$tmp/saved"
         get_config_file() { echo "$tmp/config"; }
@@ -34,9 +36,10 @@ for scenario in full first fallback cancel busy manual probeerror; do
         zapret2_running() { return 0; }
         sleep() { :; }
         _supersweep_settle() { :; }
-        check_googlevideo_access() { echo manual_media >> "$tmp/trace"; }
+        check_googlevideo_access() { test "$1" = "$expected_video"; echo manual_media >> "$tmp/trace"; }
         check_access() { echo 'FAIL: old root check' >&2; exit 1; }
         supersweep_media_prepare() {
+            test "$Z2R_MEDIA_VIDEO_ID" = "$expected_video"
             echo prepare >> "$tmp/trace"
             Z2R_MEDIA_DIR=$(mktemp -d /tmp/zator-media.XXXXXX)
             echo "cache|$Z2R_MEDIA_DIR" >> "$tmp/trace"
@@ -73,11 +76,13 @@ for scenario in full first fallback cancel busy manual probeerror; do
         }
         if [ "$scenario" = busy ]; then mkdir "$Z2R_SUPERSWEEP_DIR.lock"; fi
         if [ "$scenario" = manual ]; then
-            printf '1\n0\n' | orch_profile_try 2 'Профиль 2: TCP 443 (Googlevideo)' tls https://old.googlevideo.com/ > "$tmp/log" 2>&1
+            printf '1\nhttps://youtu.be/M7lc1UVf-VE\n0\n' | orch_profile_try 2 'Профиль 2: TCP 443 (Googlevideo)' tls https://old.googlevideo.com/ > "$tmp/log" 2>&1
+        elif [ "$scenario" = custom ]; then
+            printf 'A\nhttps://www.youtube.com/watch?v=M7lc1UVf-VE&feature=shared\n2\n\n\n0\n' | orch_profile_try 2 'Профиль 2: TCP 443 (Googlevideo)' tls https://old.googlevideo.com/ > "$tmp/log" 2>&1
         elif [ "$scenario" = first ]; then
-            printf 'A\n1\n\n\n\n' | orch_profile_try 2 'Профиль 2: TCP 443 (Googlevideo)' tls https://old.googlevideo.com/ > "$tmp/log" 2>&1
+            printf 'A\n\n1\n\n\n\n' | orch_profile_try 2 'Профиль 2: TCP 443 (Googlevideo)' tls https://old.googlevideo.com/ > "$tmp/log" 2>&1
         else
-            printf 'A\n2\n\n\n0\n' | orch_profile_try 2 'Профиль 2: TCP 443 (Googlevideo)' tls https://old.googlevideo.com/ > "$tmp/log" 2>&1
+            printf 'A\n\n2\n\n\n0\n' | orch_profile_try 2 'Профиль 2: TCP 443 (Googlevideo)' tls https://old.googlevideo.com/ > "$tmp/log" 2>&1
         fi
         if [ "$scenario" = fallback ]; then
             test "$(grep -c '^root$' "$tmp/trace")" = 3
@@ -86,7 +91,7 @@ for scenario in full first fallback cancel busy manual probeerror; do
             ! grep -q '^root$' "$tmp/trace"
         fi
         case "$scenario" in
-            full)
+            full|custom)
                 grep -q 'Media UNKNOWN: noqueue' "$tmp/log"
                 grep -q 'Media FAIL: incomplete_transfer' "$tmp/log"
                 grep -q 'Media OK: media_range' "$tmp/log"

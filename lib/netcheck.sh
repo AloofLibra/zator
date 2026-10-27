@@ -1172,6 +1172,10 @@ check_dns() {
 
 check_googlevideo_access() {
    local rc=1
+   local Z2R_MEDIA_VIDEO_ID="${1:-${Z2R_MEDIA_VIDEO_ID:-}}"
+   if [ "$#" = 0 ] && type z2r_media_ask_video >/dev/null 2>&1; then
+      Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Медиапроверка отменена.'; return 0; }
+   fi
    if type z2r_media_check_manual >/dev/null 2>&1; then
       z2r_media_check_manual && return 0
       rc=$?

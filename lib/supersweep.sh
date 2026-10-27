@@ -1192,11 +1192,11 @@ _supersweep_run() {
         [ "$interrupted" = 1 ] && cancelled=1 && break
         if [ "$phase" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
             Z2R_MEDIA_READY=0
-            if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && type supersweep_media_prepare >/dev/null 2>&1; then
+            if type supersweep_media_prepare >/dev/null 2>&1; then
                 supersweep_media_prepare || echo resolver_unavailable > "$dir/media-status"
             else
-                echo isolation_unavailable > "$dir/media-status"
-                echo 'Googlevideo: Media UNKNOWN, нет изолированного media probe; fallback TLS/CDN без автоматического применения профиля 2.' >&2
+                echo resolver_unavailable > "$dir/media-status"
+                echo 'Googlevideo: Media UNKNOWN, нет media-модуля; fallback TLS/CDN без автоматического применения профиля 2.' >&2
             fi
         fi
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
@@ -1675,6 +1675,7 @@ supersweep_ask_rkn_pause() {
 
 supersweep_menu() {
     local cfg domains tls_pref pause ds_pause rkn_pause answer ss_run_rc=0
+    local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
     if [ -d "${Z2R_SUPERSWEEP_DIR}.lock" ]; then
         echo "Суперавтопрогон уже выполняется. Лог: ${Z2R_SUPERSWEEP_DIR}.log"
         answer=""
@@ -1712,6 +1713,9 @@ supersweep_menu() {
     echo "зелёным, следующая проверка идёт уже через 5 секунд."
     echo ""
 
+    if type z2r_media_ask_video >/dev/null 2>&1; then
+        Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
+    fi
     domains="$(supersweep_ask_domains)" || { echo "Отмена."; return 0; }
     domains="$(supersweep_ask_own_domains "$domains")"
 

@@ -29,7 +29,7 @@ for mode in ok fail unknown unavailable; do
         }
         get_yt_cluster_domain() { echo cdn.example; }
         check_access() { echo "$1" >> "$tmp/legacy"; }
-        check_googlevideo_access > "$tmp/output"
+        check_googlevideo_access "$Z2R_MEDIA_DEFAULT_VIDEO_ID" > "$tmp/output"
         case "$mode" in
             ok) grep -q '<green>Media OK.*<reset>' "$tmp/output" ;;
             fail) grep -q '<red>Media FAIL.*<reset>' "$tmp/output" ;;
@@ -55,9 +55,18 @@ done
 (
     z2r_media_check_manual() { return 130; }
     check_access() { touch "$tmp/cancel-fallback"; }
-    check_googlevideo_access > "$tmp/output"
+    check_googlevideo_access "$Z2R_MEDIA_DEFAULT_VIDEO_ID" > "$tmp/output"
     test ! -e "$tmp/cancel-fallback"
     grep -q 'прервана' "$tmp/output"
+)
+(
+    z2r_media_check_manual() { printf '%s\n' "$Z2R_MEDIA_VIDEO_ID" > "$tmp/chosen"; }
+    check_access() { echo 'FAIL: selection invoked fallback' >&2; exit 1; }
+    printf 'https://youtu.be/M7lc1UVf-VE?si=public\n' | check_googlevideo_access > "$tmp/output" 2> "$tmp/prompt"
+    test "$(cat "$tmp/chosen")" = M7lc1UVf-VE
+    rm "$tmp/chosen"
+    printf '0\n' | check_googlevideo_access > "$tmp/output" 2> "$tmp/prompt"
+    test ! -e "$tmp/chosen"
 )
 # Реальный resolver при отсутствии jq не должен вызывать установку/диалог.
 (

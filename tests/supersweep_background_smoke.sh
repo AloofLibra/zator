@@ -307,6 +307,7 @@ cat > "$TMP/bin/curl" <<'MOCK'
 #!/bin/sh
 case "$*" in *report_mapping*) exit 0 ;; esac
 echo "$*" >> "$TMP/network.args"
+printf '%s\n' "${Z2R_MEDIA_VIDEO_ID:-missing}" > "$TMP/video.id"
 sleep "${MOCK_BG_DELAY:-0.1}"
 seq="$(awk '$1==65535 {print $8}' "$Z2R_SUPERSWEEP_QUEUE_FILE")"
 printf '65535 0 0 2 65531 0 0 %s 1\n' "$(( ${seq:-0} + 1 ))" > "$Z2R_SUPERSWEEP_QUEUE_FILE.$$"
@@ -326,6 +327,8 @@ mv "$TMP/trimmed" "$CONFIG_FILE"
 # Match the submenu: selected scope is a shell variable, not an environment var.
 export -n ORCH_ACTIVE_SCOPE
 ORCH_ACTIVE_SCOPE=mark:5
+Z2R_MEDIA_VIDEO_ID=M7lc1UVf-VE
+export -n Z2R_MEDIA_VIDEO_ID
 mkdir -p "$ORCH_DIR/scopes"
 printf '1\ttls\t7\n' > "$ORCH_DIR/scopes/mark_5.tsv"
 cp "$ORCH_LOCK_FILE" "$TMP/global.before"
@@ -380,6 +383,7 @@ assert r['completed']==r['total'] and len(r['workers'])==4
 assert {a['target'] for a in r['applied'] if a['kind']=='profile'}=={'1','2','3','4'}
 PY
 [ "$(wc -l < "$TMP/nfq.pids")" = 4 ]
+test "$(cat "$TMP/video.id")" = M7lc1UVf-VE
 grep -q -- '--local-port 62000-62999' "$TMP/network.args"
 grep -q -- '-D OUTPUT' "$TMP/iptables.args"
 while read -r pid; do ! kill -0 "$pid" 2>/dev/null; done < "$TMP/nfq.pids"

@@ -650,7 +650,7 @@ d="$(printf 'fresh1.ru fresh2.ru\n' | supersweep_ask_own_domains 'a.com b.com c.
 
 rm -rf "$Z2R_SUPERSWEEP_DIR"
 rm -f "$TMP_DIR/gate13.args"
-printf '\n\n\n\n\n\n\n' > "$TMP_DIR/in13.txt"
+printf '\n\n\n\n\n\n\n\n' > "$TMP_DIR/in13.txt"
 export MOCK_DELAY=0.2
 export MOCK_OK_P1="1 3"
 (
@@ -697,4 +697,25 @@ grep -q 'rutracker.org' "$TMP_DIR/gate13.args" \
   || fail "сценарий 13: красная стратегия должна дать паузу 5с минус выдержка 2с = 3с"
 unset MOCK_DELAY MOCK_OK_P1
 
+# == 14. обычный SuperSweep передаёт выбранное видео в media без изоляции ==
+(
+  Z2R_SUPERSWEEP_MEDIA=1 Z2R_MEDIA_VIDEO_ID=M7lc1UVf-VE
+  Z2R_SUPERSWEEP_ISOLATED=0 Z2R_SUPERSWEEP_SETTLE=0
+  export MOCK_OK_P1=1 MOCK_OK_P4=1 MOCK_OK_P2='' MOCK_OK_meduza_io=1
+  config_profile_max_strategy() { echo 1; }
+  supersweep_media_prepare() {
+    test "$Z2R_MEDIA_VIDEO_ID" = M7lc1UVf-VE
+    echo "$Z2R_MEDIA_VIDEO_ID" >> "$TMP_DIR/video14.prepared"
+    Z2R_MEDIA_READY=1
+  }
+  supersweep_media_check() {
+    test "$Z2R_SUPERSWEEP_ISOLATED" = 0
+    test "$Z2R_MEDIA_VIDEO_ID" = M7lc1UVf-VE
+    echo 'OK|media_range|0|206|2097152|.1|.2|.3|1|2097152'
+  }
+  supersweep_run both 0 0 0 1 meduza.io > "$TMP_DIR/video14.log" 2>&1
+  test "$(cat "$TMP_DIR/video14.prepared")" = M7lc1UVf-VE
+  test "$(lock_state 2 tls)" = 1
+  grep -q 'Media OK' "$TMP_DIR/video14.log"
+) || fail 'сценарий 14: выбранное видео потеряно в обычном SuperSweep'
 echo "supersweep smoke ok"

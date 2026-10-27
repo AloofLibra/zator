@@ -1,5 +1,46 @@
 #!/bin/sh
 # Необязательный resolver/probe. URL живут только в приватном tmpfs вне архива sweep.
+Z2R_MEDIA_DEFAULT_VIDEO_ID=BPk1uJ4txPc
+
+# Только известные YouTube URL; никакие страницы по пользовательскому адресу не загружаются.
+z2r_media_video_id() {
+    local value="$1" host path query part id=""
+    case "$value" in
+        https://*|http://*)
+            path=${value#*://}; host=${path%%/*}; path=${path#*/}
+            case "$host" in
+                youtu.be|www.youtu.be) id=${path%%[/?#]*} ;;
+                youtube.com|www.youtube.com|m.youtube.com|music.youtube.com)
+                    case "$path" in
+                        shorts/*|embed/*|live/*) id=${path#*/}; id=${id%%[/?#]*} ;;
+                        watch\?*)
+                            query=${path#*\?}; query=${query%%#*}
+                            while [ -n "$query" ]; do
+                                part=${query%%&*}
+                                case "$query" in *'&'*) query=${query#*&} ;; *) query="" ;; esac
+                                case "$part" in v=*) [ -z "$id" ] || return 1; id=${part#v=} ;; esac
+                            done ;;
+                    esac ;;
+                *) return 1 ;;
+            esac ;;
+        *) id=$value ;;
+    esac
+    case "$id" in ''|*[!a-zA-Z0-9_-]*) return 1 ;; esac
+    [ "${#id}" = 11 ] || return 1
+    printf '%s\n' "$id"
+}
+
+# Как остальные диалоги меню: stdout — только ответ, сообщения — stderr.
+z2r_media_ask_video() {
+    local answer id default="${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}"
+    while :; do
+        printf 'Видео для Googlevideo: URL или ID (Enter — %s, 0 — отмена): ' "$default" >&2
+        IFS= read -r answer || return 1
+        case "$answer" in 0) return 1 ;; '') answer=$default ;; esac
+        if id=$(z2r_media_video_id "$answer"); then printf '%s\n' "$id"; return 0; fi
+        echo 'Неверный YouTube URL или video ID (нужно 11 символов). Повторите ввод.' >&2
+    done
+}
 
 z2r_media_ua() {
     printf '%s' 'com.google.visionos.youtube/1.04(RealityDevice17,1; U; CPU visionOS 26_6_0 like Mac OS X; US)'
@@ -188,7 +229,7 @@ supersweep_media_prepare() {
     local status row kind
     Z2R_MEDIA_DIR=$(umask 077; mktemp -d /tmp/zator-media.XXXXXX) || return 1
     Z2R_MEDIA_READY=0
-    if z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-aqz-KE-bpKQ}" "$Z2R_MEDIA_DIR"; then
+    if z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$Z2R_MEDIA_DIR"; then
         Z2R_MEDIA_READY=1
         for kind in audio video; do
             row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" 16384 0) || row='UNKNOWN|probe_error'
@@ -220,7 +261,7 @@ z2r_media_check_manual() (
     trap 'rm -rf "$dir"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    if ! z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-aqz-KE-bpKQ}" "$dir"; then
+    if ! z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$dir"; then
         IFS= read -r reason < "$dir/status" || reason=resolver_error
         printf '%bGooglevideo Media UNKNOWN: %s%b\n' "${yellow:-}" "$reason" "${plain:-}"
         return 1

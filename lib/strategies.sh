@@ -89,6 +89,11 @@ orch_profile_try() {
         start_strat=1
     fi
 
+    local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
+    if [ "$profile" = 2 ] && type z2r_media_ask_video >/dev/null 2>&1; then
+        Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
+    fi
+
     for p in $proto_list; do
         prev_map["$p"]="$(orch_locked_state_get "$profile" "$p")"
         [ "$current_state" = "0" ] && prev_map["$p"]="0"
@@ -110,7 +115,7 @@ orch_profile_try() {
             fi
         elif [ "$profile" = 2 ]; then
             _supersweep_settle
-            check_googlevideo_access
+            check_googlevideo_access "$Z2R_MEDIA_VIDEO_ID"
         elif [ -n "$test_url" ]; then
             echo "Проверка доступа: $test_url"
             check_access "$test_url"
@@ -204,6 +209,10 @@ orch_ask_sweep_tls_pref() {
 orch_run_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
     local mode tls_pref pause_total
+    local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
+    if [ "$kind" = profile ] && [ "$key" = 2 ] && type z2r_media_ask_video >/dev/null 2>&1; then
+        Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
+    fi
     read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 2, 0 - отмена): " mode
     if [ "$mode" = "0" ]; then
         echo "Отмена."
