@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source lib/youtube_media.sh
 source lib/netcheck.sh
+green="<green>"; red="<red>"; yellow="<yellow>"; plain="<reset>"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export Z2R_SUPERSWEEP_DIR="$tmp/old-sweep"
@@ -29,6 +30,11 @@ for mode in ok fail unknown unavailable; do
         get_yt_cluster_domain() { echo cdn.example; }
         check_access() { echo "$1" >> "$tmp/legacy"; }
         check_googlevideo_access > "$tmp/output"
+        case "$mode" in
+            ok) grep -q '<green>Media OK.*<reset>' "$tmp/output" ;;
+            fail) grep -q '<red>Media FAIL.*<reset>' "$tmp/output" ;;
+            *) grep -q '<yellow>.*Media UNKNOWN.*<reset>' "$tmp/output" ;;
+        esac
         test ! -d "$(cat "$tmp/cache-path")"
         if [ "$mode" = unavailable ]; then
             grep -q 'плюшевый' "$tmp/output"

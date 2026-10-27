@@ -288,7 +288,7 @@ _supersweep_badge() {
     btxt="${badge%%|*}"; bst="${badge#*|}"
     case "$bst" in
         ok) printf '%b%-17s%b' "$green" "$btxt" "$plain" ;;
-        http) printf '%b%-17s%b' "$yellow" "$btxt" "$plain" ;;
+        http) if [ "${name:-}" = gv ]; then printf '%b%-17s%b' "$green" "$btxt" "$plain"; else printf '%b%-17s%b' "$yellow" "$btxt" "$plain"; fi ;;
         fail) printf '%b%-17s%b' "$red" "$btxt" "$plain" ;;
         *) printf '%b%-17s%b' "$plain" "$btxt" "$plain" ;;
     esac
@@ -443,7 +443,7 @@ _supersweep_worker_profile() {
     local tls_pref="$7" pause_sec="$8"
     local s p round=0 out v12 v13 dl short token specs epoch
     local ok_list="" warn_list="" full_list="" ok_stats="" warn_stats=""
-    local n_ok=0 n_warn=0 n_fail=0 n_unknown=0 media_row media_state media_reason
+    local n_ok=0 n_warn=0 n_fail=0 n_unknown=0
     local q12 q13 dlsize dltime rc code unused
     local ss_interrupted=0 psleep settle_v g
     # Settle входит в паузу; интервал проверок = пауза + время пробы.
@@ -463,27 +463,19 @@ _supersweep_worker_profile() {
         _supersweep_request_lock "$name" "$round" "$specs" || { ss_interrupted=1; break; }
         _supersweep_settle
 
-        out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
-        { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
-        short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-        token="${short%%|*}"; short="${short#*|}"
-
-        if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
-            if type supersweep_media_check >/dev/null 2>&1; then
-                media_row="$(supersweep_media_check "$s")" || media_row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
-            else
-                media_row='UNKNOWN|resolver_unavailable|0|000|0|0|0|0|0|0'
+        if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+            out="$(supersweep_media_target "$s" "$tls_pref")"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
+        else
+            out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
+            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
+                short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
             fi
-            IFS='|' read -r media_state media_reason rc code dlsize unused unused unused dltime unused <<< "$media_row"
-            short="Media ${media_state}: ${media_reason}; TLS/CDN: ${short}"
-            dl="$rc|$code|$dlsize|$dltime"
-            case "$media_state" in
-                OK) token=ok ;;
-                FAIL) token=fail ;;
-                *) token=unknown ;;
-            esac
-            _supersweep_cancelled && { ss_interrupted=1; break; }
         fi
+        token="${short%%|*}"; short="${short#*|}"
+        _supersweep_cancelled && { ss_interrupted=1; break; }
 
         q12=0; q13=0
         IFS='|' read -r rc code unused <<< "$v12"

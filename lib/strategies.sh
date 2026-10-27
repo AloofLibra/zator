@@ -108,6 +108,9 @@ orch_profile_try() {
             else
                 echo -e "${yellow}Нет ответа по HTTP. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
             fi
+        elif [ "$profile" = 2 ]; then
+            _supersweep_settle
+            check_googlevideo_access
         elif [ -n "$test_url" ]; then
             echo "Проверка доступа: $test_url"
             check_access "$test_url"
@@ -228,6 +231,57 @@ orch_run_auto_sweep() {
     pause_enter
 }
 
+# У GV свой изолированный транспорт; остальной интерактивный цикл общий.
+orch_gv_auto_sweep() (
+    local shared_lock="${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}.lock"
+    local Z2R_SUPERSWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
+    local Z2R_SUPERSWEEP_ISOLATED=1 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
+    local Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=0 Z2R_SUPERSWEEP_NFQ_PID=""
+    local Z2R_SUPERSWEEP_SETTLE="${Z2R_SUPERSWEEP_SETTLE:-2}"
+    local FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT POSTNAT POSTNAT_ALL
+    local ZAPRET_NFT_TABLE FILTER_MARK CLIENT_SCOPE_MARK_MASK cfg name value
+    local completed=0 fallback_touched=0 prior
+    case "$Z2R_SUPERSWEEP_SETTLE" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
+    prior="$(orch_locked_state_get 2 tls)"
+    (umask 077; mkdir "$shared_lock") 2>/dev/null || {
+        echo 'Другой прогон уже выполняется: Googlevideo не запущен.' >&2
+        return 0
+    }
+    printf '%s\n' "$BASHPID" > "$shared_lock/pid"
+    trap 'trap "" INT TERM HUP
+        if [ -n "$Z2R_SUPERSWEEP_DIR" ] && type supersweep_probe_stop >/dev/null 2>&1 && ! supersweep_probe_stop; then
+            echo "Не удалось убрать тестовый транспорт; диагностика и lock сохранены: $Z2R_SUPERSWEEP_DIR" >&2
+            exit 1
+        fi
+        if [ "$completed" = 0 ] && [ "$fallback_touched" = 1 ]; then
+            case "$prior" in ""|auto) orch_locked_clear 2 tls ;; *) orch_locked_set 2 tls "$prior" ;; esac
+        fi
+        [ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"
+        [ -z "$Z2R_SUPERSWEEP_DIR" ] || rm -rf "$Z2R_SUPERSWEEP_DIR"
+        rm -f "$shared_lock/pid"; rmdir "$shared_lock" 2>/dev/null || true' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    Z2R_SUPERSWEEP_DIR=$(umask 077; mktemp -d /tmp/zator-gv-trial.XXXXXX) || return 1
+    if type supersweep_media_prepare >/dev/null 2>&1; then
+        supersweep_media_prepare || return 1
+    else
+        echo 'Googlevideo Media UNKNOWN: нет media-модуля. Плюшевый TLS/CDN-тест, без выбора media-победителя.' >&2
+    fi
+    if [ "$Z2R_MEDIA_READY" = 1 ]; then
+        if ! type supersweep_transport_start >/dev/null 2>&1; then
+            source "${LIB_DIR:-${BASH_SOURCE[0]%/*}}/supersweep_transport.sh" || return 1
+        fi
+        cfg="$(get_config_file)" || return 1
+        for name in FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE FILTER_MARK CLIENT_SCOPE_MARK_MASK; do
+            value="$(config_get_var "$cfg" "$name" | tr -d '\"\047')"
+            printf -v "$name" '%s' "$value"
+        done
+        supersweep_probe_start 2 "$cfg" || return 1
+    fi
+    orch_auto_sweep "$@" || return 1
+    completed=1
+)
+
 # Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
 # прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
 # и выбор сохранения. kind=profile|domain; key=профиль или домен.
@@ -237,9 +291,14 @@ orch_run_auto_sweep() {
 # $9 (tls_pref: any|12|13|both) — какие версии TLS обязаны работать, чтобы
 # стратегия считалась зелёной (в диалоге по умолчанию обе).
 orch_auto_sweep() {
+    if [ "$1" = profile ] && [ "$2" = 2 ] && [ "${_Z2R_GV_TRIAL:-0}" != 1 ]; then
+        orch_gv_auto_sweep "$@" || echo 'Проверка Googlevideo прервана; media-победитель не применён.' >&2
+        return 0
+    fi
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6" stop_on_ok="$7"
     local s p out v12 v13 dl short token color vcolor
-    local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0
+    local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0 n_unknown=0
+    local psleep
     local ok_stats="" best="" best_short=""
     local full_list="" full_stats="" best_full="" best_full_short=""
     local warn_stats="" best_from_warn=0 n_a12=0 n_a13=0
@@ -267,6 +326,9 @@ orch_auto_sweep() {
         13)   goal_txt=", цель TLS 1.3";      goal_list=" (нужен TLS 1.3)" ;;
         both) goal_txt=", цель TLS 1.2+1.3";  goal_list=" (TLS 1.2 и 1.3)" ;;
     esac
+    if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then
+        goal_txt="$goal_txt, media audio/video/середина"
+    fi
 
     if [ "$kind" = "domain" ]; then
         prev_str="$(orch_locked_state_get "$key" "tls")"
@@ -292,24 +354,36 @@ orch_auto_sweep() {
     zapret2_running && svc_was_running=1
 
     for ((s=start; s<=max; s++)); do
-        if [ "$kind" = "domain" ]; then
+        if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+            (ORCH_LOCK_FILE="$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" ORCH_ACTIVE_SCOPE=default; orch_locked_set 2 tls "$s") || break
+            chmod 644 "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv" || break
+            _supersweep_settle
+        elif [ "$kind" = "domain" ]; then
             orch_locked_set "$key" "tls" "$s"
         else
+            [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || fallback_touched=1
             for p in $proto_list; do
                 orch_locked_set "$key" "$p" "$s"
             done
         fi
 
-        out="$(z2r_tls_check_target "$test_url")"
-        if [ "$orch_auto_sweep_interrupted" = "1" ]; then
-            echo -e "${yellow}Прервано пользователем на стратегии ${s}.${plain}"
+        if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+            out="$(supersweep_media_target "$s" "$tls_pref")"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
+        else
+            out="$(z2r_tls_check_target "$test_url")"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
+            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then
+                short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
+            fi
+        fi
+        token="${short%%|*}"; short="${short#*|}"
+        if [ "$orch_auto_sweep_interrupted" = 1 ] || { [ -n "${Z2R_SUPERSWEEP_DIR:-}" ] && [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]; }; then
+            orch_auto_sweep_interrupted=1
+            echo -e "${yellow}Проверка прервана пользователем на стратегии ${s}.${plain}"
             break
         fi
-        v12="$(printf '%s\n' "$out" | sed -n 1p)"
-        v13="$(printf '%s\n' "$out" | sed -n 2p)"
-        dl="$(printf '%s\n' "$out" | sed -n 3p)"
-        short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-        token="${short%%|*}"; short="${short#*|}"
 
         q12=0; q13=0
         if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)"; then q12=1; fi
@@ -344,6 +418,7 @@ orch_auto_sweep() {
                     warn_stats="${warn_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
                 fi
                 ;;
+            unknown) color="$yellow"; disp="UNKNOWN"; n_unknown=$((n_unknown + 1)) ;;
             *) color="$red"; disp="FAIL"; token="fail"; n_fail=$((n_fail + 1)) ;;
         esac
 
@@ -351,7 +426,7 @@ orch_auto_sweep() {
         btxt="${badge%%|*}"; bst="${badge#*|}"
         case "$bst" in
             ok) bcol="$green" ;;
-            http) bcol="$yellow" ;;
+            http) if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then bcol="$green"; else bcol="$yellow"; fi ;;
             fail) bcol="$red" ;;
             *) bcol="$plain" ;;
         esac
@@ -360,7 +435,7 @@ orch_auto_sweep() {
         btxt="${badge%%|*}"; bst="${badge#*|}"
         case "$bst" in
             ok) bcol="$green" ;;
-            http) bcol="$yellow" ;;
+            http) if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then bcol="$green"; else bcol="$yellow"; fi ;;
             fail) bcol="$red" ;;
             *) bcol="$plain" ;;
         esac
@@ -373,14 +448,22 @@ orch_auto_sweep() {
         fi
         # Пауза между стратегиями, чтобы частыми переключениями не словить блок ТСПУ.
         if [ "$s" -lt "$max" ] && [ "$pause_sec" -gt 0 ]; then
-            sleep "$pause_sec"
+            psleep="$pause_sec"
+            if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+                psleep=$((pause_sec - ${Z2R_SUPERSWEEP_SETTLE:-2}))
+                [ "$psleep" -ge 0 ] || psleep=0
+            fi
+            [ "$psleep" -le 0 ] || sleep "$psleep"
             if [ "$orch_auto_sweep_interrupted" = "1" ]; then
                 echo -e "${yellow}Прервано пользователем на стратегии ${s}.${plain}"
                 break
             fi
         fi
     done
-    trap - INT
+    if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+        supersweep_probe_stop || return 1
+    fi
+    if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then trap ':' INT; else trap - INT; fi
     if [ "$had_e" = "1" ]; then set -e; fi
     Z2R_TLS_WAIT_BOTH="$wait_both_prev"
 
@@ -436,6 +519,7 @@ orch_auto_sweep() {
         echo -e " Полные (TLS 1.2 и 1.3): ${green}${full_list}${plain}"
     fi
     [ -n "$warn_list" ] && echo -e " Жёлтые стратегии: ${yellow}${warn_list}${plain}"
+    [ "$n_unknown" = 0 ] || echo " Media UNKNOWN: $n_unknown (не участвуют в выборе победителя)."
     if [ -n "$best" ]; then
         if [ "$best_from_warn" = "1" ]; then
             echo -e " Лучшая из жёлтых (зелёных нет): ${yellow}${best}${plain} (${best_short})"
@@ -518,6 +602,8 @@ orch_auto_sweep() {
                 echo -e "${red}Не удалось сохранить стратегию ${answer} для профиля ${key}.${plain}"
             fi
             telemetry_notify
+        elif [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+            echo 'Изменения отменены, рабочие стратегии не менялись.'
         else
             for p in $proto_list; do
                 # auto/пусто = профиль не имел лока (работала стратегия по

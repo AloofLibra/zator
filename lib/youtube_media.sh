@@ -201,14 +201,14 @@ supersweep_media_prepare() {
 z2r_media_check_manual() (
     umask 077
     local Z2R_SUPERSWEEP_DIR="" Z2R_SUPERSWEEP_ISOLATED=0
-    local dir item kind count middle row state reason rc code bytes tcp tls ttfb total speed
+    local dir item kind count middle row state reason rc code bytes tcp tls ttfb total speed color
     dir=$(mktemp -d /tmp/zator-media.XXXXXX) || return 1
     trap 'rm -rf "$dir"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     if ! z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-aqz-KE-bpKQ}" "$dir"; then
         IFS= read -r reason < "$dir/status" || reason=resolver_error
-        printf 'Googlevideo Media UNKNOWN: %s\n' "$reason"
+        printf '%bGooglevideo Media UNKNOWN: %s%b\n' "${yellow:-}" "$reason" "${plain:-}"
         return 1
     fi
     echo 'Googlevideo: реальная загрузка аудио/видео по TCP (QUIC не проверяется).'
@@ -218,7 +218,8 @@ z2r_media_check_manual() (
         IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
 $row
 EOF
-        printf 'Media %s: %s, середина=%s; HTTP %s, %s байт, %s с, %s Б/с (%s)\n' "$state" "$kind" "$middle" "$code" "$bytes" "$total" "$speed" "$reason"
+        case "$state" in OK) color=${green:-} ;; FAIL) color=${red:-} ;; *) color=${yellow:-} ;; esac
+        printf '%bMedia %s: %s, середина=%s; HTTP %s, %s байт, %s с, %s Б/с (%s)%b\n' "$color" "$state" "$kind" "$middle" "$code" "$bytes" "$total" "$speed" "$reason" "${plain:-}"
         [ "$state" = OK ] || break
     done
     return 0
@@ -233,11 +234,42 @@ supersweep_media_check() {
     for item in "audio:${Z2R_MEDIA_AUDIO_BYTES:-262144}:0" "video:${Z2R_MEDIA_VIDEO_BYTES:-1048576}:0" "video:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"; do
         kind=${item%%:*}; item=${item#*:}; count=${item%%:*}; middle=${item#*:}
         row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" "$count" "$middle" 1) || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
-        printf '%s\t%s\t%s\t%s\n' "$strategy" "$kind" "$middle" "$row" >> "$Z2R_SUPERSWEEP_DIR/media.tsv"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$strategy" "$kind" "$middle" "$row" "${Z2R_MEDIA_TLS_VERSION:-auto}" >> "$Z2R_SUPERSWEEP_DIR/media.tsv"
         state=${row%%|*}; reason=${row#*|}; reason=${reason%%|*}
         [ "$state" = OK ] || break
     done
     printf '%s\n' "$row"
+}
+
+# Старый формат TLS-метрик, но каждый успех подтверждён медиаданными, не корнем CDN.
+supersweep_media_target() {
+    local strategy="$1" pref="${2:-both}" version row state reason rc code bytes tcp tls ttfb total speed
+    local v12 v13 r12 r13 s12 s13 selected token label
+    for version in 12 13; do
+        row=$(Z2R_MEDIA_TLS_VERSION=$version supersweep_media_check "$strategy") || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
+        IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
+$row
+EOF
+        # HTTP 206 сам по себе не означает успешную передачу.
+        if [ "$state" = OK ]; then selected="0|206|HTTP/1.1|$total|"; else selected="56|000|HTTP/1.1|$total|"; fi
+        if [ "$version" = 12 ]; then v12=$selected; r12=$row; s12=$state; else v13=$selected; r13=$row; s13=$state; fi
+        [ "$reason" != cancelled ] || break
+    done
+    r13=${r13:-$r12}; s13=${s13:-UNKNOWN}; v13=${v13:-56|000|HTTP/1.1|0|}
+    case "$pref" in 12) selected=$r12 ;; *) selected=$r13 ;; esac
+    if [ "$pref" = any ] && [ "$s12" = OK ]; then selected=$r12; fi
+    if [ "$pref" = both ] && [ "$s12" != OK ]; then selected=$r12; fi
+    IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
+$selected
+EOF
+    case "$pref:$s12:$s13" in
+        12:OK:*|13:*:OK|any:OK:*|any:*:OK|both:OK:OK) token=ok; label=OK ;;
+        12:UNKNOWN:*|13:*:UNKNOWN|*:UNKNOWN:*|*:*:UNKNOWN) token=unknown; label=UNKNOWN ;;
+        *:OK:*|*:*:OK) token=warn; label=WARN ;;
+        *) token=fail; label=FAIL ;;
+    esac
+    printf '%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
+        "$token|Media $label: $reason; $bytes байт за $total с; TLS 1.2=$s12, TLS 1.3=$s13"
 }
 
 # OK/FAIL/UNKNOWN | reason | curl_rc | HTTP | bytes | TCP | TLS | TTFB | total | B/s.
@@ -276,6 +308,10 @@ EOF
     trap 'exit 143' TERM HUP
     set --
     if [ "$require_queue" = 1 ]; then set -- --local-port 62000-62999; fi
+    case "${Z2R_MEDIA_TLS_VERSION:-}" in
+        12) set -- "$@" --tlsv1.2 --tls-max 1.2 ;;
+        13) set -- "$@" --tlsv1.3 --tls-max 1.3 ;;
+    esac
     # Один curl = новое TCP/TLS-соединение. stderr не должен раскрывать URL.
     curl -q -4 --noproxy '*' --proto '=https' --http1.1 -s \
         --config "$dir/curl.conf" -A "$(z2r_media_ua)" "$@" \

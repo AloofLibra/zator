@@ -76,15 +76,22 @@ done
 cat > "$tmp/bin/curl" <<'MOCK'
 #!/bin/sh
 set -eu
-headers= range= config=
+headers= range= config= tls_min= tls_max=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -D) headers="$2"; shift ;;
         --range) range="$2"; shift ;;
         --config) config="$2"; shift ;;
+        --tlsv1.2) tls_min=12 ;;
+        --tlsv1.3) tls_min=13 ;;
+        --tls-max) tls_max="$2"; shift ;;
     esac
     shift
 done
+case "${Z2R_MEDIA_TLS_VERSION:-}" in
+    12) test "$tls_min:$tls_max" = 12:1.2 ;;
+    13) test "$tls_min:$tls_max" = 13:1.3 ;;
+esac
 test -n "$config" # URL не должен быть в argv.
 case "${MOCK:-ok}" in
     wait) sleep 10; exit 0 ;;
@@ -123,6 +130,10 @@ for scenario in ok 200 403 429 partial reset timeout text wrongrange redirect ba
     esac
 done
 MOCK=ok
+for version in 12 13; do
+    result=$(Z2R_MEDIA_TLS_VERSION=$version z2r_media_probe "$tmp/cache" video 1048576 0)
+    [[ "$result" == OK\|media_range\|* ]]
+done
 export MOCK Z2R_SUPERSWEEP_ISOLATED=1
 supersweep_probe_healthy() { return 0; }
 supersweep_probe_sequence() { echo 100; }
@@ -168,7 +179,8 @@ supersweep_media_check() {
         3) echo 'OK|media_range|0|206|2097152|.1|.2|.3|1|2097152' ;;
     esac
 }
-Z2R_SUPERSWEEP_MEDIA=1 Z2R_SUPERSWEEP_SETTLE=0 \
+_supersweep_check_target() { echo 'FAIL: root during media' >&2; exit 1; }
+Z2R_MEDIA_READY=1 Z2R_SUPERSWEEP_MEDIA=1 Z2R_SUPERSWEEP_SETTLE=0 \
     _supersweep_worker_profile gv gv 2 tls https://example.org/ 3 any 0 > "$tmp/worker.log"
 grep -q '^best=3$' "$tmp/run/best.gv"
 grep -q '^greens=3$' "$tmp/run/best.gv"
@@ -177,7 +189,7 @@ grep -q '^n_unknown=1$' "$tmp/run/best.gv"
 grep -q '^n_fail=1$' "$tmp/run/best.gv"
 awk -F '\t' '$3==2 && $4=="fail" && $7==99 {found=1} END {exit !found}' "$tmp/run/progress.gv.tsv"
 supersweep_media_check() { touch "$Z2R_SUPERSWEEP_DIR/cancel"; echo 'UNKNOWN|cancelled|0|000|0|0|0|0|0|0'; }
-Z2R_SUPERSWEEP_MEDIA=1 _supersweep_worker_profile gv gv 2 tls https://example.org/ 1 any 0 > "$tmp/worker.log"
+Z2R_MEDIA_READY=1 Z2R_SUPERSWEEP_MEDIA=1 _supersweep_worker_profile gv gv 2 tls https://example.org/ 1 any 0 > "$tmp/worker.log"
 grep -q '^interrupted=1$' "$tmp/run/best.gv"
 grep -q '^best=$' "$tmp/run/best.gv"
 supersweep_report_save() { :; }
