@@ -338,7 +338,7 @@ z2r_media_resolve() (
 
 # Подготовка через рабочее соединение ДО установки тестового транспорта.
 z2r_media_prepare() {
-    local status row kind baseline="${1:-1}"
+    local status row kind length mime host expire baseline="${1:-1}"
     Z2R_MEDIA_DIR=$(umask 077; mktemp -d /tmp/zator-media.XXXXXX) || return 1
     Z2R_MEDIA_READY=0
     if z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$Z2R_MEDIA_DIR"; then
@@ -362,6 +362,10 @@ z2r_media_prepare() {
     if [ "$Z2R_MEDIA_READY" = 1 ]; then
         if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then cp "$Z2R_MEDIA_DIR/meta.json" "$Z2R_SUPERSWEEP_DIR/media-meta.json"; fi
         echo 'Googlevideo: подписанные media URL подготовлены; аудио + видео + удалённый диапазон, TCP (QUIC не проверяется).' >&2
+        for kind in audio video; do
+            IFS='|' read -r length mime host expire < "$Z2R_MEDIA_DIR/$kind.params" || return 1
+            printf 'Googlevideo %s: %s\n' "$kind" "$host" >&2
+        done
     else
         echo "Googlevideo: Media UNKNOWN ($status). Плюшевый TLS/CDN-тест; медиазагрузка не подтверждена, победитель профиля 2 автоматически не применяется." >&2
     fi
@@ -388,12 +392,12 @@ z2r_media_check_manual() (
         return 1
     fi
     echo 'Googlevideo: реальная загрузка аудио/видео по TCP (QUIC не проверяется).'
-    z2r_media_check '' print
+    z2r_media_target '' both print
 )
 
-# Один план audio/video/middle для всех режимов; print меняет только представление.
+# Один план audio/video/middle для всех режимов.
 z2r_media_check() {
-    local strategy="${1:-}" output_mode="${2:-}" item kind count middle row state reason color
+    local strategy="${1:-}" item kind count middle row state reason
     local rc code bytes tcp tls ttfb total speed
     if [ "${Z2R_MEDIA_READY:-0}" != 1 ]; then
         printf 'UNKNOWN|resolver_unavailable|0|000|0|0|0|0|0|0\n'; return 0
@@ -407,24 +411,28 @@ z2r_media_check() {
         IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
 $row
 EOF
-        if [ "$output_mode" = print ]; then
-            case "$state" in OK) color=${green:-} ;; FAIL) color=${red:-} ;; *) color=${yellow:-} ;; esac
-            printf '%bMedia %s: %s, середина=%s; HTTP %s, %s байт, %s с, %s Б/с (%s)%b\n' "$color" "$state" "$kind" "$middle" "$code" "$bytes" "$total" "$speed" "$reason" "${plain:-}"
-        fi
         [ "$state" = OK ] || break
     done
-    [ "$output_mode" = print ] || printf '%s\n' "$row"
+    printf '%s\n' "$row"
 }
 
 # Старый формат TLS-метрик, но каждый успех подтверждён медиаданными, не корнем CDN.
 z2r_media_target() {
-    local strategy="$1" pref="${2:-both}" version row state reason rc code bytes tcp tls ttfb total speed
+    local strategy="$1" pref="${2:-both}" output_mode="${3:-}" version row state reason rc code bytes tcp tls ttfb total speed color
     local v12 v13 r12 r13 s12 s13 selected token label
     for version in 12 13; do
-        row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" z2r_media_check) || return 1
+        if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+            row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" z2r_media_check) || return 1
+        else
+            row=$(Z2R_MEDIA_TLS_VERSION=$version z2r_media_check "$strategy") || return 1
+        fi
         IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
 $row
 EOF
+        if [ "$output_mode" = print ]; then
+            case "$state" in OK) color=${green:-} ;; FAIL) color=${red:-} ;; *) color=${yellow:-} ;; esac
+            printf '%bTLS 1.%s: %s; HTTP %s, %s байт, %s с (%s)%b\n' "$color" "${version#1}" "$state" "$code" "$bytes" "$total" "$reason" "${plain:-}"
+        fi
         # HTTP 206 сам по себе не означает успешную передачу.
         if [ "$state" = OK ]; then selected="0|206|HTTP/1.1|$total|"; else selected="56|000|HTTP/1.1|$total|"; fi
         if [ "$version" = 12 ]; then v12=$selected; r12=$row; s12=$state; else v13=$selected; r13=$row; s13=$state; fi
@@ -446,8 +454,13 @@ EOF
     IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
 $selected
 EOF
-    printf '%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
-        "$token|Media $label: $reason; $bytes байт за $total с"
+    if [ "$output_mode" = print ]; then
+        case "$token" in ok) color=${green:-} ;; fail) color=${red:-} ;; *) color=${yellow:-} ;; esac
+        printf '%bMedia %s: %s; %s байт за %s с%b\n' "$color" "$label" "$reason" "$bytes" "$total" "${plain:-}"
+    else
+        printf '%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
+            "$token|Media $label: $reason; $bytes байт за $total с"
+    fi
 }
 
 # OK/FAIL/UNKNOWN | reason | curl_rc | HTTP | bytes | TCP | TLS | TTFB | total | B/s.

@@ -9,30 +9,36 @@ trap 'rm -rf "$tmp"' EXIT
 export Z2R_SUPERSWEEP_DIR="$tmp/old-sweep"
 mkdir "$Z2R_SUPERSWEEP_DIR"
 touch "$Z2R_SUPERSWEEP_DIR/cancel"
-for mode in ok fail unknown unavailable; do
+for mode in ok fail partial unknown unavailable; do
     (
         : > "$tmp/probes"; : > "$tmp/legacy"
         z2r_media_install_jq() { echo 'FAIL: installation during a check' >&2; exit 1; }
         z2r_media_resolve() {
             echo "$2" > "$tmp/cache-path"
             echo ready > "$2/status"
+            echo '8388608|audio/mp4|audio.googlevideo.com|9999999999' > "$2/audio.params"
+            echo '33554432|video/webm|video.googlevideo.com|9999999999' > "$2/video.params"
             if [ "$mode" = unavailable ]; then echo parser_missing > "$2/status"; return 1; fi
         }
         z2r_media_probe() {
             test -z "$Z2R_SUPERSWEEP_DIR"
             test "${5:-0}" = 0
-            printf '%s %s %s\n' "$2" "$3" "$4" >> "$tmp/probes"
+            printf '%s %s %s %s\n' "$Z2R_MEDIA_TLS_VERSION" "$2" "$3" "$4" >> "$tmp/probes"
             case "$mode" in
                 ok) echo 'OK|media_range|0|206|1024|.1|.2|.3|.4|2560' ;;
+                partial)
+                    if [ "$Z2R_MEDIA_TLS_VERSION" = 12 ]; then echo 'FAIL|network_error|28|000|0|0|0|0|5|0'
+                    else echo 'OK|media_range|0|206|1024|.1|.2|.3|.4|2560'; fi ;;
                 fail) echo 'FAIL|incomplete_transfer|18|206|99|.1|.2|.3|.4|256' ;;
                 unknown) echo 'UNKNOWN|cdn_403|0|403|0|.1|.2|.3|.4|0' ;;
             esac
         }
         get_yt_cluster_domain() { echo cdn.example; }
         check_access() { echo "$1" >> "$tmp/legacy"; }
-        check_googlevideo_access "$Z2R_MEDIA_DEFAULT_VIDEO_ID" > "$tmp/output"
+        check_googlevideo_access "$Z2R_MEDIA_DEFAULT_VIDEO_ID" > "$tmp/output" 2>&1
         case "$mode" in
             ok) grep -q '<green>Media OK.*<reset>' "$tmp/output" ;;
+            partial) grep -q '<yellow>Media WARN.*<reset>' "$tmp/output" ;;
             fail) grep -q '<red>Media FAIL.*<reset>' "$tmp/output" ;;
             *) grep -q '<yellow>.*Media UNKNOWN.*<reset>' "$tmp/output" ;;
         esac
@@ -43,11 +49,17 @@ for mode in ok fail unknown unavailable; do
             test ! -s "$tmp/probes"
         else
             test ! -s "$tmp/legacy"
+            grep -q '^Googlevideo audio: audio.googlevideo.com$' "$tmp/output"
+            grep -q '^Googlevideo video: video.googlevideo.com$' "$tmp/output"
             if [ "$mode" = ok ]; then
-                test "$(cat "$tmp/probes")" = $'audio 262144 0\nvideo 1048576 0\nvideo 2097152 1'
+                test "$(cat "$tmp/probes")" = $'12 audio 262144 0\n12 video 1048576 0\n12 video 2097152 1\n13 audio 262144 0\n13 video 1048576 0\n13 video 2097152 1'
                 grep -q 'Media OK' "$tmp/output"
+            elif [ "$mode" = partial ]; then
+                test "$(wc -l < "$tmp/probes")" = 4
+                grep -q 'TLS 1.2: FAIL' "$tmp/output"
+                grep -q 'TLS 1.3: OK' "$tmp/output"
             else
-                test "$(wc -l < "$tmp/probes")" = 1
+                test "$(wc -l < "$tmp/probes")" = 2
                 grep -qi "Media $mode" "$tmp/output"
             fi
         fi
@@ -106,6 +118,8 @@ for scenario in cancel save fallback expired signal; do
             test "$1" = BPk1uJ4txPc
             echo "$2" >> "$tmp/resolves"
             echo ready > "$2/status"
+            echo '8388608|audio/mp4|audio.googlevideo.com|9999999999' > "$2/audio.params"
+            echo '33554432|video/webm|video.googlevideo.com|9999999999' > "$2/video.params"
             echo '{}' > "$2/meta.json"
             if [ "$scenario" = fallback ]; then echo parser_missing > "$2/status"; return 1; fi
         }
@@ -135,8 +149,8 @@ for scenario in cancel save fallback expired signal; do
         case "$scenario" in
             fallback) test "$(wc -l < "$tmp/legacy")" = 2; test ! -s "$tmp/probes" ;;
             signal) grep -q 'прерван' "$tmp/series.log" ;;
-            expired) test "$(wc -l < "$tmp/probes")" = 4; grep -q 'url_expired' "$tmp/series.log"; test ! -s "$tmp/legacy" ;;
-            *) test "$(wc -l < "$tmp/probes")" = 6; test ! -s "$tmp/legacy" ;;
+            expired) test "$(wc -l < "$tmp/probes")" = 8; grep -q 'url_expired' "$tmp/series.log"; test ! -s "$tmp/legacy" ;;
+            *) test "$(wc -l < "$tmp/probes")" = 12; test ! -s "$tmp/legacy" ;;
         esac
     )
 done
