@@ -25,6 +25,20 @@ select_fixture() { z2r_media_select "$1" aqz-KE-bpKQ 0123456789abcdef "$tmp/cach
 expect_status() { test "$(cat "$tmp/cache/status")" = "$1"; }
 select_fixture "$fixture"
 expect_status ready
+# Подготовка не проверяет текущую стратегию: CDN может быть заблокирован до перебора.
+(
+    Z2R_MEDIA_DIR=""
+    trap '[ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"' EXIT
+    z2r_media_resolve() { z2r_media_select "$fixture" aqz-KE-bpKQ 0123456789abcdef "$2"; }
+    z2r_media_probe() { touch "$tmp/premature-probe"; return 1; }
+    z2r_media_prepare > "$tmp/prepare-log" 2>&1
+    test "$Z2R_MEDIA_READY" = 1
+    test "$(cat "$Z2R_MEDIA_DIR/status")" = ready
+    test "$(cat "$Z2R_SUPERSWEEP_DIR/media-status")" = ready
+    test ! -e "$tmp/premature-probe"
+    grep -q '^Googlevideo audio: rr1---sn-example.googlevideo.com$' "$tmp/prepare-log"
+    ! grep -q 'Плюшевый' "$tmp/prepare-log"
+)
 bootstrap_loop=$(awk '/^for lib in \$Z2R_LIB_FILES; do$/ {inside=1} inside {print} inside && /^done$/ {exit}' z2r.sh)
 (
     mkdir "$tmp/bootstrap"

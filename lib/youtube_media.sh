@@ -338,21 +338,11 @@ z2r_media_resolve() (
 
 # Подготовка через рабочее соединение ДО установки тестового транспорта.
 z2r_media_prepare() {
-    local status row kind length mime host expire baseline="${1:-1}"
+    local status kind length mime host expire
     Z2R_MEDIA_DIR=$(umask 077; mktemp -d /tmp/zator-media.XXXXXX) || return 1
     Z2R_MEDIA_READY=0
     if z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$Z2R_MEDIA_DIR"; then
         Z2R_MEDIA_READY=1
-        if [ "$baseline" = 1 ]; then
-            for kind in audio video; do
-                row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" 16384 0) || row='UNKNOWN|probe_error'
-                if [ "${row%%|*}" != OK ]; then
-                    Z2R_MEDIA_READY=0
-                    z2r_media_status "baseline_${row#*|}" "$Z2R_MEDIA_DIR"
-                    break
-                fi
-            done
-        fi
     fi
     IFS= read -r status < "$Z2R_MEDIA_DIR/status"
     status=${status%%|*}
@@ -384,7 +374,7 @@ z2r_media_check_manual() (
         # Отдельная проверка владеет кешем; в ручной серии им владеет orch_gv_trial.
         Z2R_SUPERSWEEP_DIR=""
         trap '[ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"' EXIT
-        z2r_media_prepare 0 || return 1
+        z2r_media_prepare || return 1
     fi
     if [ "$Z2R_MEDIA_READY" != 1 ]; then
         IFS= read -r reason < "$Z2R_MEDIA_DIR/status" || reason=resolver_error

@@ -256,9 +256,8 @@ orch_run_auto_sweep() {
 
 # Ручная GV-серия и автопрогон используют рабочую очередь и один кеш ссылок.
 orch_gv_trial() (
-    local run="$1" baseline=1
+    local run="$1"
     shift
-    [ "$run" != _orch_profile_manual_sweep ] || baseline=0
     local shared_lock="${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}.lock"
     local Z2R_SUPERSWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
     local Z2R_SUPERSWEEP_ISOLATED=0 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
@@ -282,7 +281,7 @@ orch_gv_trial() (
     trap 'exit 143' TERM HUP
     Z2R_SUPERSWEEP_DIR=$(umask 077; mktemp -d /tmp/zator-gv-trial.XXXXXX) || return 1
     if type z2r_media_prepare >/dev/null 2>&1; then
-        z2r_media_prepare "$baseline" || return 1
+        z2r_media_prepare || return 1
     else
         echo 'Googlevideo Media UNKNOWN: нет media-модуля. Плюшевый TLS/CDN-тест, без выбора media-победителя.' >&2
     fi
