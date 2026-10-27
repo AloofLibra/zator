@@ -122,15 +122,20 @@ for scenario in full first fallback cancel startfail busy manual; do
 done
 # TLS-цель использует только подтверждённые media-ответы соответствующей версии.
 supersweep_media_check() {
-    if [ "$Z2R_MEDIA_TLS_VERSION" = 12 ]; then
-        echo 'OK|media_range|0|206|1024|.1|.2|.3|1|1024'
+    local state=$first_state
+    [ "$Z2R_MEDIA_TLS_VERSION" = 12 ] || state=$second_state
+    if [ "$state" = OK ]; then
+        echo 'OK|media_range|0|206|2097152|.1|.2|.3|.9|2330168'
     else
-        echo "$second_state|second_version|18|206|99|.1|.2|.3|1|99"
+        echo "$state|network_error|28|000|0|0|0|0|5.002153|0"
     fi
 }
-for spec in both:FAIL:warn 12:FAIL:ok 13:FAIL:warn any:FAIL:ok both:UNKNOWN:unknown 12:UNKNOWN:ok; do
-    IFS=: read -r pref second_state expected <<< "$spec"
+for spec in both:FAIL:FAIL:fail both:FAIL:OK:warn both:OK:FAIL:warn 12:OK:FAIL:ok 13:OK:FAIL:warn any:OK:FAIL:ok both:OK:UNKNOWN:unknown 12:OK:UNKNOWN:ok both:UNKNOWN:UNKNOWN:unknown; do
+    IFS=: read -r pref first_state second_state expected <<< "$spec"
     out=$(supersweep_media_target 1 "$pref")
     test "$(printf '%s\n' "$out" | sed -n '4s/|.*//p')" = "$expected"
+    if [ "$expected" = warn ]; then
+        test "$(printf '%s\n' "$out" | sed -n 3p)" = '0|206|2097152|.9'
+    fi
 done
 echo 'youtube media strategy smoke ok'

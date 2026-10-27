@@ -95,6 +95,13 @@ esac
 test -n "$config" # URL не должен быть в argv.
 case "${MOCK:-ok}" in
     wait) sleep 10; exit 0 ;;
+    earlytimeout|connectfail|tlsfail|emptyreply|earlyreset|dnsfail|unsupported)
+        : > "$headers"
+        printf '000|0|0|0|0|5.002153|0'
+        case "$MOCK" in
+            earlytimeout) exit 28 ;; connectfail) exit 7 ;; tlsfail) exit 35 ;;
+            emptyreply) exit 52 ;; earlyreset) exit 56 ;; dnsfail) exit 6 ;; unsupported) exit 4 ;;
+        esac ;;
     403|429) printf 'HTTP/1.1 %s\r\n\r\n' "$MOCK" > "$headers"; printf '%s|0|.1|.2|.3|.4|0' "$MOCK"; exit 0 ;;
     200) printf 'HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n\r\n' > "$headers"; printf '200|1048576|.1|.2|.3|.4|12345'; exit 0 ;;
     redirect|badredirect)
@@ -120,12 +127,13 @@ exit "$rc"
 MOCK
 chmod +x "$tmp/bin/curl"
 export PATH="$tmp/bin:$PATH"
-for scenario in ok 200 403 429 partial reset timeout text wrongrange redirect badredirect; do
+for scenario in ok 200 403 429 partial reset timeout text wrongrange redirect badredirect earlytimeout connectfail tlsfail emptyreply earlyreset dnsfail unsupported; do
     export MOCK="$scenario"
     result=$(z2r_media_probe "$tmp/cache" video 1048576 1)
     case "$scenario" in
         ok|redirect) [[ "$result" == OK\|media_range\|* ]] ;;
         partial|reset|timeout) [[ "$result" == FAIL\|incomplete_transfer\|* ]] ;;
+        earlytimeout|connectfail|tlsfail|emptyreply|earlyreset) [[ "$result" == FAIL\|network_error\|* ]] ;;
         *) [[ "$result" == UNKNOWN\|* ]] ;;
     esac
 done
@@ -137,11 +145,19 @@ done
 export MOCK Z2R_SUPERSWEEP_ISOLATED=1
 supersweep_probe_healthy() { return 0; }
 supersweep_probe_sequence() { echo 100; }
+MOCK=earlytimeout
+result=$(z2r_media_probe "$tmp/cache" video 1048576 0 1)
+[[ "$result" == UNKNOWN\|noqueue\|* ]]
+MOCK=ok
 result=$(z2r_media_probe "$tmp/cache" video 1048576 0 1)
 [[ "$result" == UNKNOWN\|noqueue\|* ]]
 supersweep_probe_sequence() { if [ -f "$tmp/seq" ]; then echo 101; else touch "$tmp/seq"; echo 100; fi; }
 result=$(z2r_media_probe "$tmp/cache" video 1048576 0 1)
 [[ "$result" == OK\|* ]]
+rm "$tmp/seq"
+MOCK=earlytimeout
+result=$(z2r_media_probe "$tmp/cache" video 1048576 0 1)
+[[ "$result" == FAIL\|network_error\|28\|000\|0\|* ]]
 export MOCK=wait
 z2r_media_probe "$tmp/cache" video 1048576 0 > "$tmp/cancel-result" &
 pid=$!

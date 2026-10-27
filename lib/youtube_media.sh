@@ -270,18 +270,21 @@ EOF
         [ "$reason" != cancelled ] || break
     done
     r13=${r13:-$r12}; s13=${s13:-UNKNOWN}; v13=${v13:-56|000|HTTP/1.1|0|}
-    case "$pref" in 12) selected=$r12 ;; *) selected=$r13 ;; esac
-    if [ "$pref" = any ] && [ "$s12" = OK ]; then selected=$r12; fi
-    if [ "$pref" = both ] && [ "$s12" != OK ]; then selected=$r12; fi
-    IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
-$selected
-EOF
     case "$pref:$s12:$s13" in
         12:OK:*|13:*:OK|any:OK:*|any:*:OK|both:OK:OK) token=ok; label=OK ;;
         12:UNKNOWN:*|13:*:UNKNOWN|*:UNKNOWN:*|*:*:UNKNOWN) token=unknown; label=UNKNOWN ;;
         *:OK:*|*:*:OK) token=warn; label=WARN ;;
         *) token=fail; label=FAIL ;;
     esac
+    case "$pref" in 12) selected=$r12 ;; *) selected=$r13 ;; esac
+    if [ "$pref" = any ] && [ "$s12" = OK ]; then selected=$r12; fi
+    if [ "$pref" = both ] && [ "$s12" != OK ]; then selected=$r12; fi
+    if [ "$token" = warn ]; then
+        if [ "$s12" = OK ]; then selected=$r12; else selected=$r13; fi
+    fi
+    IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
+$selected
+EOF
     printf '%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
         "$token|Media $label: $reason; $bytes байт за $total с; TLS 1.2=$s12, TLS 1.3=$s13"
 }
@@ -376,8 +379,9 @@ EOF
                 case "$rc" in 0|18|28|56) state=FAIL; reason=incomplete_transfer ;; esac
             fi ;;
         000)
-            # DNS/TLS/network failure не доказывает DPI. Без ответа сервера UNKNOWN.
-            reason=network_error ;;
+            reason=network_error
+            # Передача может сломаться до HTTP; DNS/возможности curl не оценивают стратегию.
+            case "$rc" in 7|18|28|35|52|55|56) state=FAIL ;; esac ;;
     esac
     printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$state" "$reason" "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}"
 )
