@@ -337,27 +337,31 @@ z2r_media_resolve() (
 )
 
 # Подготовка через рабочее соединение ДО установки тестового транспорта.
-supersweep_media_prepare() {
-    local status row kind
+z2r_media_prepare() {
+    local status row kind baseline="${1:-1}"
     Z2R_MEDIA_DIR=$(umask 077; mktemp -d /tmp/zator-media.XXXXXX) || return 1
     Z2R_MEDIA_READY=0
     if z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$Z2R_MEDIA_DIR"; then
         Z2R_MEDIA_READY=1
-        for kind in audio video; do
-            row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" 16384 0) || row='UNKNOWN|probe_error'
-            if [ "${row%%|*}" != OK ]; then
-                Z2R_MEDIA_READY=0
-                z2r_media_status "baseline_${row#*|}" "$Z2R_MEDIA_DIR"
-                break
-            fi
-        done
+        if [ "$baseline" = 1 ]; then
+            for kind in audio video; do
+                row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" 16384 0) || row='UNKNOWN|probe_error'
+                if [ "${row%%|*}" != OK ]; then
+                    Z2R_MEDIA_READY=0
+                    z2r_media_status "baseline_${row#*|}" "$Z2R_MEDIA_DIR"
+                    break
+                fi
+            done
+        fi
     fi
     IFS= read -r status < "$Z2R_MEDIA_DIR/status"
     status=${status%%|*}
-    printf '%s\n' "$status" > "$Z2R_SUPERSWEEP_DIR/media-status"
+    if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then
+        printf '%s\n' "$status" > "$Z2R_SUPERSWEEP_DIR/media-status"
+    fi
     if [ "$Z2R_MEDIA_READY" = 1 ]; then
-        cp "$Z2R_MEDIA_DIR/meta.json" "$Z2R_SUPERSWEEP_DIR/media-meta.json"
-        echo 'Googlevideo: подписанные media URL проверены; аудио + видео + удалённый диапазон, TCP (QUIC не проверяется).' >&2
+        if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then cp "$Z2R_MEDIA_DIR/meta.json" "$Z2R_SUPERSWEEP_DIR/media-meta.json"; fi
+        echo 'Googlevideo: подписанные media URL подготовлены; аудио + видео + удалённый диапазон, TCP (QUIC не проверяется).' >&2
     else
         echo "Googlevideo: Media UNKNOWN ($status). Плюшевый TLS/CDN-тест; медиазагрузка не подтверждена, победитель профиля 2 автоматически не применяется." >&2
     fi
@@ -367,53 +371,57 @@ supersweep_media_prepare() {
 # Пункт 1 меню: проверяется рабочее соединение, без подмены стратегий/firewall.
 z2r_media_check_manual() (
     umask 077
-    local Z2R_SUPERSWEEP_DIR="" Z2R_SUPERSWEEP_ISOLATED=0
-    local dir item kind count middle row state reason rc code bytes tcp tls ttfb total speed color
-    dir=$(mktemp -d /tmp/zator-media.XXXXXX) || return 1
-    trap 'rm -rf "$dir"' EXIT
+    trap - EXIT
+    local Z2R_MEDIA_DIR="${Z2R_MEDIA_DIR:-}" Z2R_MEDIA_READY="${Z2R_MEDIA_READY:-0}"
+    local Z2R_SUPERSWEEP_DIR="${Z2R_SUPERSWEEP_DIR:-}" Z2R_SUPERSWEEP_ISOLATED=0 reason
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    if ! z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$dir"; then
-        IFS= read -r reason < "$dir/status" || reason=resolver_error
+    if [ -z "$Z2R_MEDIA_DIR" ]; then
+        # Отдельная проверка владеет кешем; в ручной серии им владеет orch_gv_trial.
+        Z2R_SUPERSWEEP_DIR=""
+        trap '[ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"' EXIT
+        z2r_media_prepare 0 || return 1
+    fi
+    if [ "$Z2R_MEDIA_READY" != 1 ]; then
+        IFS= read -r reason < "$Z2R_MEDIA_DIR/status" || reason=resolver_error
         printf '%bGooglevideo Media UNKNOWN: %s%b\n' "${yellow:-}" "$reason" "${plain:-}"
         return 1
     fi
     echo 'Googlevideo: реальная загрузка аудио/видео по TCP (QUIC не проверяется).'
-    for item in "audio:${Z2R_MEDIA_AUDIO_BYTES:-262144}:0" "video:${Z2R_MEDIA_VIDEO_BYTES:-1048576}:0" "video:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"; do
-        kind=${item%%:*}; item=${item#*:}; count=${item%%:*}; middle=${item#*:}
-        row=$(z2r_media_probe "$dir" "$kind" "$count" "$middle") || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
-        IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
-$row
-EOF
-        case "$state" in OK) color=${green:-} ;; FAIL) color=${red:-} ;; *) color=${yellow:-} ;; esac
-        printf '%bMedia %s: %s, середина=%s; HTTP %s, %s байт, %s с, %s Б/с (%s)%b\n' "$color" "$state" "$kind" "$middle" "$code" "$bytes" "$total" "$speed" "$reason" "${plain:-}"
-        [ "$state" = OK ] || break
-    done
-    return 0
+    z2r_media_check '' print
 )
 
-# stdout: итог последней пробы; безопасные подробные метрики отдельно от старого TSV.
-supersweep_media_check() {
-    local strategy="$1" item kind count middle row state reason
+# Один план audio/video/middle для всех режимов; print меняет только представление.
+z2r_media_check() {
+    local strategy="${1:-}" output_mode="${2:-}" item kind count middle row state reason color
+    local rc code bytes tcp tls ttfb total speed
     if [ "${Z2R_MEDIA_READY:-0}" != 1 ]; then
         printf 'UNKNOWN|resolver_unavailable|0|000|0|0|0|0|0|0\n'; return 0
     fi
     for item in "audio:${Z2R_MEDIA_AUDIO_BYTES:-262144}:0" "video:${Z2R_MEDIA_VIDEO_BYTES:-1048576}:0" "video:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"; do
         kind=${item%%:*}; item=${item#*:}; count=${item%%:*}; middle=${item#*:}
         row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" "$count" "$middle" "${Z2R_SUPERSWEEP_ISOLATED:-0}") || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
-        printf '%s\t%s\t%s\t%s\t%s\n' "$strategy" "$kind" "$middle" "$row" "${Z2R_MEDIA_TLS_VERSION:-auto}" >> "$Z2R_SUPERSWEEP_DIR/media.tsv"
-        state=${row%%|*}; reason=${row#*|}; reason=${reason%%|*}
+        if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' "$strategy" "$kind" "$middle" "$row" "${Z2R_MEDIA_TLS_VERSION:-auto}" >> "$Z2R_SUPERSWEEP_DIR/media.tsv"
+        fi
+        IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
+$row
+EOF
+        if [ "$output_mode" = print ]; then
+            case "$state" in OK) color=${green:-} ;; FAIL) color=${red:-} ;; *) color=${yellow:-} ;; esac
+            printf '%bMedia %s: %s, середина=%s; HTTP %s, %s байт, %s с, %s Б/с (%s)%b\n' "$color" "$state" "$kind" "$middle" "$code" "$bytes" "$total" "$speed" "$reason" "${plain:-}"
+        fi
         [ "$state" = OK ] || break
     done
-    printf '%s\n' "$row"
+    [ "$output_mode" = print ] || printf '%s\n' "$row"
 }
 
 # Старый формат TLS-метрик, но каждый успех подтверждён медиаданными, не корнем CDN.
-supersweep_media_target() {
+z2r_media_target() {
     local strategy="$1" pref="${2:-both}" version row state reason rc code bytes tcp tls ttfb total speed
     local v12 v13 r12 r13 s12 s13 selected token label
     for version in 12 13; do
-        row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" supersweep_media_check) || return 1
+        row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" z2r_media_check) || return 1
         IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
 $row
 EOF
@@ -445,6 +453,7 @@ EOF
 # OK/FAIL/UNKNOWN | reason | curl_rc | HTTP | bytes | TCP | TLS | TTFB | total | B/s.
 # Для SuperSweep require_queue=1; standalone PoC проверяет только медиаресурс.
 z2r_media_probe() (
+    trap - EXIT
     umask 077
     local dir="$1" kind="$2" count="$3" middle="$4" require_queue="${5:-0}"
     local length mime host expire offset end row rc pid before after state reason headers

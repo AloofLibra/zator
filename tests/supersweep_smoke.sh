@@ -703,12 +703,12 @@ unset MOCK_DELAY MOCK_OK_P1
   Z2R_SUPERSWEEP_ISOLATED=0 Z2R_SUPERSWEEP_SETTLE=0
   export MOCK_OK_P1=1 MOCK_OK_P4=1 MOCK_OK_P2='' MOCK_OK_meduza_io=1
   config_profile_max_strategy() { echo 1; }
-  supersweep_media_prepare() {
+  z2r_media_prepare() {
     test "$Z2R_MEDIA_VIDEO_ID" = M7lc1UVf-VE
     echo "$Z2R_MEDIA_VIDEO_ID" >> "$TMP_DIR/video14.prepared"
     Z2R_MEDIA_READY=1
   }
-  supersweep_media_check() {
+  z2r_media_check() {
     test "$Z2R_SUPERSWEEP_ISOLATED" = 0
     test "$Z2R_MEDIA_VIDEO_ID" = M7lc1UVf-VE
     echo 'OK|media_range|0|206|2097152|.1|.2|.3|1|2097152'

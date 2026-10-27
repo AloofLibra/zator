@@ -38,7 +38,7 @@ for scenario in full first fallback cancel busy manual probeerror custom; do
         _supersweep_settle() { :; }
         check_googlevideo_access() { test "$1" = "$expected_video"; echo manual_media >> "$tmp/trace"; }
         check_access() { echo 'FAIL: old root check' >&2; exit 1; }
-        supersweep_media_prepare() {
+        z2r_media_prepare() {
             test "$Z2R_MEDIA_VIDEO_ID" = "$expected_video"
             echo prepare >> "$tmp/trace"
             Z2R_MEDIA_DIR=$(mktemp -d /tmp/zator-media.XXXXXX)
@@ -58,7 +58,7 @@ for scenario in full first fallback cancel busy manual probeerror custom; do
         supersweep_probe_healthy() { probe_forbidden; }
         supersweep_probe_sequence() { probe_forbidden; }
         z2r_tls_check_target() { echo root >> "$tmp/trace"; printf '0|404|HTTP/1.1|.1|192.0.2.1\n0|404|HTTP/1.1|.1|192.0.2.1\nskip\n'; }
-        supersweep_media_check() {
+        z2r_media_check() {
             test -z "$Z2R_TLS_LOCAL_PORTS"
             test "$Z2R_SUPERSWEEP_ISOLATED" = 0
             test "$(cat "$ORCH_LOCK_FILE")" = "$(printf '2\ttls\t%s' "$1")"
@@ -121,14 +121,14 @@ for scenario in full first fallback cancel busy manual probeerror custom; do
             [ "$event" != set ] || test "$path" = "$ORCH_LOCK_FILE"
         done < "$tmp/trace"
         test ! -d "$Z2R_SUPERSWEEP_DIR.lock"
-        if [ "$scenario" != manual ] && [ "$scenario" != busy ]; then test "$(grep -c '^prepare$' "$tmp/trace")" = 1; fi
+        if [ "$scenario" != busy ]; then test "$(grep -c '^prepare$' "$tmp/trace")" = 1; fi
         while IFS='|' read -r event path rest; do
             [ "$event" != cache ] || test ! -d "$path"
         done < "$tmp/trace"
     )
 done
 # TLS-цель использует только подтверждённые media-ответы соответствующей версии.
-supersweep_media_check() {
+z2r_media_check() {
     local state=$first_state
     [ "$Z2R_MEDIA_TLS_VERSION" = 12 ] || state=$second_state
     if [ "$state" = OK ]; then
@@ -139,7 +139,7 @@ supersweep_media_check() {
 }
 for spec in both:FAIL:FAIL:fail both:FAIL:OK:warn both:OK:FAIL:warn 12:OK:FAIL:ok 13:OK:FAIL:warn any:OK:FAIL:ok both:OK:UNKNOWN:unknown 12:OK:UNKNOWN:ok both:UNKNOWN:UNKNOWN:unknown; do
     IFS=: read -r pref first_state second_state expected <<< "$spec"
-    out=$(supersweep_media_target 1 "$pref")
+    out=$(z2r_media_target 1 "$pref")
     test "$(printf '%s\n' "$out" | sed -n '4s/|.*//p')" = "$expected"
     if [ "$expected" = warn ]; then
         test "$(printf '%s\n' "$out" | sed -n 3p)" = '0|206|2097152|.9'

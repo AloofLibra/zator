@@ -15,6 +15,7 @@ for mode in ok fail unknown unavailable; do
         z2r_media_install_jq() { echo 'FAIL: installation during a check' >&2; exit 1; }
         z2r_media_resolve() {
             echo "$2" > "$tmp/cache-path"
+            echo ready > "$2/status"
             if [ "$mode" = unavailable ]; then echo parser_missing > "$2/status"; return 1; fi
         }
         z2r_media_probe() {
@@ -68,9 +69,9 @@ done
     printf '0\n' | check_googlevideo_access > "$tmp/output" 2> "$tmp/prompt"
     test ! -e "$tmp/chosen"
 )
-# Реальный resolver при отсутствии jq не должен вызывать установку/диалог.
+# Реальный resolver при отсутствии обоих парсеров не должен вызывать установку/диалог.
 (
-    command() { case "$*" in '-v jq') return 1 ;; *) builtin command "$@" ;; esac; }
+    command() { case "$*" in '-v jq'|'-v jsonfilter') return 1 ;; *) builtin command "$@" ;; esac; }
     z2r_media_install_jq() { touch "$tmp/install-called"; }
     z2r_media_offer_jq() { touch "$tmp/install-called"; }
     mkdir "$tmp/cache"
@@ -78,4 +79,65 @@ done
     test "$(cat "$tmp/cache/status")" = parser_missing
     test ! -e "$tmp/install-called"
 )
+# Реальный пошаговый путь меню: один resolver и общий план на всю серию.
+source lib/config.sh
+source lib/supersweep.sh
+source lib/strategies.sh
+for scenario in cancel save fallback expired signal; do
+    (
+        export Z2R_SUPERSWEEP_DIR="$tmp/series"
+        printf '7\n' > "$tmp/strategy"
+        : > "$tmp/resolves"; : > "$tmp/probes"; : > "$tmp/legacy"
+        orch_max_strategy_for_profile() { echo 3; }
+        profile_state_display() { echo 7; }
+        orch_locked_state_get() { cat "$tmp/strategy"; }
+        orch_locked_set() { printf '%s\n' "$3" > "$tmp/strategy"; }
+        profile_state_set_and_apply() { orch_locked_set "$1" tls "$3"; }
+        get_config_file() { echo "$tmp/config"; }
+        config_get_var() { :; }
+        profile_strategy_restart_if_needed() { :; }
+        pause_enter() { :; }
+        show_hint() { :; }
+        telemetry_notify() { :; }
+        _supersweep_settle() { :; }
+        get_yt_cluster_domain() { echo cdn.example; }
+        check_access() { echo root >> "$tmp/legacy"; }
+        z2r_media_resolve() {
+            test "$1" = BPk1uJ4txPc
+            echo "$2" >> "$tmp/resolves"
+            echo ready > "$2/status"
+            echo '{}' > "$2/meta.json"
+            if [ "$scenario" = fallback ]; then echo parser_missing > "$2/status"; return 1; fi
+        }
+        z2r_media_probe() {
+            test "$1" = "$(cat "$tmp/resolves")"
+            test -d "$1"
+            test "${5:-0}" = 0
+            test "$Z2R_SUPERSWEEP_ISOLATED" = 0
+            test -z "$Z2R_TLS_LOCAL_PORTS"
+            printf '%s %s %s %s\n' "$(cat "$tmp/strategy")" "$2" "$3" "$4" >> "$tmp/probes"
+            if [ "$scenario" = signal ]; then
+                kill -TERM "$(cat "$tmp/series.lock/pid")"
+                echo 'UNKNOWN|cancelled|0|000|0|0|0|0|0|0'
+            elif [ "$scenario" = expired ] && [ "$(cat "$tmp/strategy")" = 2 ]; then
+                echo 'UNKNOWN|url_expired|0|000|0|0|0|0|0|0'
+            else
+                echo 'OK|media_range|0|206|1024|.1|.2|.3|.4|2560'
+            fi
+        }
+        if [ "$scenario" = save ]; then answer=1; else answer=0; fi
+        printf '1\n\n\n%s\n' "$answer" | orch_profile_try 2 Googlevideo tls https://old.googlevideo.com/ > "$tmp/series.log" 2>&1
+        test "$(wc -l < "$tmp/resolves")" = 1
+        test ! -d "$(cat "$tmp/resolves")"
+        test ! -d "$tmp/series.lock"
+        if [ "$scenario" = save ]; then expected=2; else expected=7; fi
+        test "$(cat "$tmp/strategy")" = "$expected"
+        case "$scenario" in
+            fallback) test "$(wc -l < "$tmp/legacy")" = 2; test ! -s "$tmp/probes" ;;
+            signal) grep -q 'прерван' "$tmp/series.log" ;;
+            expired) test "$(wc -l < "$tmp/probes")" = 4; grep -q 'url_expired' "$tmp/series.log"; test ! -s "$tmp/legacy" ;;
+            *) test "$(wc -l < "$tmp/probes")" = 6; test ! -s "$tmp/legacy" ;;
+        esac
+    )
+done
 echo 'youtube media manual smoke ok'

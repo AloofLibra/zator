@@ -94,12 +94,25 @@ orch_profile_try() {
         Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
     fi
 
+    if [ "$profile" = 2 ] && type z2r_media_prepare >/dev/null 2>&1; then
+        # Как supersweep_menu: Ctrl+C ребёнка не должен закрыть родительское меню.
+        trap ':' INT
+        orch_gv_trial _orch_profile_manual_sweep || echo 'Подбор Googlevideo прерван; прежняя стратегия восстановлена.'
+        trap - INT
+    else
+        _orch_profile_manual_sweep
+    fi
+}
+
+# Общий пошаговый цикл; GV-контекст добавляет только один кеш на всю серию.
+_orch_profile_manual_sweep() {
     for p in $proto_list; do
         prev_map["$p"]="$(orch_locked_state_get "$profile" "$p")"
         [ "$current_state" = "0" ] && prev_map["$p"]="0"
     done
 
     for ((s=start_strat; s<=max_strat; s++)); do
+        [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || trial_touched=1
         for p in $proto_list; do
             orch_locked_set "$profile" "$p" "$s"
         done
@@ -131,6 +144,7 @@ orch_profile_try() {
             cfg="$(get_config_file)"
             old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
             if profile_state_set_and_apply "$profile" "$proto_list" "$s" "$cfg"; then
+                [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || completed=1
                 echo "Стратегия $s сохранена для профиля $profile."
                 profile_strategy_restart_if_needed "$profile" "$cfg" "$old_udp_ports"
             else
@@ -240,8 +254,11 @@ orch_run_auto_sweep() {
     pause_enter
 }
 
-# Обычный GV-автопрогон использует рабочую очередь; ссылки общие для всего прогона.
-orch_gv_auto_sweep() (
+# Ручная GV-серия и автопрогон используют рабочую очередь и один кеш ссылок.
+orch_gv_trial() (
+    local run="$1" baseline=1
+    shift
+    [ "$run" != _orch_profile_manual_sweep ] || baseline=0
     local shared_lock="${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}.lock"
     local Z2R_SUPERSWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
     local Z2R_SUPERSWEEP_ISOLATED=0 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
@@ -264,12 +281,12 @@ orch_gv_auto_sweep() (
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     Z2R_SUPERSWEEP_DIR=$(umask 077; mktemp -d /tmp/zator-gv-trial.XXXXXX) || return 1
-    if type supersweep_media_prepare >/dev/null 2>&1; then
-        supersweep_media_prepare || return 1
+    if type z2r_media_prepare >/dev/null 2>&1; then
+        z2r_media_prepare "$baseline" || return 1
     else
         echo 'Googlevideo Media UNKNOWN: нет media-модуля. Плюшевый TLS/CDN-тест, без выбора media-победителя.' >&2
     fi
-    orch_auto_sweep "$@" || return 1
+    "$run" "$@" || return 1
     completed=1
 )
 
@@ -283,7 +300,7 @@ orch_gv_auto_sweep() (
 # стратегия считалась зелёной (в диалоге по умолчанию обе).
 orch_auto_sweep() {
     if [ "$1" = profile ] && [ "$2" = 2 ] && [ "${_Z2R_GV_TRIAL:-0}" != 1 ]; then
-        orch_gv_auto_sweep "$@" || echo 'Проверка Googlevideo прервана; media-победитель не применён.' >&2
+        orch_gv_trial orch_auto_sweep "$@" || echo 'Проверка Googlevideo прервана; media-победитель не применён.' >&2
         return 0
     fi
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6" stop_on_ok="$7"
@@ -356,7 +373,7 @@ orch_auto_sweep() {
 
         if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
             _supersweep_settle
-            out="$(supersweep_media_target "$s" "$tls_pref")" || {
+            out="$(z2r_media_target "$s" "$tls_pref")" || {
                 echo 'Медиапроверка недействительна; автопрогон остановлен.' >&2
                 orch_auto_sweep_interrupted=1
                 break
@@ -585,6 +602,7 @@ orch_auto_sweep() {
             cfg="$(get_config_file)"
             old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
             if profile_state_set_and_apply "$key" "$proto_list" "$answer" "$cfg"; then
+                [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || completed=1
                 echo "Стратегия ${answer} сохранена для профиля ${key}."
                 profile_strategy_restart_if_needed "$key" "$cfg" "$old_udp_ports"
             else

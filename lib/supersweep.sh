@@ -477,7 +477,7 @@ _supersweep_worker_profile() {
         _supersweep_settle
 
         if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
-            out="$(supersweep_media_target "$s" "$tls_pref")" || { ss_interrupted=1; break; }
+            out="$(z2r_media_target "$s" "$tls_pref")" || { ss_interrupted=1; break; }
             { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
         else
             out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
@@ -1192,8 +1192,8 @@ _supersweep_run() {
         [ "$interrupted" = 1 ] && cancelled=1 && break
         if [ "$phase" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
             Z2R_MEDIA_READY=0
-            if type supersweep_media_prepare >/dev/null 2>&1; then
-                supersweep_media_prepare || echo resolver_unavailable > "$dir/media-status"
+            if type z2r_media_prepare >/dev/null 2>&1; then
+                z2r_media_prepare || echo resolver_unavailable > "$dir/media-status"
             else
                 echo resolver_unavailable > "$dir/media-status"
                 echo 'Googlevideo: Media UNKNOWN, нет media-модуля; fallback TLS/CDN без автоматического применения профиля 2.' >&2
