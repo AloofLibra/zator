@@ -1,5 +1,5 @@
 #!/bin/sh
-# Независимый PoC: только shell/curl/jq; никаких сервисов и firewall.
+# Независимый PoC: только shell/curl + jsonfilter или jq; никаких сервисов и firewall.
 set -u
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$root/lib/youtube_media.sh"
@@ -13,7 +13,7 @@ if ! z2r_media_resolve "${1:-}" "$dir"; then
     exit 1
 fi
 # Только обезличенная метаинформация: подписанные ссылки не попадают в stdout.
-jq 'del(.audio_url,.video_url)' "$dir/media.json"
+cat "$dir/meta.json"
 failed=0
 for kind in audio video; do
     count=262144; [ "$kind" != video ] || count=1048576

@@ -12,6 +12,7 @@ for mode in installed install retry fail updatefail apk apt none; do
         [ "$mode" != installed ] || touch "$ready"
         command() {
             case "$*" in
+                '-v jsonfilter') return 1 ;;
                 '-v jq') test -f "$ready" ;;
                 '-v opkg') case "$mode" in install|retry|fail|updatefail) return 0 ;; *) return 1 ;; esac ;;
                 '-v apk') test "$mode" = apk ;;
@@ -53,7 +54,7 @@ for mode in installed install retry fail updatefail apk apt none; do
 done
 for answer in '' 0 1; do
     (
-        command() { case "$*" in '-v jq') return 1 ;; *) builtin command "$@" ;; esac; }
+        command() { case "$*" in '-v jq'|'-v jsonfilter') return 1 ;; *) builtin command "$@" ;; esac; }
         z2r_media_install_jq() { touch "$tmp/consented"; }
         rm -f "$tmp/consented"
         printf '%s\n' "$answer" | z2r_media_ask_jq > "$tmp/stdout" 2> "$tmp/stderr"
@@ -81,7 +82,7 @@ import subprocess
 import tempfile
 
 library = shlex.quote(str(pathlib.Path('lib/youtube_media.sh').resolve()))
-for mode in ('missing', 'installed'):
+for mode in ('missing', 'installed', 'jsonfilter', 'both'):
     with tempfile.TemporaryDirectory() as root:
         cache = pathlib.Path(root) / 'extra_strats/cache'
         (cache / 'deploy').mkdir(parents=True)
@@ -92,8 +93,9 @@ set -eu
 export ZATOR_ROOT={shlex.quote(root)}
 . {library}
 command() {{
-    case "$*" in '-v jq') test {mode} = installed ;; *) builtin command "$@" ;; esac
+    case "$*" in '-v jq') test {mode} = installed || test {mode} = both ;; '-v jsonfilter') test {mode} = jsonfilter || test {mode} = both ;; *) builtin command "$@" ;; esac
 }}
+if [ {mode} = both ]; then test "$(z2r_media_parser)" = jsonfilter; fi
 z2r_media_install_jq() {{ echo installed >> "$ZATOR_ROOT/installs"; }}
 z2r_media_offer_jq
 z2r_media_offer_jq

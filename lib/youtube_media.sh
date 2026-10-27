@@ -50,6 +50,13 @@ z2r_media_status() {
     printf '%s\n' "$1" > "$2/status"
 }
 
+# jsonfilter штатно доступен в OpenWrt; jq нужен только при его отсутствии.
+z2r_media_parser() {
+    if command -v jsonfilter >/dev/null 2>&1; then printf 'jsonfilter\n'
+    elif command -v jq >/dev/null 2>&1; then printf 'jq\n'
+    else return 1; fi
+}
+
 z2r_media_install_jq() {
     command -v jq >/dev/null 2>&1 && return 0
     echo 'Media probe: jq отсутствует, пробую установить пакет jq.' >&2
@@ -67,7 +74,7 @@ z2r_media_install_jq() {
 
 # Только установщик/обновление вызывают этот диалог с живого терминала.
 z2r_media_ask_jq() {
-    command -v jq >/dev/null 2>&1 && return 0
+    z2r_media_parser >/dev/null 2>&1 && return 0
     local answer
     printf 'Установить jq для проверки настоящих медиаданных YouTube? 1 — да, Enter — нет: ' >&2
     IFS= read -r answer || answer=""
@@ -82,7 +89,7 @@ z2r_media_ask_jq() {
 # Старый deploy.sh уже работает в памяти при обновлении: новый CLI завершает setup.
 z2r_media_offer_jq() {
     [ -t 0 ] || return 0
-    command -v jq >/dev/null 2>&1 && return 0
+    z2r_media_parser >/dev/null 2>&1 && return 0
     local cache="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache" version answered
     version=$(sed -n 's/^ZATOR_SHA="\([^"]*\)"$/\1/p' "$cache/deploy/version.env" 2>/dev/null) || version=""
     version=${version:-legacy}
@@ -112,81 +119,182 @@ z2r_media_api() {
         --data-binary "@$2" -o "$3" -w '%{http_code}' "$1" 2>/dev/null
 }
 
-# Разбор отдельно от сети позволяет тестировать обезличенные фикстуры.
-z2r_media_select() {
-    jq -e --arg id "$2" --arg cpn "$3" '
-        def direct:
-            .url? | strings | startswith("https://");
+# Один jq разбирает player; после выбора парсер больше не нужен для media GET.
+_z2r_media_select_jq() {
+    jq -r '
         def choose($kind):
             [.streamingData.adaptiveFormats[]? |
-                select(direct and (.mimeType | startswith($kind + "/"))) |
+                select(.url? | strings | startswith("https://")) |
+                select(.mimeType? | strings | startswith($kind + "/")) |
                 select((.drmFamilies // [] | length) == 0) |
-                select((.contentLength | tonumber) >= 4096)] |
+                select((try (.contentLength | tonumber) catch 0) >= 4096)] |
             sort_by(.bitrate) |
             ([.[] | select(.contentLength|tonumber >= (if $kind=="video" then 8388608 else 1048576 end))] + .) | .[0];
         . as $r | choose("audio") as $a | choose("video") as $v |
-        {video_id:$id, playability:($r.playabilityStatus.status // "MISSING"),
-         response_video_id:($r.videoDetails.videoId // ""),
-         cipher:([$r.streamingData.adaptiveFormats[]? |
-                  select(.signatureCipher != null or .cipher != null)] | length > 0),
-         audio:$a, video:$v, cpn:$cpn} |
-        .audio |= (if . then {url:.url,itag:.itag,mime_type:.mimeType,length:(.contentLength|tonumber)} else null end) |
-        .video |= (if . then {url:.url,itag:.itag,mime_type:.mimeType,length:(.contentLength|tonumber)} else null end)
-    ' "$1" > "$4/selected.json" 2>/dev/null || { z2r_media_status invalid_json "$4"; return 1; }
-    local state actual cipher
-    state=$(jq -r '.playability' "$4/selected.json")
-    actual=$(jq -r '.response_video_id' "$4/selected.json")
+        (if $r.playabilityStatus.status=="OK" then "OK"
+         elif ($r.playabilityStatus.reason // "" | ascii_downcase | contains("po token") or contains("potoken")) then "po_token_required"
+         elif $r.playabilityStatus.status=="LOGIN_REQUIRED" then "auth_required" else "video_unavailable" end),
+        ($r.videoDetails.videoId // ""),
+        ([$r.streamingData.adaptiveFormats[]? | select(.signatureCipher != null or .cipher != null)] | length > 0),
+        ($a.url // ""), ($a.itag // ""), ($a.mimeType // "" | split(";")[0]), ($a.contentLength // ""),
+        ($v.url // ""), ($v.itag // ""), ($v.mimeType // "" | split(";")[0]), ($v.contentLength // "")
+    ' "$1" 2>/dev/null
+}
+
+_z2r_media_select_jsonfilter() {
+    local file="$1" dir="$2" state actual="" reason cipher=false indices index base
+    local url itag mime length rate drm_type drm extra has_extra kind large
+    local au="" ai="" am="" al="" ar=0 ap=0 vu="" vi="" vm="" vl="" vr=0 vp=0
+    state=$(jsonfilter -q -i "$file" -e '@.playabilityStatus.status') || {
+        jsonfilter -q -l 0 -i "$file" -e '@' >/dev/null || return 1
+        state=MISSING
+    }
     if [ "$state" != OK ]; then
-        if jq -e '(.playabilityStatus.reason // "" | strings | ascii_downcase) | contains("po token") or contains("potoken")' "$1" >/dev/null 2>&1; then
-            state=po_token_required
-        elif [ "$state" = LOGIN_REQUIRED ]; then state=auth_required
-        else state=video_unavailable; fi
-        z2r_media_status "$state" "$4"; return 1
+        reason=$(jsonfilter -q -i "$file" -e '@.playabilityStatus.reason' 2>/dev/null | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+        case "$reason" in *'po token'*|*potoken*) state=po_token_required ;;
+            *) if [ "$state" = LOGIN_REQUIRED ]; then state=auth_required; else state=video_unavailable; fi ;;
+        esac
+    else
+        actual=$(jsonfilter -q -i "$file" -e '@.videoDetails.videoId') || actual=""
+        # Служебный вывод содержит только индексы массива, не значения. Никакого eval.
+        indices=$(jsonfilter -q -i "$file" -F , -e 'indices=@.streamingData.adaptiveFormats') || indices=""
+        indices=${indices#export indices=}; indices=${indices%'; '}
+        while [ -n "$indices" ]; do
+            index=${indices%%,*}
+            case "$indices" in *,*) indices=${indices#*,} ;; *) indices="" ;; esac
+            case "$index" in ''|*[!0-9]*) continue ;; esac
+            base="@.streamingData.adaptiveFormats[$index]"
+            jsonfilter -q -i "$file" -e "$base.url" -e "$base.itag" -e "$base.mimeType" \
+                -e "$base.contentLength" -e "$base.bitrate" -t "$base.drmFamilies" -e "$base.drmFamilies" \
+                > "$dir/format.fields" 2>/dev/null || :
+            url=""; itag=""; mime=""; length=""; rate=""; drm_type=""; drm=""; has_extra=0
+            { IFS= read -r url; IFS= read -r itag; IFS= read -r mime; IFS= read -r length
+              IFS= read -r rate; IFS= read -r drm_type; IFS= read -r drm
+              if IFS= read -r extra; then has_extra=1; fi
+            } < "$dir/format.fields" || :
+            [ "$has_extra" = 0 ] || continue
+            case "$drm_type:$drm" in :|null:|'array:[]'|'array:[ ]') ;; *) continue ;; esac
+            case "$url" in https://*) ;; *) continue ;; esac
+            case "$itag" in ''|*[!0-9]*) continue ;; esac
+            case "$length" in ''|*[!0-9]*) continue ;; esac
+            case "$rate" in ''|*[!0-9]*) continue ;; esac
+            case "$itag:$length" in 0?*:*|*:0?*) return 1 ;; esac
+    [ "${#itag}" -le 6 ] && [ "${#length}" -le 15 ] && [ "${#rate}" -le 15 ] || continue
+            [ "$length" -ge 4096 ] || continue
+            mime=${mime%%;*}; large=0
+            case "$mime" in
+                audio/mp4|audio/webm) kind=audio; [ "$length" -lt 1048576 ] || large=1 ;;
+                video/mp4|video/webm) kind=video; [ "$length" -lt 8388608 ] || large=1 ;;
+                *) continue ;;
+            esac
+            if [ "$kind" = audio ]; then
+                if [ -z "$au" ] || [ "$large" -gt "$ap" ] || { [ "$large" = "$ap" ] && [ "$rate" -lt "$ar" ]; }; then
+                    au=$url; ai=$itag; am=$mime; al=$length; ar=$rate; ap=$large
+                fi
+            elif [ -z "$vu" ] || [ "$large" -gt "$vp" ] || { [ "$large" = "$vp" ] && [ "$rate" -lt "$vr" ]; }; then
+                vu=$url; vi=$itag; vm=$mime; vl=$length; vr=$rate; vp=$large
+            fi
+        done
+        if [ -z "$au" ] || [ -z "$vu" ]; then
+            reason=$(jsonfilter -q -i "$file" -t '@.streamingData.adaptiveFormats[*].signatureCipher' -t '@.streamingData.adaptiveFormats[*].cipher') || :
+            case "$reason" in *string*|*int*|*double*|*array*|*object*|*boolean*) cipher=true ;; esac
+        fi
     fi
-    if [ "$actual" != "$2" ]; then z2r_media_status video_id_mismatch "$4"; return 1; fi
-    if ! jq -e '.audio != null and .video != null' "$4/selected.json" >/dev/null; then
-        cipher=$(jq -r '.cipher' "$4/selected.json")
-        if [ "$cipher" = true ]; then state=signature_cipher; else state=no_format; fi
-        z2r_media_status "$state" "$4"; return 1
+    printf '%s\n' "$state" "$actual" "$cipher" "$au" "$ai" "$am" "$al" "$vu" "$vi" "$vm" "$vl"
+}
+
+# Проверенные скаляры, не shell-код: params читаются через read, URL — только curl -K.
+_z2r_media_cache_stream() {
+    local dir="$1" kind="$2" url="$3" itag="$4" mime="$5" length="$6" cpn="$7" host query part expire="" value
+    z2r_media_url_valid "$url" || return 1
+    case "$itag:$length" in *[!0-9:]*|:*|*:) return 1 ;; esac
+    [ "${#itag}" -le 6 ] && [ "${#length}" -le 15 ] && [ "$length" -ge 4096 ] || return 1
+    case "$kind:$mime" in audio:audio/mp4|audio:audio/webm|video:video/mp4|video:video/webm) ;; *) return 1 ;; esac
+    host=${url#https://}; host=${host%%/*}; query=${url#*\?}
+    while [ -n "$query" ]; do
+        part=${query%%&*}
+        case "$query" in *'&'*) query=${query#*&} ;; *) query="" ;; esac
+        case "$part" in
+            n=*) z2r_media_status unsupported_n "$dir"; return 2 ;;
+            expire=*)
+                value=${part#expire=}
+                case "$value" in ''|*[!0-9]*|0?*) return 1 ;; esac
+                [ "${#value}" -le 12 ] || return 1
+                if [ -z "$expire" ] || [ "$value" -lt "$expire" ]; then expire=$value; fi ;;
+        esac
+    done
+    [ -n "$expire" ] || return 1
+    printf '%s|%s|%s|%s\n' "$length" "$mime" "$host" "$expire" > "$dir/$kind.params" || return 1
+    printf 'url = "%s&cpn=%s"\n' "$url" "$cpn" > "$dir/$kind.curl"
+}
+
+# Разбор отдельно от сети позволяет прогнать обе реализации на одних фикстурах.
+z2r_media_select() {
+    local file="$1" id="$2" cpn="$3" dir="$4" parser="${5:-}" state actual cipher au ai am al vu vi vm vl ah ae vh ve expires metadata rc
+    rm -f "$dir/audio.params" "$dir/video.params" "$dir/audio.curl" "$dir/video.curl" "$dir/expires" "$dir/media.json" "$dir/meta.json"
+    [ -n "$parser" ] || parser=$(z2r_media_parser) || { z2r_media_status parser_missing "$dir"; return 1; }
+    case "$id$cpn" in *[!a-zA-Z0-9_-]*) z2r_media_status invalid_video_id "$dir"; return 1 ;; esac
+    [ "${#id}" = 11 ] && [ "${#cpn}" = 16 ] || { z2r_media_status invalid_video_id "$dir"; return 1; }
+    case "$parser" in
+        jq) _z2r_media_select_jq "$file" > "$dir/selection" ;;
+        jsonfilter) _z2r_media_select_jsonfilter "$file" "$dir" > "$dir/selection" ;;
+        *) z2r_media_status parser_missing "$dir"; return 1 ;;
+    esac || { z2r_media_status invalid_json "$dir"; return 1; }
+    { IFS= read -r state; IFS= read -r actual; IFS= read -r cipher
+      IFS= read -r au; IFS= read -r ai; IFS= read -r am; IFS= read -r al
+      IFS= read -r vu; IFS= read -r vi; IFS= read -r vm; IFS= read -r vl
+    } < "$dir/selection" || { z2r_media_status invalid_json "$dir"; return 1; }
+    [ "$state" = OK ] || { z2r_media_status "$state" "$dir"; return 1; }
+    [ "$actual" = "$id" ] || { z2r_media_status video_id_mismatch "$dir"; return 1; }
+    if [ -z "$au" ] || [ -z "$vu" ]; then
+        state=no_format; [ "$cipher" != true ] || state=signature_cipher
+        z2r_media_status "$state" "$dir"; return 1
     fi
-    # Проверяем URL как данные; не eval/source и не передаём URL в argv curl.
-    jq -r '.audio.url,.video.url' "$4/selected.json" | while IFS= read -r url; do
-        z2r_media_url_valid "$url" || exit 1
-    done || { z2r_media_status invalid_url "$4"; return 1; }
-    if jq -e '[.audio.url,.video.url] | any(.[]; (split("?")[1]|split("&")|any(.[]; startswith("n="))))' \
-        "$4/selected.json" >/dev/null; then
-        z2r_media_status unsupported_n "$4"; return 1
-    fi
-    jq --arg cpn "$3" '
-        def metadata:
-            .cdn_hostname=(.url|split("/")[2]) |
-            .expires_at=(.url|split("?")[1]|split("&")|map(select(startswith("expire="))|split("=")[1]|tonumber)|min) |
-            .url += ("&cpn="+$cpn);
-        .audio |= metadata | .video |= metadata |
-        {video_id, audio_url:.audio.url, video_url:.video.url,
-         audio_itag:.audio.itag, video_itag:.video.itag,
-         mime_type:{audio:.audio.mime_type,video:.video.mime_type},
-         cdn_hostname:{audio:.audio.cdn_hostname,video:.video.cdn_hostname},
-         audio_length:.audio.length, video_length:.video.length,
-         audio_expires_at:.audio.expires_at, video_expires_at:.video.expires_at,
-         expires_at:([.audio.expires_at,.video.expires_at]|min), resolver_status:"ready"}
-    ' "$4/selected.json" > "$4/media.json" 2>/dev/null || { z2r_media_status invalid_url "$4"; return 1; }
-    z2r_media_fresh "$4" || { z2r_media_status expired "$4"; return 1; }
-    z2r_media_status ready "$4"
+    for state in audio video; do
+        rc=0
+        if [ "$state" = audio ]; then _z2r_media_cache_stream "$dir" audio "$au" "$ai" "$am" "$al" "$cpn" || rc=$?
+        else _z2r_media_cache_stream "$dir" video "$vu" "$vi" "$vm" "$vl" "$cpn" || rc=$?; fi
+        [ "$rc" != 2 ] || return 1
+        [ "$rc" = 0 ] || { z2r_media_status invalid_url "$dir"; return 1; }
+    done
+    IFS='|' read -r al am ah ae < "$dir/audio.params"
+    IFS='|' read -r vl vm vh ve < "$dir/video.params"
+    expires=$ae; [ "$ve" -ge "$expires" ] || expires=$ve
+    printf '%s\n' "$expires" > "$dir/expires"
+    z2r_media_fresh "$dir" || { z2r_media_status expired "$dir"; return 1; }
+    printf '{"video_id":"%s","audio_itag":%s,"video_itag":%s,"mime_type":{"audio":"%s","video":"%s"},"cdn_hostname":{"audio":"%s","video":"%s"},"audio_length":%s,"video_length":%s,"audio_expires_at":%s,"video_expires_at":%s,"expires_at":%s,"resolver_status":"ready"}\n' \
+        "$id" "$ai" "$vi" "$am" "$vm" "$ah" "$vh" "$al" "$vl" "$ae" "$ve" "$expires" > "$dir/meta.json" || return 1
+    IFS= read -r metadata < "$dir/meta.json"
+    printf '{"audio_url":"%s&cpn=%s","video_url":"%s&cpn=%s",%s\n' "$au" "$cpn" "$vu" "$cpn" "${metadata#\{}" > "$dir/media.json" || return 1
+    rm -f "$dir/selection" "$dir/format.fields"
+    z2r_media_status ready "$dir"
 }
 
 z2r_media_fresh() {
-    jq -e --argjson now "$(date +%s)" '[.audio_expires_at,.video_expires_at] | all(.[]; type=="number" and . > ($now + 120))' "$1/media.json" >/dev/null 2>&1
+    local expires now
+    IFS= read -r expires < "$1/expires" || return 1
+    case "$expires" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#expires}" -le 12 ] || return 1
+    now=$(date +%s) || return 1
+    [ "$expires" -gt "$((now + 120))" ]
+}
+
+z2r_media_request() {
+    printf '%s' '{"context":{"client":{"clientName":"VISIONOS","clientVersion":"1.04","clientScreen":"WATCH","platform":"MOBILE","deviceMake":"Apple","deviceModel":"RealityDevice17,1","osName":"visionOS","osVersion":"26.6.0.23O770","hl":"en","gl":"US","utcOffsetMinutes":0'
+    [ -z "${3:-}" ] || printf ',"visitorData":"%s"' "$3"
+    printf '%s' '},"request":{"internalExperimentFlags":[],"useSsl":true},"user":{"lockedSafetyMode":false}}'
+    [ -z "${1:-}" ] || printf ',"videoId":"%s","cpn":"%s","contentCheckOk":true,"racyCheckOk":true' "$1" "$2"
+    printf '}\n'
 }
 
 # dir создаёт вызывающий с umask 077. Только /tmp: никаких записей URL на flash.
 z2r_media_resolve() (
     umask 077
-    local id="$1" dir="$2" code rc cpn t version major minor
+    local id="$1" dir="$2" code rc cpn t version major minor parser visitor visitor_type visitor_extra
     case "$id" in ''|*[!a-zA-Z0-9_-]*) z2r_media_status invalid_video_id "$dir"; return 1 ;; esac
     [ "${#id}" = 11 ] || { z2r_media_status invalid_video_id "$dir"; return 1; }
-    command -v jq >/dev/null 2>&1 || {
-        echo 'jq отсутствует: реальная медиапроверка недоступна.' >&2
+    parser=$(z2r_media_parser) || {
+        echo 'Нет jsonfilter или jq: реальная медиапроверка недоступна.' >&2
         z2r_media_status parser_missing "$dir"; return 1
     }
     # До 8.4 --max-filesize не ограничивает ответ без Content-Length.
@@ -201,27 +309,31 @@ z2r_media_resolve() (
     cpn=$(cat /proc/sys/kernel/random/uuid | tr -d '\n-')
     cpn=${cpn%????????????????}; t=${cpn%????}
     [ "${#cpn}" = 16 ] || { z2r_media_status random_failed "$dir"; return 1; }
-    printf '%s\n' '{"context":{"client":{"clientName":"VISIONOS","clientVersion":"1.04","clientScreen":"WATCH","platform":"MOBILE","deviceMake":"Apple","deviceModel":"RealityDevice17,1","osName":"visionOS","osVersion":"26.6.0.23O770","hl":"en","gl":"US","utcOffsetMinutes":0},"request":{"internalExperimentFlags":[],"useSsl":true},"user":{"lockedSafetyMode":false}}}' > "$dir/request.json"
+    z2r_media_request > "$dir/request.json"
     code=$(z2r_media_api 'https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false' "$dir/request.json" "$dir/visitor.json"); rc=$?
     if [ "$rc" != 0 ] || [ "$code" != 200 ]; then
         case "$code" in 403) code=innertube_denied ;; 429) code=rate_limited ;; 000) code=network_error ;; *) code=api_error ;; esac
         z2r_media_status "$code" "$dir"; return 1
     fi
-    jq -e --slurpfile v "$dir/visitor.json" --arg id "$id" --arg cpn "$cpn" '
-        $v[0].responseContext.visitorData as $visitor |
-        if ($visitor|type)=="string" and ($visitor|length)>0 then
-            .context.client.visitorData=$visitor | .videoId=$id | .cpn=$cpn |
-            .contentCheckOk=true | .racyCheckOk=true
-        else error("visitor missing") end
-    ' "$dir/request.json" > "$dir/player-request.json" 2>/dev/null || { z2r_media_status visitor_missing "$dir"; return 1; }
+    case "$parser" in
+        jsonfilter)
+            jsonfilter -q -i "$dir/visitor.json" -t '@.responseContext.visitorData' -e '@.responseContext.visitorData' > "$dir/visitor.fields" || :
+            visitor_type=""; visitor=""
+            { IFS= read -r visitor_type; IFS= read -r visitor; if IFS= read -r visitor_extra; then visitor_type=invalid; fi; } < "$dir/visitor.fields" || :
+            [ "$visitor_type" = string ] || visitor="" ;;
+        jq) visitor=$(jq -er '.responseContext.visitorData | select(type=="string" and length>0)' "$dir/visitor.json" 2>/dev/null) || visitor="" ;;
+    esac
+    case "$visitor" in ''|*[!a-zA-Z0-9_%=+/.-]*) z2r_media_status visitor_missing "$dir"; return 1 ;; esac
+    [ "${#visitor}" -le 4096 ] || { z2r_media_status visitor_missing "$dir"; return 1; }
+    z2r_media_request "$id" "$cpn" "$visitor" > "$dir/player-request.json"
     code=$(z2r_media_api "https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false&t=$t&id=$id&%24fields=playabilityStatus,videoDetails(videoId,lengthSeconds),streamingData" \
         "$dir/player-request.json" "$dir/player.json"); rc=$?
     if [ "$rc" != 0 ] || [ "$code" != 200 ]; then
         case "$code" in 403) code=innertube_denied ;; 429) code=rate_limited ;; 000) code=network_error ;; *) code=api_error ;; esac
         z2r_media_status "$code" "$dir"; return 1
     fi
-    z2r_media_select "$dir/player.json" "$id" "$cpn" "$dir" || return 1
-    rm -f "$dir/request.json" "$dir/visitor.json" "$dir/player-request.json" "$dir/player.json" "$dir/selected.json"
+    z2r_media_select "$dir/player.json" "$id" "$cpn" "$dir" "$parser" || return 1
+    rm -f "$dir/request.json" "$dir/visitor.json" "$dir/player-request.json" "$dir/player.json" "$dir/visitor.fields"
 )
 
 # Подготовка через рабочее соединение ДО установки тестового транспорта.
@@ -244,7 +356,7 @@ supersweep_media_prepare() {
     status=${status%%|*}
     printf '%s\n' "$status" > "$Z2R_SUPERSWEEP_DIR/media-status"
     if [ "$Z2R_MEDIA_READY" = 1 ]; then
-        jq 'del(.audio_url,.video_url)' "$Z2R_MEDIA_DIR/media.json" > "$Z2R_SUPERSWEEP_DIR/media-meta.json"
+        cp "$Z2R_MEDIA_DIR/meta.json" "$Z2R_SUPERSWEEP_DIR/media-meta.json"
         echo 'Googlevideo: подписанные media URL проверены; аудио + видео + удалённый диапазон, TCP (QUIC не проверяется).' >&2
     else
         echo "Googlevideo: Media UNKNOWN ($status). Плюшевый TLS/CDN-тест; медиазагрузка не подтверждена, победитель профиля 2 автоматически не применяется." >&2
@@ -336,14 +448,11 @@ z2r_media_probe() (
     umask 077
     local dir="$1" kind="$2" count="$3" middle="$4" require_queue="${5:-0}"
     local length mime host expire offset end row rc pid before after state reason headers
-    local code bytes tcp tls ttfb total speed location url_override="${6:-}" redirects="${7:-2}"
+    local code bytes tcp tls ttfb total speed location url_override="${6:-}" redirects="${7:-2}" config="$dir/$kind.curl"
     case "$kind" in audio|video) ;; *) return 1 ;; esac
     case "$count" in ''|*[!0-9]*) return 1 ;; esac
     [ "$count" -ge 4096 ] && [ "$count" -le 4194304 ] || return 1
-    row=$(jq -r --arg k "$kind" '[.[$k+"_length"],(.mime_type[$k]|split(";")[0]),.cdn_hostname[$k],.[$k+"_expires_at"]] | @tsv' "$dir/media.json") || return 1
-    IFS="$(printf '\t')" read -r length mime host expire <<EOF
-$row
-EOF
+    IFS='|' read -r length mime host expire < "$dir/$kind.params" || return 1
     if ! z2r_media_fresh "$dir"; then printf 'UNKNOWN|expired|0|000|0|0|0|0|0|0\n'; return 0; fi
     # Не скачивать целиком даже короткий поток; оба диапазона ограничены четвертью.
     [ "$count" -le $((length / 4)) ] || count=$((length / 4))
@@ -357,9 +466,8 @@ EOF
     fi
     if [ -n "$url_override" ]; then
         z2r_media_url_valid "$url_override" || return 1
-        printf 'url = "%s"\n' "$url_override" > "$dir/curl.conf"
-    else
-        jq -r --arg k "$kind" '"url = " + (.[$k+"_url"]|@json)' "$dir/media.json" > "$dir/curl.conf" || return 1
+        config="$dir/curl.conf"
+        printf 'url = "%s"\n' "$url_override" > "$config" || return 1
     fi
     trap 'if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; fi; rm -f "$dir/curl.conf" "$dir/headers" "$dir/metrics"' EXIT
     trap 'exit 130' INT
@@ -372,7 +480,7 @@ EOF
     esac
     # Один curl = новое TCP/TLS-соединение. stderr не должен раскрывать URL.
     curl -q -4 --noproxy '*' --proto '=https' --http1.1 -s \
-        --config "$dir/curl.conf" -A "$(z2r_media_ua)" "$@" \
+        --config "$config" -A "$(z2r_media_ua)" "$@" \
         --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
         --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 5 \
         -D "$dir/headers" -o /dev/null \

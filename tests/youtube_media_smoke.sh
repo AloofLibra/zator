@@ -40,6 +40,9 @@ bootstrap_loop=$(awk '/^for lib in \$Z2R_LIB_FILES; do$/ {inside=1} inside {prin
 ! z2r_media_url_valid 'https://evil.example/foo.googlevideo.com/videoplayback?sig=REDACTED'
 ! z2r_media_url_valid 'https://rr1---sn-example.googlevideo.com/foo.googlevideo.com/videoplayback?sig=REDACTED'
 jq -e '.audio_itag==139 and .video_itag==160 and .cdn_hostname.audio=="rr1---sn-example.googlevideo.com"' "$tmp/cache/media.json" >/dev/null
+printf '{' > "$tmp/broken.json"
+! select_fixture "$tmp/broken.json"; expect_status invalid_json
+test ! -e "$tmp/cache/video.curl"
 for scenario in absent unavailable cipher n expired badhost wrongid potoken; do
     case "$scenario" in
         absent) filter='del(.streamingData)'; expected=no_format ;;
@@ -57,26 +60,56 @@ for scenario in absent unavailable cipher n expired badhost wrongid potoken; do
 done
 jq '.streamingData.adaptiveFormats[].mimeType="application/octet-stream"' "$fixture" > "$tmp/changed.json"
 ! select_fixture "$tmp/changed.json"; expect_status no_format
+for selection in tiny_preferred low_bitrate drm duplicate_itag null_drm; do
+    case "$selection" in
+        tiny_preferred) filter='.streamingData.adaptiveFormats += [(.streamingData.adaptiveFormats[0] | .itag=140 | .contentLength="8192" | .bitrate=1)]'; expected_itag=139 ;;
+        low_bitrate) filter='.streamingData.adaptiveFormats += [(.streamingData.adaptiveFormats[0] | .itag=140 | .bitrate=1 | .drmFamilies=[])]'; expected_itag=140 ;;
+        drm) filter='.streamingData.adaptiveFormats += [(.streamingData.adaptiveFormats[0] | .itag=140 | .bitrate=1 | .drmFamilies=["widevine"])]'; expected_itag=139 ;;
+        null_drm) filter='.streamingData.adaptiveFormats[].drmFamilies=null'; expected_itag=139 ;;
+        duplicate_itag) filter='.streamingData.adaptiveFormats += [(.streamingData.adaptiveFormats[0] | .bitrate=1 | .contentLength="5000000")]'; expected_itag=139 ;;
+    esac
+    jq "$filter" "$fixture" > "$tmp/ranked.json"
+    for backend in jq jsonfilter; do
+        command -v "$backend" >/dev/null 2>&1 || continue
+        z2r_media_select "$tmp/ranked.json" aqz-KE-bpKQ 0123456789abcdef "$tmp/cache" "$backend"
+        jq -e --argjson itag "$expected_itag" '.audio_itag==$itag' "$tmp/cache/media.json" >/dev/null
+        jq -S . "$tmp/cache/media.json" > "$tmp/ranked-$backend.json"
+    done
+    if command -v jsonfilter >/dev/null 2>&1; then cmp "$tmp/ranked-jq.json" "$tmp/ranked-jsonfilter.json"; fi
+done
 select_fixture "$fixture"
-for scenario in missing 403 429 valid; do
+for scenario in missing visitor_number visitor_quote visitor_newline 403 429 valid; do
     (
+        : > "$tmp/cold-parser.calls"
+        jq() { echo jq >> "$tmp/cold-parser.calls"; command jq "$@"; }
         z2r_media_api() {
             case "$scenario" in
                 403|429) printf '%s' "$scenario" ;;
                 missing) echo '{}' > "$3"; printf 200 ;;
-                valid)
+                valid|visitor_number|visitor_quote|visitor_newline)
                     case "$1" in
-                        *visitor_id*) echo '{"responseContext":{"visitorData":"REDACTED"}}' > "$3" ;;
-                        *player*) cp "$fixture" "$3" ;;
+                        *visitor_id*)
+                            case "$scenario" in
+                                visitor_newline) printf '%s\n' '{"responseContext":{"visitorData":"REDACTED\nEXTRA"}}' > "$3" ;;
+                                visitor_number) echo '{"responseContext":{"visitorData":123}}' > "$3" ;;
+                                visitor_quote) echo '{"responseContext":{"visitorData":"bad\\\"visitor"}}' > "$3" ;;
+                                *) echo '{"responseContext":{"visitorData":"REDACTED"}}' > "$3" ;;
+                            esac ;;
+                        *player*)
+                            command jq -e '.context.client.visitorData=="REDACTED" and .context.client.clientName=="VISIONOS" and .videoId=="aqz-KE-bpKQ" and .contentCheckOk==true and .racyCheckOk==true' "$2" >/dev/null || return 1
+                            cp "$fixture" "$3" ;;
                     esac
                     printf 200 ;;
             esac
         }
         case "$scenario" in
-            valid) z2r_media_resolve aqz-KE-bpKQ "$tmp/cache"; expect_status ready ;;
+            valid)
+                z2r_media_resolve aqz-KE-bpKQ "$tmp/cache"; expect_status ready
+                if [ "$(z2r_media_parser)" = jq ]; then test "$(wc -l < "$tmp/cold-parser.calls")" = 2
+                else test ! -s "$tmp/cold-parser.calls"; fi ;;
             *)
                 ! z2r_media_resolve aqz-KE-bpKQ "$tmp/cache"
-                case "$scenario" in missing) expect_status visitor_missing ;; 403) expect_status innertube_denied ;; 429) expect_status rate_limited ;; esac ;;
+                case "$scenario" in missing|visitor_number|visitor_quote|visitor_newline) expect_status visitor_missing ;; 403) expect_status innertube_denied ;; 429) expect_status rate_limited ;; esac ;;
         esac
     )
 done
@@ -154,6 +187,22 @@ for version in 12 13; do
     result=$(Z2R_MEDIA_TLS_VERSION=$version z2r_media_probe "$tmp/cache" video 1048576 0)
     [[ "$result" == OK\|media_range\|* ]]
 done
+# Прогретая проба и redirect не должны запускать НИ ОДНОГО JSON-парсера.
+(
+    jq() { echo 'FAIL: jq in media probe' >&2; exit 99; }
+    jsonfilter() { echo 'FAIL: jsonfilter in media probe' >&2; exit 99; }
+    for spec in audio:262144:0 video:1048576:0 video:2097152:1; do
+        kind=${spec%%:*}; rest=${spec#*:}; count=${rest%%:*}; middle=${rest#*:}
+        result=$(z2r_media_probe "$tmp/cache" "$kind" "$count" "$middle")
+        [[ "$result" == OK\|media_range\|* ]]
+    done
+    MOCK=redirect
+    result=$(z2r_media_probe "$tmp/cache" video 1048576 1)
+    [[ "$result" == OK\|media_range\|* ]]
+    date() { echo 4102444800; }
+    result=$(z2r_media_probe "$tmp/cache" video 1048576 0)
+    [[ "$result" == UNKNOWN\|expired\|* ]]
+)
 export MOCK Z2R_SUPERSWEEP_ISOLATED=1
 supersweep_probe_healthy() { return 0; }
 supersweep_probe_sequence() { echo 100; }
@@ -179,7 +228,7 @@ wait "$pid"
 grep -q '^UNKNOWN|cancelled|' "$tmp/cancel-result"
 rm "$Z2R_SUPERSWEEP_DIR/cancel"
 (
-    command() { case "$*" in '-v jq'|'-v opkg'|'-v apk'|'-v apt-get') return 1 ;; *) builtin command "$@" ;; esac; }
+    command() { case "$*" in '-v jq'|'-v jsonfilter'|'-v opkg'|'-v apk'|'-v apt-get') return 1 ;; *) builtin command "$@" ;; esac; }
     ! z2r_media_resolve aqz-KE-bpKQ "$tmp/cache"
     expect_status parser_missing
 )
