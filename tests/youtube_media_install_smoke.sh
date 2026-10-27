@@ -56,7 +56,7 @@ for answer in '' 0 1; do
         command() { case "$*" in '-v jq') return 1 ;; *) builtin command "$@" ;; esac; }
         z2r_media_install_jq() { touch "$tmp/consented"; }
         rm -f "$tmp/consented"
-        printf '%s\n' "$answer" | z2r_media_offer_jq > "$tmp/stdout" 2> "$tmp/stderr"
+        printf '%s\n' "$answer" | z2r_media_ask_jq > "$tmp/stdout" 2> "$tmp/stderr"
         test ! -s "$tmp/stdout"
         if [ "$answer" = 1 ]; then test -f "$tmp/consented"; else test ! -f "$tmp/consented"; fi
     )
@@ -71,4 +71,57 @@ done
     deploy_offer_media_jq </dev/null
     test ! -e "$tmp/deploy-prompted"
 )
+# Старый deploy может иметь stdin=/dev/null; новый CLI спрашивает после exec с TTY.
+python3 - <<'PY'
+import os
+import pathlib
+import pty
+import shlex
+import subprocess
+import tempfile
+
+library = shlex.quote(str(pathlib.Path('lib/youtube_media.sh').resolve()))
+for mode in ('missing', 'installed'):
+    with tempfile.TemporaryDirectory() as root:
+        cache = pathlib.Path(root) / 'extra_strats/cache'
+        (cache / 'deploy').mkdir(parents=True)
+        version = cache / 'deploy/version.env'
+        version.write_text('ZATOR_SHA="first"\n')
+        script = f'''
+set -eu
+export ZATOR_ROOT={shlex.quote(root)}
+. {library}
+command() {{
+    case "$*" in '-v jq') test {mode} = installed ;; *) builtin command "$@" ;; esac
+}}
+z2r_media_install_jq() {{ echo installed >> "$ZATOR_ROOT/installs"; }}
+z2r_media_offer_jq
+z2r_media_offer_jq
+printf 'ZATOR_SHA="second"\\n' > "$ZATOR_ROOT/extra_strats/cache/deploy/version.env"
+z2r_media_offer_jq
+'''
+        result = subprocess.run(['bash', '-c', script], input='1\n', text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
+        assert result.returncode == 0 and not result.stdout, result.stdout
+        assert not (cache / 'jq-offer').exists()
+        assert not (pathlib.Path(root) / 'installs').exists()
+        version.write_text('ZATOR_SHA="first"\n')
+        master, slave = pty.openpty()
+        try:
+            os.write(master, b'\n1\n')
+            result = subprocess.run(['bash', '-c', script], stdin=slave, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
+        finally:
+            os.close(master)
+            os.close(slave)
+        assert result.returncode == 0, result.stdout
+        if mode == 'missing':
+            assert result.stdout.count('Установить jq') == 2, result.stdout
+            assert (cache / 'jq-offer').read_text() == 'second\n'
+            assert (pathlib.Path(root) / 'installs').read_text() == 'installed\n'
+        else:
+            assert not result.stdout and not (cache / 'jq-offer').exists()
+assert sum(line.strip() == 'z2r_media_offer_jq' for line in pathlib.Path('z2r.sh').read_text().splitlines()) == 2
+PY
+
 echo 'youtube media install smoke ok'

@@ -1181,7 +1181,7 @@ get_repo() {
 # cache
 mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
-if [ -t 0 ] && type z2r_media_offer_jq >/dev/null 2>&1; then
+if type z2r_media_offer_jq >/dev/null 2>&1; then
   z2r_media_offer_jq
 fi
 
@@ -2826,6 +2826,9 @@ fi
 
 #Меню и быстрый запуск подбора стратегии
  if [ -d "$ZATOR_ROOT/extra_strats" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
+	if [ -z "${1:-}" ] && type z2r_media_offer_jq >/dev/null 2>&1; then
+		z2r_media_offer_jq
+	fi
 	if [ $1 ]; then
 		Strats_Tryer $1
 	fi

@@ -25,7 +25,7 @@ z2r_media_install_jq() {
 }
 
 # Только установщик/обновление вызывают этот диалог с живого терминала.
-z2r_media_offer_jq() {
+z2r_media_ask_jq() {
     command -v jq >/dev/null 2>&1 && return 0
     local answer
     printf 'Установить jq для проверки настоящих медиаданных YouTube? 1 — да, Enter — нет: ' >&2
@@ -36,6 +36,20 @@ z2r_media_offer_jq() {
         echo 'Установка jq пропущена. Без него используется плюшевый TLS/CDN-тест.' >&2
     fi
     return 0
+}
+
+# Старый deploy.sh уже работает в памяти при обновлении: новый CLI завершает setup.
+z2r_media_offer_jq() {
+    [ -t 0 ] || return 0
+    command -v jq >/dev/null 2>&1 && return 0
+    local cache="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache" version answered
+    version=$(sed -n 's/^ZATOR_SHA="\([^"]*\)"$/\1/p' "$cache/deploy/version.env" 2>/dev/null) || version=""
+    version=${version:-legacy}
+    answered=""
+    [ ! -f "$cache/jq-offer" ] || IFS= read -r answered < "$cache/jq-offer" || true
+    [ "$answered" != "$version" ] || return 0
+    z2r_media_ask_jq
+    mkdir -p "$cache" && printf '%s\n' "$version" > "$cache/jq-offer" || true
 }
 
 z2r_media_url_valid() {
