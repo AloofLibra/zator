@@ -127,6 +127,41 @@ for scenario in full first fallback cancel busy manual probeerror custom; do
         done < "$tmp/trace"
     )
 done
+# Отмена прошлого SuperSweep не отменяет обычные автопрогоны других профилей/доменов.
+(
+    mkdir -p "$Z2R_SUPERSWEEP_DIR"
+    touch "$Z2R_SUPERSWEEP_DIR/cancel"
+    orch_locked_state_get() { echo 7; }
+    orch_locked_set() { echo "$3" >> "$tmp/locks"; }
+    zapret2_running() { return 1; }
+    pause_enter() { :; }
+    sleep() { :; }
+    z2r_media_prepare() { echo 'FAIL: media preparation in non-GV sweep' >&2; exit 99; }
+    z2r_tls_check_target() {
+        echo "$1" >> "$tmp/checks"
+        printf '0|200|HTTP/1.1|.1|192.0.2.1\n0|200|HTTP/1.1|.1|192.0.2.1\n0|206|65536|.2\n'
+    }
+    for target in profile:1 profile:3 profile:4 domain:example.org; do
+        : > "$tmp/checks"; : > "$tmp/locks"
+        printf '0\n' | orch_auto_sweep "${target%%:*}" "${target#*:}" tls https://example.org/ 1 2 0 0 both > "$tmp/log" 2>&1
+        test "$(wc -l < "$tmp/checks")" = 2
+        grep -q 'Итог автопрогона:.*OK 2' "$tmp/log"
+        ! grep -q 'прервана пользователем' "$tmp/log"
+        test "$(tail -n 1 "$tmp/locks")" = 7
+        test -f "$Z2R_SUPERSWEEP_DIR/cancel"
+    done
+    # Настоящий SIGINT текущего автопрогона по-прежнему останавливает его и откатывает лок.
+    orch_locked_set() {
+        echo "$3" >> "$tmp/locks"
+        [ "$3" != 2 ] || kill -INT "$BASHPID"
+    }
+    : > "$tmp/locks"
+    printf '0\n' | orch_auto_sweep profile 1 tls https://example.org/ 1 3 0 0 both > "$tmp/log" 2>&1
+    grep -q 'Проверка прервана пользователем на стратегии 2' "$tmp/log"
+    grep -q 'Итог автопрогона:.*OK 1' "$tmp/log"
+    test "$(tail -n 1 "$tmp/locks")" = 7
+    test -f "$Z2R_SUPERSWEEP_DIR/cancel"
+)
 # TLS-цель использует только подтверждённые media-ответы соответствующей версии.
 z2r_media_check() {
     local state=$first_state

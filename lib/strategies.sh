@@ -387,7 +387,9 @@ orch_auto_sweep() {
             fi
         fi
         token="${short%%|*}"; short="${short#*|}"
-        if [ "$orch_auto_sweep_interrupted" = 1 ] || { [ -n "${Z2R_SUPERSWEEP_DIR:-}" ] && [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]; }; then
+        if [ "$orch_auto_sweep_interrupted" = 1 ] || {
+            [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ -n "${Z2R_SUPERSWEEP_DIR:-}" ] && [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+        }; then
             orch_auto_sweep_interrupted=1
             echo -e "${yellow}Проверка прервана пользователем на стратегии ${s}.${plain}"
             break
