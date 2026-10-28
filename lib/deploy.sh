@@ -236,6 +236,19 @@ free_kb() {
   df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}'
 }
 
+deploy_check_memory() {
+  local available
+  available="$(awk '/^MemAvailable:/ {a=$2; found=1} /^MemFree:/ {f=$2} END {if (found) print a; else if (f != "") print f}' /proc/meminfo 2>/dev/null)"
+  if [ -z "$available" ]; then
+    echo -e "${yellow}Не удалось определить доступную ОЗУ. Проверка пропущена.${plain}"
+    return 0
+  fi
+  if [ "$available" -lt 16384 ]; then
+    echo -e "${red}Недостаточно оперативной памяти: доступно $available КБ, нужно не менее 16 МБ.${plain}"
+    return 1
+  fi
+}
+
 # Выбор режима staging по свободному месту:
 #   A — staging в /tmp (архив + развёрнутое одновременно);
 #   B — staging на /opt (архив + развёрнутое на разделе установки);
@@ -252,8 +265,15 @@ deploy_space_mode_select() {
     return 0
   fi
   local need="$((unpacked_kb + DEPLOY_MARGIN_KB + DEPLOY_SLACK_KB))"
+  # При staging в /tmp на /opt нужны только рост файлов и временная копия одного файла.
+  if [ "$tmp_free" -ge "$((archive_kb + unpacked_kb + 512))" ]; then
+    need=5120
+    if [ ! -d "$ZATOR_ROOT/z2r_lib" ] && [ "$((unpacked_kb + DEPLOY_SLACK_KB))" -gt "$need" ]; then
+      need="$((unpacked_kb + DEPLOY_SLACK_KB))"
+    fi
+  fi
   if [ "$opt_free" -lt "$need" ]; then
-    echo -e "${red}Недостаточно места на разделе /opt: свободно $((opt_free / 1024)) МБ, нужно около $((need / 1024)) МБ (zator + zapret2 + рост листов).${plain}"
+    echo -e "${red}Недостаточно места на разделе /opt: свободно $opt_free КБ, нужно не менее $need КБ.${plain}"
     return 1
   fi
   if [ "$tmp_free" -ge "$((archive_kb + unpacked_kb + 512))" ]; then
@@ -693,6 +713,8 @@ deploy_from_tar() {
   staging="$tmpbase/stage" newdir="$ZATOR_ROOT.deploy.new.$$"
   archive="" archive_kb="" unpacked_kb="" unpacked_bytes="" fresh=0 url="" meta_key=""
   trap 'rm -rf "$tmpbase" "$newdir"' EXIT
+
+  deploy_check_memory || exit 1
 
   case "$source" in
     http://*|https://*)
