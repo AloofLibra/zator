@@ -122,7 +122,7 @@ NFQWS2_OPT="
 --out-range=-s34228
 --in-range=x
 --payload=tls_client_hello
---lua-desync=fake:blob=fake_default_tls:tcp_seq=-3000:strategy=1 --lua-desync=multisplit:pos=1,midsld:strategy=1
+--lua-desync=fake:blob=fake_default_tls:tcp_seq=-3000:repeats=2:strategy=1 --lua-desync=multisplit:pos=1,midsld:strategy=1
 --lua-desync=multisplit:blob=fake_default_tls:badsum:pos=2:nodrop:strategy=2
 --lua-desync=multisplit:blob=fake_default_tls:badsum:pos=2:nodrop:strategy=3 --lua-desync=fakeddisorder:pos=midsld:badsum:strategy=3
 --lua-desync=multisplit:blob=fake_default_tls:tcp_md5:pos=2:nodrop:strategy=4 --lua-desync=fakeddisorder:pos=sniext+4:tcp_md5:strategy=4
