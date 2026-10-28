@@ -372,6 +372,21 @@ cmp -s "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.defaul
 check_symlink "$ZATOR_ROOT/webui/www/cgi-bin" || fail "symlink cgi-bin не создан"
 ok "deploy_from_tar A: файлы, payload, z2r.sh, symlink"
 
+# Обычные режимы A/B используют тот же SHA256-пропуск, что и экономный D.
+for mode in A B; do
+  (
+    DEPLOY_MODE="$mode"
+    deploy_install_file() { echo "лишняя запись: $2" >&2; return 1; }
+    deploy_apply_staging "$STAGE" latest
+  ) > "$WORK/unchanged-$mode.out" 2>&1 || { cat "$WORK/unchanged-$mode.out"; fail "обычный режим $mode переписывает совпадающие файлы"; }
+  grep -q 'Установлено файлов: 0, без изменений:' "$WORK/unchanged-$mode.out" || fail "режим $mode не считает пропущенные файлы"
+done
+printf 'changed\n' > "$ZATOR_ROOT/lua/locked.lua"
+deploy_from_tar "$DIST/zator-full.tar.gz" > "$WORK/changed.out" 2>&1 || fail "обычное обновление изменённого файла упало"
+cmp -s "$WORK/expected-locked.lua" "$ZATOR_ROOT/lua/locked.lua" || fail "изменённый файл ошибочно пропущен"
+grep -q 'Установлено файлов: 1, без изменений:' "$WORK/changed.out" || fail "обычное обновление переписало больше одного изменённого файла"
+ok "обычные A/B: совпадающие SHA256 не записываются, изменённый файл обновляется"
+
 grep -q 'user-domain.example' "$ZATOR_ROOT/lists/netrogat.txt" || fail "netrogat.txt перезаписан"
 grep -q 'custom.example' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" || fail "TCP_Custom.txt перезаписан"
 grep -q 'autohost-runtime' "$ZATOR_ROOT/lists/autohostlist.txt" || fail "autohostlist.txt тронут"
