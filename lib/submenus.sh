@@ -1766,21 +1766,6 @@ fake_mode_profile_pick() {
         pause_enter
         ;;
       "2")
-        # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): клоны некорректно
-        # работают с Discord. Функционал не режем: предупреждение + явное
-        # согласие. Снять — убрать эту ветку.
-        if [ "$profile" = "4" ] && [ "$cur" != "clone" ]; then
-          echo ""
-          echo -e "${yellow}Внимание: клоны не корректно работают с Discord.${plain}"
-          echo -e "Рабочую стратегию Discord подбирает суперавтопрогон или перебор п.4."
-          dsc=""
-          read -re -p "Всё равно включить клоны? 1 - да, Enter - нет: " dsc || dsc=""
-          if [ "$dsc" != "1" ]; then
-            echo "Отмена — режим не менялся."
-            pause_enter
-            continue
-          fi
-        fi
         if mode_override_set "$profile" clone; then
           echo -e "${green}Профиль $profile: клоны ClientHello пользователя с невинным SNI.${plain}"
           echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
