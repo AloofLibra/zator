@@ -705,6 +705,7 @@ unset MOCK_DELAY MOCK_OK_P1
   config_profile_max_strategy() { echo 1; }
   z2r_media_prepare() {
     test "$Z2R_MEDIA_VIDEO_ID" = M7lc1UVf-VE
+    test "$(lock_state 1 tls)" = 1
     echo "$Z2R_MEDIA_VIDEO_ID" >> "$TMP_DIR/video14.prepared"
     Z2R_MEDIA_READY=1
   }

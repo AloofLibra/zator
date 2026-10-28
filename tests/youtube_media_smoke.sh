@@ -97,6 +97,7 @@ for scenario in missing visitor_number visitor_quote visitor_newline 403 429 val
         : > "$tmp/cold-parser.calls"
         jq() { echo jq >> "$tmp/cold-parser.calls"; command jq "$@"; }
         z2r_media_api() {
+            case "$1" in https://www.youtube.com/youtubei/v1/*) ;; *) return 1 ;; esac
             case "$scenario" in
                 403|429) printf '%s' "$scenario" ;;
                 missing) echo '{}' > "$3"; printf 200 ;;

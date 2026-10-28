@@ -35,9 +35,59 @@ export Z2R_TLS_LOCAL_PORTS=62000-62999
 z2r_tls_head_once https://example.com/ "$TMP/h" >/dev/null
 z2r_tls_probe_download https://example.com/ >/dev/null
 [ "$(grep -c -- '--local-port 62000-62999' "$TMP/curl.args")" = 2 ]
+z2r_media_api https://www.youtube.com/youtubei/v1/visitor_id "$TMP/request" "$TMP/visitor" >/dev/null
+z2r_media_api https://www.youtube.com/youtubei/v1/player "$TMP/request" "$TMP/player" >/dev/null
+[ "$(grep -c -- '--local-port 62000-62999' "$TMP/curl.args")" = 4 ]
 unset Z2R_TLS_LOCAL_PORTS
 z2r_tls_probe_download https://example.com/ >/dev/null
-[ "$(grep -c -- '--local-port' "$TMP/curl.args")" = 2 ]
+z2r_media_api https://www.youtube.com/youtubei/v1/visitor_id "$TMP/request" "$TMP/visitor" >/dev/null
+[ "$(grep -c -- '--local-port' "$TMP/curl.args")" = 4 ]
+# Resolver uses the winning YT plan, never the last tested plan or the GV plan.
+for resolver_case in winner no_winner resolve_fail start_fail lock_fail stop_fail; do
+(
+    Z2R_SUPERSWEEP_DIR="$TMP/resolver-$resolver_case"
+    mkdir -p "$Z2R_SUPERSWEEP_DIR/probe"
+    printf 'best=2\nbest_kind=ok\n' > "$Z2R_SUPERSWEEP_DIR/best.yt"
+    [ "$resolver_case" != no_winner ] || echo 'best=' > "$Z2R_SUPERSWEEP_DIR/best.yt"
+    supersweep_probe_start() {
+        echo "start:$1" >> "$Z2R_SUPERSWEEP_DIR/events"
+        test "$1" = 1
+        [ "$resolver_case" != start_fail ] || return 1
+        export Z2R_TLS_LOCAL_PORTS=62000-62999
+    }
+    supersweep_probe_stop() {
+        echo stop >> "$Z2R_SUPERSWEEP_DIR/events"
+        unset Z2R_TLS_LOCAL_PORTS
+        [ "$resolver_case" != stop_fail ]
+    }
+    _supersweep_settle() { echo settle >> "$Z2R_SUPERSWEEP_DIR/events"; }
+    if [ "$resolver_case" = lock_fail ]; then orch_locked_set() { return 1; }; fi
+    z2r_media_prepare() {
+        if [ "$resolver_case" = no_winner ]; then
+            test -z "${Z2R_TLS_LOCAL_PORTS:-}"
+        else
+            test "$Z2R_TLS_LOCAL_PORTS" = 62000-62999
+            grep -q $'^1\ttls\t2$' "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
+            grep -q $'^1\thttp\t2$' "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
+        fi
+        grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE"
+        echo resolve >> "$Z2R_SUPERSWEEP_DIR/events"
+        [ "$resolver_case" != resolve_fail ] || return 1
+        Z2R_MEDIA_READY=1
+    }
+    rc=0; _supersweep_prepare_media "$CONFIG_FILE" > "$TMP/resolver.log" 2>&1 || rc=$?
+    case "$resolver_case" in
+        winner|resolve_fail)
+            test "$rc" = 0
+            test "$(cat "$Z2R_SUPERSWEEP_DIR/events")" = $'start:1\nsettle\nresolve\nstop'
+            if [ "$resolver_case" = winner ]; then test "$Z2R_MEDIA_READY" = 1
+            else test "$Z2R_MEDIA_READY" = 0; grep -q resolver_unavailable "$Z2R_SUPERSWEEP_DIR/media-status"; fi ;;
+        no_winner) test "$rc" = 0; test "$(cat "$Z2R_SUPERSWEEP_DIR/events")" = resolve ;;
+        *) test "$rc" = 1; test "$resolver_case" = stop_fail || ! grep -q '^resolve$' "$Z2R_SUPERSWEEP_DIR/events" ;;
+    esac
+    test -z "${Z2R_TLS_LOCAL_PORTS:-}"
+) || { cat "$TMP/resolver.log" >&2; echo "FAIL: resolver route $resolver_case" >&2; exit 1; }
+done
 # Build from deployed source, not develop strategies or its adaptive extensions.
 source lib/supersweep_probe.sh
 # RKN must retain isolation errors in the run log, just like profile workers.

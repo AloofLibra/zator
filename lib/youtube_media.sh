@@ -113,10 +113,15 @@ z2r_media_url_valid() {
 
 # curl без пользовательского .curlrc, proxy/cookies и повторов. Никаких Player JS.
 z2r_media_api() {
+    local url="$1" request="$2" output="$3"
+    set --
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && [ -n "${Z2R_TLS_LOCAL_PORTS:-}" ]; then
+        set -- "$@" --local-port "$Z2R_TLS_LOCAL_PORTS"
+    fi
     curl -q -4 --noproxy '*' --proto '=https' -s --connect-timeout 5 --max-time 15 \
         --max-filesize 262144 -A "$(z2r_media_ua)" \
         -H 'Content-Type: application/json' -H 'X-Goog-Api-Format-Version: 2' \
-        --data-binary "@$2" -o "$3" -w '%{http_code}' "$1" 2>/dev/null
+        --data-binary "@$request" -o "$output" -w '%{http_code}' "$url" "$@" 2>/dev/null
 }
 
 # Один jq разбирает player; после выбора парсер больше не нужен для media GET.
@@ -326,7 +331,7 @@ z2r_media_resolve() (
     case "$visitor" in ''|*[!a-zA-Z0-9_%=+/.-]*) z2r_media_status visitor_missing "$dir"; return 1 ;; esac
     [ "${#visitor}" -le 4096 ] || { z2r_media_status visitor_missing "$dir"; return 1; }
     z2r_media_request "$id" "$cpn" "$visitor" > "$dir/player-request.json"
-    code=$(z2r_media_api "https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false&t=$t&id=$id&%24fields=playabilityStatus,videoDetails(videoId,lengthSeconds),streamingData" \
+    code=$(z2r_media_api "https://www.youtube.com/youtubei/v1/player?prettyPrint=false&t=$t&id=$id&%24fields=playabilityStatus,videoDetails(videoId,lengthSeconds),streamingData" \
         "$dir/player-request.json" "$dir/player.json"); rc=$?
     if [ "$rc" != 0 ] || [ "$code" != 200 ]; then
         case "$code" in 403) code=innertube_denied ;; 429) code=rate_limited ;; 000) code=network_error ;; *) code=api_error ;; esac

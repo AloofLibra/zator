@@ -150,10 +150,10 @@ done
         test "$(tail -n 1 "$tmp/locks")" = 7
         test -f "$Z2R_SUPERSWEEP_DIR/cancel"
     done
-    # Настоящий SIGINT текущего автопрогона по-прежнему останавливает его и откатывает лок.
+    # Собственная отмена автопрогона по-прежнему останавливает его и откатывает лок.
     orch_locked_set() {
         echo "$3" >> "$tmp/locks"
-        [ "$3" != 2 ] || kill -INT "$BASHPID"
+        [ "$3" != 2 ] || orch_auto_sweep_interrupted=1
     }
     : > "$tmp/locks"
     printf '0\n' | orch_auto_sweep profile 1 tls https://example.org/ 1 3 0 0 both > "$tmp/log" 2>&1

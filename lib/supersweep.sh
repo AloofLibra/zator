@@ -854,6 +854,39 @@ _supersweep_profile_best() {
     _supersweep_kv_read "$file" best
 }
 
+# Innertube требует рабочий профиль YT, даже когда основной zapret2 не обходит DPI.
+_supersweep_prepare_media() {
+    local cfg="$1" dir="$Z2R_SUPERSWEEP_DIR" best probe=0
+    Z2R_MEDIA_READY=0
+    if ! type z2r_media_prepare >/dev/null 2>&1; then
+        echo resolver_unavailable > "$dir/media-status"
+        echo 'Googlevideo: Media UNKNOWN, нет media-модуля; fallback TLS/CDN без автоматического применения профиля 2.' >&2
+        return 0
+    fi
+    best="$(_supersweep_profile_best yt)"
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && [ -n "$best" ]; then
+        supersweep_probe_start 1 "$cfg" || return 1
+        probe=1
+        if ! { printf 'r|media-resolve\nprofile|1|tls|%s\nprofile|1|http|%s\n' "$best" "$best" > "$dir/cmd.yt" \
+            && _supersweep_apply_cmd "$dir/cmd.yt"; }; then
+            supersweep_probe_stop || :
+            return 1
+        fi
+    fi
+    if [ -n "$best" ]; then
+        echo "Googlevideo: получение медиассылок через рабочую YT-стратегию $best." >&2
+        _supersweep_settle
+    else
+        echo 'Googlevideo: рабочая YT-стратегия не найдена; пробую получить ссылки через текущее соединение.' >&2
+    fi
+    if ! z2r_media_prepare; then
+        Z2R_MEDIA_READY=0
+        echo resolver_unavailable > "$dir/media-status"
+    fi
+    [ "$probe" = 0 ] || supersweep_probe_stop || return 1
+    return 0
+}
+
 _supersweep_restore_prev() {
     # Пробы писали только приватный файл. Рабочие локи мог изменить пользователь.
     [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && return 0
@@ -1191,13 +1224,8 @@ _supersweep_run() {
         [ "$cancelled" = 1 ] && break
         [ "$interrupted" = 1 ] && cancelled=1 && break
         if [ "$phase" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
-            Z2R_MEDIA_READY=0
-            if type z2r_media_prepare >/dev/null 2>&1; then
-                z2r_media_prepare || echo resolver_unavailable > "$dir/media-status"
-            else
-                echo resolver_unavailable > "$dir/media-status"
-                echo 'Googlevideo: Media UNKNOWN, нет media-модуля; fallback TLS/CDN без автоматического применения профиля 2.' >&2
-            fi
+            _supersweep_prepare_media "$cfg" || { cancelled=1; break; }
+            if [ "$interrupted" = 1 ] || _supersweep_cancelled; then cancelled=1; break; fi
         fi
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             local probe_profile
