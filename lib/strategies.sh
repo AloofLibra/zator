@@ -738,6 +738,33 @@ z2r_normalize_domain() {
     printf '%s\n' "$d"
 }
 
+# Путь и query сохраняются буквально; hostlist и локи получают только домен.
+z2r_test_url_domain() {
+    local host="${1#*://}"
+    host="${host%%[/?#]*}"
+    z2r_normalize_domain "$host"
+}
+
+z2r_normalize_test_url() {
+    local url="$1" scheme authority host
+    url="${url#"${url%%[![:space:]]*}"}"
+    url="${url%"${url##*[![:space:]]}"}"
+    case "$url" in ''|*[[:space:][:cntrl:]]*|*\\*) return 1 ;; esac
+    case "$url" in
+        *://*)
+            scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"
+            case "$scheme" in http|https) ;; *) return 1 ;; esac
+            url="$scheme://${url#*://}"
+            ;;
+        *) url="https://$url" ;;
+    esac
+    authority="${url#*://}"; authority="${authority%%[/?#]*}"
+    printf '%s' "$authority" | grep -Eq '^[a-zA-Z0-9.-]+(:[0-9]+)?$' || return 1
+    host="$(z2r_test_url_domain "$url")" || return 1
+    [ -n "$host" ] || return 1
+    printf '%s\n' "$url"
+}
+
 # Пути к доменным спискам, общие для CLI и WebUI.
 custom_rkn_file() {
     printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_Custom.txt"
@@ -962,8 +989,8 @@ manage_custom_rkn_domain() {
         return 0
     fi
 
-    # Нормализация: отсекаем схему (http/https), порт, путь, крайние точки и т.п.
-    if ! user_domain="$(z2r_normalize_domain "$user_domain")"; then
+    test_url="$(z2r_normalize_test_url "$user_domain")" || test_url=""
+    if [ -z "$test_url" ] || ! user_domain="$(z2r_test_url_domain "$test_url")"; then
         echo -e "${red}Не удалось распознать домен из ввода.${plain}"
         echo -e "Укажите домен или ссылку, например: example.com или https://www.youtube.com/watch?v=..."
         pause_enter
@@ -1080,10 +1107,6 @@ manage_custom_rkn_domain() {
     read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
     case "$strategy_num" in
         a|A|а|А)
-            test_url="$user_domain"
-            if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
-                test_url="https://$test_url"
-            fi
             orch_run_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat"
             return 0
             ;;
@@ -1094,11 +1117,6 @@ manage_custom_rkn_domain() {
     if ! ui_is_number_in_range "$strategy_num" 1 "$max_strat"; then
         echo "Некорректный номер стратегии или вне диапазона. Начинаем с 1."
         strategy_num=1
-    fi
-
-    test_url="$user_domain"
-    if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
-        test_url="https://$test_url"
     fi
 
     for ((s=strategy_num; s<=max_strat; s++)); do
@@ -1292,7 +1310,7 @@ Strats_Tryer() {
       ;;
     "4")
       if rkn_trial_domain_pick; then
-        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://${RKN_TRIAL_DOMAIN}"
+        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "$RKN_TRIAL_URL"
       fi
       ;;
     *)
@@ -1306,7 +1324,7 @@ Strats_Tryer() {
 # (TCP_RKN_list.txt + TCP_Custom.txt; hostlist-семантика рантайма: сам домен
 # или родительский суффикс). Отсутствующего предлагаем добавить в
 # TCP_Custom.txt — тот же путь, что у суперавтопрогона. Результат —
-# в RKN_TRIAL_DOMAIN, rc!=0 = отмена подбора.
+# в RKN_TRIAL_DOMAIN и полный URL в RKN_TRIAL_URL, rc!=0 = отмена подбора.
 
 RKN_TRIAL_DOMAIN_DEFAULT="meduza.io"
 
@@ -1335,11 +1353,11 @@ rkn_list_has_domain() {
 }
 
 rkn_trial_domain_pick() {
-    local ans="" add_ans=""
+    local ans="" add_ans="" url=""
     clear -x
     echo -e "${cyan}--- Домен проверки профиля 3 (RKN) ---${plain}"
     echo -e "Enter — ${RKN_TRIAL_DOMAIN_DEFAULT} (базовый), свой домен или ссылка"
-    echo -e "(схема, порт и путь отбрасываются), 0 — отмена."
+    echo -e "Путь и параметры ссылки сохраняются для проверки загрузки; 0 — отмена."
     echo -e "Свой домен должен быть в РКН-списках; если его там нет — предложу добавить в TCP_Custom.txt."
     read -re -p "Домен: " ans || ans=""
     if [ "$ans" = "0" ]; then
@@ -1348,9 +1366,10 @@ rkn_trial_domain_pick() {
     fi
     if [ -z "$ans" ]; then
         RKN_TRIAL_DOMAIN="$RKN_TRIAL_DOMAIN_DEFAULT"
+        RKN_TRIAL_URL="https://${RKN_TRIAL_DOMAIN_DEFAULT}"
         return 0
     fi
-    ans="$(z2r_normalize_domain "$ans" 2>/dev/null)" || {
+    url="$(z2r_normalize_test_url "$ans" 2>/dev/null)" && ans="$(z2r_test_url_domain "$url")" || {
         echo -e "${red}Не удалось распознать домен. Пример: example.com или https://site.ru/path${plain}"
         pause_enter
         return 1
@@ -1358,6 +1377,7 @@ rkn_trial_domain_pick() {
     if rkn_list_has_domain "$ans"; then
         echo -e "${green}Домен ${ans} найден в РКН-списках.${plain}"
         RKN_TRIAL_DOMAIN="$ans"
+        RKN_TRIAL_URL="$url"
         return 0
     fi
     echo -e "${yellow}Домена ${ans} нет в РКН-списках — профиль 3 не будет его обрабатывать.${plain}"
@@ -1365,6 +1385,7 @@ rkn_trial_domain_pick() {
     if [ "$add_ans" = "1" ]; then
         domain_list_add "$(custom_rkn_file)" "$ans" "РКН-список (TCP_Custom.txt)" "Домен"
         RKN_TRIAL_DOMAIN="$ans"
+        RKN_TRIAL_URL="$url"
         return 0
     fi
     echo "Отменено."

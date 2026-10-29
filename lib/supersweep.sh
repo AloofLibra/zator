@@ -638,13 +638,15 @@ _supersweep_worker_rkn() {
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tmpd="${dir}/wrkn"
-    local ref d round=0 token out s v12 v13 rc code12 code13 unused
+    local ref d url round=0 token out s v12 v13 rc code12 code13 unused
+    local -a targets
+    read -r -a targets <<< "$domains"
     local ss_interrupted=0
     trap 'ss_interrupted=1' INT TERM
     set +e
     mkdir -p "$tmpd" 2>/dev/null
 
-    ref="${domains%% *}"
+    ref="$(z2r_test_url_domain "${targets[0]}")"
 
     # Порядок по результатам YouTube меняет только очередность, не набор стратегий.
     local s_list=""
@@ -666,20 +668,22 @@ _supersweep_worker_rkn() {
 
     # Полный последовательный проход каждого домена против rate-эвристик ТСПУ.
     local dtot="$(_supersweep_count_list "$domains")" dnum=0 dom_first=1 peff g
-    for d in $domains; do
+    for url in "${targets[@]}"; do
+        d="$(z2r_test_url_domain "$url")"
+        url="$(z2r_normalize_test_url "$url")"
         [ "$ss_interrupted" = 1 ] && break
         _supersweep_cancelled && break
         [ "$dom_first" = 1 ] || _supersweep_sleep "$pause_sec"
         dom_first=0
         dnum=$((dnum + 1))
-        echo -e "$(date '+%H:%M:%S') ${cyan}РКН: домен ${d} (${dnum}/${dtot}) — полный проход стратегий${plain}" >&2
+        echo -e "$(date '+%H:%M:%S') ${cyan}РКН: ${url} (${dnum}/${dtot}) — полный проход стратегий${plain}" >&2
         for s in $s_list; do
             [ "$ss_interrupted" = 1 ] && break
             _supersweep_cancelled && break
             round=$((round + 1))
             _supersweep_request_lock "$name" "$round" "domain|${d}|tls|${s}" || { ss_interrupted=1; break; }
             _supersweep_settle
-            _supersweep_check_target "https://${d}/" > "${tmpd}/r.0" </dev/null \
+            _supersweep_check_target "$url" > "${tmpd}/r.0" </dev/null \
                 || { ss_interrupted=1; break; }
             [ "$ss_interrupted" = 1 ] && break
             out="$(< "${tmpd}/r.0")"
@@ -1049,11 +1053,21 @@ _supersweep_domain_valid() {
 
 # Нормализация и дедупликация; мусор из CLI/WebUI отбрасывается с предупреждением.
 supersweep_sanitize_domains() {
-    local dom clean out="" dropped=0
-    for dom in $1; do
-        clean="$(z2r_normalize_domain "$dom" 2>/dev/null)" || clean=""
+    local dom clean url old kept out="" dropped=0
+    local -a inputs previous
+    read -r -a inputs <<< "${1//$'\n'/ }"
+    for dom in "${inputs[@]}"; do
+        url="$(z2r_normalize_test_url "$dom" 2>/dev/null)" || url=""
+        clean="$(z2r_test_url_domain "$url" 2>/dev/null)" || clean=""
         if [ -n "$clean" ] && _supersweep_domain_valid "$clean"; then
-            case " $out " in *" $clean "*) ;; *) out="${out}${out:+ }${clean}" ;; esac
+            case "$dom" in *://*|*/*|*\?*|*\#*) dom="$url" ;; *) dom="$clean" ;; esac
+            # Одна цель на домен, как в coverage.tsv: последний ввод заменяет прежний URL.
+            kept=""
+            read -r -a previous <<< "$out"
+            for old in "${previous[@]}"; do
+                [ "$(z2r_test_url_domain "$old")" = "$clean" ] || kept="${kept}${kept:+ }${old}"
+            done
+            out="${kept}${kept:+ }${dom}"
         else
             [ "$dropped" = 0 ] && echo -e "${yellow}Отброшены некорректные домены:${plain}" >&2
             echo -e "  ${dom}" >&2
@@ -1132,6 +1146,12 @@ _supersweep_run() {
     case "${Z2R_SUPERSWEEP_SETTLE:-2}" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
 
     domains="$(supersweep_sanitize_domains "$domains")"
+    local -a rkn_targets rkn_domains
+    local target
+    read -r -a rkn_targets <<< "$domains"
+    for target in "${rkn_targets[@]}"; do
+        rkn_domains+=("$(z2r_test_url_domain "$target")")
+    done
     [ -n "$domains" ] || {
         echo -e "${red}После проверки не осталось ни одного корректного домена РКН.${plain}"
         return 1
@@ -1169,7 +1189,7 @@ _supersweep_run() {
         printf 'yt\tyt\tprofile\t1\thttps://www.youtube.com/\t%s\n' "$max1"
         printf 'gv\tgv\tprofile\t2\t%s\t%s\n' "$gv_url" "$max2"
         printf 'ds\tds\tprofile\t4\thttps://discord.com/\t%s\n' "$max4"
-        printf 'rkn\tRKN\trkn\t3\t%s\t%s\n' "$(printf '%s' "$domains" | tr ' ' ',')" "$max3"
+        printf 'rkn\tRKN\trkn\t3\t%s\t%s\n' "$(IFS=,; echo "${rkn_domains[*]}")" "$max3"
     } > "${dir}/workers.tsv"
 
     # Прежние локи для отката и архива.
@@ -1180,7 +1200,7 @@ _supersweep_run() {
         printf 'profile|4|tls|%s\n' "$(orch_locked_state_get 4 tls)"
         printf 'profile|3|tls|%s\n' "$(orch_locked_state_get 3 tls)"
         local d
-        for d in $domains; do
+        for d in "${rkn_domains[@]}"; do
             printf 'domain|%s|tls|%s\n' "$d" "$(orch_locked_state_get "$d" tls)"
         done
     } > "${dir}/prev.tsv"
@@ -1246,7 +1266,7 @@ _supersweep_run() {
             yt) _supersweep_worker_profile yt yt 1 "tls http" "https://www.youtube.com/" "$max1" "$tls_pref" "$pause_sec" & ;;
             gv) _supersweep_worker_profile gv gv 2 "tls" "$gv_url" "$max2" "$tls_pref" "$pause_sec" & ;;
             ds) _supersweep_worker_profile ds ds 4 "tls" "https://discord.com/" "$max4" "$tls_pref" "$ds_pause" & ;;
-            rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" $domains & ;;
+            rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" "${rkn_targets[@]}" & ;;
         esac
         pid=$!
         Z2R_SUPERSWEEP_WORKER_PID="$pid"
@@ -1365,7 +1385,7 @@ _supersweep_run() {
         # Откатить доменные пробы без применённого победителя и профили без маркера.
         local d_tab
         d_tab="$(printf '\t')"
-        for d in $domains; do
+        for d in "${rkn_domains[@]}"; do
             grep -q "^domain${d_tab}${d}${d_tab}" "${dir}/applied.tsv" 2>/dev/null \
                 || _supersweep_restore_prev domain "$d"
         done
@@ -1484,7 +1504,7 @@ _supersweep_run() {
     # РКН: доменные победители, дефолт профиля и опциональные жёлтые.
     local cover totald warn_cover ref_dom yt_greens corr rkn_ans
     totald="$total_rkn"
-    ref_dom="${domains%% *}"
+    ref_dom="${rkn_domains[0]}"
     cover="$(_supersweep_kv_read "${dir}/best.rkn" winner_cover)"
     warn_winner="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner)"
     warn_cover="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner_cover)"
@@ -1557,7 +1577,7 @@ _supersweep_run() {
         echo -e "   Профильная стратегия РКН не менялась: зелёного покрытия нет ни у одной стратегии."
     fi
     # Без персонального победителя домен использует профильную стратегию.
-    for d in $domains; do
+    for d in "${rkn_domains[@]}"; do
         grep -q "^domain${d_tab2}${d}${d_tab2}" "${dir}/applied.tsv" 2>/dev/null \
             || no_win="${no_win}${no_win:+ }${d}"
     done
@@ -1635,21 +1655,18 @@ supersweep_ask_domains() {
 
 supersweep_ask_own_domains() {
     # Дополнить $1 своими доменами; неизвестные добавить в TCP_Custom для профиля 3.
-    local selected="$1" raw dom clean added=0 skipped=0 total=0
-    read -re -p "Свои домены через пробел (Enter - пропустить): " raw
+    local selected="$1" raw dom clean added=0 total=0
+    local -a targets
+    read -re -p "Свои домены или полные ссылки через пробел (Enter - пропустить): " raw
     [ -z "$raw" ] && { printf '%s\n' "$selected"; return 0; }
-    raw="$(printf '%s' "$raw" | tr ',' ' ')"
+    case "$raw" in *://*) ;; *) raw="$(printf '%s' "$raw" | tr ',' ' ')" ;; esac
+    raw="$(supersweep_sanitize_domains "$raw")"
     local rkn_list custom_file
     rkn_list="${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_RKN_list.txt"
     custom_file="$(custom_rkn_file)"
-    for dom in $raw; do
-        if ! clean="$(z2r_normalize_domain "$dom")" || ! _supersweep_domain_valid "$clean"; then
-            echo -e "${yellow}Не распознан домен: ${dom} — пропущен.${plain}" >&2
-            skipped=$((skipped + 1))
-            continue
-        fi
-        case " $selected " in *" $clean "*) continue ;; esac
-        selected="${selected} ${clean}"
+    read -r -a targets <<< "$raw"
+    for dom in "${targets[@]}"; do
+        clean="$(z2r_test_url_domain "$dom")"
         if { [ -f "$rkn_list" ] && grep -Fixq "$clean" "$rkn_list" 2>/dev/null; } \
             || { [ -f "$custom_file" ] && grep -Fixq "$clean" "$custom_file" 2>/dev/null; }; then
             :
@@ -1659,7 +1676,7 @@ supersweep_ask_own_domains() {
             added=$((added + 1))
         fi
     done
-    [ "$skipped" -gt 0 ] && echo -e "${yellow}Пропущено нераспознанных: ${skipped}.${plain}" >&2
+    selected="$(supersweep_sanitize_domains "$selected $raw")"
     total="$(_supersweep_count_list "$selected")"
     echo -e "Всего доменов РКН в прогоне: ${green}${total}${plain}" >&2
     echo -e "${green}${selected}${plain}" >&2
@@ -1746,6 +1763,8 @@ supersweep_menu() {
     fi
     domains="$(supersweep_ask_domains)" || { echo "Отмена."; return 0; }
     domains="$(supersweep_ask_own_domains "$domains")"
+    local -a rkn_targets
+    read -r -a rkn_targets <<< "$domains"
 
     tls_pref="$(orch_ask_sweep_tls_pref)"
     if [ -z "$tls_pref" ]; then
@@ -1782,7 +1801,7 @@ supersweep_menu() {
 
     echo ""
     echo -e "Домены РКН в прогоне (${ndom}):"
-    echo -e "${green}$(printf '%s\n' $domains | tr '\n' ' ' | sed 's/ $//')${plain}"
+    printf '%b%s%b\n' "$green" "$domains" "$plain"
     echo -e "РКН: ${ndom} домен(ов) по одному, полный проход стратегий на каждый, пауза РКН ${rkn_pause} сек."
     echo ""
     echo -e "Прогон займёт ориентировочно до $(( (est_total + 59) / 60 )) мин. Во время прогона"
@@ -1812,7 +1831,7 @@ supersweep_menu() {
     # Обработать rc=1 отмены, чтобы глобальный set -e не закрыл меню.
     case "$answer" in
         B)
-            supersweep_background_start "$cfg" "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || true
+            supersweep_background_start "$cfg" "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 "${rkn_targets[@]}" || true
             pause_enter || true
             return 0
             ;;
@@ -1821,7 +1840,7 @@ supersweep_menu() {
     # Прогон живёт в subshell с собственным INT trap; родительское меню
     # тоже получает Ctrl+C от терминала и не должно завершаться вместе с ним.
     trap ':' INT
-    supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || ss_run_rc=$?
+    supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 "${rkn_targets[@]}" || ss_run_rc=$?
     # Повторный Ctrl+C в сводке/паузе игнорируем; затем вернуть обычный INT.
     trap ':' INT
     pause_enter || true

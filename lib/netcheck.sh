@@ -79,7 +79,7 @@ z2r_tls_head_once() {
     local url="$1" hdr="$2"; shift 2
     local out rc
     rc=0
-    out="$(z2r_tls_curl -4 -s -L -k -I -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(z2r_tls_curl -4 -s -L -k -g -I -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_MAX_TIME" \
         -D "$hdr" -w '%{time_total} %{remote_ip}' \
         "$@" "$url" 2>/dev/null)" || rc=$?
@@ -119,7 +119,7 @@ z2r_tls_probe_download() {
     local url="$1" out rc code rest size time
     rc=0
 
-    out="$(z2r_tls_curl -4 -s -L -k -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(z2r_tls_curl -4 -s -L -k -g -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_DL_MAX_TIME" \
         --speed-limit "$Z2R_TLS_DL_SPEED_LIMIT" --speed-time "$Z2R_TLS_DL_SPEED_TIME" \
         -H "Range: bytes=0-$((Z2R_TLS_DL_RANGE - 1))" \

@@ -402,7 +402,8 @@ wait "$stale_pid" 2>/dev/null || true
 [ "$stale_rc" != 0 ]
 grep -q 'Обнаружен живой процесс' "$TMP/stale.error"
 [ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ]
-supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
+rkn_url='https://example.com/Case/0.summary?x=one,two&arr[]=1'
+supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 "$rkn_url"
 [ -d "$Z2R_SUPERSWEEP_DIR.lock" ]
 ! supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com 2>/dev/null
 for ((i=0; i<200; i++)); do
@@ -435,6 +436,7 @@ PY
 [ "$(wc -l < "$TMP/nfq.pids")" = 4 ]
 test "$(cat "$TMP/video.id")" = M7lc1UVf-VE
 grep -q -- '--local-port 62000-62999' "$TMP/network.args"
+grep -Fq -- "$rkn_url" "$TMP/network.args" || { echo 'FAIL: detached RKN lost the full URL' >&2; exit 1; }
 grep -q -- '-D OUTPUT' "$TMP/iptables.args"
 while read -r pid; do ! kill -0 "$pid" 2>/dev/null; done < "$TMP/nfq.pids"
 regression_failed=0

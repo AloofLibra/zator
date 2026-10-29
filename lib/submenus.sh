@@ -981,7 +981,7 @@ strategies_submenu() {
         ;;
       "3")
         if rkn_trial_domain_pick; then
-          orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://${RKN_TRIAL_DOMAIN}"
+          orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "$RKN_TRIAL_URL"
         fi
         ;;
       "4")
