@@ -675,6 +675,7 @@ api_state() {
     [ -n "$v_tracking" ] || v_tracking="latest"
     v_lz_date="$(deploy_latest_field LATEST_ZATOR_DATE)"
     v_lw_date="$(deploy_latest_field LATEST_WEBUI_DATE)"
+    v_lrel="$(deploy_latest_field LATEST_RELEASE)"
     local v_zs v_ws v_lz v_lw
     v_zs="$(deploy_version_field ZATOR_SHA)"
     v_ws="$(deploy_version_field WEBUI_SHA)"
@@ -691,9 +692,10 @@ api_state() {
     _json_esc "$v_tracking"; local j_track="$REPLY"
     _json_esc "$v_lz_date"; local j_lzdate="$REPLY"
     _json_esc "$v_lw_date"; local j_lwdate="$REPLY"
-    version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"$j_zver\",\"zator_date\":\"$j_zdate\",\"webui_version\":\"$j_wver\",\"webui_date\":\"$j_wdate\",\"tracking\":\"$j_track\",\"update_available\":$v_update,\"latest_zator_date\":\"$j_lzdate\",\"latest_webui_date\":\"$j_lwdate\",$cfg_json}"
+    _json_esc "$v_lrel"; local j_lrel="$REPLY"
+    version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"$j_zver\",\"zator_date\":\"$j_zdate\",\"webui_version\":\"$j_wver\",\"webui_date\":\"$j_wdate\",\"tracking\":\"$j_track\",\"update_available\":$v_update,\"latest_release\":\"$j_lrel\",\"latest_zator_date\":\"$j_lzdate\",\"latest_webui_date\":\"$j_lwdate\",$cfg_json}"
   else
-    version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
+    version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_release\":\"\",\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
   fi
   send_json "200 OK" "$(cat <<EOF
 {"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}

@@ -164,6 +164,7 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
   "webui_date": "2026-09-01 12:00",
   "tracking": "latest",          // latest | <тег релиза> — пин автообновления лаунчера
   "update_available": false,
+  "latest_release": "1.4",       // номер релиза, к которому привязан rolling-latest (поле release в latest.json; пусто — проверок не было или старый кэш)
   "latest_zator_date": "",       // даты доступного обновления (пусто — проверки не было)
   "latest_webui_date": "",
   "config_date": "2026-09-01 12:00:37 UTC",       // дата «# Last modified» живого config

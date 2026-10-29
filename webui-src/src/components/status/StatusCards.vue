@@ -35,7 +35,10 @@ async function runUpdateCheck() {
       return
     }
     await fetchAndApplyState()
-    showToast(res.update_available ? 'Есть обновление' : 'Обновлений нет', res.update_available ? 'info' : 'success')
+    const updText = res.update_available
+      ? (res.release ? `Есть обновление: релиз ${res.release}` : 'Есть обновление')
+      : 'Обновлений нет'
+    showToast(updText, res.update_available ? 'info' : 'success')
   } catch {
     showToast('Не удалось проверить обновления', 'error')
   } finally {
@@ -74,6 +77,8 @@ const cards = computed<CardDef[]>(() => {
   if (verRelease) verParts.push(`версия ${verRelease}`)
   if (ver?.zator_date) verParts.push(`zator от ${ver.zator_date}`)
   if (ver?.webui_date) verParts.push(`Web-панель от ${ver.webui_date}`)
+  // номер релиза, к которому привязан rolling-latest (latest.json «release»)
+  if (ver?.update_available && ver.latest_release) verParts.push(`доступен релиз ${ver.latest_release}`)
   const cfgPending = ver?.config_update_pending ?? false
   const verSub = ver?.update_available
     ? (verParts.length ? verParts.join('\n') : undefined)

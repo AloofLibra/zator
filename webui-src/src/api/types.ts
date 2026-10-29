@@ -229,6 +229,7 @@ export interface VersionInfo {
   webui_date: string
   tracking: string
   update_available: boolean
+  latest_release: string
   latest_zator_date: string
   latest_webui_date: string
   config_date: string

@@ -219,7 +219,11 @@ deploy_check_latest() {
     [ -n "$webui_sha" ] && [ "$webui_sha" != "$DEPLOY_META_WEBUI_SHA" ] && DEPLOY_UPDATE_WEBUI=1
   fi
   if [ "$DEPLOY_UPDATE_ZATOR" = 1 ] || [ "$DEPLOY_UPDATE_WEBUI" = 1 ]; then
-    echo -e "${yellow}Есть обновление:${plain}"
+    if [ -n "$DEPLOY_META_RELEASE" ]; then
+      echo -e "${yellow}Есть обновление (релиз ${green}$DEPLOY_META_RELEASE${yellow}):${plain}"
+    else
+      echo -e "${yellow}Есть обновление:${plain}"
+    fi
     [ "$DEPLOY_UPDATE_ZATOR" = 1 ] && echo -e "  zator от ${green}$DEPLOY_META_ZATOR_DATE${plain}"
     [ "$DEPLOY_UPDATE_WEBUI" = 1 ] && echo -e "  Web-панель от ${green}$DEPLOY_META_WEBUI_DATE${plain}"
   else
@@ -1191,13 +1195,16 @@ deploy_menu_header() {
   if [ -n "$mirror" ]; then
     MENU_DEPLOY_SOURCE=", источник: ${plain}зеркало $(printf '%s' "$mirror" | sed 's#^[a-z]*://##; s#/.*##')${yellow}"
   fi
-  local zsha wsha lz lw
+  local zsha wsha lz lw lrel
   zsha="$(deploy_version_field ZATOR_SHA)"
   wsha="$(deploy_version_field WEBUI_SHA)"
   lz="$(deploy_latest_field LATEST_ZATOR_SHA)"
   lw="$(deploy_latest_field LATEST_WEBUI_SHA)"
+  # номер релиза, к которому привязан rolling-latest (поле release в
+  # latest.json); в старом кэше latest.env его нет — тогда только даты
+  lrel="$(deploy_latest_field LATEST_RELEASE)"
   if [ -n "$lz" ] && [ -n "$zsha" ] && [ "$zsha" != "$lz" ]; then
-    what="zator от $(deploy_latest_field LATEST_ZATOR_DATE)"
+    what="zator${lrel:+ $lrel} от $(deploy_latest_field LATEST_ZATOR_DATE)"
   fi
   if [ "$has_webui" = 1 ] && [ -n "$lw" ] && [ -n "$wsha" ] && [ "$wsha" != "$lw" ]; then
     [ -n "$what" ] && what="$what, "
