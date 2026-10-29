@@ -2855,6 +2855,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                         "webui_date": "2026-09-01 12:00",
                         "tracking": "latest",
                         "update_available": False,
+                        "latest_release": "1.4",
                         "latest_zator_date": "",
                         "latest_webui_date": "",
                         "config_date": "2026-09-01 12:00:37 UTC",

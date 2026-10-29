@@ -219,7 +219,11 @@ deploy_check_latest() {
     [ -n "$webui_sha" ] && [ "$webui_sha" != "$DEPLOY_META_WEBUI_SHA" ] && DEPLOY_UPDATE_WEBUI=1
   fi
   if [ "$DEPLOY_UPDATE_ZATOR" = 1 ] || [ "$DEPLOY_UPDATE_WEBUI" = 1 ]; then
-    echo -e "${yellow}Есть обновление:${plain}"
+    if [ -n "$DEPLOY_META_RELEASE" ]; then
+      echo -e "${yellow}Есть обновление (релиз ${green}$DEPLOY_META_RELEASE${yellow}):${plain}"
+    else
+      echo -e "${yellow}Есть обновление:${plain}"
+    fi
     [ "$DEPLOY_UPDATE_ZATOR" = 1 ] && echo -e "  zator от ${green}$DEPLOY_META_ZATOR_DATE${plain}"
     [ "$DEPLOY_UPDATE_WEBUI" = 1 ] && echo -e "  Web-панель от ${green}$DEPLOY_META_WEBUI_DATE${plain}"
   else
@@ -1170,6 +1174,12 @@ deploy_menu_header() {
   [ -n "$MENU_ZATOR_DATE" ] || MENU_ZATOR_DATE="неизвестно"
   [ -n "$MENU_WEBUI_DATE" ] || MENU_WEBUI_DATE="неизвестно"
   [ -n "$MENU_DEPLOY_TRACKING" ] || MENU_DEPLOY_TRACKING="latest"
+  # номер релиза для шапки: пусто/unknown не показываем, "branch" — как есть
+  MENU_ZATOR_VER=""
+  case "$MENU_ZATOR_VERSION" in
+    ""|"unknown") ;;
+    *) MENU_ZATOR_VER=" ${plain}${MENU_ZATOR_VERSION}${yellow}" ;;
+  esac
   # без установленной панели ничего про неё не пишем: поля WEBUI_* в
   # version.env приходят из общей сборки даже для core-варианта
   MENU_WEBUI_PART=""
@@ -1185,13 +1195,16 @@ deploy_menu_header() {
   if [ -n "$mirror" ]; then
     MENU_DEPLOY_SOURCE=", источник: ${plain}зеркало $(printf '%s' "$mirror" | sed 's#^[a-z]*://##; s#/.*##')${yellow}"
   fi
-  local zsha wsha lz lw
+  local zsha wsha lz lw lrel
   zsha="$(deploy_version_field ZATOR_SHA)"
   wsha="$(deploy_version_field WEBUI_SHA)"
   lz="$(deploy_latest_field LATEST_ZATOR_SHA)"
   lw="$(deploy_latest_field LATEST_WEBUI_SHA)"
+  # номер релиза, к которому привязан rolling-latest (поле release в
+  # latest.json); в старом кэше latest.env его нет — тогда только даты
+  lrel="$(deploy_latest_field LATEST_RELEASE)"
   if [ -n "$lz" ] && [ -n "$zsha" ] && [ "$zsha" != "$lz" ]; then
-    what="zator от $(deploy_latest_field LATEST_ZATOR_DATE)"
+    what="zator${lrel:+ $lrel} от $(deploy_latest_field LATEST_ZATOR_DATE)"
   fi
   if [ "$has_webui" = 1 ] && [ -n "$lw" ] && [ -n "$wsha" ] && [ "$wsha" != "$lw" ]; then
     [ -n "$what" ] && what="$what, "
@@ -1199,7 +1212,7 @@ deploy_menu_header() {
   fi
   if [ -n "$what" ]; then
     if [ "$MENU_DEPLOY_TRACKING" != "latest" ]; then
-      MENU_DEPLOY_NOTICE="${yellow}Закреплена версия ${plain}${MENU_DEPLOY_TRACKING}${yellow}, доступен latest: ${plain}${what}${yellow} (п.2 снимет закрепление)
+      MENU_DEPLOY_NOTICE="${yellow}Закреплена версия ${plain}${MENU_DEPLOY_TRACKING}${yellow}, доступен latest: ${plain}${what}${yellow} (п.5 -> п.2 снимет закрепление)
 "
     else
       MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
@@ -1224,7 +1237,7 @@ deploy_update_menu() {
     clear -x
     echo -e "${Fcyan}============ Обновление zator и zapret2 ============${plain}"
     deploy_menu_header
-    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}${MENU_DEPLOY_SOURCE}"
+    echo -e "zator${MENU_ZATOR_VER} от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}${MENU_DEPLOY_SOURCE}"
     echo ""
     submenu_item 1 "Проверить обновления (даты zator/webui: локально vs сервер)"
     submenu_item 2 "Обновить zator (код, листы, lua; конфиг применится к живому, рестарт zapret2)"

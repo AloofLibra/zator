@@ -2489,7 +2489,7 @@ ${green}Прямо как твой интернет.${yellow}
 ${MENU_WAN_LINE}Аптайм: ${plain}${MENU_UPTIME}${yellow}
 RAM: ${plain}${MENU_RAM}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
-zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
+zator${MENU_ZATOR_VER} от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
 ${MENU_ZAPRET2_LINE}${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
 ${Fcyan}0.${yellow} Выход
