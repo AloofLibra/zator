@@ -65,7 +65,13 @@ const cards = computed<CardDef[]>(() => {
   const dnsProfile = (data.profiles || []).find((profile) => profile.is_dns_desync)
 
   const ver = versionInfo.value
+  // номер релиза из version.env; branch/unknown считаем «без номера» — показываем дату
+  const verRelease =
+    ver?.zator_version && ver.zator_version !== 'unknown' && ver.zator_version !== 'branch'
+      ? ver.zator_version
+      : ''
   const verParts: string[] = []
+  if (verRelease) verParts.push(`версия ${verRelease}`)
   if (ver?.zator_date) verParts.push(`zator от ${ver.zator_date}`)
   if (ver?.webui_date) verParts.push(`Web-панель от ${ver.webui_date}`)
   const cfgPending = ver?.config_update_pending ?? false
@@ -74,7 +80,7 @@ const cards = computed<CardDef[]>(() => {
     : cfgPending
       ? 'Для применения: п.5 -> п.7 в меню z2r'
       : (ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined)
-  let verValue = ver?.zator_date || '—'
+  let verValue = verRelease || ver?.zator_date || '—'
   let verClass = ''
   if (ver?.update_available) {
     verValue = 'Есть обновление'

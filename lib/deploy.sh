@@ -1170,6 +1170,12 @@ deploy_menu_header() {
   [ -n "$MENU_ZATOR_DATE" ] || MENU_ZATOR_DATE="неизвестно"
   [ -n "$MENU_WEBUI_DATE" ] || MENU_WEBUI_DATE="неизвестно"
   [ -n "$MENU_DEPLOY_TRACKING" ] || MENU_DEPLOY_TRACKING="latest"
+  # номер релиза для шапки: пусто/unknown не показываем, "branch" — как есть
+  MENU_ZATOR_VER=""
+  case "$MENU_ZATOR_VERSION" in
+    ""|"unknown") ;;
+    *) MENU_ZATOR_VER=" ${plain}${MENU_ZATOR_VERSION}${yellow}" ;;
+  esac
   # без установленной панели ничего про неё не пишем: поля WEBUI_* в
   # version.env приходят из общей сборки даже для core-варианта
   MENU_WEBUI_PART=""
@@ -1224,7 +1230,7 @@ deploy_update_menu() {
     clear -x
     echo -e "${Fcyan}============ Обновление zator и zapret2 ============${plain}"
     deploy_menu_header
-    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}${MENU_DEPLOY_SOURCE}"
+    echo -e "zator${MENU_ZATOR_VER} от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}${MENU_DEPLOY_SOURCE}"
     echo ""
     submenu_item 1 "Проверить обновления (даты zator/webui: локально vs сервер)"
     submenu_item 2 "Обновить zator (код, листы, lua; конфиг применится к живому, рестарт zapret2)"
