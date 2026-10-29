@@ -990,149 +990,95 @@ menu_config_snapshot() {
 }
 
 config_profile_max_strategy() {
-  local profile="$1"
-  local cfg keyed_max
+  local profile="$1" cfg begin_marker end_marker
   cfg="$(config_get_file "${2:-}")" || { echo 0; return 0; }
 
-  # Профиль задаётся логическим key=N, а не позицией блока между --new.
-  # Порядок блоков может меняться (в том числе в локальных конфигах и авто-режиме),
-  # поэтому сначала ищем стратегии в блоках с нужным ключом.
-  keyed_max="$(awk -v pid="$profile" '
-      function scan_strategies(line) {
-          while (match(line, /strategy=[0-9]+/)) {
-              num=substr(line, RSTART+9, RLENGTH-9)+0
-              if (in_template && num>tplmax[tpl]) tplmax[tpl]=num
-              if (!in_template && active && num>max) max=num
-              line=substr(line, RSTART+RLENGTH)
-          }
+  # Собираем keyed-, fallback- и positional-форматы одним проходом. Приоритет
+  # прежний: логический key=N, затем legacy fallback, затем номер блока.
+  case "$profile" in
+    8) begin_marker="#Z2R_FALLBACK_BEGIN"; end_marker="#Z2R_FALLBACK_END" ;;
+    9) begin_marker="#Z2R_FALLBACK_HTTP_BEGIN"; end_marker="#Z2R_FALLBACK_HTTP_END" ;;
+    *) begin_marker=""; end_marker="" ;;
+  esac
+  awk -v pid="$profile" -v begin="$begin_marker" -v end="$end_marker" '
+    function scan_strategies(line,    num) {
+      while (match(line, /strategy=[0-9]+/)) {
+        num=substr(line, RSTART+9, RLENGTH-9)+0
+        if (in_template) {
+          if (num > tplmax[tpl]) tplmax[tpl]=num
+        } else {
+          if (key_active && num > keyed_max) keyed_max=num
+          if (pos_active && prof == pid && num > positional_max) positional_max=num
+          if (in_fallback && num > fallback_max) fallback_max=num
+        }
+        line=substr(line, RSTART+RLENGTH)
       }
-      BEGIN {
-          inopt=0
-          in_template=0
-          active=0
-          tpl=""
-          max=0
-          key_re="--lua-desync=(circular_locked|circular_quality|rst_guard_locked):key=" pid "([^0-9]|$)"
+    }
+    function start_positional_profile() {
+      if (!in_template && !pos_active &&
+          $0 ~ /^--/ &&
+          $0 !~ /^--new/ &&
+          $0 !~ /^--lua-init/ &&
+          $0 !~ /^--blob=/ &&
+          $0 !~ /^--reasm-disable/) {
+        prof++
+        pos_active=1
       }
-      /^NFQWS2_OPT="/ {inopt=1}
-      inopt {
-          if ($0 ~ /^--template=/) {
-              in_template=1
-              active=0
-              tpl=$0
-              sub(/^--template=/, "", tpl)
-              sub(/[[:space:]].*$/, "", tpl)
-          } else if ($0 ~ /^[[:space:]]*--new[[:space:]]*$/) {
-              in_template=0
-              active=0
-              tpl=""
-          } else if (!in_template && $0 ~ key_re) {
-              active=1
-          }
-          if (!in_template && active && $0 ~ /^--import([=[:space:]]|$)/) {
-              imp=$0
-              sub(/^--import[=[:space:]]+/, "", imp)
-              sub(/[[:space:]].*$/, "", imp)
-              if (tplmax[imp]>max) max=tplmax[imp]
-          }
-          scan_strategies($0)
-          if ($0 ~ /^"$/) exit
-      }
-      END {print max}
-  ' "$cfg")"
-  if [ -n "$keyed_max" ] && [ "$keyed_max" -gt 0 ]; then
-    echo "$keyed_max"
-    return 0
-  fi
+    }
+    function template_name(line,    value) {
+      value=line
+      sub(/^--template=/, "", value)
+      sub(/[[:space:]].*$/, "", value)
+      return value
+    }
+    function import_name(line,    value) {
+      value=line
+      sub(/^--import[=[:space:]]+/, "", value)
+      sub(/[[:space:]].*$/, "", value)
+      return value
+    }
+    BEGIN {
+      inopt=0; in_template=0; tpl=""
+      key_active=0; pos_active=0; prof=0
+      in_fallback=0
+      keyed_max=0; fallback_max=0; positional_max=0
+      key_re="--lua-desync=(circular_locked|circular_quality|rst_guard_locked):key=" pid "([^0-9]|$)"
+    }
+    /^NFQWS2_OPT="/ { inopt=1 }
+    {
+      if (begin != "" && index($0, begin)) in_fallback=1
+      if (end != "" && index($0, end)) in_fallback=0
 
-  # Совместимость со старыми конфигами без логических key=N.
-  if [ "$profile" = "8" ] || [ "$profile" = "9" ]; then
-    local begin_marker end_marker fallback_max
-    if [ "$profile" = "9" ]; then
-      begin_marker="#Z2R_FALLBACK_HTTP_BEGIN"
-      end_marker="#Z2R_FALLBACK_HTTP_END"
-    else
-      begin_marker="#Z2R_FALLBACK_BEGIN"
-      end_marker="#Z2R_FALLBACK_END"
-    fi
-    fallback_max="$(awk -v begin="$begin_marker" -v end="$end_marker" '
-        function scan_strategies(line) {
-            while (match(line, /strategy=[0-9]+/)) {
-                num=substr(line, RSTART+9, RLENGTH-9)+0
-                if (in_template && num>tplmax[tpl]) tplmax[tpl]=num
-                if (inblk && num>max) max=num
-                line=substr(line, RSTART+RLENGTH)
-            }
+      if (inopt) {
+        if ($0 ~ /^--template=/) {
+          in_template=1
+          tpl=template_name($0)
+          key_active=0
+        } else if ($0 ~ /^[[:space:]]*--new[[:space:]]*$/) {
+          in_template=0; tpl=""; key_active=0; pos_active=0
+        } else if (!in_template) {
+          start_positional_profile()
+          if ($0 ~ key_re) key_active=1
         }
-        BEGIN{inblk=0; in_template=0; tpl=""; max=0}
-        /^--template=/ {
-            in_template=1
-            tpl=$0
-            sub(/^--template=/, "", tpl)
-            sub(/[[:space:]].*$/, "", tpl)
-        }
-        /^[[:space:]]*--new[[:space:]]*$/ {in_template=0; tpl=""}
-        index($0, begin) {inblk=1; next}
-        index($0, end) {inblk=0; exit}
-        inblk {
-            if ($0 ~ /^--import([=[:space:]]|$)/) {
-                imp=$0
-                sub(/^--import[=[:space:]]+/, "", imp)
-                sub(/[[:space:]].*$/, "", imp)
-                if (tplmax[imp]>max) max=tplmax[imp]
-            }
-        }
-        { scan_strategies($0) }
-        END{print max}
-    ' "$cfg")"
-    if [ -n "$fallback_max" ] && [ "$fallback_max" -gt 0 ]; then
-      echo "$fallback_max"
-      return 0
-    fi
-  fi
 
-  awk -v pid="$profile" '
-      function scan_strategies(line) {
-          while (match(line, /strategy=[0-9]+/)) {
-              num=substr(line, RSTART+9, RLENGTH-9)+0
-              if (in_template && num>tplmax[tpl]) tplmax[tpl]=num
-              if (!in_template && active && prof==pid && num>max) max=num
-              line=substr(line, RSTART+RLENGTH)
-          }
+        if (!in_template && key_active && $0 ~ /^--import([=[:space:]]|$)/) {
+          imp=import_name($0)
+          if (tplmax[imp] > keyed_max) keyed_max=tplmax[imp]
+        }
+        if (!in_template && pos_active && prof == pid && $0 ~ /^--import([=[:space:]]|$)/) {
+          imp=import_name($0)
+          if (tplmax[imp] > positional_max) positional_max=tplmax[imp]
+        }
       }
-      function start_profile_if_needed() {
-          if (!in_template && !active &&
-              $0 ~ /^--/ &&
-              $0 !~ /^--new/ &&
-              $0 !~ /^--lua-init/ &&
-              $0 !~ /^--blob=/ &&
-              $0 !~ /^--reasm-disable/) {
-              prof++
-              active=1
-          }
-      }
-      BEGIN{inopt=0; prof=0; active=0; in_template=0; tpl=""; max=0}
-      /^NFQWS2_OPT="/ {inopt=1}
-      inopt {
-          if ($0 ~ /^--template=/) {
-              in_template=1
-              tpl=$0
-              sub(/^--template=/, "", tpl)
-              sub(/[[:space:]].*$/, "", tpl)
-          } else {
-              start_profile_if_needed()
-          }
-          if (!in_template && active && prof==pid && $0 ~ /^--import([=[:space:]]|$)/) {
-              imp=$0
-              sub(/^--import[=[:space:]]+/, "", imp)
-              sub(/[[:space:]].*$/, "", imp)
-              if (tplmax[imp]>max) max=tplmax[imp]
-          }
-          scan_strategies($0)
-          if ($0 ~ /^--new/) {active=0; in_template=0; tpl=""}
-          if ($0 ~ /^"$/) exit
-      }
-      END{print max}
+
+      scan_strategies($0)
+      if (inopt && $0 ~ /^"$/) exit
+    }
+    END {
+      if (keyed_max > 0) print keyed_max
+      else if (fallback_max > 0) print fallback_max
+      else print positional_max
+    }
   ' "$cfg"
 }
 
@@ -1336,13 +1282,9 @@ config_profile_voice_ports() {
   echo "50000-50099,1400,3478-3481,5349,19294-19344"
 }
 
-config_profile_voice_ports_apply() {
-  local cfg="$1"
-  local state="$2"
-  local ports new_ports
-
+_config_profile_udp_ports_apply() {
+  local cfg="$1" state="$2" ports="$3" new_ports
   [ -f "$cfg" ] || return 0
-  ports="$(config_profile_voice_ports)"
   case "$state" in
     0)
       new_ports="$(csv_remove_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
@@ -1353,6 +1295,10 @@ config_profile_voice_ports_apply() {
       ;;
   esac
   [ "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" = "$new_ports" ] || config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
+}
+
+config_profile_voice_ports_apply() {
+  _config_profile_udp_ports_apply "$1" "$2" "$(config_profile_voice_ports)"
 }
 
 # Порт(ы) DNS-профиля (10) в NFQWS2_PORTS_UDP: тумблер антиспуфа добавляет/убирает 53.
@@ -1361,22 +1307,7 @@ config_profile_dns_ports() {
 }
 
 config_profile_dns_ports_apply() {
-  local cfg="$1"
-  local state="$2"
-  local ports new_ports
-
-  [ -f "$cfg" ] || return 0
-  ports="$(config_profile_dns_ports)"
-  case "$state" in
-    0)
-      new_ports="$(csv_remove_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
-      [ -n "$new_ports" ] || new_ports="443"
-      ;;
-    *)
-      new_ports="$(csv_add_tokens "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" "$ports")"
-      ;;
-  esac
-  [ "$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" = "$new_ports" ] || config_set_var "$cfg" NFQWS2_PORTS_UDP "$new_ports"
+  _config_profile_udp_ports_apply "$1" "$2" "$(config_profile_dns_ports)"
 }
 
 profile_config_voice_ports_changed() {

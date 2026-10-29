@@ -8,33 +8,22 @@
 [ -z "${Z2R_CURL_UA:-}" ] && Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
 get_yt_cluster_domain() {
-    local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
-    local letters_map_b="0 1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p q r s t u v w x y z -"
+    local letters_map_a='uzpkfa50vqlgb61wrmhc72xsnid83ytoje94-'
+    local letters_map_b='0123456789abcdefghijklmnopqrstuvwxyz-'
+    local cluster_codename converted_name
+    local i
 
-    cluster_codename=$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
-	#Второй раз для пробития нерелевантного ответа
-    cluster_codename=$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
-    
+    for i in 1 2; do
+        cluster_codename="$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
+    done
+
     [ -z "$cluster_codename" ] && {
         echo "Не удалось получить cluster_codename. Используем тогда rr2---sn-4g5ednly.googlevideo.com" >&2
         echo "rr2---sn-4g5ednly.googlevideo.com"
         return
     }
-    
-    local converted_name=""
-    local i=0
-    while [ $i -lt ${#cluster_codename} ]; do
-        char=$(echo "$cluster_codename" | cut -c$((i+1)))
-        idx=1
-        for a in $letters_map_a; do
-            [ "$a" = "$char" ] && break
-            idx=$((idx+1))
-        done
-        b=$(echo "$letters_map_b" | cut -d' ' -f $idx)
-        converted_name="${converted_name}${b}"
-        i=$((i+1))
-    done
-    
+
+    converted_name="$(printf '%s' "$cluster_codename" | tr "$letters_map_a" "$letters_map_b")"
     echo "rr1---sn-${converted_name}.googlevideo.com"
 }
 

@@ -179,10 +179,6 @@ supersweep_report_json() {
     END {print root ",\"workers\":[" workers "],\"applied\":[" applied "],\"domains\":[" domains "]}"}'
 }
 
-supersweep_dir() {
-    printf '%s\n' "$Z2R_SUPERSWEEP_DIR"
-}
-
 # Отмена: touch "$Z2R_SUPERSWEEP_DIR/cancel"; воркеры остановятся на безопасном шаге, откат — в родителе.
 supersweep_cancel_running() {
     [ -d "$Z2R_SUPERSWEEP_DIR" ] || return 1
@@ -291,14 +287,6 @@ _supersweep_badge() {
         http) if [ "${name:-}" = gv ]; then printf '%b%-17s%b' "$green" "$btxt" "$plain"; else printf '%b%-17s%b' "$yellow" "$btxt" "$plain"; fi ;;
         fail) printf '%b%-17s%b' "$red" "$btxt" "$plain" ;;
         *) printf '%b%-17s%b' "$plain" "$btxt" "$plain" ;;
-    esac
-}
-
-_supersweep_verdict_color() {
-    case "$1" in
-        ok) printf '%s' "$green" ;;
-        warn) printf '%s' "$yellow" ;;
-        *) printf '%s' "$red" ;;
     esac
 }
 

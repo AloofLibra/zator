@@ -4,11 +4,10 @@ PREMIUM_FLAG="$CACHE_DIR/premium.enabled"
 PREMIUM_TITLE_FILE="$CACHE_DIR/premium.title"
 
 rand_from_list() {
-  # usage: rand_from_list "a" "b" "c"
-  local n=$#
-  (( n == 0 )) && return 1
-  local idx=$(( (RANDOM % n) + 1 ))
-  eval "echo \"\${$idx}\""
+  (( $# > 0 )) || return 1
+  local idx=$((RANDOM % $#))
+  shift "$idx"
+  printf '%s\n' "$1"
 }
 
 spinner_for_seconds() {

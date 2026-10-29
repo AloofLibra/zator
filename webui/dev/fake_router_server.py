@@ -1738,8 +1738,8 @@ class FakeRouterState:
         is_udp_games = (pid == UDP_GAMES_PROFILE)
         is_dns_desync = (pid == DNS_DESYNC_PROFILE)
         # current_lock читаем из profile.lock + orchestra-lock — как реальный
-        # profile_json_fallback → profile_state_display. Для 8/9 orchestra-lock
-        # живёт в locked.manual.tsv (profile_config_orch_set); config-блок не
+        # profile_json. Для 8/9 orchestra-lock живёт в locked.manual.tsv
+        # (profile_config_orch_set); config-блок не
         # хранит выбор стратегии (его делает runtime circular_locked:key=N).
         orch_file = self.lock_manual_file if is_fallback else self.lock_file
         if scope == "default":

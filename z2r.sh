@@ -155,19 +155,6 @@ z2r_download_project_file() {
   return 1
 }
 
-z2r_download_project_stdout() {
-  local rel="$1"
-  local tmp="/tmp/z2r_download_$$"
-
-  if z2r_download_project_file "$tmp" "$rel"; then
-    cat "$tmp"
-    rm -f "$tmp"
-    return 0
-  fi
-  rm -f "$tmp"
-  return 1
-}
-
 z2r_upstream_mirror_url() {
   printf '%s/%s?h=master' "$ZAPRET2_UPSTREAM_MIRROR_BASE" "$1"
 }
@@ -1202,16 +1189,6 @@ client_scope_config_restore() {
   config_client_scope_ensure "$ZAPRET2_ROOT/config" || true
   client_scope_lua_config_sync "$ZAPRET2_ROOT/config" || true
   rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
-}
-
-#Удаление старого запрета, если есть
-client_scope_enabled_from_active_config() {
- if [ "${CLIENT_SCOPE_ENABLE+x}" = "x" ]; then
-  [ "$CLIENT_SCOPE_ENABLE" = "1" ]
-  return
- fi
- [ -f "$ZAPRET2_ROOT/config" ] || return 1
- grep -Eq '^[[:space:]]*CLIENT_SCOPE_ENABLE[[:space:]]*=[[:space:]]*1([[:space:]]*#.*)?$' "$ZAPRET2_ROOT/config"
 }
 
 client_scope_firewall_apply_active_config() {

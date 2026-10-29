@@ -115,10 +115,6 @@ deploy_json_str() {
   sed -n "s/^.*\"$2\": *\"\([^\"]*\)\".*$/\1/p" "$1" | head -n1
 }
 
-deploy_json_num() {
-  sed -n "s/^.*\"$2\": *\([0-9][0-9]*\).*$/\1/p" "$1" | head -n1
-}
-
 deploy_asset_field() {
   local file="$1" variant="$2" key="$3" section
   section="$(awk -v v="\"${variant}\":" 'index($0, v) > 0 {inb = 1; next} inb && index($0, "}") > 0 {exit} inb {print}' "$file")"

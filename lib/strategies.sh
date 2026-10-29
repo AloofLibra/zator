@@ -1163,10 +1163,6 @@ manage_custom_rkn_list() {
         1
 }
 
-netrogat_remove_domain() {
-    domain_list_remove "$(netrogat_file)" "$1"
-}
-
 netrogat_add_domain() {
     local user_domain="" clean_domain="" net_file
     net_file="$(netrogat_file)"

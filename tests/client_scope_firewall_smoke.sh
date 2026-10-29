@@ -87,25 +87,11 @@ chmod +x "$MOCK/nft"
   grep -q 'foreign table inet other' "$NFT_STATE" || fail 'invalid comment changed nft state'
 )
 
-# Lifecycle integration: remove_zapret must honor the active config even when
-# CLIENT_SCOPE_ENABLE is not exported by the caller.
-CONFIG_ROOT="$TMP/config-root"
-mkdir -p "$CONFIG_ROOT"
-printf 'CLIENT_SCOPE_ENABLE=1\n' > "$CONFIG_ROOT/config"
-unset CLIENT_SCOPE_ENABLE
-eval "$(sed -n '/^client_scope_enabled_from_active_config() {/,/^}/p' "$ROOT/z2r.sh")"
-ZAPRET2_ROOT="$CONFIG_ROOT"
-client_scope_enabled_from_active_config || fail 'active config enable was not detected'
-printf 'CLIENT_SCOPE_ENABLE=0\n' > "$CONFIG_ROOT/config"
-if client_scope_enabled_from_active_config; then
-  fail 'disabled active config was treated as enabled'
-fi
+# Lifecycle integration: remove_zapret must always clean client-scope rules,
+# regardless of whether CLIENT_SCOPE_ENABLE is exported by the caller.
 REMOVE_BLOCK=$(sed -n '/^remove_zapret() {/,/^}/p' "$ROOT/z2r.sh")
 printf '%s\n' "$REMOVE_BLOCK" | grep -q 'client_scope_firewall_action cleanup' \
   || fail 'remove_zapret does not always clean up client scope firewall'
-if printf '%s\n' "$REMOVE_BLOCK" | grep -q 'if client_scope_enabled_from_active_config'; then
-  fail 'remove_zapret still gates cleanup on enabled config'
-fi
 
 # Keenetic ndm пересобирает firewall при любом событии в сети и сносит правила
 # client scope; netfilter.d-хук обязан переустанавливать их общим reconcile.
