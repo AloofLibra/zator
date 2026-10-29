@@ -12,6 +12,11 @@ Z2R_SUPERSWEEP_ARCHIVE_KEEP="${Z2R_SUPERSWEEP_ARCHIVE_KEEP:-10}"
 Z2R_SUPERSWEEP_RKN_PAR_DEFAULT="${Z2R_SUPERSWEEP_RKN_PAR_DEFAULT:-2}"
 # Базовые домены уже в TCP_RKN_list.txt; добавление в TCP_Custom не требуется.
 Z2R_SUPERSWEEP_RKN_DOMAINS="${Z2R_SUPERSWEEP_RKN_DOMAINS:-xhamster.com anidub.com amnezia.org}"
+# 0 явно оставляет прежний TLS/CDN-тест; отсутствие jq не меняет установку.
+Z2R_SUPERSWEEP_MEDIA="${Z2R_SUPERSWEEP_MEDIA:-1}"
+if [ -f "${LIB_DIR:-${BASH_SOURCE[0]%/*}}/youtube_media.sh" ]; then
+    source "${LIB_DIR:-${BASH_SOURCE[0]%/*}}/youtube_media.sh"
+fi
 
 # Цвета для standalone-запуска; в меню их задаёт z2r.sh.
 [ -z "${plain:-}" ] && plain='\033[0m'
@@ -39,7 +44,7 @@ supersweep_report_tsv() {
     fi
     [ "${_Z2R_SS_REPORT_FINAL:-0}" != 1 ] || alive=0
     set --
-    for file in status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv \
+    for file in status media-status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv \
         best.yt best.gv best.ds best.rkn applied.yt applied.gv applied.ds applied.rkn applied.tsv; do
         [ ! -r "$dir/$file" ] || set -- "$@" "$dir/$file"
     done
@@ -54,12 +59,13 @@ supersweep_report_tsv() {
     }
     {
         file=FILENAME;sub(/^.*\//,"",file)
+        if(file=="media-status") {media=$1;next}
         if(file=="status") {i=index($0,"=");if(i)kv[substr($0,1,i-1)]=substr($0,i+1);next}
         if(file=="workers.tsv" && NF>=6 && $1 in labels) {
             w=$1;seen[w]=1;total[w]=num($6)*(w=="rkn"?split($5,ds,","):1);url[w]=$5;next
         }
-        if(file~/^progress\.(yt|gv|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail)$/) {
-            w=file;sub(/^progress\./,"",w);sub(/\.tsv$/,"",w);count[w]++;verdict[w,$4]++;next
+        if(file~/^progress\.(yt|gv|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail|unknown)$/) {
+            w=file;sub(/^progress\./,"",w);sub(/\.tsv$/,"",w);count[w]++;verdict[w,$4=="unknown"?"warn":$4]++;next
         }
         if(file~/^best\.(yt|gv|ds|rkn)$/) {
             w=file;sub(/^best\./,"",w);i=index($0,"=");key=substr($0,1,i-1);v=substr($0,i+1)
@@ -86,7 +92,8 @@ supersweep_report_tsv() {
         printf "R\t%s\t%d\t%.0f\t%.0f\t%s\t%s\t%d\t%d\tlive\n",state,active,num(kv["started"]),num(kv["updated"]),clean(kv["scope"]==""?"default":kv["scope"]),clean(phase),completed,sum
         for(i=1;i<=4;i++) {
             w=names[i];if(!seen[w])continue
-            print "W",w,labels[w],profiles[w],count[w]+0,total[w]+0,verdict[w,"ok"]+0,verdict[w,"warn"]+0,verdict[w,"fail"]+0,clean(active&&phase==w?current[w]:""),clean(target[w]),clean(lists[w,"greens"]),clean(lists[w,"warns"]),clean(winner[w])
+            label=labels[w];if(w=="gv" && media!="")label=label " [" (media=="ready"?"media TCP":"Media UNKNOWN: " clean(media)) "]"
+            print "W",w,label,profiles[w],count[w]+0,total[w]+0,verdict[w,"ok"]+0,verdict[w,"warn"]+0,verdict[w,"fail"]+0,clean(active&&phase==w?current[w]:""),clean(target[w]),clean(lists[w,"greens"]),clean(lists[w,"warns"]),clean(winner[w])
         }
         for(i=1;i<=na;i++){key=order[i];print "A",kind[key],clean(dest[key]),applied[key]}
     }' "$@" || return 1
@@ -170,10 +177,6 @@ supersweep_report_json() {
     $1=="A" {applied=applied as "{\"kind\":" q($2) ",\"target\":" q($3) ",\"strategy\":" n($4) "}"; as=","; if($2=="domain") da[$3]=$4}
     $1=="D" {domains=domains ds "{\"domain\":" q($2) ",\"best_strategy\":" ($3=="-"?"null":n($3)) ",\"verdict\":" q($4) ",\"applied\":" ($2 in da?n(da[$2]):"null") "}"; ds=","}
     END {print root ",\"workers\":[" workers "],\"applied\":[" applied "],\"domains\":[" domains "]}"}'
-}
-
-supersweep_dir() {
-    printf '%s\n' "$Z2R_SUPERSWEEP_DIR"
 }
 
 # Отмена: touch "$Z2R_SUPERSWEEP_DIR/cancel"; воркеры остановятся на безопасном шаге, откат — в родителе.
@@ -281,17 +284,9 @@ _supersweep_badge() {
     btxt="${badge%%|*}"; bst="${badge#*|}"
     case "$bst" in
         ok) printf '%b%-17s%b' "$green" "$btxt" "$plain" ;;
-        http) printf '%b%-17s%b' "$yellow" "$btxt" "$plain" ;;
+        http) if [ "${name:-}" = gv ]; then printf '%b%-17s%b' "$green" "$btxt" "$plain"; else printf '%b%-17s%b' "$yellow" "$btxt" "$plain"; fi ;;
         fail) printf '%b%-17s%b' "$red" "$btxt" "$plain" ;;
         *) printf '%b%-17s%b' "$plain" "$btxt" "$plain" ;;
-    esac
-}
-
-_supersweep_verdict_color() {
-    case "$1" in
-        ok) printf '%s' "$green" ;;
-        warn) printf '%s' "$yellow" ;;
-        *) printf '%s' "$red" ;;
     esac
 }
 
@@ -301,8 +296,19 @@ _supersweep_verdict_color() {
 # xtables lock даёт транзиентный отказ. Если правила транспорта снёс
 # внешний firewall-фреймворк (ndm на Keenetic), транспорт
 # переустанавливается на месте — прогон продолжает работу.
+_supersweep_probe_failure() {
+    mkdir -p "$Z2R_SUPERSWEEP_DIR/probe"
+    {
+        printf 'reason=%s\npid=%s\n' "$1" "${Z2R_SUPERSWEEP_NFQ_PID:-}"
+        if kill -0 "${Z2R_SUPERSWEEP_NFQ_PID:-}" 2>/dev/null; then echo process=running; else echo process=stopped; fi
+        cat "${Z2R_SUPERSWEEP_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}" 2>/dev/null || :
+    } > "$Z2R_SUPERSWEEP_DIR/probe/isolation-error"
+    : > "$Z2R_SUPERSWEEP_DIR/cancel"
+}
+
 _supersweep_check_target() {
     local out seq_before seq_after try attempt isolation_lost v12 v13 dl noqueue_saved=0
+    local check="${2:-z2r_tls_check_target}"
     for attempt in 1 2; do
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             for try in 1 2 3; do
@@ -311,17 +317,17 @@ _supersweep_check_target() {
                     echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
                     if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
                         echo 'Транспорт не восстановлен; прогон остановлен.' >&2
-                        : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                        _supersweep_probe_failure transport_unavailable
                         return 1
                     fi
                     break
                 fi
                 sleep 1
             done
-            seq_before="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+            seq_before="$(supersweep_probe_sequence)" || { _supersweep_probe_failure queue_unavailable; return 1; }
         fi
         isolation_lost=0
-        out="$(z2r_tls_check_target "$1")" || return 1
+        out="$("$check" "$1")" || return 1
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             for try in 1 2 3; do
                 if supersweep_probe_healthy; then break; fi
@@ -330,7 +336,7 @@ _supersweep_check_target() {
                     echo 'Проверка здоровья тестового пробника не прошла: переустанавливаю правила транспорта.' >&2
                     if ! supersweep_transport_reinstall || ! supersweep_probe_healthy; then
                         echo 'Транспорт не восстановлен; прогон остановлен.' >&2
-                        : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                        _supersweep_probe_failure transport_unavailable
                         return 1
                     fi
                     break
@@ -339,7 +345,9 @@ _supersweep_check_target() {
             done
             # Ответ при потере изоляции недостоверен; повторяем всю пробу один раз.
             [ "$isolation_lost" = 0 ] || continue
-            seq_after="$(supersweep_probe_sequence)" || { : > "$Z2R_SUPERSWEEP_DIR/cancel"; return 1; }
+            seq_after="$(supersweep_probe_sequence)" || { _supersweep_probe_failure queue_unavailable; return 1; }
+            # Даже при общем росте счётчика один media GET мог пройти вне очереди.
+            case "$out" in UNKNOWN\|noqueue\|*|UNKNOWN\|isolation_unavailable\|*) seq_after="$seq_before" ;; esac
             if [ "$seq_before" = "$seq_after" ]; then
                 { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
                 # Снять состояние до cleanup: он удалит правила и остановит очередь.
@@ -363,7 +371,7 @@ _supersweep_check_target() {
                 fi
                 echo 'Пакеты не попали в тестовую NFQUEUE: проверьте маршрутизацию и DNS. Прогон остановлен.' >&2
                 printf 'Проба %s: TLS 1.2=%s; TLS 1.3=%s; download=%s\n' "$1" "$v12" "$v13" "$dl" >&2
-                : > "$Z2R_SUPERSWEEP_DIR/cancel"
+                _supersweep_probe_failure noqueue
                 return 1
             fi
         fi
@@ -371,7 +379,7 @@ _supersweep_check_target() {
         return 0
     done
     echo 'Изоляция повторно нарушена во время проверки; прогон остановлен.' >&2
-    : > "$Z2R_SUPERSWEEP_DIR/cancel"
+    _supersweep_probe_failure isolation_lost
     return 1
 }
 
@@ -397,6 +405,7 @@ _supersweep_print_line() {
     case "$token" in
         ok) disp="OK  "; color="$green" ;;
         warn) disp="WARN"; color="$yellow" ;;
+        unknown) disp="UNKNOWN"; color="$yellow" ;;
         *) disp="FAIL"; color="$red" ;;
     esac
     printf -v stamp '%(%H:%M:%S)T' -1 2>/dev/null || stamp="$(date '+%H:%M:%S')"
@@ -435,7 +444,8 @@ _supersweep_worker_profile() {
     local tls_pref="$7" pause_sec="$8"
     local s p round=0 out v12 v13 dl short token specs epoch
     local ok_list="" warn_list="" full_list="" ok_stats="" warn_stats=""
-    local n_ok=0 n_warn=0 n_fail=0
+    local n_ok=0 n_warn=0 n_fail=0 n_unknown=0
+    local q12 q13 dlsize dltime rc code unused
     local ss_interrupted=0 psleep settle_v g
     # Settle входит в паузу; интервал проверок = пауза + время пробы.
     settle_v="${Z2R_SUPERSWEEP_SETTLE:-2}"
@@ -454,12 +464,21 @@ _supersweep_worker_profile() {
         _supersweep_request_lock "$name" "$round" "$specs" || { ss_interrupted=1; break; }
         _supersweep_settle
 
-        out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
-        { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
-        short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+        if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+            out="$(z2r_media_target "$s" "$tls_pref")" || { ss_interrupted=1; break; }
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
+        else
+            out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
+            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
+                short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
+            fi
+        fi
         token="${short%%|*}"; short="${short#*|}"
+        _supersweep_cancelled && { ss_interrupted=1; break; }
 
-        local q12=0 q13=0 dlsize dltime rc code unused
+        q12=0; q13=0
         IFS='|' read -r rc code unused <<< "$v12"
         z2r_tls_code_ok "$code" && q12=1
         IFS='|' read -r rc code unused <<< "$v13"
@@ -481,6 +500,7 @@ _supersweep_worker_profile() {
                     warn_stats="${warn_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
                 fi
                 ;;
+            unknown) n_unknown=$((n_unknown + 1)) ;;
             *)
                 token="fail"; n_fail=$((n_fail + 1))
                 ;;
@@ -543,6 +563,7 @@ _supersweep_worker_profile() {
         printf 'n_ok=%s\n' "$n_ok"
         printf 'n_warn=%s\n' "$n_warn"
         printf 'n_fail=%s\n' "$n_fail"
+        printf 'n_unknown=%s\n' "$n_unknown"
         printf 'interrupted=%s\n' "$ss_incomplete"
     } > "${dir}/best.${name}"
     : > "${dir}/done.${name}"
@@ -605,13 +626,15 @@ _supersweep_worker_rkn() {
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tmpd="${dir}/wrkn"
-    local ref d round=0 token out s v12 v13 rc code12 code13 unused
+    local ref d url round=0 token out s v12 v13 rc code12 code13 unused
+    local -a targets
+    read -r -a targets <<< "$domains"
     local ss_interrupted=0
     trap 'ss_interrupted=1' INT TERM
     set +e
     mkdir -p "$tmpd" 2>/dev/null
 
-    ref="${domains%% *}"
+    ref="$(z2r_test_url_domain "${targets[0]}")"
 
     # Порядок по результатам YouTube меняет только очередность, не набор стратегий.
     local s_list=""
@@ -633,20 +656,22 @@ _supersweep_worker_rkn() {
 
     # Полный последовательный проход каждого домена против rate-эвристик ТСПУ.
     local dtot="$(_supersweep_count_list "$domains")" dnum=0 dom_first=1 peff g
-    for d in $domains; do
+    for url in "${targets[@]}"; do
+        d="$(z2r_test_url_domain "$url")"
+        url="$(z2r_normalize_test_url "$url")"
         [ "$ss_interrupted" = 1 ] && break
         _supersweep_cancelled && break
         [ "$dom_first" = 1 ] || _supersweep_sleep "$pause_sec"
         dom_first=0
         dnum=$((dnum + 1))
-        echo -e "$(date '+%H:%M:%S') ${cyan}РКН: домен ${d} (${dnum}/${dtot}) — полный проход стратегий${plain}" >&2
+        echo -e "$(date '+%H:%M:%S') ${cyan}РКН: ${url} (${dnum}/${dtot}) — полный проход стратегий${plain}" >&2
         for s in $s_list; do
             [ "$ss_interrupted" = 1 ] && break
             _supersweep_cancelled && break
             round=$((round + 1))
             _supersweep_request_lock "$name" "$round" "domain|${d}|tls|${s}" || { ss_interrupted=1; break; }
             _supersweep_settle
-            _supersweep_check_target "https://${d}/" > "${tmpd}/r.0" </dev/null \
+            _supersweep_check_target "$url" > "${tmpd}/r.0" </dev/null \
                 || { ss_interrupted=1; break; }
             [ "$ss_interrupted" = 1 ] && break
             out="$(< "${tmpd}/r.0")"
@@ -821,6 +846,39 @@ _supersweep_profile_best() {
     _supersweep_kv_read "$file" best
 }
 
+# Innertube требует рабочий профиль YT, даже когда основной zapret2 не обходит DPI.
+_supersweep_prepare_media() {
+    local cfg="$1" dir="$Z2R_SUPERSWEEP_DIR" best probe=0
+    Z2R_MEDIA_READY=0
+    if ! type z2r_media_prepare >/dev/null 2>&1; then
+        echo resolver_unavailable > "$dir/media-status"
+        echo 'Googlevideo: Media UNKNOWN, нет media-модуля; fallback TLS/CDN без автоматического применения профиля 2.' >&2
+        return 0
+    fi
+    best="$(_supersweep_profile_best yt)"
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && [ -n "$best" ]; then
+        supersweep_probe_start 1 "$cfg" || return 1
+        probe=1
+        if ! { printf 'r|media-resolve\nprofile|1|tls|%s\nprofile|1|http|%s\n' "$best" "$best" > "$dir/cmd.yt" \
+            && _supersweep_apply_cmd "$dir/cmd.yt"; }; then
+            supersweep_probe_stop || :
+            return 1
+        fi
+    fi
+    if [ -n "$best" ]; then
+        echo "Googlevideo: получение медиассылок через рабочую YT-стратегию $best." >&2
+        _supersweep_settle
+    else
+        echo 'Googlevideo: рабочая YT-стратегия не найдена; пробую получить ссылки через текущее соединение.' >&2
+    fi
+    if ! z2r_media_prepare; then
+        Z2R_MEDIA_READY=0
+        echo resolver_unavailable > "$dir/media-status"
+    fi
+    [ "$probe" = 0 ] || supersweep_probe_stop || return 1
+    return 0
+}
+
 _supersweep_restore_prev() {
     # Пробы писали только приватный файл. Рабочие локи мог изменить пользователь.
     [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && return 0
@@ -983,11 +1041,21 @@ _supersweep_domain_valid() {
 
 # Нормализация и дедупликация; мусор из CLI/WebUI отбрасывается с предупреждением.
 supersweep_sanitize_domains() {
-    local dom clean out="" dropped=0
-    for dom in $1; do
-        clean="$(z2r_normalize_domain "$dom" 2>/dev/null)" || clean=""
+    local dom clean url old kept out="" dropped=0
+    local -a inputs previous
+    read -r -a inputs <<< "${1//$'\n'/ }"
+    for dom in "${inputs[@]}"; do
+        url="$(z2r_normalize_test_url "$dom" 2>/dev/null)" || url=""
+        clean="$(z2r_test_url_domain "$url" 2>/dev/null)" || clean=""
         if [ -n "$clean" ] && _supersweep_domain_valid "$clean"; then
-            case " $out " in *" $clean "*) ;; *) out="${out}${out:+ }${clean}" ;; esac
+            case "$dom" in *://*|*/*|*\?*|*\#*) dom="$url" ;; *) dom="$clean" ;; esac
+            # Одна цель на домен, как в coverage.tsv: последний ввод заменяет прежний URL.
+            kept=""
+            read -r -a previous <<< "$out"
+            for old in "${previous[@]}"; do
+                [ "$(z2r_test_url_domain "$old")" = "$clean" ] || kept="${kept}${kept:+ }${old}"
+            done
+            out="${kept}${kept:+ }${dom}"
         else
             [ "$dropped" = 0 ] && echo -e "${yellow}Отброшены некорректные домены:${plain}" >&2
             echo -e "  ${dom}" >&2
@@ -1021,6 +1089,10 @@ _supersweep_cleanup() {
             return 1
         }
     fi
+    if [[ "${Z2R_MEDIA_DIR:-}" =~ ^/tmp/zator-media\.[a-zA-Z0-9]{6}$ ]]; then
+        rm -rf "$Z2R_MEDIA_DIR"
+    fi
+    Z2R_MEDIA_DIR=""
     supersweep_report_save || echo 'Не удалось сохранить последний отчёт суперавтопрогона.' >&2
     rm -f "${Z2R_SUPERSWEEP_DIR}.lock/pid"
     rmdir "${Z2R_SUPERSWEEP_DIR}.lock" 2>/dev/null || true
@@ -1041,6 +1113,7 @@ supersweep_run() (
 )
 
 _supersweep_run() {
+    Z2R_MEDIA_DIR=""; Z2R_MEDIA_READY=0
     local tls_pref="$1" pause_sec="$2" ds_pause="$3" rkn_pause="$4" rkn_par="$5"
     printf '%s\n' "${BASHPID:-$$}" > "$Z2R_SUPERSWEEP_DIR.lock/pid" || return 1
     shift 5
@@ -1061,6 +1134,12 @@ _supersweep_run() {
     case "${Z2R_SUPERSWEEP_SETTLE:-2}" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
 
     domains="$(supersweep_sanitize_domains "$domains")"
+    local -a rkn_targets rkn_domains
+    local target
+    read -r -a rkn_targets <<< "$domains"
+    for target in "${rkn_targets[@]}"; do
+        rkn_domains+=("$(z2r_test_url_domain "$target")")
+    done
     [ -n "$domains" ] || {
         echo -e "${red}После проверки не осталось ни одного корректного домена РКН.${plain}"
         return 1
@@ -1098,7 +1177,7 @@ _supersweep_run() {
         printf 'yt\tyt\tprofile\t1\thttps://www.youtube.com/\t%s\n' "$max1"
         printf 'gv\tgv\tprofile\t2\t%s\t%s\n' "$gv_url" "$max2"
         printf 'ds\tds\tprofile\t4\thttps://discord.com/\t%s\n' "$max4"
-        printf 'rkn\tRKN\trkn\t3\t%s\t%s\n' "$(printf '%s' "$domains" | tr ' ' ',')" "$max3"
+        printf 'rkn\tRKN\trkn\t3\t%s\t%s\n' "$(IFS=,; echo "${rkn_domains[*]}")" "$max3"
     } > "${dir}/workers.tsv"
 
     # Прежние локи для отката и архива.
@@ -1109,7 +1188,7 @@ _supersweep_run() {
         printf 'profile|4|tls|%s\n' "$(orch_locked_state_get 4 tls)"
         printf 'profile|3|tls|%s\n' "$(orch_locked_state_get 3 tls)"
         local d
-        for d in $domains; do
+        for d in "${rkn_domains[@]}"; do
             printf 'domain|%s|tls|%s\n' "$d" "$(orch_locked_state_get "$d" tls)"
         done
     } > "${dir}/prev.tsv"
@@ -1152,6 +1231,10 @@ _supersweep_run() {
     for phase in yt gv ds rkn; do
         [ "$cancelled" = 1 ] && break
         [ "$interrupted" = 1 ] && cancelled=1 && break
+        if [ "$phase" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
+            _supersweep_prepare_media "$cfg" || { cancelled=1; break; }
+            if [ "$interrupted" = 1 ] || _supersweep_cancelled; then cancelled=1; break; fi
+        fi
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             local probe_profile
             case "$phase" in yt) probe_profile=1 ;; gv) probe_profile=2 ;; ds) probe_profile=4 ;; rkn) probe_profile=3 ;; esac
@@ -1171,7 +1254,7 @@ _supersweep_run() {
             yt) _supersweep_worker_profile yt yt 1 "tls http" "https://www.youtube.com/" "$max1" "$tls_pref" "$pause_sec" & ;;
             gv) _supersweep_worker_profile gv gv 2 "tls" "$gv_url" "$max2" "$tls_pref" "$pause_sec" & ;;
             ds) _supersweep_worker_profile ds ds 4 "tls" "https://discord.com/" "$max4" "$tls_pref" "$ds_pause" & ;;
-            rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" $domains & ;;
+            rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" "${rkn_targets[@]}" & ;;
         esac
         pid=$!
         Z2R_SUPERSWEEP_WORKER_PID="$pid"
@@ -1290,7 +1373,7 @@ _supersweep_run() {
         # Откатить доменные пробы без применённого победителя и профили без маркера.
         local d_tab
         d_tab="$(printf '\t')"
-        for d in $domains; do
+        for d in "${rkn_domains[@]}"; do
             grep -q "^domain${d_tab}${d}${d_tab}" "${dir}/applied.tsv" 2>/dev/null \
                 || _supersweep_restore_prev domain "$d"
         done
@@ -1409,7 +1492,7 @@ _supersweep_run() {
     # РКН: доменные победители, дефолт профиля и опциональные жёлтые.
     local cover totald warn_cover ref_dom yt_greens corr rkn_ans
     totald="$total_rkn"
-    ref_dom="${domains%% *}"
+    ref_dom="${rkn_domains[0]}"
     cover="$(_supersweep_kv_read "${dir}/best.rkn" winner_cover)"
     warn_winner="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner)"
     warn_cover="$(_supersweep_kv_read "${dir}/best.rkn" warn_winner_cover)"
@@ -1482,7 +1565,7 @@ _supersweep_run() {
         echo -e "   Профильная стратегия РКН не менялась: зелёного покрытия нет ни у одной стратегии."
     fi
     # Без персонального победителя домен использует профильную стратегию.
-    for d in $domains; do
+    for d in "${rkn_domains[@]}"; do
         grep -q "^domain${d_tab2}${d}${d_tab2}" "${dir}/applied.tsv" 2>/dev/null \
             || no_win="${no_win}${no_win:+ }${d}"
     done
@@ -1560,21 +1643,18 @@ supersweep_ask_domains() {
 
 supersweep_ask_own_domains() {
     # Дополнить $1 своими доменами; неизвестные добавить в TCP_Custom для профиля 3.
-    local selected="$1" raw dom clean added=0 skipped=0 total=0
-    read -re -p "Свои домены через пробел (Enter - пропустить): " raw
+    local selected="$1" raw dom clean added=0 total=0
+    local -a targets
+    read -re -p "Свои домены или полные ссылки через пробел (Enter - пропустить): " raw
     [ -z "$raw" ] && { printf '%s\n' "$selected"; return 0; }
-    raw="$(printf '%s' "$raw" | tr ',' ' ')"
+    case "$raw" in *://*) ;; *) raw="$(printf '%s' "$raw" | tr ',' ' ')" ;; esac
+    raw="$(supersweep_sanitize_domains "$raw")"
     local rkn_list custom_file
     rkn_list="${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_RKN_list.txt"
     custom_file="$(custom_rkn_file)"
-    for dom in $raw; do
-        if ! clean="$(z2r_normalize_domain "$dom")" || ! _supersweep_domain_valid "$clean"; then
-            echo -e "${yellow}Не распознан домен: ${dom} — пропущен.${plain}" >&2
-            skipped=$((skipped + 1))
-            continue
-        fi
-        case " $selected " in *" $clean "*) continue ;; esac
-        selected="${selected} ${clean}"
+    read -r -a targets <<< "$raw"
+    for dom in "${targets[@]}"; do
+        clean="$(z2r_test_url_domain "$dom")"
         if { [ -f "$rkn_list" ] && grep -Fixq "$clean" "$rkn_list" 2>/dev/null; } \
             || { [ -f "$custom_file" ] && grep -Fixq "$clean" "$custom_file" 2>/dev/null; }; then
             :
@@ -1584,7 +1664,7 @@ supersweep_ask_own_domains() {
             added=$((added + 1))
         fi
     done
-    [ "$skipped" -gt 0 ] && echo -e "${yellow}Пропущено нераспознанных: ${skipped}.${plain}" >&2
+    selected="$(supersweep_sanitize_domains "$selected $raw")"
     total="$(_supersweep_count_list "$selected")"
     echo -e "Всего доменов РКН в прогоне: ${green}${total}${plain}" >&2
     echo -e "${green}${selected}${plain}" >&2
@@ -1628,6 +1708,7 @@ supersweep_ask_rkn_pause() {
 
 supersweep_menu() {
     local cfg domains tls_pref pause ds_pause rkn_pause answer ss_run_rc=0
+    local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
     if [ -d "${Z2R_SUPERSWEEP_DIR}.lock" ]; then
         echo "Суперавтопрогон уже выполняется. Лог: ${Z2R_SUPERSWEEP_DIR}.log"
         answer=""
@@ -1665,8 +1746,13 @@ supersweep_menu() {
     echo "зелёным, следующая проверка идёт уже через 5 секунд."
     echo ""
 
+    if type z2r_media_ask_video >/dev/null 2>&1; then
+        Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
+    fi
     domains="$(supersweep_ask_domains)" || { echo "Отмена."; return 0; }
     domains="$(supersweep_ask_own_domains "$domains")"
+    local -a rkn_targets
+    read -r -a rkn_targets <<< "$domains"
 
     tls_pref="$(orch_ask_sweep_tls_pref)"
     if [ -z "$tls_pref" ]; then
@@ -1703,7 +1789,7 @@ supersweep_menu() {
 
     echo ""
     echo -e "Домены РКН в прогоне (${ndom}):"
-    echo -e "${green}$(printf '%s\n' $domains | tr '\n' ' ' | sed 's/ $//')${plain}"
+    printf '%b%s%b\n' "$green" "$domains" "$plain"
     echo -e "РКН: ${ndom} домен(ов) по одному, полный проход стратегий на каждый, пауза РКН ${rkn_pause} сек."
     echo ""
     echo -e "Прогон займёт ориентировочно до $(( (est_total + 59) / 60 )) мин. Во время прогона"
@@ -1733,7 +1819,7 @@ supersweep_menu() {
     # Обработать rc=1 отмены, чтобы глобальный set -e не закрыл меню.
     case "$answer" in
         B)
-            supersweep_background_start "$cfg" "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || true
+            supersweep_background_start "$cfg" "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 "${rkn_targets[@]}" || true
             pause_enter || true
             return 0
             ;;
@@ -1742,7 +1828,7 @@ supersweep_menu() {
     # Прогон живёт в subshell с собственным INT trap; родительское меню
     # тоже получает Ctrl+C от терминала и не должно завершаться вместе с ним.
     trap ':' INT
-    supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || ss_run_rc=$?
+    supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 "${rkn_targets[@]}" || ss_run_rc=$?
     # Повторный Ctrl+C в сводке/паузе игнорируем; затем вернуть обычный INT.
     trap ':' INT
     pause_enter || true

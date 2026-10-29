@@ -115,10 +115,6 @@ deploy_json_str() {
   sed -n "s/^.*\"$2\": *\"\([^\"]*\)\".*$/\1/p" "$1" | head -n1
 }
 
-deploy_json_num() {
-  sed -n "s/^.*\"$2\": *\([0-9][0-9]*\).*$/\1/p" "$1" | head -n1
-}
-
 deploy_asset_field() {
   local file="$1" variant="$2" key="$3" section
   section="$(awk -v v="\"${variant}\":" 'index($0, v) > 0 {inb = 1; next} inb && index($0, "}") > 0 {exit} inb {print}' "$file")"
@@ -236,24 +232,67 @@ free_kb() {
   df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}'
 }
 
+deploy_check_memory() {
+  local available
+  available="$(awk '/^MemAvailable:/ {a=$2; found=1} /^MemFree:/ {f=$2} END {if (found) print a; else if (f != "") print f}' /proc/meminfo 2>/dev/null)"
+  if [ -z "$available" ]; then
+    echo -e "${yellow}Не удалось определить доступную ОЗУ. Проверка пропущена.${plain}"
+    return 0
+  fi
+  if [ "$available" -lt 16384 ]; then
+    echo -e "${red}Недостаточно оперативной памяти: доступно $available КБ, нужно не менее 16 МБ.${plain}"
+    return 1
+  fi
+}
+
+deploy_confirm_economy() {
+  local answer
+  echo -e "${yellow}Для обычного обновления недостаточно свободной памяти или места на /opt.${plain}" >&2
+  echo -e "${yellow}Экономный режим временно остановит zapret2 и удалит старые файлы перед записью новых.${plain}" >&2
+  echo -e "${red}При отключении питания или перезагрузке во время записи файл может пропасть. Может потребоваться ручное восстановление установки: резервная копия в /tmp тоже потеряется.${plain}" >&2
+  if [ ! -t 0 ]; then
+    echo "Экономный режим требует подтверждения в интерактивном терминале. Обновление отменено." >&2
+    return 1
+  fi
+  printf 'Воспользоваться экономным режимом? 1 — да, Enter — отмена: ' >&2
+  IFS= read -r answer || return 1
+  [ "$answer" = 1 ]
+}
+
 # Выбор режима staging по свободному месту:
 #   A — staging в /tmp (архив + развёрнутое одновременно);
 #   B — staging на /opt (архив + развёрнутое на разделе установки);
-#   C — без хранения архива: распаковка в новый каталог с послеченной сверкой.
+#   C — без хранения архива: распаковка в новый каталог с послеченной сверкой;
+#   D — экономное обновление core: staging в /tmp, замена без второй копии на /opt.
 deploy_space_mode_select() {
   local archive_kb="$1" unpacked_kb="$2"
   DEPLOY_MODE=""
   local tmp_free opt_free
   tmp_free="$(free_kb /tmp)"
   opt_free="$(free_kb "$ZATOR_ROOT")"
+  if [ "${DEPLOY_ECONOMY:-0}" = 1 ]; then
+    if [ -z "$tmp_free" ] || [ "$tmp_free" -lt "$((unpacked_kb + 512))" ]; then
+      echo -e "${red}Недостаточно места в /tmp для экономного обновления.${plain}"
+      return 1
+    fi
+    DEPLOY_MODE=D
+    return 0
+  fi
   if [ -z "$tmp_free" ] || [ -z "$opt_free" ]; then
     echo -e "${yellow}Не удалось определить свободное место (df). Проверки пропущены.${plain}"
     DEPLOY_MODE=A
     return 0
   fi
   local need="$((unpacked_kb + DEPLOY_MARGIN_KB + DEPLOY_SLACK_KB))"
+  # При staging в /tmp на /opt нужны только рост файлов и временная копия одного файла.
+  if [ "$tmp_free" -ge "$((archive_kb + unpacked_kb + 512))" ]; then
+    need=5120
+    if [ ! -d "$ZATOR_ROOT/z2r_lib" ] && [ "$((unpacked_kb + DEPLOY_SLACK_KB))" -gt "$need" ]; then
+      need="$((unpacked_kb + DEPLOY_SLACK_KB))"
+    fi
+  fi
   if [ "$opt_free" -lt "$need" ]; then
-    echo -e "${red}Недостаточно места на разделе /opt: свободно $((opt_free / 1024)) МБ, нужно около $((need / 1024)) МБ (zator + zapret2 + рост листов).${plain}"
+    echo -e "${red}Недостаточно места на разделе /opt: свободно $opt_free КБ, нужно не менее $need КБ.${plain}"
     return 1
   fi
   if [ "$tmp_free" -ge "$((archive_kb + unpacked_kb + 512))" ]; then
@@ -262,7 +301,7 @@ deploy_space_mode_select() {
     echo -e "${yellow}Мало места в /tmp — staging будет на /opt.${plain}"
     DEPLOY_MODE=B
   else
-    echo -e "${yellow}Совсем мало места — установка без хранения архива, с послеченной сверкой.${plain}"
+    echo -e "${yellow}Совсем мало места — установка без хранения архива, с пофайловой сверкой.${plain}"
     DEPLOY_MODE=C
   fi
 }
@@ -353,12 +392,44 @@ deploy_verify_staging() {
 }
 
 deploy_install_file() {
-  local src="$1" dest="$2" exec="$3" tmp="${dest}.z2rtmp.$$"
-  mkdir -p "$(dirname "$dest")"
+  local src="$1" dest="$2" exec="$3" tmp="${dest}.z2rtmp.$$" expected="${4:-}"
+  mkdir -p "$(dirname "$dest")" || return 1
+  if [ "${DEPLOY_MODE:-}" = D ]; then
+    # shortcut: при потере питания между rm и cp файл пропадёт; для атомарной замены нужен свободный диск.
+    [ ! -L "$dest" ] || return 1
+    DEPLOY_RESTORE_EXISTS=0
+    if [ -e "$dest" ]; then
+      [ -f "$dest" ] || return 1
+      DEPLOY_RESTORE_SHA="$(file_sha256 "$dest")"
+      [ -n "$DEPLOY_RESTORE_SHA" ] || return 1
+      cp -p "$dest" "$tmpbase/old-file" || return 1
+      [ "$(file_sha256 "$tmpbase/old-file")" = "$DEPLOY_RESTORE_SHA" ] || return 1
+      DEPLOY_RESTORE_EXISTS=1
+    fi
+    DEPLOY_RESTORE_DEST="$dest"
+    rm -f "$dest" || return 1
+    sync
+    cp "$src" "$dest" || return 1
+    [ -n "$expected" ] && [ "$(file_sha256 "$dest")" = "$expected" ] || return 1
+    if [ "$exec" = 1 ]; then chmod 755 "$dest"; else chmod 644 "$dest"; fi || return 1
+    DEPLOY_RESTORE_DEST=""
+    rm -f "$tmpbase/old-file"
+    return 0
+  fi
   rm -f "$tmp"
   cp "$src" "$tmp" || return 1
   mv -f "$tmp" "$dest" || return 1
   if [ "$exec" = "1" ]; then chmod 755 "$dest"; else chmod 644 "$dest"; fi
+}
+
+deploy_restore_file() {
+  [ -n "${DEPLOY_RESTORE_DEST:-}" ] || return 0
+  rm -f "$DEPLOY_RESTORE_DEST" || return 1
+  if [ "$DEPLOY_RESTORE_EXISTS" = 1 ]; then
+    cp -p "$tmpbase/old-file" "$DEPLOY_RESTORE_DEST" || return 1
+    [ "$(file_sha256 "$DEPLOY_RESTORE_DEST")" = "$DEPLOY_RESTORE_SHA" ] || return 1
+  fi
+  DEPLOY_RESTORE_DEST=""
 }
 
 deploy_fix_interpreters() {
@@ -403,7 +474,7 @@ deploy_write_version() {
   fi
   if [ -z "$tracking" ]; then tracking="$(deploy_version_field TRACKING)"; fi
   [ -n "$tracking" ] || tracking="latest"
-  cat > "${DEPLOY_VERSION_FILE}.tmp" <<EOF
+  cat > "${DEPLOY_VERSION_FILE}.tmp" <<EOF || return 1
 ZATOR_VERSION="${zver:-unknown}"
 ZATOR_DATE="${zdate:-}"
 ZATOR_COMMIT="${zcommit:-}"
@@ -428,20 +499,20 @@ deploy_post_apply() {
     01) name=webui ;;
     *) name=full ;;
   esac
-  mkdir -p "$DEPLOY_CACHE_DIR"
+  mkdir -p "$DEPLOY_CACHE_DIR" || return 1
   # раздельные манифесты по компонентам: webui-деплой освежает только свой,
   # целостность проверяет оба без ложных «изменено»
   if [ "$has_core" = 1 ]; then
-    awk -F'|' '$1 ~ /^#/ || $1 !~ /^webui\// {print}' "$tree/$DEPLOY_MANIFEST_REL" > "$DEPLOY_CACHE_DIR/manifest.core.tsv"
+    awk -F'|' '$1 ~ /^#/ || $1 !~ /^webui\// {print}' "$tree/$DEPLOY_MANIFEST_REL" > "$DEPLOY_CACHE_DIR/manifest.core.tsv" || return 1
   fi
   if [ "$has_webui" = 1 ]; then
-    awk -F'|' '$1 ~ /^#/ || $1 ~ /^webui\// {print}' "$tree/$DEPLOY_MANIFEST_REL" > "$DEPLOY_CACHE_DIR/manifest.webui.tsv"
+    awk -F'|' '$1 ~ /^#/ || $1 ~ /^webui\// {print}' "$tree/$DEPLOY_MANIFEST_REL" > "$DEPLOY_CACHE_DIR/manifest.webui.tsv" || return 1
   fi
   rm -f "$DEPLOY_CACHE_DIR/manifest.full.tsv" "$DEPLOY_CACHE_DIR/manifest.full.json"
   if [ -f "$tree/extra_strats/cache/deploy/manifest.json" ]; then
-    cp -f "$tree/extra_strats/cache/deploy/manifest.json" "$DEPLOY_CACHE_DIR/manifest.${name}.json"
+    cp -f "$tree/extra_strats/cache/deploy/manifest.json" "$DEPLOY_CACHE_DIR/manifest.${name}.json" || return 1
   fi
-  deploy_write_version "$tree/extra_strats/cache/deploy/version.env" "$has_core" "$has_webui" "$tracking"
+  deploy_write_version "$tree/extra_strats/cache/deploy/version.env" "$has_core" "$has_webui" "$tracking" || return 1
 
   if [ "$webui_updated" = 1 ]; then
     deploy_fix_interpreters
@@ -455,17 +526,31 @@ deploy_post_apply() {
   fi
 }
 
-# Режимы A/B: пофайловая установка из staging по классам манифеста.
+# Не спрашивать в CGI/автообновлении; свежая установка предложит jq в get_repo.
+deploy_offer_media_jq() {
+  [ -t 0 ] && [ -f "$ZAPRET2_ROOT/config" ] || return 0
+  [ -f "$ZATOR_ROOT/z2r_lib/youtube_media.sh" ] || return 0
+  (
+    . "$ZATOR_ROOT/z2r_lib/youtube_media.sh"
+    z2r_media_offer_jq
+  ) || true
+}
+
+# Режимы A/B/D: пофайловая установка из staging; совпадающие SHA256 пропускаются во всех трёх.
 deploy_apply_staging() {
   local staging="$1" tracking="$2"
   local manifest="$staging/$DEPLOY_MANIFEST_REL"
-  local path dest cls sha size exec z2r_updated=0 webui_updated=0 kept=0 installed=0
+  local path dest cls sha size exec z2r_updated=0 webui_updated=0 kept=0 installed=0 unchanged=0
   while IFS='|' read -r path dest cls sha size exec; do
     case "$path" in ''|'#'*) continue ;; esac
     case "$path" in /*|../*|*/../*|*/..)
       echo -e "${red}Недопустимый путь в манифесте: $path${plain}"
       return 1
       ;;
+    esac
+    case "$dest" in */../*|*/..)
+      echo -e "${red}Недопустимый dest в манифесте: $dest${plain}"
+      return 1 ;;
     esac
     case "$dest" in
       /opt/zator/*|/opt/z2r.sh) ;;
@@ -479,7 +564,11 @@ deploy_apply_staging() {
       kept=$((kept + 1))
       continue
     fi
-    if ! deploy_install_file "$staging/$path" "$dest" "$exec"; then
+    if [ -f "$dest" ] && [ ! -L "$dest" ] && command -v sha256sum >/dev/null 2>&1 && [ "$(file_sha256 "$dest")" = "$sha" ]; then
+      unchanged=$((unchanged + 1))
+      continue
+    fi
+    if ! deploy_install_file "$staging/$path" "$dest" "$exec" "$sha"; then
       echo -e "${red}Не удалось установить $dest${plain}"
       return 1
     fi
@@ -487,7 +576,7 @@ deploy_apply_staging() {
     case "$dest" in "$ZATOR_ROOT"/webui/*) webui_updated=1 ;; esac
     installed=$((installed + 1))
   done < "$manifest"
-  echo -e "${green}Установлено файлов: $installed, сохранено пользовательских: $kept.${plain}"
+  echo -e "${green}Установлено файлов: $installed, без изменений: $unchanged, сохранено пользовательских: $kept.${plain}"
   if [ -d "$staging/webui/www" ]; then
     mkdir -p "$ZATOR_ROOT/webui/www"
     if [ ! -L "$ZATOR_ROOT/webui/www/cgi-bin" ]; then
@@ -495,14 +584,15 @@ deploy_apply_staging() {
       ln -sfn ../cgi-bin "$ZATOR_ROOT/webui/www/cgi-bin" 2>/dev/null || true
     fi
   fi
-  deploy_post_apply "$staging" "$tracking" "$z2r_updated" "$webui_updated"
+  deploy_post_apply "$staging" "$tracking" "$z2r_updated" "$webui_updated" || return 1
   type fake_files_refresh >/dev/null 2>&1 && fake_files_refresh
   # config.default применяется только из core/full-архива: webui-only деплой
   # не должен трогать живой конфиг и эталон. Без проверки deploy_apply_config_default
   # срабатывает на устаревший payload от прошлого полного релиза (бэкап-промпт,
   # рестарт zapret2 при обычном обновлении панели).
-  if [ -e "$staging/_root/z2r.sh" ] || [ -d "$staging/z2r_lib" ]; then
+  if [ "${DEPLOY_MODE:-}" != D ] && { [ -e "$staging/_root/z2r.sh" ] || [ -d "$staging/z2r_lib" ]; }; then
     deploy_apply_config_default || true
+    deploy_offer_media_jq
   fi
 }
 
@@ -577,6 +667,7 @@ deploy_apply_newdir() {
   type fake_files_refresh >/dev/null 2>&1 && fake_files_refresh
   if [ "$has_core" = 1 ]; then
     deploy_apply_config_default || true
+    deploy_offer_media_jq
   fi
 }
 
@@ -615,6 +706,11 @@ deploy_apply_config_to_live() {
     fi
     echo -e "${yellow}config.default обновлён; примените его к живому конфигу: меню п.5 -> п.7.${plain}"
     return 0
+  fi
+  if [ "${DEPLOY_ECONOMY:-0}" = 1 ]; then
+    # Сервис уже остановлен; /tmp должен быть очищен до единственного старта в EXIT.
+    config_apply_from_default
+    return "$?"
   fi
   if type backup_helper_ask_and_create >/dev/null 2>&1; then
     backup_helper_ask_and_create
@@ -680,7 +776,46 @@ deploy_from_tar() {
   tmpbase="/tmp/z2r_deploy_$$"
   staging="$tmpbase/stage" newdir="$ZATOR_ROOT.deploy.new.$$"
   archive="" archive_kb="" unpacked_kb="" unpacked_bytes="" fresh=0 url="" meta_key=""
-  trap 'rm -rf "$tmpbase" "$newdir"' EXIT
+  DEPLOY_ECONOMY=0 DEPLOY_RESTART=0 DEPLOY_RESTORE_DEST=""
+  trap '
+    rc=$?
+    trap "" INT TERM HUP
+    if ! deploy_restore_file; then
+      echo "Не удалось восстановить $DEPLOY_RESTORE_DEST. Резервная копия: $tmpbase/old-file. zapret2 оставлен остановленным." >&2
+      exit 1
+    fi
+    rm -rf "$tmpbase" "$newdir" || exit 1
+    if [ "$DEPLOY_RESTART" = 1 ]; then
+      z2r_service_action start || exit 1
+    fi
+    exit "$rc"
+  ' EXIT
+
+  opt_free="$(free_kb "$ZATOR_ROOT")"
+  if ! deploy_check_memory >/dev/null || { [ -n "$opt_free" ] && [ "$opt_free" -lt 5120 ]; }; then
+    if [ -d "$ZATOR_ROOT/z2r_lib" ] && [ ! -e "$ZATOR_ROOT/webui/run-webui.sh" ] && { [ "$variant" = core ] || [ -z "$variant" ]; }; then
+      command -v sha256sum >/dev/null 2>&1 || exit 1
+      if ! deploy_confirm_economy; then
+        echo -e "${yellow}Экономное обновление отменено.${plain}"
+        exit 1
+      fi
+      if ! type z2r_service_action >/dev/null 2>&1; then
+        . "$ZATOR_ROOT/z2r_lib/config.sh" || exit 1
+        if [ -f "$ZAPRET2_ROOT/init.d/openwrt/zapret2" ]; then
+          ZAPRET2_INIT="$ZAPRET2_ROOT/init.d/openwrt/zapret2"
+        else
+          ZAPRET2_INIT="$ZAPRET2_ROOT/init.d/sysv/zapret2"
+        fi
+      fi
+      DEPLOY_ECONOMY=1
+      trap 'exit 130' INT
+      trap 'exit 143' TERM HUP
+      pidof nfqws2 >/dev/null 2>&1 && DEPLOY_RESTART=1
+      echo -e "${yellow}Экономное обновление core: остановка zapret2, проверка SHA256, замена файлов без второй копии на /opt.${plain}"
+      z2r_service_action stop || exit 1
+    fi
+  fi
+  deploy_check_memory || exit 1
 
   case "$source" in
     http://*|https://*)
@@ -749,12 +884,20 @@ deploy_from_tar() {
     rm -rf "$staging"
     exit 1
   fi
+  if [ "$DEPLOY_MODE" = D ] && { [ ! -d "$staging/z2r_lib" ] || [ -d "$staging/webui" ]; }; then
+    echo -e "${red}Экономный режим поддерживает только архив core.${plain}"
+    exit 1
+  fi
   if [ "$DEPLOY_MODE" = "C" ]; then
     deploy_apply_newdir "$staging" "$tracking" "$fresh" || { rm -rf "$staging"; exit 1; }
   else
     deploy_apply_staging "$staging" "$tracking" || { rm -rf "$staging"; exit 1; }
   fi
   rm -rf "$staging"
+  if [ "$DEPLOY_MODE" = D ]; then
+    rm -rf "$tmpbase" || exit 1
+    deploy_apply_config_default || exit 1
+  fi
   exit 0
   )
 }

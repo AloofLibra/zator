@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Изолированные пробы не меняют рабочие локи и не откатывают изменения меню.
 set -euo pipefail
+export Z2R_SUPERSWEEP_MEDIA=0 # Здесь mock TLS/iptables; подписанные media URL проверяются отдельно.
 cd "$(dirname "$0")/.."
 TMP="$(mktemp -d)"
 trap '[ "${SMOKE_KEEP:-0}" = 1 ] || rm -rf "$TMP"' EXIT
@@ -34,9 +35,59 @@ export Z2R_TLS_LOCAL_PORTS=62000-62999
 z2r_tls_head_once https://example.com/ "$TMP/h" >/dev/null
 z2r_tls_probe_download https://example.com/ >/dev/null
 [ "$(grep -c -- '--local-port 62000-62999' "$TMP/curl.args")" = 2 ]
+z2r_media_api https://www.youtube.com/youtubei/v1/visitor_id "$TMP/request" "$TMP/visitor" >/dev/null
+z2r_media_api https://www.youtube.com/youtubei/v1/player "$TMP/request" "$TMP/player" >/dev/null
+[ "$(grep -c -- '--local-port 62000-62999' "$TMP/curl.args")" = 4 ]
 unset Z2R_TLS_LOCAL_PORTS
 z2r_tls_probe_download https://example.com/ >/dev/null
-[ "$(grep -c -- '--local-port' "$TMP/curl.args")" = 2 ]
+z2r_media_api https://www.youtube.com/youtubei/v1/visitor_id "$TMP/request" "$TMP/visitor" >/dev/null
+[ "$(grep -c -- '--local-port' "$TMP/curl.args")" = 4 ]
+# Resolver uses the winning YT plan, never the last tested plan or the GV plan.
+for resolver_case in winner no_winner resolve_fail start_fail lock_fail stop_fail; do
+(
+    Z2R_SUPERSWEEP_DIR="$TMP/resolver-$resolver_case"
+    mkdir -p "$Z2R_SUPERSWEEP_DIR/probe"
+    printf 'best=2\nbest_kind=ok\n' > "$Z2R_SUPERSWEEP_DIR/best.yt"
+    [ "$resolver_case" != no_winner ] || echo 'best=' > "$Z2R_SUPERSWEEP_DIR/best.yt"
+    supersweep_probe_start() {
+        echo "start:$1" >> "$Z2R_SUPERSWEEP_DIR/events"
+        test "$1" = 1
+        [ "$resolver_case" != start_fail ] || return 1
+        export Z2R_TLS_LOCAL_PORTS=62000-62999
+    }
+    supersweep_probe_stop() {
+        echo stop >> "$Z2R_SUPERSWEEP_DIR/events"
+        unset Z2R_TLS_LOCAL_PORTS
+        [ "$resolver_case" != stop_fail ]
+    }
+    _supersweep_settle() { echo settle >> "$Z2R_SUPERSWEEP_DIR/events"; }
+    if [ "$resolver_case" = lock_fail ]; then orch_locked_set() { return 1; }; fi
+    z2r_media_prepare() {
+        if [ "$resolver_case" = no_winner ]; then
+            test -z "${Z2R_TLS_LOCAL_PORTS:-}"
+        else
+            test "$Z2R_TLS_LOCAL_PORTS" = 62000-62999
+            grep -q $'^1\ttls\t2$' "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
+            grep -q $'^1\thttp\t2$' "$Z2R_SUPERSWEEP_DIR/probe/locked.tsv"
+        fi
+        grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE"
+        echo resolve >> "$Z2R_SUPERSWEEP_DIR/events"
+        [ "$resolver_case" != resolve_fail ] || return 1
+        Z2R_MEDIA_READY=1
+    }
+    rc=0; _supersweep_prepare_media "$CONFIG_FILE" > "$TMP/resolver.log" 2>&1 || rc=$?
+    case "$resolver_case" in
+        winner|resolve_fail)
+            test "$rc" = 0
+            test "$(cat "$Z2R_SUPERSWEEP_DIR/events")" = $'start:1\nsettle\nresolve\nstop'
+            if [ "$resolver_case" = winner ]; then test "$Z2R_MEDIA_READY" = 1
+            else test "$Z2R_MEDIA_READY" = 0; grep -q resolver_unavailable "$Z2R_SUPERSWEEP_DIR/media-status"; fi ;;
+        no_winner) test "$rc" = 0; test "$(cat "$Z2R_SUPERSWEEP_DIR/events")" = resolve ;;
+        *) test "$rc" = 1; test "$resolver_case" = stop_fail || ! grep -q '^resolve$' "$Z2R_SUPERSWEEP_DIR/events" ;;
+    esac
+    test -z "${Z2R_TLS_LOCAL_PORTS:-}"
+) || { cat "$TMP/resolver.log" >&2; echo "FAIL: resolver route $resolver_case" >&2; exit 1; }
+done
 # Build from deployed source, not develop strategies or its adaptive extensions.
 source lib/supersweep_probe.sh
 # RKN must retain isolation errors in the run log, just like profile workers.
@@ -306,6 +357,7 @@ cat > "$TMP/bin/curl" <<'MOCK'
 #!/bin/sh
 case "$*" in *report_mapping*) exit 0 ;; esac
 echo "$*" >> "$TMP/network.args"
+printf '%s\n' "${Z2R_MEDIA_VIDEO_ID:-missing}" > "$TMP/video.id"
 sleep "${MOCK_BG_DELAY:-0.1}"
 seq="$(awk '$1==65535 {print $8}' "$Z2R_SUPERSWEEP_QUEUE_FILE")"
 printf '65535 0 0 2 65531 0 0 %s 1\n' "$(( ${seq:-0} + 1 ))" > "$Z2R_SUPERSWEEP_QUEUE_FILE.$$"
@@ -325,6 +377,8 @@ mv "$TMP/trimmed" "$CONFIG_FILE"
 # Match the submenu: selected scope is a shell variable, not an environment var.
 export -n ORCH_ACTIVE_SCOPE
 ORCH_ACTIVE_SCOPE=mark:5
+Z2R_MEDIA_VIDEO_ID=M7lc1UVf-VE
+export -n Z2R_MEDIA_VIDEO_ID
 mkdir -p "$ORCH_DIR/scopes"
 printf '1\ttls\t7\n' > "$ORCH_DIR/scopes/mark_5.tsv"
 cp "$ORCH_LOCK_FILE" "$TMP/global.before"
@@ -348,7 +402,8 @@ wait "$stale_pid" 2>/dev/null || true
 [ "$stale_rc" != 0 ]
 grep -q 'Обнаружен живой процесс' "$TMP/stale.error"
 [ ! -d "$Z2R_SUPERSWEEP_DIR.lock" ]
-supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com
+rkn_url='https://example.com/Case/0.summary?x=one,two&arr[]=1'
+supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 "$rkn_url"
 [ -d "$Z2R_SUPERSWEEP_DIR.lock" ]
 ! supersweep_background_start "$CONFIG_FILE" both 0 0 0 1 example.com 2>/dev/null
 for ((i=0; i<200; i++)); do
@@ -379,7 +434,9 @@ assert r['completed']==r['total'] and len(r['workers'])==4
 assert {a['target'] for a in r['applied'] if a['kind']=='profile'}=={'1','2','3','4'}
 PY
 [ "$(wc -l < "$TMP/nfq.pids")" = 4 ]
+test "$(cat "$TMP/video.id")" = M7lc1UVf-VE
 grep -q -- '--local-port 62000-62999' "$TMP/network.args"
+grep -Fq -- "$rkn_url" "$TMP/network.args" || { echo 'FAIL: detached RKN lost the full URL' >&2; exit 1; }
 grep -q -- '-D OUTPUT' "$TMP/iptables.args"
 while read -r pid; do ! kill -0 "$pid" 2>/dev/null; done < "$TMP/nfq.pids"
 regression_failed=0

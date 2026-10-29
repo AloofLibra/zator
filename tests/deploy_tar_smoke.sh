@@ -372,6 +372,21 @@ cmp -s "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.defaul
 check_symlink "$ZATOR_ROOT/webui/www/cgi-bin" || fail "symlink cgi-bin не создан"
 ok "deploy_from_tar A: файлы, payload, z2r.sh, symlink"
 
+# Обычные режимы A/B используют тот же SHA256-пропуск, что и экономный D.
+for mode in A B; do
+  (
+    DEPLOY_MODE="$mode"
+    deploy_install_file() { echo "лишняя запись: $2" >&2; return 1; }
+    deploy_apply_staging "$STAGE" latest
+  ) > "$WORK/unchanged-$mode.out" 2>&1 || { cat "$WORK/unchanged-$mode.out"; fail "обычный режим $mode переписывает совпадающие файлы"; }
+  grep -q 'Установлено файлов: 0, без изменений:' "$WORK/unchanged-$mode.out" || fail "режим $mode не считает пропущенные файлы"
+done
+printf 'changed\n' > "$ZATOR_ROOT/lua/locked.lua"
+deploy_from_tar "$DIST/zator-full.tar.gz" > "$WORK/changed.out" 2>&1 || fail "обычное обновление изменённого файла упало"
+cmp -s "$WORK/expected-locked.lua" "$ZATOR_ROOT/lua/locked.lua" || fail "изменённый файл ошибочно пропущен"
+grep -q 'Установлено файлов: 1, без изменений:' "$WORK/changed.out" || fail "обычное обновление переписало больше одного изменённого файла"
+ok "обычные A/B: совпадающие SHA256 не записываются, изменённый файл обновляется"
+
 grep -q 'user-domain.example' "$ZATOR_ROOT/lists/netrogat.txt" || fail "netrogat.txt перезаписан"
 grep -q 'custom.example' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" || fail "TCP_Custom.txt перезаписан"
 grep -q 'autohost-runtime' "$ZATOR_ROOT/lists/autohostlist.txt" || fail "autohostlist.txt тронут"
@@ -471,6 +486,36 @@ ok "слияние version.env по компонентам, манифесты �
 
 # мок df с параметрами: TMP_FREE_KB/OPT_FREE_KB (по умолчанию тесный /tmp)
 mkdir -p "$WORK/bin"
+export DEPLOY_TEST_AWK="$(command -v awk)"
+export DEPLOY_TEST_MEMINFO="$WORK/meminfo"
+cat > "$WORK/bin/awk" <<'EOF'
+#!/bin/sh
+if [ "$#" = 2 ] && [ "$2" = /proc/meminfo ]; then
+  exec "$DEPLOY_TEST_AWK" "$1" "$DEPLOY_TEST_MEMINFO"
+fi
+exec "$DEPLOY_TEST_AWK" "$@"
+EOF
+chmod +x "$WORK/bin/awk"
+printf 'MemFree: 1000 kB\nMemAvailable: 16384 kB\n' > "$DEPLOY_TEST_MEMINFO"
+PATH="$WORK/bin:$PATH" deploy_check_memory >/dev/null 2>&1 || fail "16 МБ доступной ОЗУ должны проходить"
+printf 'MemFree: 20000 kB\nMemAvailable: 16383 kB\n' > "$DEPLOY_TEST_MEMINFO"
+if PATH="$WORK/bin:$PATH" deploy_check_memory >/dev/null 2>&1; then
+  fail "менее 16 МБ доступной ОЗУ должны блокировать обновление"
+fi
+memory_out="$(PATH="$WORK/bin:$PATH" deploy_from_tar "$WORK/missing.tar.gz" 2>&1)"
+[ "$?" != 0 ] || fail "deploy_from_tar пропустил нехватку ОЗУ"
+printf '%s\n' "$memory_out" | grep -q 'Недостаточно оперативной памяти' || fail "проверка ОЗУ должна идти до чтения/скачивания архива"
+printf 'MemFree: 16384 kB\n' > "$DEPLOY_TEST_MEMINFO"
+PATH="$WORK/bin:$PATH" deploy_check_memory >/dev/null 2>&1 || fail "fallback MemFree не работает"
+printf 'MemFree: 0 kB\n' > "$DEPLOY_TEST_MEMINFO"
+if PATH="$WORK/bin:$PATH" deploy_check_memory >/dev/null 2>&1; then
+  fail "нулевая свободная ОЗУ должна блокировать обновление"
+fi
+: > "$DEPLOY_TEST_MEMINFO"
+PATH="$WORK/bin:$PATH" deploy_check_memory >/dev/null 2>&1 || fail "неизвестная ОЗУ должна давать предупреждение"
+rm -f "$WORK/bin/awk"
+ok "порог ОЗУ 16 МБ, MemAvailable/MemFree и проверка до скачивания"
+
 cat > "$WORK/bin/df" <<'EOF'
 #!/bin/sh
 hdr="Filesystem 1024-blocks Used Available Capacity Mounted"
@@ -480,6 +525,19 @@ case " $* " in
 esac
 EOF
 chmod +x "$WORK/bin/df"
+
+TMP_FREE_KB=100000 OPT_FREE_KB=5120 PATH="$WORK/bin:$PATH" deploy_space_mode_select 900 3000 >/dev/null 2>&1 \
+  && [ "$DEPLOY_MODE" = A ] || fail "5 МБ на /opt должны проходить при staging в /tmp"
+if TMP_FREE_KB=100000 OPT_FREE_KB=5119 PATH="$WORK/bin:$PATH" deploy_space_mode_select 900 3000 >/dev/null 2>&1; then
+  fail "менее 5 МБ на /opt должны блокировать обновление"
+fi
+if TMP_FREE_KB=100 OPT_FREE_KB=5120 PATH="$WORK/bin:$PATH" deploy_space_mode_select 900 3000 >/dev/null 2>&1; then
+  fail "staging на /opt должен учитывать место под распаковку"
+fi
+if (ZATOR_ROOT="$WORK/not-installed" TMP_FREE_KB=100000 OPT_FREE_KB=5120 PATH="$WORK/bin:$PATH" deploy_space_mode_select 900 6000 >/dev/null 2>&1); then
+  fail "свежая установка должна учитывать размер распакованных файлов"
+fi
+ok "порог /opt 5 МБ и запас под staging/свежую установку"
 
 # A: просторный /tmp; C: /tmp тесный, /opt хватает на базу, но не на staging с архивом
 DEPLOY_MODE=""

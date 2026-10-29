@@ -8,33 +8,22 @@
 [ -z "${Z2R_CURL_UA:-}" ] && Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
 get_yt_cluster_domain() {
-    local letters_map_a="u z p k f a 5 0 v q l g b 6 1 w r m h c 7 2 x s n i d 8 3 y t o j e 9 4 -"
-    local letters_map_b="0 1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p q r s t u v w x y z -"
+    local letters_map_a='uzpkfa50vqlgb61wrmhc72xsnid83ytoje94-'
+    local letters_map_b='0123456789abcdefghijklmnopqrstuvwxyz-'
+    local cluster_codename converted_name
+    local i
 
-    cluster_codename=$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
-	#Второй раз для пробития нерелевантного ответа
-    cluster_codename=$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no"| sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')
-    
+    for i in 1 2; do
+        cluster_codename="$(curl -4 -s -k -A "$Z2R_CURL_UA" --max-time 4 "https://redirector.xn--ngstr-lra8j.com/report_mapping?di=no" | sed -n 's/.*=>[[:space:]]*\([^ (:)]*\).*/\1/p')"
+    done
+
     [ -z "$cluster_codename" ] && {
         echo "Не удалось получить cluster_codename. Используем тогда rr2---sn-4g5ednly.googlevideo.com" >&2
         echo "rr2---sn-4g5ednly.googlevideo.com"
         return
     }
-    
-    local converted_name=""
-    local i=0
-    while [ $i -lt ${#cluster_codename} ]; do
-        char=$(echo "$cluster_codename" | cut -c$((i+1)))
-        idx=1
-        for a in $letters_map_a; do
-            [ "$a" = "$char" ] && break
-            idx=$((idx+1))
-        done
-        b=$(echo "$letters_map_b" | cut -d' ' -f $idx)
-        converted_name="${converted_name}${b}"
-        i=$((i+1))
-    done
-    
+
+    converted_name="$(printf '%s' "$cluster_codename" | tr "$letters_map_a" "$letters_map_b")"
     echo "rr1---sn-${converted_name}.googlevideo.com"
 }
 
@@ -79,7 +68,7 @@ z2r_tls_head_once() {
     local url="$1" hdr="$2"; shift 2
     local out rc
     rc=0
-    out="$(z2r_tls_curl -4 -s -L -k -I -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(z2r_tls_curl -4 -s -L -k -g -I -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_MAX_TIME" \
         -D "$hdr" -w '%{time_total} %{remote_ip}' \
         "$@" "$url" 2>/dev/null)" || rc=$?
@@ -119,7 +108,7 @@ z2r_tls_probe_download() {
     local url="$1" out rc code rest size time
     rc=0
 
-    out="$(z2r_tls_curl -4 -s -L -k -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(z2r_tls_curl -4 -s -L -k -g -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_DL_MAX_TIME" \
         --speed-limit "$Z2R_TLS_DL_SPEED_LIMIT" --speed-time "$Z2R_TLS_DL_SPEED_TIME" \
         -H "Range: bytes=0-$((Z2R_TLS_DL_RANGE - 1))" \
@@ -1170,6 +1159,21 @@ check_dns() {
     return 2
 }
 
+check_googlevideo_access() {
+   local rc=1
+   local Z2R_MEDIA_VIDEO_ID="${1:-${Z2R_MEDIA_VIDEO_ID:-}}"
+   if [ "$#" = 0 ] && type z2r_media_ask_video >/dev/null 2>&1; then
+      Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Медиапроверка отменена.'; return 0; }
+   fi
+   if type z2r_media_check_manual >/dev/null 2>&1; then
+      z2r_media_check_manual && return 0
+      rc=$?
+   fi
+   case "$rc" in 129|130|143) echo 'Googlevideo: медиапроверка прервана.'; return 0 ;; esac
+   echo 'Googlevideo: плюшевый TLS/CDN-тест; реальные медиаданные не проверены.'
+   check_access "https://$(get_yt_cluster_domain)"
+}
+
 check_access_list() {
    if ! check_dns "rutracker.org"; then
       echo -e "${yellow}DNS-проверка завершилась предупреждением, продолжаю остальные тесты.${plain}"
@@ -1177,8 +1181,7 @@ check_access_list() {
 
    echo "Проверка доступности youtube.com (YT TCP)"
    check_access "https://www.youtube.com/"
-   echo "Проверка доступности $(get_yt_cluster_domain) (YT TCP)"
-   check_access "https://$(get_yt_cluster_domain)"
+   check_googlevideo_access
    echo "Проверка доступности meduza.io (RKN list)"
    check_access "https://meduza.io"
    echo "Проверка доступности www.instagram.com (RKN list + нужен рабочий DNS)"

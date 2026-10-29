@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh youtube_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
@@ -150,19 +150,6 @@ z2r_download_project_file() {
       mv -f "$tmp" "$dest"
       return 0
     fi
-  fi
-  rm -f "$tmp"
-  return 1
-}
-
-z2r_download_project_stdout() {
-  local rel="$1"
-  local tmp="/tmp/z2r_download_$$"
-
-  if z2r_download_project_file "$tmp" "$rel"; then
-    cat "$tmp"
-    rm -f "$tmp"
-    return 0
   fi
   rm -f "$tmp"
   return 1
@@ -398,6 +385,8 @@ else
 fi
 for lib in $Z2R_LIB_FILES; do
   if [ ! -f "$LIB_DIR/$lib" ]; then
+    # Старый bootstrap не знает необязательный media-модуль: CLI должен открыть fallback.
+    [ "$lib" != youtube_media.sh ] || continue
     missing_libs=1
     break
   fi
@@ -1179,6 +1168,10 @@ get_repo() {
 # cache
 mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
+if type z2r_media_offer_jq >/dev/null 2>&1; then
+  z2r_media_offer_jq
+fi
+
 }
 
 # Client-scope config snapshot survives the destructive zapret2 reinstall.
@@ -1196,16 +1189,6 @@ client_scope_config_restore() {
   config_client_scope_ensure "$ZAPRET2_ROOT/config" || true
   client_scope_lua_config_sync "$ZAPRET2_ROOT/config" || true
   rm -f "$CLIENT_SCOPE_CONFIG_SNAPSHOT"
-}
-
-#Удаление старого запрета, если есть
-client_scope_enabled_from_active_config() {
- if [ "${CLIENT_SCOPE_ENABLE+x}" = "x" ]; then
-  [ "$CLIENT_SCOPE_ENABLE" = "1" ]
-  return
- fi
- [ -f "$ZAPRET2_ROOT/config" ] || return 1
- grep -Eq '^[[:space:]]*CLIENT_SCOPE_ENABLE[[:space:]]*=[[:space:]]*1([[:space:]]*#.*)?$' "$ZAPRET2_ROOT/config"
 }
 
 client_scope_firewall_apply_active_config() {
@@ -2820,6 +2803,9 @@ fi
 
 #Меню и быстрый запуск подбора стратегии
  if [ -d "$ZATOR_ROOT/extra_strats" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
+	if [ -z "${1:-}" ] && type z2r_media_offer_jq >/dev/null 2>&1; then
+		z2r_media_offer_jq
+	fi
 	if [ $1 ]; then
 		Strats_Tryer $1
 	fi

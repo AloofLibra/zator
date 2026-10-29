@@ -89,12 +89,30 @@ orch_profile_try() {
         start_strat=1
     fi
 
+    local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
+    if [ "$profile" = 2 ] && type z2r_media_ask_video >/dev/null 2>&1; then
+        Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
+    fi
+
+    if [ "$profile" = 2 ] && type z2r_media_prepare >/dev/null 2>&1; then
+        # Как supersweep_menu: Ctrl+C ребёнка не должен закрыть родительское меню.
+        trap ':' INT
+        orch_gv_trial _orch_profile_manual_sweep || echo 'Подбор Googlevideo прерван; прежняя стратегия восстановлена.'
+        trap - INT
+    else
+        _orch_profile_manual_sweep
+    fi
+}
+
+# Общий пошаговый цикл; GV-контекст добавляет только один кеш на всю серию.
+_orch_profile_manual_sweep() {
     for p in $proto_list; do
         prev_map["$p"]="$(orch_locked_state_get "$profile" "$p")"
         [ "$current_state" = "0" ] && prev_map["$p"]="0"
     done
 
     for ((s=start_strat; s<=max_strat; s++)); do
+        [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || trial_touched=1
         for p in $proto_list; do
             orch_locked_set "$profile" "$p" "$s"
         done
@@ -108,6 +126,9 @@ orch_profile_try() {
             else
                 echo -e "${yellow}Нет ответа по HTTP. ${red}Проверьте доступность вручную. Возможно ошибка теста.${plain}"
             fi
+        elif [ "$profile" = 2 ]; then
+            _supersweep_settle
+            check_googlevideo_access "$Z2R_MEDIA_VIDEO_ID"
         elif [ -n "$test_url" ]; then
             echo "Проверка доступа: $test_url"
             check_access "$test_url"
@@ -123,6 +144,7 @@ orch_profile_try() {
             cfg="$(get_config_file)"
             old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
             if profile_state_set_and_apply "$profile" "$proto_list" "$s" "$cfg"; then
+                [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || completed=1
                 echo "Стратегия $s сохранена для профиля $profile."
                 profile_strategy_restart_if_needed "$profile" "$cfg" "$old_udp_ports"
             else
@@ -201,6 +223,10 @@ orch_ask_sweep_tls_pref() {
 orch_run_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
     local mode tls_pref pause_total
+    local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
+    if [ "$kind" = profile ] && [ "$key" = 2 ] && type z2r_media_ask_video >/dev/null 2>&1; then
+        Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
+    fi
     read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 2, 0 - отмена): " mode
     if [ "$mode" = "0" ]; then
         echo "Отмена."
@@ -228,6 +254,41 @@ orch_run_auto_sweep() {
     pause_enter
 }
 
+# Ручная GV-серия и автопрогон используют рабочую очередь и один кеш ссылок.
+orch_gv_trial() (
+    local run="$1"
+    shift
+    local shared_lock="${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}.lock"
+    local Z2R_SUPERSWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
+    local Z2R_SUPERSWEEP_ISOLATED=0 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
+    local Z2R_SUPERSWEEP_SETTLE="${Z2R_SUPERSWEEP_SETTLE:-2}"
+    local completed=0 trial_touched=0 prior
+    case "$Z2R_SUPERSWEEP_SETTLE" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
+    prior="$(orch_locked_state_get 2 tls)"
+    (umask 077; mkdir "$shared_lock") 2>/dev/null || {
+        echo 'Другой прогон уже выполняется: Googlevideo не запущен.' >&2
+        return 0
+    }
+    printf '%s\n' "$BASHPID" > "$shared_lock/pid"
+    trap 'trap "" INT TERM HUP
+        if [ "$completed" = 0 ] && [ "$trial_touched" = 1 ]; then
+            case "$prior" in ""|auto) orch_locked_clear 2 tls ;; *) orch_locked_set 2 tls "$prior" ;; esac
+        fi
+        [ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"
+        [ -z "$Z2R_SUPERSWEEP_DIR" ] || rm -rf "$Z2R_SUPERSWEEP_DIR"
+        rm -f "$shared_lock/pid"; rmdir "$shared_lock" 2>/dev/null || true' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    Z2R_SUPERSWEEP_DIR=$(umask 077; mktemp -d /tmp/zator-gv-trial.XXXXXX) || return 1
+    if type z2r_media_prepare >/dev/null 2>&1; then
+        z2r_media_prepare || return 1
+    else
+        echo 'Googlevideo Media UNKNOWN: нет media-модуля. Плюшевый TLS/CDN-тест, без выбора media-победителя.' >&2
+    fi
+    "$run" "$@" || return 1
+    completed=1
+)
+
 # Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
 # прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
 # и выбор сохранения. kind=profile|domain; key=профиль или домен.
@@ -237,9 +298,14 @@ orch_run_auto_sweep() {
 # $9 (tls_pref: any|12|13|both) — какие версии TLS обязаны работать, чтобы
 # стратегия считалась зелёной (в диалоге по умолчанию обе).
 orch_auto_sweep() {
+    if [ "$1" = profile ] && [ "$2" = 2 ] && [ "${_Z2R_GV_TRIAL:-0}" != 1 ]; then
+        orch_gv_trial orch_auto_sweep "$@" || echo 'Проверка Googlevideo прервана; media-победитель не применён.' >&2
+        return 0
+    fi
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6" stop_on_ok="$7"
     local s p out v12 v13 dl short token color vcolor
-    local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0
+    local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0 n_unknown=0
+    local psleep
     local ok_stats="" best="" best_short=""
     local full_list="" full_stats="" best_full="" best_full_short=""
     local warn_stats="" best_from_warn=0 n_a12=0 n_a13=0
@@ -267,6 +333,9 @@ orch_auto_sweep() {
         13)   goal_txt=", цель TLS 1.3";      goal_list=" (нужен TLS 1.3)" ;;
         both) goal_txt=", цель TLS 1.2+1.3";  goal_list=" (TLS 1.2 и 1.3)" ;;
     esac
+    if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then
+        goal_txt="$goal_txt, media audio/video/середина"
+    fi
 
     if [ "$kind" = "domain" ]; then
         prev_str="$(orch_locked_state_get "$key" "tls")"
@@ -295,21 +364,36 @@ orch_auto_sweep() {
         if [ "$kind" = "domain" ]; then
             orch_locked_set "$key" "tls" "$s"
         else
+            [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || trial_touched=1
             for p in $proto_list; do
                 orch_locked_set "$key" "$p" "$s"
             done
         fi
 
-        out="$(z2r_tls_check_target "$test_url")"
-        if [ "$orch_auto_sweep_interrupted" = "1" ]; then
-            echo -e "${yellow}Прервано пользователем на стратегии ${s}.${plain}"
+        if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+            _supersweep_settle
+            out="$(z2r_media_target "$s" "$tls_pref")" || {
+                echo 'Медиапроверка недействительна; автопрогон остановлен.' >&2
+                orch_auto_sweep_interrupted=1
+                break
+            }
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
+        else
+            out="$(z2r_tls_check_target "$test_url")"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
+            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then
+                short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
+            fi
+        fi
+        token="${short%%|*}"; short="${short#*|}"
+        if [ "$orch_auto_sweep_interrupted" = 1 ] || {
+            [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ -n "${Z2R_SUPERSWEEP_DIR:-}" ] && [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]
+        }; then
+            orch_auto_sweep_interrupted=1
+            echo -e "${yellow}Проверка прервана пользователем на стратегии ${s}.${plain}"
             break
         fi
-        v12="$(printf '%s\n' "$out" | sed -n 1p)"
-        v13="$(printf '%s\n' "$out" | sed -n 2p)"
-        dl="$(printf '%s\n' "$out" | sed -n 3p)"
-        short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-        token="${short%%|*}"; short="${short#*|}"
 
         q12=0; q13=0
         if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)"; then q12=1; fi
@@ -344,6 +428,7 @@ orch_auto_sweep() {
                     warn_stats="${warn_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
                 fi
                 ;;
+            unknown) color="$yellow"; disp="UNKNOWN"; n_unknown=$((n_unknown + 1)) ;;
             *) color="$red"; disp="FAIL"; token="fail"; n_fail=$((n_fail + 1)) ;;
         esac
 
@@ -351,7 +436,7 @@ orch_auto_sweep() {
         btxt="${badge%%|*}"; bst="${badge#*|}"
         case "$bst" in
             ok) bcol="$green" ;;
-            http) bcol="$yellow" ;;
+            http) if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then bcol="$green"; else bcol="$yellow"; fi ;;
             fail) bcol="$red" ;;
             *) bcol="$plain" ;;
         esac
@@ -360,7 +445,7 @@ orch_auto_sweep() {
         btxt="${badge%%|*}"; bst="${badge#*|}"
         case "$bst" in
             ok) bcol="$green" ;;
-            http) bcol="$yellow" ;;
+            http) if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then bcol="$green"; else bcol="$yellow"; fi ;;
             fail) bcol="$red" ;;
             *) bcol="$plain" ;;
         esac
@@ -373,14 +458,19 @@ orch_auto_sweep() {
         fi
         # Пауза между стратегиями, чтобы частыми переключениями не словить блок ТСПУ.
         if [ "$s" -lt "$max" ] && [ "$pause_sec" -gt 0 ]; then
-            sleep "$pause_sec"
+            psleep="$pause_sec"
+            if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
+                psleep=$((pause_sec - ${Z2R_SUPERSWEEP_SETTLE:-2}))
+                [ "$psleep" -ge 0 ] || psleep=0
+            fi
+            [ "$psleep" -le 0 ] || sleep "$psleep"
             if [ "$orch_auto_sweep_interrupted" = "1" ]; then
                 echo -e "${yellow}Прервано пользователем на стратегии ${s}.${plain}"
                 break
             fi
         fi
     done
-    trap - INT
+    if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then trap ':' INT; else trap - INT; fi
     if [ "$had_e" = "1" ]; then set -e; fi
     Z2R_TLS_WAIT_BOTH="$wait_both_prev"
 
@@ -436,6 +526,7 @@ orch_auto_sweep() {
         echo -e " Полные (TLS 1.2 и 1.3): ${green}${full_list}${plain}"
     fi
     [ -n "$warn_list" ] && echo -e " Жёлтые стратегии: ${yellow}${warn_list}${plain}"
+    [ "$n_unknown" = 0 ] || echo " Media UNKNOWN: $n_unknown (не участвуют в выборе победителя)."
     if [ -n "$best" ]; then
         if [ "$best_from_warn" = "1" ]; then
             echo -e " Лучшая из жёлтых (зелёных нет): ${yellow}${best}${plain} (${best_short})"
@@ -512,6 +603,7 @@ orch_auto_sweep() {
             cfg="$(get_config_file)"
             old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
             if profile_state_set_and_apply "$key" "$proto_list" "$answer" "$cfg"; then
+                [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || completed=1
                 echo "Стратегия ${answer} сохранена для профиля ${key}."
                 profile_strategy_restart_if_needed "$key" "$cfg" "$old_udp_ports"
             else
@@ -644,6 +736,33 @@ z2r_normalize_domain() {
     case "$d" in *[!a-z0-9.-]*) return 1 ;; esac
     case "$d" in *[a-z0-9]*) : ;; *) return 1 ;; esac
     printf '%s\n' "$d"
+}
+
+# Путь и query сохраняются буквально; hostlist и локи получают только домен.
+z2r_test_url_domain() {
+    local host="${1#*://}"
+    host="${host%%[/?#]*}"
+    z2r_normalize_domain "$host"
+}
+
+z2r_normalize_test_url() {
+    local url="$1" scheme authority host
+    url="${url#"${url%%[![:space:]]*}"}"
+    url="${url%"${url##*[![:space:]]}"}"
+    case "$url" in ''|*[[:space:][:cntrl:]]*|*\\*) return 1 ;; esac
+    case "$url" in
+        *://*)
+            scheme="$(printf '%s' "${url%%://*}" | tr 'A-Z' 'a-z')"
+            case "$scheme" in http|https) ;; *) return 1 ;; esac
+            url="$scheme://${url#*://}"
+            ;;
+        *) url="https://$url" ;;
+    esac
+    authority="${url#*://}"; authority="${authority%%[/?#]*}"
+    printf '%s' "$authority" | grep -Eq '^[a-zA-Z0-9.-]+(:[0-9]+)?$' || return 1
+    host="$(z2r_test_url_domain "$url")" || return 1
+    [ -n "$host" ] || return 1
+    printf '%s\n' "$url"
 }
 
 # Пути к доменным спискам, общие для CLI и WebUI.
@@ -870,8 +989,8 @@ manage_custom_rkn_domain() {
         return 0
     fi
 
-    # Нормализация: отсекаем схему (http/https), порт, путь, крайние точки и т.п.
-    if ! user_domain="$(z2r_normalize_domain "$user_domain")"; then
+    test_url="$(z2r_normalize_test_url "$user_domain")" || test_url=""
+    if [ -z "$test_url" ] || ! user_domain="$(z2r_test_url_domain "$test_url")"; then
         echo -e "${red}Не удалось распознать домен из ввода.${plain}"
         echo -e "Укажите домен или ссылку, например: example.com или https://www.youtube.com/watch?v=..."
         pause_enter
@@ -988,10 +1107,6 @@ manage_custom_rkn_domain() {
     read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
     case "$strategy_num" in
         a|A|а|А)
-            test_url="$user_domain"
-            if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
-                test_url="https://$test_url"
-            fi
             orch_run_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat"
             return 0
             ;;
@@ -1002,11 +1117,6 @@ manage_custom_rkn_domain() {
     if ! ui_is_number_in_range "$strategy_num" 1 "$max_strat"; then
         echo "Некорректный номер стратегии или вне диапазона. Начинаем с 1."
         strategy_num=1
-    fi
-
-    test_url="$user_domain"
-    if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
-        test_url="https://$test_url"
     fi
 
     for ((s=strategy_num; s<=max_strat; s++)); do
@@ -1051,10 +1161,6 @@ manage_custom_rkn_list() {
         "Домены в TCP_Custom и подобранные стратегии:" \
         "Домен удалён из TCP_Custom и locked.tsv." \
         1
-}
-
-netrogat_remove_domain() {
-    domain_list_remove "$(netrogat_file)" "$1"
 }
 
 netrogat_add_domain() {
@@ -1200,7 +1306,7 @@ Strats_Tryer() {
       ;;
     "4")
       if rkn_trial_domain_pick; then
-        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://${RKN_TRIAL_DOMAIN}"
+        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "$RKN_TRIAL_URL"
       fi
       ;;
     *)
@@ -1214,7 +1320,7 @@ Strats_Tryer() {
 # (TCP_RKN_list.txt + TCP_Custom.txt; hostlist-семантика рантайма: сам домен
 # или родительский суффикс). Отсутствующего предлагаем добавить в
 # TCP_Custom.txt — тот же путь, что у суперавтопрогона. Результат —
-# в RKN_TRIAL_DOMAIN, rc!=0 = отмена подбора.
+# в RKN_TRIAL_DOMAIN и полный URL в RKN_TRIAL_URL, rc!=0 = отмена подбора.
 
 RKN_TRIAL_DOMAIN_DEFAULT="meduza.io"
 
@@ -1243,11 +1349,11 @@ rkn_list_has_domain() {
 }
 
 rkn_trial_domain_pick() {
-    local ans="" add_ans=""
+    local ans="" add_ans="" url=""
     clear -x
     echo -e "${cyan}--- Домен проверки профиля 3 (RKN) ---${plain}"
     echo -e "Enter — ${RKN_TRIAL_DOMAIN_DEFAULT} (базовый), свой домен или ссылка"
-    echo -e "(схема, порт и путь отбрасываются), 0 — отмена."
+    echo -e "Путь и параметры ссылки сохраняются для проверки загрузки; 0 — отмена."
     echo -e "Свой домен должен быть в РКН-списках; если его там нет — предложу добавить в TCP_Custom.txt."
     read -re -p "Домен: " ans || ans=""
     if [ "$ans" = "0" ]; then
@@ -1256,9 +1362,10 @@ rkn_trial_domain_pick() {
     fi
     if [ -z "$ans" ]; then
         RKN_TRIAL_DOMAIN="$RKN_TRIAL_DOMAIN_DEFAULT"
+        RKN_TRIAL_URL="https://${RKN_TRIAL_DOMAIN_DEFAULT}"
         return 0
     fi
-    ans="$(z2r_normalize_domain "$ans" 2>/dev/null)" || {
+    url="$(z2r_normalize_test_url "$ans" 2>/dev/null)" && ans="$(z2r_test_url_domain "$url")" || {
         echo -e "${red}Не удалось распознать домен. Пример: example.com или https://site.ru/path${plain}"
         pause_enter
         return 1
@@ -1266,6 +1373,7 @@ rkn_trial_domain_pick() {
     if rkn_list_has_domain "$ans"; then
         echo -e "${green}Домен ${ans} найден в РКН-списках.${plain}"
         RKN_TRIAL_DOMAIN="$ans"
+        RKN_TRIAL_URL="$url"
         return 0
     fi
     echo -e "${yellow}Домена ${ans} нет в РКН-списках — профиль 3 не будет его обрабатывать.${plain}"
@@ -1273,6 +1381,7 @@ rkn_trial_domain_pick() {
     if [ "$add_ans" = "1" ]; then
         domain_list_add "$(custom_rkn_file)" "$ans" "РКН-список (TCP_Custom.txt)" "Домен"
         RKN_TRIAL_DOMAIN="$ans"
+        RKN_TRIAL_URL="$url"
         return 0
     fi
     echo "Отменено."

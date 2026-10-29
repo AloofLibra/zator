@@ -995,25 +995,6 @@ ports_manage() {
   done
 }
 
-# Краткий статус для строки главного меню: сколько портов слева от якорей.
-# Необязательный аргумент — путь к конфигу (по умолчанию /opt/zapret2/config).
-ports_menu_status() {
-  local cfg="${1:-/opt/zapret2/config}"
-  local tcp udp n=0 arr=()
-  [ -f "$cfg" ] || { printf 'дефолт'; return 0; }
-  tcp="$(config_get_var "$cfg" NFQWS2_PORTS_TCP)"
-  udp="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
-  ports_split "$tcp" "80"
-  [ -n "$_PORTS_USER" ] && { IFS=',' read -ra arr <<< "$_PORTS_USER"; n=$((n + ${#arr[@]})); }
-  ports_split "$udp" "443"
-  [ -n "$_PORTS_USER" ] && { IFS=',' read -ra arr <<< "$_PORTS_USER"; n=$((n + ${#arr[@]})); }
-  if [ "$n" -gt 0 ]; then
-    printf 'добавлено портов: %s' "$n"
-  else
-    printf 'дефолт'
-  fi
-}
-
 Z2R_BACKUP_DIR="/opt/zator_backup"
 
 z2r_backup_state_files() {

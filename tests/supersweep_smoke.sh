@@ -7,6 +7,7 @@
 # «воркер -> cmd-файл -> координатор -> orch_locked_set -> движок z2r_tls_*».
 
 set -euo pipefail
+export Z2R_SUPERSWEEP_MEDIA=0 # Этот fixture проверяет прежний TLS-движок; media имеет отдельный smoke.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -40,6 +41,10 @@ for arg in "$@"; do
   prev="$arg"
 done
 host="$(printf '%s' "$url" | sed -e 's#^[a-z]*://##' -e 's#/.*##' -e 's/:.*//')"
+if [ "$host" = meduza.io ] && [ -n "${MOCK_RKN_URL:-}" ]; then
+  [ "$url" = "$MOCK_RKN_URL" ] || exit 28
+  printf '%s|%s\n' "$head" "$url" >> "$MOCK_RKN_URL_LOG"
+fi
 prof=""
 case "$host" in
   *googlevideo.com*) prof=2 ;;
@@ -179,7 +184,7 @@ grep -q 'z2r_dns_spoof_gate "${Z2R_DNS_REF_DOMAIN:-rutracker.org}"' "$REPO_DIR/l
   || fail "гейт DNS должен вызываться по эталонному домену, а не по первому пользовательскому"
 # отмена прогона не роняет меню: вызов защищён от возврата 1 под глобальным
 # set -e z2r.sh, повторный Ctrl+C в сводке/паузе глушится trap'ом
-grep -q 'supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 $domains || ss_run_rc=$?' \
+grep -Fq 'supersweep_run "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 "${rkn_targets[@]}" || ss_run_rc=$?' \
   "$REPO_DIR/lib/supersweep.sh" || fail "вызов supersweep_run не защищён от возврата 1 (set -e)"
 grep -q "trap ':' INT" "$REPO_DIR/lib/supersweep.sh" || fail "нет глушения INT после прерывания прогона"
 grep -q '_supersweep_estimate_total' "$REPO_DIR/lib/supersweep.sh" \
@@ -218,10 +223,15 @@ mode_override_set 4 clone
 export MOCK_OK_P1="2 4" MOCK_OK_P2="3" MOCK_OK_P4="1 5"
 export MOCK_OK_meduza_io="1 2" MOCK_OK_xhamster_com="2" MOCK_OK_chess_com="2"
 
-out="$(supersweep_run both 0 0 0 2 meduza.io xhamster.com chess.com 2>&1)" || {
+export MOCK_RKN_URL='https://meduza.io/Case/0.summary?x=one,two&email=a@b.ru&arr[]=1'
+export MOCK_RKN_URL_LOG="$TMP_DIR/rkn-url.log"
+out="$(supersweep_run both 0 0 0 2 "$MOCK_RKN_URL" xhamster.com chess.com 2>&1)" || {
   printf '%s\n' "$out" >&2
   fail "сценарий 1: supersweep_run вернул ошибку"
 }
+grep -Fxq "1|$MOCK_RKN_URL" "$MOCK_RKN_URL_LOG" || fail 'RKN HEAD потерял URL'
+grep -Fxq "0|$MOCK_RKN_URL" "$MOCK_RKN_URL_LOG" || fail 'RKN download потерял URL'
+unset MOCK_RKN_URL MOCK_RKN_URL_LOG
 
 [ "$(lock_state 1 tls)" = 4 ] || fail "сценарий 1: профиль 1 должен получить стратегию 4, а не $(lock_state 1 tls)"
 [ "$(lock_state 1 http)" = 4 ] || fail "сценарий 1: профиль 1/http должен получить 4"
@@ -428,8 +438,18 @@ printf '0\n' | supersweep_ask_domains >/dev/null 2>&1 || d_zero_rc=$?
 # санитайзер движка: мусор отбрасывается с предупреждением, дублики схлопываются
 san="$(supersweep_sanitize_domains 'Домены meduza.io РКН https://xhamster.com/x 1. meduza.io' 2>/dev/null)" \
   || fail "сценарий 7: sanitize упал"
-[ "$san" = "meduza.io xhamster.com" ] \
-  || fail "сценарий 7: санитайзер должен оставить meduza.io xhamster.com, получено: [$san]"
+[ "$san" = "https://xhamster.com/x meduza.io" ] \
+  || fail "сценарий 7: санитайзер должен сохранить URL, получено: [$san]"
+url='https://s3.eu-central-1.amazonaws.com/lol-prod-eu-central-1-match-history/ru_572485922/0.summary'
+[ "$(z2r_normalize_test_url "$url")" = "$url" ] || fail 'URL пользователя изменён'
+[ "$(supersweep_sanitize_domains "xhamster.com https://xhamster.com/Case?x=a,b&y=1")" = 'https://xhamster.com/Case?x=a,b&y=1' ] \
+  || fail 'URL должен заменять базовую цель того же домена'
+sel="$(printf '%s\n' "$url" | supersweep_ask_own_domains meduza.io 2>/dev/null)"
+[ "$sel" = "meduza.io $url" ] || fail 'Диалог своих целей потерял полный URL'
+grep -Fxq s3.eu-central-1.amazonaws.com "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" || fail 'В hostlist нужен только домен URL'
+for bad in 'file:///etc/passwd' 'ftp://example.com/a' 'https://user:pass@example.com/a' 'https://example.com\evil/a' 'https://example.com/a b'; do
+  if z2r_normalize_test_url "$bad" >/dev/null 2>&1; then fail "Принят некорректный URL: $bad"; fi
+done
 san_warn="$(supersweep_sanitize_domains 'Домены meduza.io' 2>&1 >/dev/null)"
 printf '%s' "$san_warn" | grep -q 'Отброшены' || fail "сценарий 7: нет предупреждения об отброшенном мусоре"
 
@@ -571,6 +591,7 @@ RKN_TRIAL_DOMAIN=""
 rkn_trial_domain_pick </dev/null >/dev/null 2>&1 \
   || fail "сценарий 11: Enter должен давать базовый домен"
 [ "$RKN_TRIAL_DOMAIN" = "meduza.io" ] || fail "сценарий 11: Enter -> базовый, получено [$RKN_TRIAL_DOMAIN]"
+[ "$RKN_TRIAL_URL" = 'https://meduza.io' ] || fail 'Enter потерял URL по умолчанию'
 
 # хитрый URL: схема/путь/регистр + родительский суффикс в списке
 # (stdin из файла, не пайпом: функция должна остаться в текущем шелле,
@@ -579,6 +600,11 @@ printf 'https://Sub.Example.COM/watch?v=dQw4w9WgXcQ\n' > "$TMP_DIR/in11.txt"
 rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
   || fail "сценарий 11: URL с схемой/путём (родитель в списке) должен проходить"
 [ "$RKN_TRIAL_DOMAIN" = "sub.example.com" ] || fail "сценарий 11: URL не нормализован [$RKN_TRIAL_DOMAIN]"
+[ "$RKN_TRIAL_URL" = 'https://Sub.Example.COM/watch?v=dQw4w9WgXcQ' ] || fail 'Профиль RKN потерял путь/query'
+(
+  orch_profile_try() { [ "$4" = 'https://Sub.Example.COM/watch?v=dQw4w9WgXcQ' ]; }
+  Strats_Tryer 4 < "$TMP_DIR/in11.txt" >/dev/null 2>&1
+) || fail 'Автоподбор профиля RKN не получил полный URL'
 
 # хитрый URL с портом, точное совпадение после нормализации
 printf 'HTTP://example.com:443/some/path\n' > "$TMP_DIR/in11.txt"
@@ -591,6 +617,7 @@ printf '  https://Fresh.ru:443/x  \n1\n' > "$TMP_DIR/in11.txt"
 rkn_trial_domain_pick < "$TMP_DIR/in11.txt" >/dev/null 2>&1 \
   || fail "сценарий 11: домен с добавлением должен проходить"
 [ "$RKN_TRIAL_DOMAIN" = "fresh.ru" ] || fail "сценарий 11: добавленный домен не выбран [$RKN_TRIAL_DOMAIN]"
+[ "$RKN_TRIAL_URL" = 'https://Fresh.ru:443/x' ] || fail 'Добавление домена потеряло полный URL'
 grep -Fxq 'fresh.ru' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" \
   || fail "сценарий 11: fresh.ru не добавлен в TCP_Custom.txt"
 
@@ -649,7 +676,7 @@ d="$(printf 'fresh1.ru fresh2.ru\n' | supersweep_ask_own_domains 'a.com b.com c.
 
 rm -rf "$Z2R_SUPERSWEEP_DIR"
 rm -f "$TMP_DIR/gate13.args"
-printf '\n\n\n\n\n\n\n' > "$TMP_DIR/in13.txt"
+printf '\n\n\n\n\n\n\n\n' > "$TMP_DIR/in13.txt"
 export MOCK_DELAY=0.2
 export MOCK_OK_P1="1 3"
 (
@@ -696,4 +723,26 @@ grep -q 'rutracker.org' "$TMP_DIR/gate13.args" \
   || fail "сценарий 13: красная стратегия должна дать паузу 5с минус выдержка 2с = 3с"
 unset MOCK_DELAY MOCK_OK_P1
 
+# == 14. обычный SuperSweep передаёт выбранное видео в media без изоляции ==
+(
+  Z2R_SUPERSWEEP_MEDIA=1 Z2R_MEDIA_VIDEO_ID=M7lc1UVf-VE
+  Z2R_SUPERSWEEP_ISOLATED=0 Z2R_SUPERSWEEP_SETTLE=0
+  export MOCK_OK_P1=1 MOCK_OK_P4=1 MOCK_OK_P2='' MOCK_OK_meduza_io=1
+  config_profile_max_strategy() { echo 1; }
+  z2r_media_prepare() {
+    test "$Z2R_MEDIA_VIDEO_ID" = M7lc1UVf-VE
+    test "$(lock_state 1 tls)" = 1
+    echo "$Z2R_MEDIA_VIDEO_ID" >> "$TMP_DIR/video14.prepared"
+    Z2R_MEDIA_READY=1
+  }
+  z2r_media_check() {
+    test "$Z2R_SUPERSWEEP_ISOLATED" = 0
+    test "$Z2R_MEDIA_VIDEO_ID" = M7lc1UVf-VE
+    echo 'OK|media_range|0|206|2097152|.1|.2|.3|1|2097152'
+  }
+  supersweep_run both 0 0 0 1 meduza.io > "$TMP_DIR/video14.log" 2>&1
+  test "$(cat "$TMP_DIR/video14.prepared")" = M7lc1UVf-VE
+  test "$(lock_state 2 tls)" = 1
+  grep -q 'Media OK' "$TMP_DIR/video14.log"
+) || fail 'сценарий 14: выбранное видео потеряно в обычном SuperSweep'
 echo "supersweep smoke ok"

@@ -245,23 +245,49 @@ profile_scoped_state_display() {
 }
 
 profile_json() {
-  local id="$1" label="$2" desc="$3" proto current max scope source mvar
+  local id="$1" label="$2" desc="$3" kind="${4:-}" proto current max scope source mvar
   scope="${PARAM_SCOPE:-default}"
   proto="$(profile_proto "$id")"
+  local lock_cache=L
+  [ "$kind" = fallback ] && lock_cache=M
   if [ "$scope" = "default" ]; then
     [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
-    _profile_cur_cached "$id" "$proto" L; current="$REPLY"
-    _profile_src_cached "$id" "$proto" L; source="$REPLY"
+    _profile_cur_cached "$id" "$proto" "$lock_cache"; current="$REPLY"
+    _profile_src_cached "$id" "$proto" "$lock_cache"; source="$REPLY"
   else
-    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+    if [ "$kind" = fallback ]; then
+      local saved_lock_file="$ORCH_LOCK_FILE"
+      ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
+      current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+      source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+      ORCH_LOCK_FILE="$saved_lock_file"
+    else
+      current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
+      source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
+    fi
   fi
   mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
   _json_esc "$label"; local jlabel="$REPLY"
   _json_esc "$desc"; local jdesc="$REPLY"
   _json_esc "$current"; local jcurrent="$REPLY"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s"}' \
-    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source"
+  case "$kind" in
+    fallback)
+      printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_fallback":true,"fallback_enabled":%s}' \
+        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)"
+      ;;
+    udp-games)
+      printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_udp_games":true,"udp_games_enabled":%s}' \
+        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false)"
+      ;;
+    dns)
+      printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_dns_desync":true,"dns_desync_enabled":%s}' \
+        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$([ "$MENU_DNS_DESINC" = "Включен" ] && echo true || echo false)"
+      ;;
+    *)
+      printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s"}' \
+        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source"
+      ;;
+  esac
 }
 
 all_profiles_json() {
@@ -279,86 +305,14 @@ all_profiles_json() {
   printf ','
   profile_json 6 "Voice UDP" "Discord/STUN и голосовые сервисы"
   printf ','
-  profile_json_udp_games 7 "UDP Games" "Игровой UDP (порты 1026-65531)"
+  profile_json 7 "UDP Games" "Игровой UDP (порты 1026-65531)" udp-games
   printf ','
-  profile_json_fallback 8 "Fallback TLS" "Безразборный режим TLS (profile 8)"
+  profile_json 8 "Fallback TLS" "Безразборный режим TLS (profile 8)" fallback
   printf ','
-  profile_json_fallback 9 "Fallback HTTP" "Безразборный режим HTTP (profile 9)"
+  profile_json 9 "Fallback HTTP" "Безразборный режим HTTP (profile 9)" fallback
   printf ','
-  profile_json_dns 10 "DNS Антиспуф" "Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)"
+  profile_json 10 "DNS Антиспуф" "Защита UDP:53 от подмены DNS-ответов (клон с малым TTL)" dns
   printf ']'
-}
-
-# Профиль 10 (антиспуф DNS): гейтинг по состоянию тумблера (п.8 главного меню),
-# как у UDP Games по config_mode_text udp_games.
-profile_json_dns() {
-  local id="$1" label="$2" desc="$3" proto current max dns_state scope source mvar
-  scope="${PARAM_SCOPE:-default}"
-  proto="$(profile_proto "$id")"
-  if [ "$scope" = "default" ]; then
-    [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
-    _profile_cur_cached "$id" "$proto" L; current="$REPLY"
-    _profile_src_cached "$id" "$proto" L; source="$REPLY"
-  else
-    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
-  fi
-  mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
-  dns_state="$MENU_DNS_DESINC"
-  _json_esc "$label"; local jlabel="$REPLY"
-  _json_esc "$desc"; local jdesc="$REPLY"
-  _json_esc "$current"; local jcurrent="$REPLY"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_dns_desync":true,"dns_desync_enabled":%s}' \
-    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" \
-    "$scope" "$source" "$([ "$dns_state" = "Включен" ] && echo true || echo false)"
-}
-
-profile_json_udp_games() {
-  local id="$1" label="$2" desc="$3" proto current max games_state scope source mvar
-  scope="${PARAM_SCOPE:-default}"
-  proto="$(profile_proto "$id")"
-  if [ "$scope" = "default" ]; then
-    [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
-    _profile_cur_cached "$id" "$proto" L; current="$REPLY"
-    _profile_src_cached "$id" "$proto" L; source="$REPLY"
-  else
-    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
-  fi
-  mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
-  games_state="$MENU_UDP_GAMES"
-  _json_esc "$label"; local jlabel="$REPLY"
-  _json_esc "$desc"; local jdesc="$REPLY"
-  _json_esc "$current"; local jcurrent="$REPLY"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_udp_games":true,"udp_games_enabled":%s}' \
-    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" \
-    "$scope" "$source" "$([ "$games_state" = "Включен" ] && echo true || echo false)"
-}
-
-profile_json_fallback() {
-  local id="$1" label="$2" desc="$3" proto current max fallback_state scope source mvar
-  scope="${PARAM_SCOPE:-default}"
-  proto="$(profile_proto "$id")"
-  # Для профилей 8/9 состояние стратегии хранится в locked.manual.tsv.
-  if [ "$scope" = "default" ]; then
-    [ -n "${_PS_LOADED:-}" ] || _profile_states_scan
-    _profile_cur_cached "$id" "$proto" M; current="$REPLY"
-    _profile_src_cached "$id" "$proto" M; source="$REPLY"
-  else
-    local saved_lock_file="$ORCH_LOCK_FILE"
-    ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv"
-    current="$(profile_scoped_state_display "$scope" "$id" "$proto")"
-    source="$(orch_scoped_lock_source "$scope" "$id" "$proto" 2>/dev/null || printf auto)"
-    ORCH_LOCK_FILE="$saved_lock_file"
-  fi
-  mvar="MENU_PROFILE_MAX_$id"; max="${!mvar:-0}"
-  fallback_state="$MENU_FALLBACK"
-  _json_esc "$label"; local jlabel="$REPLY"
-  _json_esc "$desc"; local jdesc="$REPLY"
-  _json_esc "$current"; local jcurrent="$REPLY"
-  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_fallback":true,"fallback_enabled":%s}' \
-    "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" \
-    "$scope" "$source" "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
 }
 
 service_zapret2() {
@@ -1582,17 +1536,6 @@ api_provider_redetect() {
   fi
   provider_force_redetect >/dev/null 2>&1
   send_json "200 OK" "{\"ok\":true,\"provider\":\"$(json_escape "$PROVIDER_MENU")\"}"
-}
-
-_backup_date_from_name() {
-  local name="$1" d
-  case "$name" in
-    z2r_backup_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9].tar)
-      d="${name#z2r_backup_}"
-      d="${d%.tar}"
-      printf '%s-%s-%s %s:%s:%s' "${d:0:4}" "${d:4:2}" "${d:6:2}" "${d:9:2}" "${d:11:2}" "${d:13:2}"
-      ;;
-  esac
 }
 
 api_backups_list() {

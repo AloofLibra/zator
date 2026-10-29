@@ -60,7 +60,7 @@ init_telemetry() {
     if [ "$tel_enabled" == "1" ] && [ -z "$tel_uuid" ]; then
         # Пытаемся взять системный UUID или генерируем md5 от времени
         if [ -f /proc/sys/kernel/random/uuid ]; then
-            tel_uuid=$(cat /proc/sys/kernel/random/uuid | cut -c1-8)
+            tel_uuid=$(cut -c1-8 < /proc/sys/kernel/random/uuid)
         else
             tel_uuid=$(date +%s%N | md5sum | head -c 8)
         fi
@@ -99,7 +99,7 @@ send_stats() {
     fi
 
     # Обрезаем до 60 символов и ставим заглушку если пусто
-    my_isp=$(echo "$my_isp" | head -c 60)
+    my_isp=$(printf '%s' "$my_isp" | head -c 60)
     [ -z "$my_isp" ] && my_isp="Unknown"
 
     # 2. Определяем номера стратегий во всех профилях (auto передаём как 0).

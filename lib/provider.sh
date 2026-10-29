@@ -83,19 +83,6 @@ provider_update_database() {
   return 0
 }
 
-provider_db_version() {
-  local src_file=""
-  case "$PROVIDER_ASN_TABLE_SRC" in
-    cache) src_file="$PROVIDER_ASN_CACHE" ;;
-    file) src_file="$PROVIDER_ASN_DB_FILE" ;;
-  esac
-  if [ -n "$src_file" ] && [ -f "$src_file" ]; then
-    sed -n 's/^# ZATOR_PROVIDER_DB_VERSION=//p' "$src_file" | head -n1
-  else
-    echo "builtin"
-  fi
-}
-
 provider_asn_lookup() {
   local row
   PROVIDER_BRAND=""
