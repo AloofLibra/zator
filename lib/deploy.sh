@@ -1212,7 +1212,7 @@ deploy_menu_header() {
   fi
   if [ -n "$what" ]; then
     if [ "$MENU_DEPLOY_TRACKING" != "latest" ]; then
-      MENU_DEPLOY_NOTICE="${yellow}Закреплена версия ${plain}${MENU_DEPLOY_TRACKING}${yellow}, доступен latest: ${plain}${what}${yellow} (п.2 снимет закрепление)
+      MENU_DEPLOY_NOTICE="${yellow}Закреплена версия ${plain}${MENU_DEPLOY_TRACKING}${yellow}, доступен latest: ${plain}${what}${yellow} (п.5 -> п.2 снимет закрепление)
 "
     else
       MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
