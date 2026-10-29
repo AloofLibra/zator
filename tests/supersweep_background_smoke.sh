@@ -31,6 +31,7 @@ _supersweep_restore_prev
  grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE"
 # The same TLS engine must steer both HEAD and download; ordinary checks unchanged.
 curl() { printf '%s\n' "$*" >> "$TMP/curl.args"; printf '206 64 1'; }
+_z2r_media_curl() { shift 3; curl "$@"; }
 export Z2R_TLS_LOCAL_PORTS=62000-62999
 z2r_tls_head_once https://example.com/ "$TMP/h" >/dev/null
 z2r_tls_probe_download https://example.com/ >/dev/null
