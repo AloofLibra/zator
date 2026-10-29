@@ -111,6 +111,37 @@ z2r_media_url_valid() {
     case "&${url#*\?}" in *'&sig='*|*'&signature='*) ;; *) return 1 ;; esac
 }
 
+# Старый curl не ограничивает chunked-ответы; FIFO не хранит медиаданные в tmpfs.
+_z2r_media_curl() (
+    trap - EXIT
+    local dir="$1" limit="$2" output="$3" fifo reader="" child="" wakeup="" rc=0 read_rc=0 task
+    shift 3
+    if [ ! -f "$dir/curl-stream-limit" ]; then exec curl "$@" -o "$output"; fi
+    fifo="$dir/body.fifo"
+    trap 'for task in "$child" "$reader" "$wakeup"; do
+        [ -z "$task" ] || { kill "$task" 2>/dev/null || :; wait "$task" 2>/dev/null || :; }
+        done; rm -f "$fifo"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    mkfifo "$fifo" || return 1
+    head -c "$((limit + 1))" < "$fifo" > "$output" &
+    reader=$!
+    curl "$@" -o "$fifo" &
+    child=$!
+    wait "$child" || rc=$?
+    child=""
+    # При DNS/пустом ответе curl мог вообще не открыть FIFO; разбудить читателя.
+    ( : > "$fifo" ) &
+    wakeup=$!
+    wait "$reader" || read_rc=$?
+    reader=""
+    kill "$wakeup" 2>/dev/null || :; wait "$wakeup" 2>/dev/null || :
+    wakeup=""
+    [ "$read_rc" = 0 ] || return 23
+    if [ "$output" != /dev/null ] && [ "$(wc -c < "$output")" -gt "$limit" ]; then return 63; fi
+    return "$rc"
+)
+
 # curl без пользовательского .curlrc, proxy/cookies и повторов. Никаких Player JS.
 z2r_media_api() {
     local url="$1" request="$2" output="$3"
@@ -118,10 +149,10 @@ z2r_media_api() {
     if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && [ -n "${Z2R_TLS_LOCAL_PORTS:-}" ]; then
         set -- "$@" --local-port "$Z2R_TLS_LOCAL_PORTS"
     fi
-    curl -q -4 --noproxy '*' --proto '=https' -s --connect-timeout 5 --max-time 15 \
+    _z2r_media_curl "${output%/*}" 262144 "$output" -q -4 --noproxy '*' --proto '=https' -s --connect-timeout 5 --max-time 15 \
         --max-filesize 262144 -A "$(z2r_media_ua)" \
         -H 'Content-Type: application/json' -H 'X-Goog-Api-Format-Version: 2' \
-        --data-binary "@$request" -o "$output" -w '%{http_code}' "$url" "$@" 2>/dev/null
+        --data-binary "@$request" -w '%{http_code}' "$url" "$@" 2>/dev/null
 }
 
 # Один jq разбирает player; после выбора парсер больше не нужен для media GET.
@@ -302,13 +333,16 @@ z2r_media_resolve() (
         echo 'Нет jsonfilter или jq: реальная медиапроверка недоступна.' >&2
         z2r_media_status parser_missing "$dir"; return 1
     }
-    # До 8.4 --max-filesize не ограничивает ответ без Content-Length.
+    # До 8.4 ограничивать поток отдельно от --max-filesize.
     version=$(curl -q --version 2>/dev/null) || { z2r_media_status curl_unavailable "$dir"; return 1; }
     version=${version#curl }; version=${version%% *}
     major=${version%%.*}; minor=${version#*.}; minor=${minor%%.*}
     case "$major:$minor" in *[!0-9:]*|:*|*:) z2r_media_status curl_unsupported "$dir"; return 1 ;; esac
     if [ "$major" -lt 8 ] || { [ "$major" = 8 ] && [ "$minor" -lt 4 ]; }; then
-        z2r_media_status curl_too_old "$dir"; return 1
+        if ! command -v mkfifo >/dev/null 2>&1 || ! head -c 0 /dev/null >/dev/null 2>&1; then
+            z2r_media_status stream_limit_unavailable "$dir"; return 1
+        fi
+        : > "$dir/curl-stream-limit" || return 1
     fi
     # 16 URL-safe случайных символов: nonce воспроизведения, не PO-токен.
     cpn=$(cat /proc/sys/kernel/random/uuid | tr -d '\n-')
@@ -465,6 +499,7 @@ z2r_media_probe() (
     umask 077
     local dir="$1" kind="$2" count="$3" middle="$4" require_queue="${5:-0}"
     local length mime host expire offset end row rc pid before after state reason headers
+    local reader="" task body=/dev/null
     local code bytes tcp tls ttfb total speed location url_override="${6:-}" redirects="${7:-2}" config="$dir/$kind.curl"
     case "$kind" in audio|video) ;; *) return 1 ;; esac
     case "$count" in ''|*[!0-9]*) return 1 ;; esac
@@ -486,7 +521,9 @@ z2r_media_probe() (
         config="$dir/curl.conf"
         printf 'url = "%s"\n' "$url_override" > "$config" || return 1
     fi
-    trap 'if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; fi; rm -f "$dir/curl.conf" "$dir/headers" "$dir/metrics"' EXIT
+    trap 'for task in "${pid:-}" "$reader"; do
+        [ -z "$task" ] || { kill "$task" 2>/dev/null || :; wait "$task" 2>/dev/null || :; }
+        done; rm -f "$dir/body.fifo" "$dir/curl.conf" "$dir/headers" "$dir/metrics"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     set --
@@ -495,12 +532,18 @@ z2r_media_probe() (
         12) set -- "$@" --tlsv1.2 --tls-max 1.2 ;;
         13) set -- "$@" --tlsv1.3 --tls-max 1.3 ;;
     esac
+    if [ -f "$dir/curl-stream-limit" ]; then
+        body="$dir/body.fifo"
+        mkfifo "$body" || return 1
+        head -c "$((count + 1))" < "$body" > /dev/null &
+        reader=$!
+    fi
     # Один curl = новое TCP/TLS-соединение. stderr не должен раскрывать URL.
     curl -q -4 --noproxy '*' --proto '=https' --http1.1 -s \
         --config "$config" -A "$(z2r_media_ua)" "$@" \
         --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
         --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 5 \
-        -D "$dir/headers" -o /dev/null \
+        -D "$dir/headers" -o "$body" \
         -w '%{http_code}|%{size_download}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}' \
         > "$dir/metrics" 2>/dev/null </dev/null &
     pid=$!

@@ -129,9 +129,16 @@ for scenario in missing visitor_number visitor_quote visitor_newline 403 429 val
     )
 done
 (
-    curl() { echo 'curl 7.88.1 fake'; }
-    ! z2r_media_resolve aqz-KE-bpKQ "$tmp/cache"
-    expect_status curl_too_old
+    mkdir "$tmp/old-curl"
+    curl() { echo 'curl 7.81.0 fake'; }
+    z2r_media_api() { touch "$tmp/old-api-called"; printf 000; return 7; }
+    ! z2r_media_resolve aqz-KE-bpKQ "$tmp/old-curl"
+    test -f "$tmp/old-curl/curl-stream-limit"
+    test -f "$tmp/old-api-called"
+    test "$(cat "$tmp/old-curl/status")" = network_error
+    command() { case "$*" in '-v mkfifo') return 1 ;; *) builtin command "$@" ;; esac; }
+    ! z2r_media_resolve aqz-KE-bpKQ "$tmp/old-curl"
+    test "$(cat "$tmp/old-curl/status")" = stream_limit_unavailable
 )
 cat > "$tmp/bin/curl" <<'MOCK'
 #!/bin/sh
