@@ -38,6 +38,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         scenario = query.get("scenario", ["ok"])[0]
+        redirects = {
+            "redirect": "ok",
+            "redirect_twice": "redirect",
+            "redirect_loop": "redirect_loop",
+            "redirect_stall": "stall",
+        }
+        if scenario in redirects:
+            query["scenario"] = [redirects[scenario]]
+            location = "https://rr1---sn-example.googlevideo.com/videoplayback?" + urllib.parse.urlencode(query, doseq=True)
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            self.close_connection = True
+            return
         length = 4_000_000 if query.get("itag") == ["139"] else 12_000_000
         mime = "audio/mp4" if length == 4_000_000 else "video/mp4"
         start, end = map(int, self.headers["Range"].removeprefix("bytes=").split("-"))

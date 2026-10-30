@@ -118,24 +118,26 @@ _z2r_media_curl() (
     shift 3
     if [ ! -f "$dir/curl-stream-limit" ]; then exec curl "$@" -o "$output"; fi
     fifo="$dir/body.fifo"
-    trap 'for task in "$child" "$reader" "$wakeup"; do
-        [ -z "$task" ] || { kill "$task" 2>/dev/null || :; wait "$task" 2>/dev/null || :; }
-        done; rm -f "$fifo"' EXIT
+    trap '{ [ -z "$child" ] || { kill "$child" 2>/dev/null || :; wait "$child" 2>/dev/null || :; }
+        for task in "$reader" "$wakeup"; do
+        [ -z "$task" ] || { kill -KILL "$task" 2>/dev/null || :; wait "$task" 2>/dev/null || :; }
+        done; rm -f "$fifo"; } 2>/dev/null' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     mkfifo "$fifo" || return 1
-    head -c "$((limit + 1))" < "$fifo" > "$output" &
+    ( trap - EXIT INT TERM HUP; exec head -c "$((limit + 1))" < "$fifo" > "$output" ) &
     reader=$!
     curl "$@" -o "$fifo" &
     child=$!
     wait "$child" || rc=$?
     child=""
     # При DNS/пустом ответе curl мог вообще не открыть FIFO; разбудить читателя.
-    ( : > "$fifo" ) &
+    ( trap - EXIT INT TERM HUP; : > "$fifo" ) &
     wakeup=$!
     wait "$reader" || read_rc=$?
     reader=""
-    kill "$wakeup" 2>/dev/null || :; wait "$wakeup" 2>/dev/null || :
+    # Не дать helper при раннем сигнале выполнить унаследованный EXIT cleanup.
+    kill -KILL "$wakeup" 2>/dev/null || :; wait "$wakeup" 2>/dev/null || :
     wakeup=""
     [ "$read_rc" = 0 ] || return 23
     if [ "$output" != /dev/null ] && [ "$(wc -c < "$output")" -gt "$limit" ]; then return 63; fi
@@ -505,92 +507,104 @@ z2r_media_probe() (
     case "$count" in ''|*[!0-9]*) return 1 ;; esac
     [ "$count" -ge 4096 ] && [ "$count" -le 4194304 ] || return 1
     IFS='|' read -r length mime host expire < "$dir/$kind.params" || return 1
-    if ! z2r_media_fresh "$dir"; then printf 'UNKNOWN|expired|0|000|0|0|0|0|0|0\n'; return 0; fi
     # Не скачивать целиком даже короткий поток; оба диапазона ограничены четвертью.
     [ "$count" -le $((length / 4)) ] || count=$((length / 4))
     offset=0; [ "$middle" != 1 ] || offset=$((length / 2))
     end=$((offset + count - 1))
-    if [ "$require_queue" = 1 ]; then
-        if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" != 1 ] || ! supersweep_probe_healthy; then
-            printf 'UNKNOWN|isolation_unavailable|0|000|0|0|0|0|0|0\n'; return 0
-        fi
-        before=$(supersweep_probe_sequence) || return 1
-    fi
-    if [ -n "$url_override" ]; then
-        z2r_media_url_valid "$url_override" || return 1
-        config="$dir/curl.conf"
-        printf 'url = "%s"\n' "$url_override" > "$config" || return 1
-    fi
-    trap 'for task in "${pid:-}" "$reader"; do
-        [ -z "$task" ] || { kill "$task" 2>/dev/null || :; wait "$task" 2>/dev/null || :; }
-        done; rm -f "$dir/body.fifo" "$dir/curl.conf" "$dir/headers" "$dir/metrics"' EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM HUP
-    set --
-    if [ "$require_queue" = 1 ]; then set -- --local-port 62000-62999; fi
-    case "${Z2R_MEDIA_TLS_VERSION:-}" in
-        12) set -- "$@" --tlsv1.2 --tls-max 1.2 ;;
-        13) set -- "$@" --tlsv1.3 --tls-max 1.3 ;;
-    esac
-    if [ -f "$dir/curl-stream-limit" ]; then
-        body="$dir/body.fifo"
-        mkfifo "$body" || return 1
-        head -c "$((count + 1))" < "$body" > /dev/null &
-        reader=$!
-    fi
-    # Один curl = новое TCP/TLS-соединение. stderr не должен раскрывать URL.
-    curl -q -4 --noproxy '*' --proto '=https' --http1.1 -s \
-        --config "$config" -A "$(z2r_media_ua)" "$@" \
-        --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
-        --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 5 \
-        -D "$dir/headers" -o "$body" \
-        -w '%{http_code}|%{size_download}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}' \
-        > "$dir/metrics" 2>/dev/null </dev/null &
-    pid=$!
-    while kill -0 "$pid" 2>/dev/null; do
-        if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ] && [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]; then
-            kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; pid=
-            printf 'UNKNOWN|cancelled|0|000|0|0|0|0|0|0\n'; return 0
-        fi
-        sleep 1
-    done
-    rc=0; wait "$pid" || rc=$?; pid=
-    IFS='|' read -r code bytes tcp tls ttfb total speed < "$dir/metrics" || :
-    state=UNKNOWN; reason=invalid_response
-    if [ "$require_queue" = 1 ]; then
-        after=$(supersweep_probe_sequence) || after=$before
-        if ! supersweep_probe_healthy || [ "$after" = "$before" ]; then
-            printf 'UNKNOWN|noqueue|%s|%s|%s|%s|%s|%s|%s|%s\n' "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}"; return 0
-        fi
-    fi
-    case "$code" in
-        301|302|307|308)
-            location=$(awk 'tolower($1)=="location:" {sub(/^[^:]*:[ ]*/, "");sub(/\r$/, "");print;exit}' "$dir/headers")
-            if [ "$rc" = 0 ] && [ "$redirects" -gt 0 ] && z2r_media_url_valid "$location"; then
-                # Только подписанный redirect CDN; каждое соединение проверяется отдельно.
-                z2r_media_probe "$dir" "$kind" "$count" "$middle" "$require_queue" "$location" $((redirects - 1))
-                return $?
+    # Один владелец FIFO/EXIT cleanup на всю цепочку перенаправлений.
+    while :; do
+        if ! z2r_media_fresh "$dir"; then printf 'UNKNOWN|expired|0|000|0|0|0|0|0|0\n'; return 0; fi
+        if [ "$require_queue" = 1 ]; then
+            if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" != 1 ] || ! supersweep_probe_healthy; then
+                printf 'UNKNOWN|isolation_unavailable|0|000|0|0|0|0|0|0\n'; return 0
             fi
-            ;;
-    esac
-    headers=$(awk -v expected="bytes $offset-$end/$length" -v mime="$mime" '
-        /^HTTP\// {range="";type=""}
-        {sub(/\r$/, ""); key=tolower($1); if(key=="content-range:") {sub(/^[^:]*:[ ]*/, "");range=$0}
-         if(key=="content-type:") {sub(/^[^:]*:[ ]*/, "");split($0,a,";");type=a[1]}}
-        END {print (range==expected && type==mime)?"valid":"invalid"}' "$dir/headers")
-    case "$code" in
-        403) reason=cdn_403 ;;
-        429) reason=rate_limited ;;
-        206)
-            if [ "$rc" = 0 ] && [ "$headers" = valid ] && [ "$bytes" = "$count" ]; then
-                state=OK; reason=media_range
-            elif [ "$headers" = valid ]; then
-                case "$rc" in 0|18|28|56) state=FAIL; reason=incomplete_transfer ;; esac
-            fi ;;
-        000)
-            reason=network_error
-            # Передача может сломаться до HTTP; DNS/возможности curl не оценивают стратегию.
-            case "$rc" in 7|18|28|35|52|55|56) state=FAIL ;; esac ;;
-    esac
-    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$state" "$reason" "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}"
+            before=$(supersweep_probe_sequence) || return 1
+        fi
+        if [ -n "$url_override" ]; then
+            z2r_media_url_valid "$url_override" || return 1
+            config="$dir/curl.conf"
+            printf 'url = "%s"\n' "$url_override" > "$config" || return 1
+        fi
+        trap '{ [ -z "${pid:-}" ] || { kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; }
+            for task in "$reader"; do
+            [ -z "$task" ] || { kill "$task" 2>/dev/null || :; wait "$task" 2>/dev/null || :; }
+            done; rm -f "$dir/body.fifo" "$dir/curl.conf" "$dir/headers" "$dir/metrics"; } 2>/dev/null' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM HUP
+        set --
+        if [ "$require_queue" = 1 ]; then set -- --local-port 62000-62999; fi
+        case "${Z2R_MEDIA_TLS_VERSION:-}" in
+            12) set -- "$@" --tlsv1.2 --tls-max 1.2 ;;
+            13) set -- "$@" --tlsv1.3 --tls-max 1.3 ;;
+        esac
+        if [ -f "$dir/curl-stream-limit" ]; then
+            body="$dir/body.fifo"
+            mkfifo "$body" || return 1
+            head -c "$((count + 1))" < "$body" > /dev/null &
+            reader=$!
+        fi
+        # Один curl = новое TCP/TLS-соединение. stderr не должен раскрывать URL.
+        curl -q -4 --noproxy '*' --proto '=https' --http1.1 -s \
+            --config "$config" -A "$(z2r_media_ua)" "$@" \
+            --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
+            --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 5 \
+            -D "$dir/headers" -o "$body" \
+            -w '%{http_code}|%{size_download}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}' \
+            > "$dir/metrics" 2>/dev/null </dev/null &
+        pid=$!
+        while kill -0 "$pid" 2>/dev/null; do
+            if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ] && [ -e "$Z2R_SUPERSWEEP_DIR/cancel" ]; then
+                kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; pid=
+                printf 'UNKNOWN|cancelled|0|000|0|0|0|0|0|0\n'; return 0
+            fi
+            sleep 1
+        done
+        rc=0; wait "$pid" || rc=$?; pid=
+        # Освободить FIFO до следующего соединения по redirect.
+        if [ -n "$reader" ]; then
+            { kill "$reader" 2>/dev/null || :; wait "$reader" 2>/dev/null || :; } 2>/dev/null
+            reader=""
+            rm -f "$body"
+        fi
+        IFS='|' read -r code bytes tcp tls ttfb total speed < "$dir/metrics" || :
+        state=UNKNOWN; reason=invalid_response
+        if [ "$require_queue" = 1 ]; then
+            after=$(supersweep_probe_sequence) || after=$before
+            if ! supersweep_probe_healthy || [ "$after" = "$before" ]; then
+                printf 'UNKNOWN|noqueue|%s|%s|%s|%s|%s|%s|%s|%s\n' "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}"; return 0
+            fi
+        fi
+        case "$code" in
+            301|302|307|308)
+                location=$(awk 'tolower($1)=="location:" {sub(/^[^:]*:[ ]*/, "");sub(/\r$/, "");print;exit}' "$dir/headers")
+                if [ "$rc" = 0 ] && [ "$redirects" -gt 0 ] && z2r_media_url_valid "$location"; then
+                    # Только подписанный redirect CDN; каждое соединение проверяется отдельно.
+                    url_override=$location
+                    redirects=$((redirects - 1))
+                    continue
+                fi
+                ;;
+        esac
+        headers=$(awk -v expected="bytes $offset-$end/$length" -v mime="$mime" '
+            /^HTTP\// {range="";type=""}
+            {sub(/\r$/, ""); key=tolower($1); if(key=="content-range:") {sub(/^[^:]*:[ ]*/, "");range=$0}
+             if(key=="content-type:") {sub(/^[^:]*:[ ]*/, "");split($0,a,";");type=a[1]}}
+            END {print (range==expected && type==mime)?"valid":"invalid"}' "$dir/headers")
+        case "$code" in
+            403) reason=cdn_403 ;;
+            429) reason=rate_limited ;;
+            206)
+                if [ "$rc" = 0 ] && [ "$headers" = valid ] && [ "$bytes" = "$count" ]; then
+                    state=OK; reason=media_range
+                elif [ "$headers" = valid ]; then
+                    case "$rc" in 0|18|28|56) state=FAIL; reason=incomplete_transfer ;; esac
+                fi ;;
+            000)
+                reason=network_error
+                # Передача может сломаться до HTTP; DNS/возможности curl не оценивают стратегию.
+                case "$rc" in 7|18|28|35|52|55|56) state=FAIL ;; esac ;;
+        esac
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$state" "$reason" "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}"
+        return 0
+    done
 )
