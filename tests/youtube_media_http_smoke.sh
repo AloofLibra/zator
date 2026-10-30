@@ -6,7 +6,8 @@ for cmd in jq curl openssl python3; do command -v "$cmd" >/dev/null || { echo "F
 source lib/youtube_media.sh
 tmp=$(mktemp -d)
 server=
-trap 'if [ -n "$server" ]; then kill "$server" 2>/dev/null || :; wait "$server" 2>/dev/null || :; fi; rm -rf "$tmp"' EXIT
+trap 'rc=$?; if [ "$rc" != 0 ]; then printf "FAIL: %s/%s: %s\n" "${limiter:-setup}" "${scenario:-setup}" "${result:-}" >&2; fi
+    if [ -n "$server" ]; then kill "$server" 2>/dev/null || :; wait "$server" 2>/dev/null || :; fi; rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/cache" "$tmp/bin" "$tmp/run"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
     -subj '/CN=rr1---sn-example.googlevideo.com' \
@@ -26,26 +27,28 @@ export PATH="$tmp/bin:$PATH" Z2R_SUPERSWEEP_DIR="$tmp/run"
 for limiter in native stream; do
     [ "${MEDIA_TEST_LEGACY_ONLY:-0}:$limiter" != 1:native ] || continue
     if [ "$limiter" = stream ]; then touch "$tmp/cache/curl-stream-limit"; else rm -f "$tmp/cache/curl-stream-limit"; fi
-for scenario in ok truncate text ignore chunked chunked_oversize; do
+for scenario in ok truncate text ignore chunked chunked_oversize redirect redirect_twice redirect_loop; do
     jq --arg s "$scenario" '.streamingData.adaptiveFormats[].url += ("&scenario="+$s)' tests/fixtures/youtube-media/player.json > "$tmp/player.json"
     z2r_media_select "$tmp/player.json" aqz-KE-bpKQ 0123456789abcdef "$tmp/cache"
-    result=$(z2r_media_probe "$tmp/cache" video 1048576 1)
+    result=$(z2r_media_probe "$tmp/cache" video 1048576 1 2> "$tmp/probe.stderr")
+    if [ -s "$tmp/probe.stderr" ]; then cat "$tmp/probe.stderr" >&2; exit 1; fi
     case "$scenario" in
-        ok|chunked) [[ "$result" == OK\|media_range\|0\|206\|1048576\|* ]] ;;
+        ok|chunked|redirect|redirect_twice) [[ "$result" == OK\|media_range\|0\|206\|1048576\|* ]] ;;
         truncate) [[ "$result" == FAIL\|incomplete_transfer\|18\|* || "$result" == FAIL\|incomplete_transfer\|56\|* ]] ;;
-        text|ignore) [[ "$result" == UNKNOWN\|* ]] ;;
+        text|ignore|redirect_loop) [[ "$result" == UNKNOWN\|* ]] ;;
         chunked_oversize) [[ "$result" != OK\|* ]] ;;
     esac
     test ! -e "$tmp/cache/body.fifo"
 done
-jq '.streamingData.adaptiveFormats[].url += "&scenario=stall"' tests/fixtures/youtube-media/player.json > "$tmp/player.json"
+jq '.streamingData.adaptiveFormats[].url += "&scenario=redirect_stall"' tests/fixtures/youtube-media/player.json > "$tmp/player.json"
 z2r_media_select "$tmp/player.json" aqz-KE-bpKQ 0123456789abcdef "$tmp/cache"
-z2r_media_probe "$tmp/cache" video 1048576 0 > "$tmp/result" &
+z2r_media_probe "$tmp/cache" video 1048576 0 > "$tmp/result" 2> "$tmp/probe.stderr" &
 pid=$!
 sleep 1
 touch "$tmp/run/cancel"
 wait "$pid"
 grep -q '^UNKNOWN|cancelled|' "$tmp/result"
+if [ -s "$tmp/probe.stderr" ]; then cat "$tmp/probe.stderr" >&2; exit 1; fi
 test ! -e "$tmp/cache/body.fifo"
 rm "$tmp/run/cancel"
 done
@@ -67,4 +70,23 @@ test ! -e "$tmp/cache/body.fifo"
 result=$(MEDIA_TEST_PORT=1 z2r_media_probe "$tmp/cache" video 4096 0)
 [[ "$result" == FAIL\|network_error\|7\|* ]]
 test ! -e "$tmp/cache/body.fifo"
+# Каждый GET после redirect обязан отдельно пройти проверку очереди.
+jq '.streamingData.adaptiveFormats[].url += "&scenario=redirect"' tests/fixtures/youtube-media/player.json > "$tmp/player.json"
+z2r_media_select "$tmp/player.json" aqz-KE-bpKQ 0123456789abcdef "$tmp/cache"
+supersweep_probe_healthy() { return 0; }
+for queue_case in good lost; do
+    printf '0\n' > "$tmp/sequence"
+    supersweep_probe_sequence() {
+        local n
+        IFS= read -r n < "$tmp/sequence"
+        n=$((n + 1)); printf '%s\n' "$n" > "$tmp/sequence"
+        if [ "$queue_case:$n" = lost:4 ]; then echo 3; else echo "$n"; fi
+    }
+    result=$(Z2R_SUPERSWEEP_ISOLATED=1 z2r_media_probe "$tmp/cache" video 4096 0 1 2> "$tmp/probe.stderr")
+    if [ -s "$tmp/probe.stderr" ]; then cat "$tmp/probe.stderr" >&2; exit 1; fi
+    if [ "$queue_case" = good ]; then [[ "$result" == OK\|media_range\|0\|206\|4096\|* ]]
+    else [[ "$result" == UNKNOWN\|noqueue\|0\|206\|4096\|* ]]; fi
+    test "$(cat "$tmp/sequence")" = 4
+    test ! -e "$tmp/cache/body.fifo"
+done
 echo 'youtube media http smoke ok'
