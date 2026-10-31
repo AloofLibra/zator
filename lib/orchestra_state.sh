@@ -4,24 +4,36 @@ ORCH_DIR="${ORCH_DIR:-/opt/zator/extra_strats/cache/orchestra}"
 ORCH_LOCK_FILE="${ORCH_LOCK_FILE:-$ORCH_DIR/locked.tsv}"
 
 # Меню, CGI и фоновый прогон — независимые писатели одного locked.tsv.
-# ponytail: один mkdir-lock на orchestra; таймаут вместо небезопасного снятия
-# чужого lock. После SIGKILL оставшийся *.write-lock удаляется вручную.
+# PID принадлежит subshell-писателю; живую или старую блокировку без PID не снимаем.
 _orch_write_run() (
   if [ "${_ORCH_WRITE_HELD:-0}" = 1 ]; then
     trap - EXIT
     "$@"; return $?
   fi
-  local lock="${ORCH_LOCK_FILE}.write-lock" n=0
+  local lock="${ORCH_LOCK_FILE}.write-lock" n=0 owner pid
+  owner="$lock/owner.${BASHPID:-$$}"
   mkdir -p "$(dirname "$ORCH_LOCK_FILE")" || return 1
   until mkdir "$lock" 2>/dev/null; do
+    for pid in "$lock"/owner.*; do
+      [ -f "$pid" ] || continue
+      pid=${pid##*/owner.}
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      [ ! -d "/proc/$pid" ] || continue
+      # Только один конкурент может удалить этот маркер и затем пустой каталог.
+      if rm "$lock/owner.$pid" 2>/dev/null; then rmdir "$lock" 2>/dev/null || :; fi
+    done
     n=$((n + 1))
-    [ "$n" -lt 10 ] || { echo 'Orchestra: write lock timeout' >&2; return 1; }
+    [ "$n" -lt 10 ] || {
+      echo "Orchestra: write lock timeout ($lock). Если все тесты и изменения стратегий остановлены, удалите пустой каталог командой rmdir." >&2
+      return 1
+    }
     sleep 1
   done
-  trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+  trap 'rm -f "$owner"; rmdir "$lock" 2>/dev/null || true' EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  : > "$owner" || return 1
   _ORCH_WRITE_HELD=1
   "$@"
 )
