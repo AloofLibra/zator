@@ -568,7 +568,8 @@ z2r_media_probe() (
         fi
         IFS='|' read -r code bytes tcp tls ttfb total speed < "$dir/metrics" || :
         state=UNKNOWN; reason=invalid_response
-        if [ "$require_queue" = 1 ]; then
+        # curl 6 не открывал TCP-соединение: счётчик NFQUEUE расти не должен.
+        if [ "$require_queue" = 1 ] && [ "$rc" != 6 ]; then
             after=$(supersweep_probe_sequence) || after=$before
             if ! supersweep_probe_healthy || [ "$after" = "$before" ]; then
                 printf 'UNKNOWN|noqueue|%s|%s|%s|%s|%s|%s|%s|%s\n' "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}"; return 0
@@ -601,6 +602,7 @@ z2r_media_probe() (
                 fi ;;
             000)
                 reason=network_error
+                [ "$rc" != 6 ] || reason=dns_error
                 # Передача может сломаться до HTTP; DNS/возможности curl не оценивают стратегию.
                 case "$rc" in 7|18|28|35|52|55|56) state=FAIL ;; esac ;;
         esac

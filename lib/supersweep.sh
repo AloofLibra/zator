@@ -345,6 +345,17 @@ _supersweep_check_target() {
             done
             # Ответ при потере изоляции недостоверен; повторяем всю пробу один раз.
             [ "$isolation_lost" = 0 ] || continue
+            # DNS-сбой до TCP не проверяет очередь и не отменяет остальные фазы.
+            if [ "$check" = z2r_media_check ]; then
+                case "$out" in UNKNOWN\|dns_error\|6\|000\|0\|*)
+                    if [ "$attempt" = 1 ]; then
+                        echo 'Не удалось разрешить имя media CDN: повторяю проверку один раз.' >&2
+                        continue
+                    fi
+                    printf '%s\n' "$out"
+                    return 0 ;;
+                esac
+            fi
             seq_after="$(supersweep_probe_sequence)" || { _supersweep_probe_failure queue_unavailable; return 1; }
             # Даже при общем росте счётчика один media GET мог пройти вне очереди.
             case "$out" in UNKNOWN\|noqueue\|*|UNKNOWN\|isolation_unavailable\|*) seq_after="$seq_before" ;; esac

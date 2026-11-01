@@ -744,7 +744,7 @@ if [ -f "$ZAPRET2_ROOT/config" ]; then
     rst_guard_lua_update_from_repo || true
   fi
   if [ ! -s "$CIRCULAR_DETECTOR_LUA" ] || [ ! -s "$SILENT_DROP_DETECTOR_LUA" ] || \
-     [ ! -s "$DNS_CLONE_LUA" ] || \
+     [ ! -s "$DNS_CLONE_LUA" ] || [ ! -s "$FAKE_ADAPT_LUA" ] || \
      [ ! -s "$STRATEGY_LOCK_MANAGER_LUA" ] || [ ! -s "$STRATEGY_VALIDATOR_WORKER" ]; then
     echo "Не найдены Lua-модули circular. Пытаюсь скачать из репозитория..."
     circular_runtime_update_from_repo || true
@@ -1074,7 +1074,7 @@ get_repo() {
   else
     rst_guard_lua_update_from_repo || true
   fi
-  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$FAKE_ADAPT_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
     :
   else
     circular_runtime_update_from_repo || return 1
