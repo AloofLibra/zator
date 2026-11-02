@@ -145,7 +145,7 @@ NFQWS2_OPT="
 --lua-desync=multisplit:blob=fake_default_tls:badsum:tcp_seq=-3000:pos=2:nodrop:strategy=21 --lua-desync=fakeddisorder:pos=midsld:badsum:tcp_seq=-3000:strategy=21
 --lua-desync=multisplit:blob=fake_default_tls:tcp_md5:tcp_seq=-3000:pos=2:nodrop:strategy=22 --lua-desync=fakeddisorder:pos=midsld:tcp_md5:strategy=22
 --lua-desync=multisplit:blob=fake_default_tls:tcp_md5:pos=2:nodrop:strategy=23 --lua-desync=fakeddisorder:pos=sniext+1:tcp_md5:strategy=23
---lua-desync=multidisorder:pos=1,midsld:strategy=24
+--lua-desync=multidisorder:pos=1,midsld,1220:strategy=24
 --lua-desync=fake:blob=fake_default_tls:badsum:repeats=2:strategy=25 --lua-desync=multisplit:pos=1,midsld:strategy=25
 --lua-desync=multisplit:seqovl=666:seqovl_pattern=custom:strategy=26
 --lua-desync=hostfakesplit:host=ozon.ru:tcp_md5:repeats=4:strategy=27

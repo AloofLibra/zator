@@ -820,6 +820,15 @@ blockcheck2_run_summary() {
   local test_name="z4r"
   local default_target="static.rutracker.cc/templates/v1/min/4e695e8ea9cf5a1dcc7aed231b887c51.lib.min.js"
   local test_target="${Z2R_BLOCKCHECK2_DOMAINS:-$default_target}"
+  if [ -z "$Z2R_BLOCKCHECK2_DOMAINS" ]; then
+    local custom_domain=""
+    read -re -p $'\033[36mСвой сайт вместо стандартного (Enter - '$'\033[0m'"rutracker): " custom_domain || true
+    custom_domain="$(echo "$custom_domain" | tr -d '\r\n')"
+    custom_domain="${custom_domain#http://}"
+    custom_domain="${custom_domain#https://}"
+    custom_domain="${custom_domain%/*}"
+    [ -n "$custom_domain" ] && test_target="$custom_domain"
+  fi
   local log_dir="/tmp/zapret2/cache/blockcheck2"
   local provider_file="$ZATOR_ROOT/extra_strats/cache/provider.txt"
   local provider_label="" provider_sanitized="" ts=""
