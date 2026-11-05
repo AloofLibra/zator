@@ -110,6 +110,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))
             <li>Wusspoppin</li><li>Швейк</li><li>BestFridayxD</li>
             <li>a1ligat0r</li><li>Данил</li><li>DarkMaz</li>
             <li>rmzspb</li><li>Артём</li><li>Kir_obrezkov</li>
+            <li>Джун</li><li>AleksCool</li><li>railwayfx</li><li>Ensae</li>
           </ul>
           <p class="modal-message">и ещё 5 анонимусов пожелавших остаться неизвестными</p>
         </section>
