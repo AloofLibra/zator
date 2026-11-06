@@ -70,13 +70,13 @@ z2r_tls_head_once() {
     rc=0
     out="$(z2r_tls_curl -4 -s -L -k -g -I -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_MAX_TIME" \
-        -D "$hdr" -w '%{time_total} %{remote_ip}' \
+        -D "$hdr" -w '%{time_total}|%{remote_ip}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{local_port}' \
         "$@" "$url" 2>/dev/null)" || rc=$?
     printf '%s|%s\n' "$rc" "${out:-- -}"
 }
 
 z2r_tls_probe_version() (
-    local url="$1" ver="$2" flags tmp hdr="${3:-}" raw rc rest time ip first proto code
+    local url="$1" ver="$2" flags tmp hdr="${3:-}" raw rc rest time ip first proto code tc ta ts port
     case "$ver" in
         12) flags="--tlsv1.2 --tls-max 1.2" ;;
         13) flags="--tlsv1.3" ;;
@@ -93,33 +93,77 @@ z2r_tls_probe_version() (
     : >"$hdr"
     raw="$(z2r_tls_head_once "$url" "$hdr" $flags)"
     rc="${raw%%|*}"; rest="${raw#*|}"
-    case "$rest" in
-        *' '*) time="${rest%% *}"; ip="${rest##* }" ;;
-        *) time="-"; ip="-" ;;
-    esac
+    IFS='|' read -r time ip tc ta ts port <<< "$rest"
+    [ -n "$time" ] || time="-"; [ -n "$ip" ] || ip="-"
+    [ -n "$tc" ] || tc="-"; [ -n "$ta" ] || ta="-"; [ -n "$ts" ] || ts="-"
+    case "$port" in ''|*[!0-9]*) port="-" ;; esac
     first="$(grep '^HTTP/' "$hdr" 2>/dev/null | tail -n 1 | tr -d '\r')"
     proto="${first%% *}"; code="${first#* }"; code="${code%% *}"
     [ -n "$proto" ] || proto="-"
     case "$code" in ''|*[!0-9]*) code=000 ;; esac
-    printf '%s|%s|%s|%s|%s\n' "$rc" "$code" "$proto" "$time" "$ip"
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$rc" "$code" "$proto" "$time" "$ip" "$tc" "$ta" "$ts" "$port"
 )
 
 z2r_tls_probe_download() {
-    local url="$1" out rc code rest size time
+    local url="$1" out rc code size time tc ta ts port
     rc=0
 
     out="$(z2r_tls_curl -4 -s -L -k -g -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_DL_MAX_TIME" \
         --speed-limit "$Z2R_TLS_DL_SPEED_LIMIT" --speed-time "$Z2R_TLS_DL_SPEED_TIME" \
         -H "Range: bytes=0-$((Z2R_TLS_DL_RANGE - 1))" \
-        -w '%{http_code} %{size_download} %{time_total}' \
+        -w '%{http_code}|%{size_download}|%{time_total}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{local_port}' \
         "$url" 2>/dev/null)" || rc=$?
-    code="${out%% *}"; rest="${out#* }"; size="${rest%% *}"; time="${rest##* }"
-    case "$out" in *' '*) ;; *) size=""; time="" ;; esac
+    IFS='|' read -r code size time tc ta ts port <<< "$out"
     case "$code" in ''|*[!0-9]*) code=000 ;; esac
     case "$size" in ''|*[!0-9]*) size=0 ;; esac
     [ -n "$time" ] || time="-"
-    printf '%s|%s|%s|%s\n' "$rc" "$code" "$size" "$time"
+    [ -n "$tc" ] || tc="-"; [ -n "$ta" ] || ta="-"; [ -n "$ts" ] || ts="-"
+    case "$port" in ''|*[!0-9]*) port="-" ;; esac
+    printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$rc" "$code" "$size" "$time" "$tc" "$ta" "$ts" "$port"
+}
+
+# Curl timings are evidence only; absent metrics remain explicitly unknown.
+z2r_tls_diagnostic() {
+    local rc="$1" code="$2" size="$3" connect="$4" appconnect="$5" start="$6" kind="$7" total="${8:-}"
+    local stage=UNKNOWN end=UNKNOWN
+    case "$connect" in ''|-|0|0.000000) ;; *) stage=TCP_CONNECTED ;; esac
+    case "$appconnect" in ''|-|0|0.000000) ;; *) stage=TLS_HANDSHAKE_COMPLETE ;; esac
+    case "$rc" in
+        28)
+            if [ "$kind" = download ] && [ "$size" -gt 0 ] 2>/dev/null; then
+                case "$total" in ''|-) stage=UNKNOWN ;;
+                    *[!0-9.]*|.*|*.*.*) stage=UNKNOWN ;;
+                    *) local seconds="${total%%.*}"
+                       if [ "$seconds" -lt "$Z2R_TLS_DL_MAX_TIME" ] 2>/dev/null; then stage=DATA_STALL
+                       else stage=DATA_TIMEOUT; fi ;;
+                esac
+            elif [ "$connect" = "-" ] || [ -z "$connect" ]; then stage=UNKNOWN
+            elif [ "$connect" = "0" ] || [ "$connect" = "0.000000" ]; then stage=TCP_CONNECT_TIMEOUT
+            elif [ "$appconnect" = "-" ] || [ -z "$appconnect" ]; then stage=TCP_CONNECTED
+            elif [ "$appconnect" = "0" ] || [ "$appconnect" = "0.000000" ]; then stage=TLS_HANDSHAKE_TIMEOUT
+            else stage=HTTP_RESPONSE_TIMEOUT; fi
+            if [ "$stage" = DATA_STALL ]; then end=SPEED_LIMIT; else end=TIMEOUT; fi ;;
+        7) stage=TCP_CONNECT_ERROR; end=CONNECT_ERROR ;;
+        35|51|58|59|60|83|90|91) stage=TLS_HANDSHAKE_ERROR; end=TLS_ERROR ;;
+        55) [ "$stage" = TCP_CONNECTED ] || stage=TCP_CONNECT_ERROR; end=SEND_ERROR ;;
+        0)
+            [ "$code" = 000 ] || stage=HTTP_HEADERS_RECEIVED
+            if [ "$kind" = download ]; then
+                if [ "$size" -gt 0 ] 2>/dev/null; then stage=DATA_COMPLETE; end=COMPLETE
+                else stage=DATA_EMPTY; end=EMPTY; fi
+            elif [ "$code" != 000 ]; then end=HTTP_RESPONSE; fi ;;
+        56)
+            if [ "$kind" = download ] && [ "$size" -gt 0 ] 2>/dev/null; then stage=DATA_CUT; end=PARTIAL
+            else end=UNKNOWN; fi ;;
+        *) [ "$stage" = TCP_CONNECTED ] || stage=TCP_CONNECT_ERROR; end=ERROR ;;
+    esac
+    if [ "$#" -gt 8 ]; then
+        [[ "$9" =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ ]] || return 1
+        printf -v "$9" '%s|%s' "$stage" "$end"
+    else
+        printf '%s|%s\n' "$stage" "$end"
+    fi
 }
 
 z2r_tls_field() {

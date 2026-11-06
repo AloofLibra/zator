@@ -54,7 +54,7 @@ _supersweep_transport_hook() {
       [ "$hook" != INPUT ] || target=Z2R_SS_IN
       _supersweep_transport_ipt "$action" "$hook" -p tcp --sport 443 --dport 62000:62999 \
         -m mark ! --mark "$_Z2R_SS_DESYNC/$_Z2R_SS_DESYNC" \
-        -m conntrack --ctstate ESTABLISHED --ctdir REPLY \
+        -m conntrack --ctdir REPLY \
         -m connmark --mark 0x08000000/0x08000000 -j "$target" ;;
     *) return 1 ;;
   esac
@@ -117,7 +117,7 @@ _supersweep_transport_nft_install() {
     _supersweep_transport_error 'foreign/stale nft probe output chain exists'; return 1
   fi
   out="meta nfproto ipv4 meta mark & $_Z2R_SS_DESYNC == 0 meta mark & 0x08000000 != 0 tcp sport 62000-62999 tcp dport 443"
-  reply="meta nfproto ipv4 ct direction reply ct state established ct mark & 0x08000000 != 0 tcp sport 443 tcp dport 62000-62999"
+  reply="meta nfproto ipv4 ct direction reply ct mark & 0x08000000 != 0 tcp sport 443 tcp dport 62000-62999"
   # One atomic transaction. Insertions are reversed: mark, queue, return.
   {
     # После mangle OUTPUT: policy routing иначе затирает ранний mark и

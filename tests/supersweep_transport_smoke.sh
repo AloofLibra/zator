@@ -91,7 +91,7 @@ supersweep_transport_start || fail 'start rejected safe range'
 for key in "${!rules[@]}"; do
   case "$key" in
     POSTROUTING*Z2R_SS_POST) [[ $key == *'--sport 62000:62999 --dport 443'* && $key == *'--ctdir ORIGINAL'* && $key == *'! --mark 0x40000000/0x40000000'* ]] || fail 'unsafe output selection' ;;
-    PREROUTING*Z2R_SS_PRE|INPUT*Z2R_SS_IN) [[ $key == *'--sport 443 --dport 62000:62999'* && $key == *'--ctstate ESTABLISHED --ctdir REPLY'* && $key == *'-m connmark --mark 0x08000000/0x08000000'* ]] || fail 'unsafe reply selection' ;;
+    PREROUTING*Z2R_SS_PRE|INPUT*Z2R_SS_IN) [[ $key == *'--sport 443 --dport 62000:62999'* && $key == *'--ctdir REPLY'* && $key != *'--ctstate ESTABLISHED'* && $key == *'-m connmark --mark 0x08000000/0x08000000'* ]] || fail 'unsafe reply selection' ;;
   esac
 done
 before=${#log[@]}

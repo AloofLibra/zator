@@ -83,18 +83,18 @@ if [ "$head" = 1 ]; then
   fi
   if [ "$okhead" = 1 ]; then
     [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"
-    echo "0.800 192.0.2.10"
+    echo "0.800|192.0.2.10|0.020|0.120|0.180"
     exit 0
   fi
-  echo "8.004 -"
+  echo "8.004|-|0|0|0"
   exit 28
 fi
 if [ "$green" = 1 ]; then
   t="$(awk -v s="${strat:-0}" 'BEGIN{printf "%.3f", 2.6 - 0.1 * s}')"
-  echo "206 65536 $t"
+  echo "206|65536|$t|0.020|0.120|0.180"
   exit 0
 fi
-echo "000 0 12.002"
+echo "000|0|12.002|0|0|0"
 exit 28
 MOCK
 mkdir -p "$TMP_DIR/bin"
@@ -253,6 +253,10 @@ grep -q '^state=done$' "$Z2R_SUPERSWEEP_DIR/status" || fail "сценарий 1:
 [ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/progress.yt.tsv")" = 5 ] || fail "сценарий 1: progress.yt.tsv должен иметь 5 строк (по числу стратегий)"
 [ "$(awk -F'\t' 'NF!=9' "$Z2R_SUPERSWEEP_DIR/progress.yt.tsv" | wc -l)" = 0 ] \
   || fail "сценарий 1: строки progress.yt.tsv должны иметь 9 колонок"
+[ "$(awk -F'\t' 'NF!=18' "$Z2R_SUPERSWEEP_DIR/diagnostics.tsv" | wc -l)" = 0 ] \
+  || fail "сценарий 1: diagnostics.tsv должен содержать 18 колонок"
+grep -q $'\t1\t2\tTLS12\t0\tHTTP_HEADERS_RECEIVED' "$Z2R_SUPERSWEEP_DIR/diagnostics.tsv" \
+  || fail "сценарий 1: нет TLS/HTTP диагностики стратегии"
 # полная матрица (рекомендация автора): каждая стратегия x каждый домен
 [ "$(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")" = 15 ] || fail "сценарий 1: coverage.tsv = 5 стратегий x 3 домена = 15 строк, а не $(wc -l < "$Z2R_SUPERSWEEP_DIR/coverage.tsv")"
 [ "$(awk -F'\t' '$3 >= 1 && $3 <= 5' "$Z2R_SUPERSWEEP_DIR/coverage.tsv" | wc -l)" = 15 ] \

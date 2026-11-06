@@ -410,6 +410,73 @@ _supersweep_progress_row() {
         "$epoch" "$target" "$strat" "$token" "$st12" "$st13" "$dlbytes" "$dltime" "$short"
 }
 
+_supersweep_observed_events() {
+    local port="$1" outvar="$2" file="${Z2R_SUPERSWEEP_DIR}/probe/events.tsv" p d event flags seq ack bytes l7 ready=0 seen=0
+    local ch=UNKNOWN cha=UNKNOWN sh=UNKNOWN rst=UNKNOWN fin=UNKNOWN
+    [[ "$outvar" =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ ]] || return 1
+    case "$port" in ''|*[!0-9]*) printf -v "$outvar" 'UNKNOWN\tUNKNOWN\tUNKNOWN\tUNKNOWN\tUNKNOWN'; return ;; esac
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" != 1 ] || [ -e "${Z2R_SUPERSWEEP_DIR}/probe/observer-unavailable" ]; then
+        printf -v "$outvar" 'UNKNOWN\tUNKNOWN\tUNKNOWN\tUNKNOWN\tUNKNOWN'; return
+    fi
+    while IFS=$'\t' read -r p d event flags seq ack bytes l7; do
+        if [ "$p" = READY ]; then ready=1; continue; fi
+        [ "$p" = "$port" ] || continue
+        if [ "$event" = TCP_SYN ]; then
+            seen=1; ch=NO; cha=NO; sh=NO; rst=NONE; fin=NONE; continue
+        fi
+        [ "$seen" = 1 ] || continue
+        case "$event" in
+            CLIENT_HELLO_SENT) ch=YES ;;
+            CLIENT_HELLO_ACKED) cha=YES ;;
+            SERVER_HELLO_RECEIVED) sh=YES ;;
+            RST_IN) case "$rst" in NONE) rst=RST_IN ;; *) rst="$rst,RST_IN" ;; esac ;;
+            RST_OUT) case "$rst" in NONE) rst=RST_OUT ;; *) rst="$rst,RST_OUT" ;; esac ;;
+            FIN_IN) case "$fin" in NONE) fin=FIN_IN ;; *) fin="$fin,FIN_IN" ;; esac ;;
+            FIN_OUT) case "$fin" in NONE) fin=FIN_OUT ;; *) fin="$fin,FIN_OUT" ;; esac ;;
+        esac
+    done < "$file" 2>/dev/null || :
+    if [ "$ready" != 1 ] && [ ! -e "${Z2R_SUPERSWEEP_DIR}/probe/observer-unavailable" ]; then
+        : > "${Z2R_SUPERSWEEP_DIR}/probe/observer-unavailable" 2>/dev/null || :
+        echo 'Lua-наблюдатель недоступен: пакетные события записаны как UNKNOWN, проверка стратегии продолжена.' >&2
+    fi
+    if [ "$ready" != 1 ] || [ "$seen" != 1 ]; then ch=UNKNOWN; cha=UNKNOWN; sh=UNKNOWN; rst=UNKNOWN; fin=UNKNOWN; fi
+    printf -v "$outvar" '%s\t%s\t%s\t%s\t%s' "$ch" "$cha" "$sh" "$rst" "$fin"
+}
+
+_supersweep_diagnostic_rows() {
+    local target="$1" profile="$2" strategy="$3" v12="$4" v13="$5" dl="$6" media="${7:-0}" row kind rc code size total tc ta ts port stage end classified events ch cha sh rst fin st12 st13 dstage=UNKNOWN dend=UNKNOWN dbytes=0
+    for kind in TLS12 TLS13; do
+        row="$v12"; [ "$kind" = TLS13 ] && row="$v13"
+        IFS='|' read -r rc code _ total _ tc ta ts port <<< "$row"
+        [ -n "$tc" ] || tc=-; [ -n "$ta" ] || ta=-; [ -n "$ts" ] || ts=-
+        [ -n "$total" ] || total=-
+        z2r_tls_diagnostic "$rc" "$code" 0 "$tc" "$ta" "$ts" head "$total" classified
+        IFS='|' read -r stage end <<< "$classified"
+        _supersweep_observed_events "$port" events
+        IFS=$'\t' read -r ch cha sh rst fin <<< "$events"
+        [ "$kind" != TLS12 ] || st12="$stage/$end"
+        [ "$kind" != TLS13 ] || st13="$stage/$end"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$target" "$profile" "$strategy" "$kind" "$rc" "$stage" "$end" "$code" "$tc" "$ta" "$ts" "$total" "$ch" "$cha" "$sh" "$rst" "$fin" >> "$Z2R_SUPERSWEEP_DIR/diagnostics.tsv" 2>/dev/null || :
+    done
+    if [ "$media" != 1 ] && [ "$dl" != skip ]; then
+        IFS='|' read -r rc code size total tc ta ts port <<< "$dl"
+        dbytes="$size"
+        [ -n "$tc" ] || tc=-; [ -n "$ta" ] || ta=-; [ -n "$ts" ] || ts=-
+        [ -n "$total" ] || total=-
+        z2r_tls_diagnostic "$rc" "$code" "$size" "$tc" "$ta" "$ts" download "$total" classified
+        IFS='|' read -r stage end <<< "$classified"
+        _supersweep_observed_events "$port" events
+        IFS=$'\t' read -r ch cha sh rst fin <<< "$events"
+        dstage="$stage/$end"
+        printf '%s\t%s\t%s\tDOWNLOAD\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$target" "$profile" "$strategy" "$rc" "$stage" "$end" "$code" "$size" "$tc" "$ta" "$ts" "$total" "$ch" "$cha" "$sh" "$rst" "$fin" >> "$Z2R_SUPERSWEEP_DIR/diagnostics.tsv" 2>/dev/null || :
+    fi
+    printf '  [diag %s #%s] TLS1.2=%s TLS1.3=%s' "$profile" "$strategy" "${st12:-UNKNOWN}" "${st13:-UNKNOWN}" >&2
+    [ "$media" = 1 ] || [ "$dl" = skip ] || printf ' DATA=%s %sB' "$dstage" "$dbytes" >&2
+    printf '\n' >&2
+}
+
 _supersweep_print_line() {
     local tag="$1" domain="$2" strat="$3" token="$4" v12="$5" v13="$6" short="$7"
     local color disp stamp
@@ -457,7 +524,8 @@ _supersweep_worker_profile() {
     local ok_list="" warn_list="" full_list="" ok_stats="" warn_stats=""
     local n_ok=0 n_warn=0 n_fail=0 n_unknown=0
     local q12 q13 dlsize dltime rc code unused
-    local ss_interrupted=0 psleep settle_v g
+    local ss_interrupted=0 psleep settle_v g media_diag=0
+    [ "$name" != gv ] || [ "${Z2R_SUPERSWEEP_MEDIA:-1}" = 0 ] || media_diag=1
     # Settle входит в паузу; интервал проверок = пауза + время пробы.
     settle_v="${Z2R_SUPERSWEEP_SETTLE:-2}"
     case "$settle_v" in ''|*[!0-9]*) settle_v=2 ;; esac
@@ -521,6 +589,7 @@ _supersweep_worker_profile() {
         printf -v epoch '%(%s)T' -1 2>/dev/null || epoch="$(date +%s)"
         _supersweep_progress_row "$epoch" "$profile" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
             >> "${dir}/progress.${name}.tsv"
+        _supersweep_diagnostic_rows "$url" "$profile" "$s" "$v12" "$v13" "$dl" "$media_diag"
 
         if [ "$s" -lt "$max" ]; then
             # Обе TLS зелёные → GREEN_PAUSE (0 отключает), в том числе для Discord.
@@ -627,6 +696,7 @@ _supersweep_rkn_record() {
         >> "${Z2R_SUPERSWEEP_DIR}/coverage.tsv"
     _supersweep_progress_row "$epoch" "$d" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
         >> "${Z2R_SUPERSWEEP_DIR}/progress.rkn.tsv"
+    _supersweep_diagnostic_rows "$d" 3 "$s" "$v12" "$v13" "$dl"
     printf '%s\n' "$token"
 }
 
@@ -1174,6 +1244,7 @@ _supersweep_run() {
 
     rm -rf "$dir"
     (umask 077; mkdir -p "$dir") || { echo -e "${red}Не удалось создать $dir${plain}"; return 1; }
+    printf 'target\tprofile\tstrategy\tattempt\tcurl_exit\tstage\ttermination\thttp_code\tbytes\ttime_connect\ttime_appconnect\ttime_starttransfer\ttime_total\tclient_hello\tclient_hello_acked\tserver_hello\trst\tfin\n' > "$dir/diagnostics.tsv" 2>/dev/null || :
     if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
         mkdir -p "${dir}/probe" || return 1
     fi

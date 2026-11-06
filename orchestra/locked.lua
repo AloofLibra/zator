@@ -1,5 +1,63 @@
 local LOCKED_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.tsv"
 local LOCKED_MANUAL_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.manual.tsv"
+local Z2R_SS_EVENT_PATH = "/tmp/z2r-supersweep/probe/events.tsv"
+local Z2R_SS_EVENT_READY = false
+
+-- Passive Supersweep observer. It records packet facts, then passes the packet unchanged.
+local function z2r_ss_event(event, desync, tcp, port)
+  pcall(function()
+    local file = io.open(Z2R_SS_EVENT_PATH, "a")
+    if not file then return end
+    if not Z2R_SS_EVENT_READY then file:write("READY\n"); Z2R_SS_EVENT_READY = true end
+    file:write(table.concat({ tostring(port), desync.outgoing and "OUT" or "IN", event,
+      tostring(tcp.th_flags or 0), tostring(tcp.th_seq or 0), tostring(tcp.th_ack or 0),
+      tostring(desync.dis and desync.dis.payload and #desync.dis.payload or 0),
+      tostring(desync.l7payload or "unknown") }, "\t"), "\n")
+    file:close()
+  end)
+end
+
+function z2r_supersweep_observe(ctx, desync)
+  local tcp = desync.dis and desync.dis.tcp
+  local track = desync.track
+  if not tcp or not track then return VERDICT_PASS end
+  local port = desync.outgoing and tcp.th_sport or tcp.th_dport
+  if not port then return VERDICT_PASS end
+  local state = track.lua_state.z2r_supersweep
+  if not state then state = {}; track.lua_state.z2r_supersweep = state end
+  local flags = tcp.th_flags or 0
+  local key = tostring(port)
+  local payload_len = desync.dis.payload and #desync.dis.payload or 0
+  local l7 = desync.l7payload
+  if bitand(flags, TH_RST) ~= 0 then z2r_ss_event(desync.outgoing and "RST_OUT" or "RST_IN", desync, tcp, port) end
+  if bitand(flags, TH_FIN) ~= 0 then z2r_ss_event(desync.outgoing and "FIN_OUT" or "FIN_IN", desync, tcp, port) end
+  if desync.outgoing and bitand(flags, TH_SYN) ~= 0 and bitand(flags, TH_ACK) == 0 then
+    state[key .. ".ch"] = nil
+    state[key .. ".ch_acked"] = nil
+    state[key .. ".ch_end"] = nil
+    z2r_ss_event("TCP_SYN", desync, tcp, port)
+  end
+  if desync.outgoing and l7 == "tls_client_hello" and not state[key .. ".ch"] then
+    local hello = desync.reasm_data or desync.dis.payload or ""
+    local offset = tonumber(desync.reasm_offset) or 0
+    state[key .. ".ch"] = true
+    state[key .. ".ch_end"] = ((tcp.th_seq or 0) - offset + #hello) % 4294967296
+    z2r_ss_event("CLIENT_HELLO_SENT", desync, tcp, port)
+  end
+  if not desync.outgoing and l7 == "tls_server_hello" and not state[key .. ".sh"] then
+    state[key .. ".sh"] = true
+    z2r_ss_event("SERVER_HELLO_RECEIVED", desync, tcp, port)
+  end
+  if not desync.outgoing and state[key .. ".ch"] and not state[key .. ".ch_acked"]
+    and bitand(flags, TH_ACK) ~= 0 and state[key .. ".ch_end"] then
+    local ack, finish = tcp.th_ack or 0, state[key .. ".ch_end"]
+    if ack == finish or ((ack - finish) % 4294967296) < 2147483648 then
+      state[key .. ".ch_acked"] = true
+      z2r_ss_event("CLIENT_HELLO_ACKED", desync, tcp, port)
+    end
+  end
+  return VERDICT_PASS
+end
 -- Per-mark lock-файлы: <orchestra>/scopes/mark_N.tsv (3 колонки, без колонки scope).
 -- Список активных mark'ов берём из маппинга клиентов — он и так перечисляет
 -- все mark'и, чей трафик маркируется firewall'ом.

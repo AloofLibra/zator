@@ -29,6 +29,15 @@ eq "$(z2r_tls_short_result "$v" "$v" "$dl" both)" 'ok|данные 65536 бай�
 eq "$(z2r_tls_short_result "$v" "$bad" "$dl" both)" 'warn|работает только TLS 1.2, данные 65536 байт за 1.234 с' 'strict both TLS'
 eq "$(z2r_tls_short_result "$v" "$v" "$dl|retry")" 'warn|срез нестабильный, повтор прошёл' 'retry'
 eq "$(z2r_tls_target_verdict "$v" "$v" "$dl")" 'ok|Сайт доступен: TLS работает, данные идут.' 'verdict'
+eq "$(z2r_tls_diagnostic 28 000 0 0.000000 0.000000 - head)" 'TCP_CONNECT_TIMEOUT|TIMEOUT' 'TCP timeout classification'
+eq "$(z2r_tls_diagnostic 28 000 0 0.020000 0.000000 - head)" 'TLS_HANDSHAKE_TIMEOUT|TIMEOUT' 'TLS timeout classification'
+eq "$(z2r_tls_diagnostic 56 206 18432 0.020000 0.120000 - download)" 'DATA_CUT|PARTIAL' 'partial body classification'
+eq "$(z2r_tls_diagnostic 0 404 0 0.020000 0.120000 - head)" 'HTTP_HEADERS_RECEIVED|HTTP_RESPONSE' 'HTTP 404 is a response'
+eq "$(z2r_tls_diagnostic 28 000 0 - - - head)" 'UNKNOWN|TIMEOUT' 'missing metrics remain unknown'
+eq "$(z2r_tls_diagnostic 28 206 18432 0.020000 0.120000 - download 2.500000)" 'DATA_STALL|SPEED_LIMIT' 'curl speed timeout classification'
+classified=unchanged
+z2r_tls_diagnostic 0 404 0 0.020000 0.120000 - head 0.3 classified
+eq "$classified" 'HTTP_HEADERS_RECEIVED|HTTP_RESPONSE' 'diagnostic assignment avoids subshells'
 # Optional output-variable API avoids subshells and must not shadow caller locals.
 check_assignments() {
     local state badge rc code expected

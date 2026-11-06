@@ -30,7 +30,7 @@ printf 'profile|1|tls|3\n' > "$Z2R_SUPERSWEEP_DIR/prev.tsv"
 _supersweep_restore_prev
  grep -q $'^1\ttls\t7$' "$ORCH_LOCK_FILE"
 # The same TLS engine must steer both HEAD and download; ordinary checks unchanged.
-curl() { printf '%s\n' "$*" >> "$TMP/curl.args"; printf '206 64 1'; }
+curl() { printf '%s\n' "$*" >> "$TMP/curl.args"; printf '206|64|1|0.02|0.12|0.2'; }
 _z2r_media_curl() { shift 3; curl "$@"; }
 export Z2R_TLS_LOCAL_PORTS=62000-62999
 z2r_tls_head_once https://example.com/ "$TMP/h" >/dev/null
@@ -368,7 +368,7 @@ for arg in "$@"; do
     [ "$prev" != -D ] || printf 'HTTP/2 200\r\n' > "$arg"
     prev="$arg"
 done
-case "$*" in *' -I '*) echo '0.1 192.0.2.1' ;; *) echo '206 64 0.1' ;; esac
+case "$*" in *' -I '*) echo '0.1|192.0.2.1|0.02|0.12|0.2' ;; *) echo '206|64|0.1|0.02|0.12|0.2' ;; esac
 MOCK
 chmod +x "$ZAPRET2_ROOT/nfq2/nfqws2" "$TMP/bin/"*
 export PATH="$TMP/bin:$PATH"
@@ -416,6 +416,9 @@ grep -q -- '--uid=65533:65533' "$TMP/nfq.args"
 grep -q -- '--lua-init=@' "$TMP/nfq.args"
 grep -q -- '--import=' "$TMP/nfq.args"
 grep -q -- '--lua-desync=circular_locked:key=1' "$TMP/nfq.args"
+grep -q -- '--lua-desync=z2r_supersweep_observe:payload=' "$TMP/nfq.args"
+grep -q -- '--out-range=a' "$TMP/nfq.args"
+grep -q -- '--in-range=a' "$TMP/nfq.args"
 ! grep -q '^@' "$TMP/nfq.args"
 [ "$(grep -cx -- '--new' "$TMP/nfq.args")" = 1 ]
 printf 'r|99\nprofile|invalid|tls|1\n' > "$Z2R_SUPERSWEEP_DIR/cmd.yt.tmp.poison"

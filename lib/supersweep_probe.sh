@@ -9,10 +9,12 @@ supersweep_probe_config() {
     case "$dir" in /*) ;; *) return 1 ;; esac
     case "$dir" in *[!a-zA-Z0-9_./-]*) return 1 ;; esac
     mkdir -p "$dir" || return 1
+    : > "$dir/events.tsv" || return 1
     # Lua после drop privileges читает только приватные локи/копии настроек.
     chmod 755 "$Z2R_SUPERSWEEP_DIR" "$dir" || return 1
     sed -e "s#^local LOCKED_PATH = .*#local LOCKED_PATH = \"$dir/locked.tsv\"#" \
         -e "s#^local LOCKED_MANUAL_PATH = .*#local LOCKED_MANUAL_PATH = \"$dir/locked.manual.tsv\"#" \
+        -e "s#^local Z2R_SS_EVENT_PATH = .*#local Z2R_SS_EVENT_PATH = \"$dir/events.tsv\"#" \
         "${ZATOR_ROOT:-/opt/zator}/lua/locked.lua" > "$dir/locked.lua" || return 1
     : > "$dir/locked.tsv"
     : > "$dir/locked.manual.tsv"
@@ -75,9 +77,12 @@ supersweep_probe_config() {
         block {
             if (!header++) {
                 print "--filter-tcp=443\n--filter-l7=tls"
-                print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
+                print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty"
                 print "--out-range=-s34228"
                 print "--in-range=-s32768"
+                print "--out-range=a\n--in-range=a"
+                print "--lua-desync=z2r_supersweep_observe:payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello,empty"
+                print "--out-range=-s34228\n--in-range=-s32768"
                 print "--lua-desync=circular_locked:key=" p
             }
             if (/^--import=/) { print; plan=1 }
@@ -159,6 +164,12 @@ supersweep_probe_start() {
         args+=("$line")
     done < "$dir/nfqws2.args"
     [ "${#args[@]}" -gt 0 ] || return 1
+    if chown 65533:65533 "$dir/events.tsv" 2>/dev/null && chmod 600 "$dir/events.tsv" 2>/dev/null; then
+        rm -f "$dir/observer-unavailable"
+    else
+        : > "$dir/observer-unavailable"
+        echo 'Не удалось выдать Lua-наблюдателю доступ к его временному журналу; packet events будут UNKNOWN.' >&2
+    fi
     # Передаём argv напрямую: разбор @-файлов различается между сборками nfqws2.
     "$binary" "${args[@]}" > "$dir/nfqws2.log" 2>&1 </dev/null &
     Z2R_SUPERSWEEP_NFQ_PID=$!
@@ -170,6 +181,7 @@ supersweep_probe_start() {
         i=$((i + 1))
     done
     if [ "$i" = 5 ]; then supersweep_probe_stop; return 1; fi
+    rm -f "$dir/observer-unavailable"
     Z2R_SUPERSWEEP_TRANSPORT_ACTIVE=1
     if ! supersweep_transport_start; then
         supersweep_transport_stop 2>/dev/null || :

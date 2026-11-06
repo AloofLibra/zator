@@ -450,14 +450,14 @@ EOF
 # Старый формат TLS-метрик, но каждый успех подтверждён медиаданными, не корнем CDN.
 z2r_media_target() {
     local strategy="$1" pref="${2:-both}" output_mode="${3:-}" version row state reason rc code bytes tcp tls ttfb total speed color
-    local v12 v13 r12 r13 s12 s13 selected token label
+    local v12 v13 r12 r13 s12 s13 selected token label localport
     for version in 12 13; do
         if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
             row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" z2r_media_check) || return 1
         else
             row=$(Z2R_MEDIA_TLS_VERSION=$version z2r_media_check "$strategy") || return 1
         fi
-        IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
+        IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed localport <<EOF
 $row
 EOF
         if [ "$output_mode" = print ]; then
@@ -465,7 +465,7 @@ EOF
             printf '%bTLS 1.%s: %s; HTTP %s, %s байт, %s с (%s)%b\n' "$color" "${version#1}" "$state" "$code" "$bytes" "$total" "$reason" "${plain:-}"
         fi
         # HTTP 206 сам по себе не означает успешную передачу.
-        if [ "$state" = OK ]; then selected="0|206|HTTP/1.1|$total|"; else selected="56|000|HTTP/1.1|$total|"; fi
+        if [ "$state" = OK ]; then selected="0|206|HTTP/1.1|$total|media|$tcp|$tls|$ttfb|$localport"; else selected="56|000|HTTP/1.1|$total|media|$tcp|$tls|$ttfb|$localport"; fi
         if [ "$version" = 12 ]; then v12=$selected; r12=$row; s12=$state; else v13=$selected; r13=$row; s13=$state; fi
         [ "$reason" != cancelled ] || break
     done
@@ -502,7 +502,7 @@ z2r_media_probe() (
     local dir="$1" kind="$2" count="$3" middle="$4" require_queue="${5:-0}"
     local length mime host expire offset end row rc pid before after state reason headers
     local reader="" task body=/dev/null
-    local code bytes tcp tls ttfb total speed location url_override="${6:-}" redirects="${7:-2}" config="$dir/$kind.curl"
+    local code bytes tcp tls ttfb total speed localport location url_override="${6:-}" redirects="${7:-2}" config="$dir/$kind.curl"
     case "$kind" in audio|video) ;; *) return 1 ;; esac
     case "$count" in ''|*[!0-9]*) return 1 ;; esac
     [ "$count" -ge 4096 ] && [ "$count" -le 4194304 ] || return 1
@@ -549,7 +549,7 @@ z2r_media_probe() (
             --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
             --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 5 \
             -D "$dir/headers" -o "$body" \
-            -w '%{http_code}|%{size_download}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}' \
+            -w '%{http_code}|%{size_download}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}|%{local_port}' \
             > "$dir/metrics" 2>/dev/null </dev/null &
         pid=$!
         while kill -0 "$pid" 2>/dev/null; do
@@ -566,7 +566,7 @@ z2r_media_probe() (
             reader=""
             rm -f "$body"
         fi
-        IFS='|' read -r code bytes tcp tls ttfb total speed < "$dir/metrics" || :
+        IFS='|' read -r code bytes tcp tls ttfb total speed localport < "$dir/metrics" || :
         state=UNKNOWN; reason=invalid_response
         # curl 6 не открывал TCP-соединение: счётчик NFQUEUE расти не должен.
         if [ "$require_queue" = 1 ] && [ "$rc" != 6 ]; then
@@ -606,7 +606,7 @@ z2r_media_probe() (
                 # Передача может сломаться до HTTP; DNS/возможности curl не оценивают стратегию.
                 case "$rc" in 7|18|28|35|52|55|56) state=FAIL ;; esac ;;
         esac
-        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$state" "$reason" "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}"
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$state" "$reason" "$rc" "${code:-000}" "${bytes:-0}" "${tcp:-0}" "${tls:-0}" "${ttfb:-0}" "${total:-0}" "${speed:-0}" "${localport:--}"
         return 0
     done
 )
