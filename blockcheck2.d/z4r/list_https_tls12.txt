@@ -447,3 +447,52 @@
 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=4:scale=6:strategy=438 --lua-desync=syndata:blob=tlsgoogle:strategy=438 --payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3:strategy=438
 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=6:strategy=439 --lua-desync=syndata:blob=tlsgoogle:strategy=439 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_md5:repeats=3:strategy=439
 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-init=@/opt/zator/lua/locked.lua --lua-desync=wssize:wsize=1:scale=6:strategy=440 --lua-desync=syndata:blob=tlsgoogle:strategy=440 --payload=tls_client_hello --lua-desync=fakemultidisorder:fake_blob=tlsgoogle:pos=host+1,midsld:fake_count=1:tcp_ack=-66000:tcp_ts_up:repeats=2:strategy=440
+
+--lua-desync=wssize:wsize=1:scale=0:strategy=441
+--lua-desync=wssize:wsize=1:scale=1:strategy=442
+--lua-desync=wssize:wsize=1:scale=2:strategy=443
+--lua-desync=wssize:wsize=1:scale=3:strategy=444
+--lua-desync=wssize:wsize=1:scale=4:strategy=445
+--lua-desync=wssize:wsize=1:scale=5:strategy=446
+--lua-desync=wssize:wsize=3:scale=0:strategy=447
+
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=0:strategy=448 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=448
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=0:strategy=449 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=664:seqovl_pattern=tlsgoogle:strategy=449
+--lua-desync=wssize:wsize=1:scale=0:strategy=450 --payload=tls_client_hello --lua-desync=multidisorder:pos=midsld:strategy=450
+--lua-desync=wssize:wsize=1:scale=0:strategy=451 --payload=tls_client_hello --lua-desync=multidisorder_legacy:pos=1,midsld:strategy=451
+--lua-desync=wssize:wsize=1:scale=0:strategy=452 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_md5:repeats=3:strategy=452
+
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=1:strategy=453 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=453
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=1:strategy=454 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=664:seqovl_pattern=tlsgoogle:strategy=454
+--lua-desync=wssize:wsize=1:scale=1:strategy=455 --payload=tls_client_hello --lua-desync=multidisorder:pos=midsld:strategy=455
+--lua-desync=wssize:wsize=1:scale=1:strategy=456 --payload=tls_client_hello --lua-desync=multidisorder_legacy:pos=1,midsld:strategy=456
+--lua-desync=wssize:wsize=1:scale=1:strategy=457 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_md5:repeats=3:strategy=457
+
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=2:strategy=458 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=458
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=2:strategy=459 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=664:seqovl_pattern=tlsgoogle:strategy=459
+--lua-desync=wssize:wsize=1:scale=2:strategy=460 --payload=tls_client_hello --lua-desync=multidisorder:pos=midsld:strategy=460
+--lua-desync=wssize:wsize=1:scale=2:strategy=461 --payload=tls_client_hello --lua-desync=multidisorder_legacy:pos=1,midsld:strategy=461
+--lua-desync=wssize:wsize=1:scale=2:strategy=462 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_md5:repeats=3:strategy=462
+
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=3:strategy=463 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=463
+--lua-desync=wssize:wsize=1:scale=3:strategy=464 --payload=tls_client_hello --lua-desync=multidisorder:pos=midsld:strategy=464
+--lua-desync=wssize:wsize=1:scale=3:strategy=465 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_md5:repeats=3:strategy=465
+
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=0:strategy=466 --payload=tls_client_hello --lua-desync=fake:blob=tlsgoogle:tcp_md5:repeats=3:strategy=466
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=0:strategy=467 --payload=tls_client_hello --lua-desync=fakedsplit:pos=2:pattern=tlsgoogle:tcp_md5:repeats=2:strategy=467
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=0:strategy=468 --lua-desync=syndata:blob=tlsgoogle:strategy=468 --payload=tls_client_hello --lua-desync=multidisorder:pos=1,midsld:strategy=468
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=0:strategy=469 --lua-desync=syndata:blob=tlsgoogle:strategy=469 --payload=tls_client_hello --lua-desync=multisplit:pos=sniext+1,midsld:seqovl=211:seqovl_pattern=tlsgoogle:strategy=469
+--lua-desync=wssize:wsize=1:scale=0:strategy=470 --payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3:strategy=470
+
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=1:strategy=471 --payload=tls_client_hello --lua-desync=fake:blob=tlsgoogle:tcp_md5:repeats=3:strategy=471
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=1:strategy=472 --payload=tls_client_hello --lua-desync=fakedsplit:pos=2:pattern=tlsgoogle:tcp_md5:repeats=2:strategy=472
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=1:strategy=473 --lua-desync=syndata:blob=tlsgoogle:strategy=473 --payload=tls_client_hello --lua-desync=multidisorder:pos=1,midsld:strategy=473
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=1:strategy=474 --lua-desync=syndata:blob=tlsgoogle:strategy=474 --payload=tls_client_hello --lua-desync=multisplit:pos=sniext+1,midsld:seqovl=211:seqovl_pattern=tlsgoogle:strategy=474
+--lua-desync=wssize:wsize=1:scale=1:strategy=475 --payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3:strategy=475
+
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=2:strategy=476 --lua-desync=syndata:blob=tlsgoogle:strategy=476 --payload=tls_client_hello --lua-desync=multidisorder:pos=1,midsld:strategy=476
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=wssize:wsize=1:scale=2:strategy=477 --lua-desync=syndata:blob=tlsgoogle:strategy=477 --payload=tls_client_hello --lua-desync=multisplit:pos=sniext+1,midsld:seqovl=211:seqovl_pattern=tlsgoogle:strategy=477
+--lua-desync=wssize:wsize=1:scale=2:strategy=478 --payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3:strategy=478
+
+--lua-desync=wssize:wsize=1:scale=0:strategy=479 --payload=tls_client_hello --lua-desync=multidisorder:pos=1,midsld:strategy=479
+--lua-desync=wssize:wsize=1:scale=1:strategy=480 --payload=tls_client_hello --lua-desync=multidisorder:pos=1,midsld:strategy=480
