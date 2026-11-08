@@ -876,7 +876,7 @@ blockcheck2_run_summary() {
     while kill -0 "$pid" >/dev/null 2>&1; do
       elapsed=$(( $(date +%s) - start_ts ))
       if [ -s "$progress_file" ]; then
-        read -r done total <"$progress_file"
+        read -r done total <"$progress_file" 2>/dev/null || { done=0; total=0; }
         if [ -n "$total" ] && [ "$total" -gt 0 ]; then
           pct=$(( (done * 100) / total ))
           if [ "$done" -gt 0 ]; then
@@ -1215,7 +1215,7 @@ remove_zapret() {
   CLIENT_SCOPE_FIREWALL_BACKEND=iptables client_scope_firewall_action cleanup || true
  fi
  if [ -f "$ZAPRET2_INIT" ] && [ -f "$ZAPRET2_ROOT/config" ]; then
- 	z2r_service_action stop
+ 	z2r_service_action stop || echo -e "${yellow}Не удалось остановить zapret2 перед удалением — продолжаю.${plain}"
  fi
  if [ -f "$ZAPRET2_ROOT/config" ] && [ -f "$ZAPRET2_ROOT/uninstall_easy.sh" ]; then
      echo "Выполняем zapret2/uninstall_easy.sh"
@@ -1285,8 +1285,8 @@ zapret2_flavor_save() { # zapret2_flavor_save fork|official
   [ "$1" = fork ] || [ "$1" = official ] || return 1
   local file
   file="$(zapret2_flavor_file)"
-  mkdir -p "$(dirname "$file")" 2>/dev/null
-  printf '%s\n' "$1" > "$file" 2>/dev/null
+  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  printf '%s\n' "$1" > "$file" 2>/dev/null || true
 }
 
 # Валидация версии zapret2 для текущего flavor: официальный формат
@@ -1347,7 +1347,7 @@ version_select() {
     return 0
    fi
    while true; do
-	read -re -p $'\033[0;32mВведите желаемую версию zapret2 (Enter для новейшей версии): \033[0m' VER
+	read -re -p $'\033[0;32mВведите желаемую версию zapret2 (Enter для новейшей версии): \033[0m' VER || VER=""
     # Если пустой ввод — берем значение по умолчанию
 	if [ -z "$VER" ]; then
 		if [ "$(zapret2_flavor_load)" = fork ]; then
@@ -1565,7 +1565,9 @@ zapret_get() {
      return 1
  fi
  sh "$workdir/zapret2/install_bin.sh"
- find "$workdir/zapret2/binaries"/* -maxdepth 0 -type d ! -name "$(basename "$(dirname "$(readlink "$workdir/zapret2/nfq2/nfqws2")")")" -exec rm -rf {} +
+ if [ -d "$workdir/zapret2/binaries" ] && [ -e "$workdir/zapret2/nfq2/nfqws2" ]; then
+   find "$workdir/zapret2/binaries"/* -maxdepth 0 -type d ! -name "$(basename "$(dirname "$(readlink "$workdir/zapret2/nfq2/nfqws2")")")" -exec rm -rf {} + || true
+ fi
  z2r_prune_staged_binaries "$workdir/zapret2"
  z2r_prune_staged_sources "$workdir/zapret2"
  rm -rf "$workdir/zapret2/docs"
@@ -1644,10 +1646,10 @@ unpatch_installer_zapret() {
 
 #Запуск установочных скриптов и перезагрузка
 install_zapret_reboot() {
- sh -i "$ZAPRET2_ROOT/install_easy.sh"
+ sh -i "$ZAPRET2_ROOT/install_easy.sh" || echo -e "${red}install_easy.sh завершился с ошибкой (rc=$?). Продолжаю.${plain}"
  cleanup_zapret2_init_dirs
  client_scope_firewall_apply_active_config
- z2r_service_action restart
+ z2r_service_action restart || echo -e "${yellow}Рестарт zapret2 не удался — запустите вручную (п.2).${plain}"
  if pidof nfqws2 >/dev/null; then
   check_access_list
   echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Открываю меню управления. Если меню закрылось или что-то пошло не так — просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
@@ -1749,10 +1751,10 @@ get_panel() {
      bash <(curl -Ls https://raw.githubusercontent.com/angristan/wireguard-install/refs/heads/master/wireguard-install.sh)
  elif [[ "$clean_answer" == "3PROXY" ]]; then
      echo "Установка 3proxy (by SnoyIatk). Доустановка с apt build-essential для сборки (debian/ubuntu)"
-	 apt update && apt install build-essential
+	 apt update && apt install build-essential || echo "apt недоступен — продолжаю без build-essential"
      bash <(curl -Ls https://raw.githubusercontent.com/SnoyIatk/3proxy/master/3proxyinstall.sh)
-     z2r_download_project_file /etc/3proxy/.proxyauth "del.proxyauth"
-     z2r_download_project_file /etc/3proxy/3proxy.cfg "3proxy.cfg"
+     z2r_download_project_file /etc/3proxy/.proxyauth "del.proxyauth" || true
+     z2r_download_project_file /etc/3proxy/3proxy.cfg "3proxy.cfg" || true
  elif [[ "$clean_answer" == "MARZBAN" ]]; then
      echo "Установка Marzban"
      bash -c "$(curl -sL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh)" @ install
@@ -2551,7 +2553,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       ensure_nfqws2_stopped
       echo -e "${green}Выполнена команда остановки zapret2${plain}"
     else
-      z2r_service_action start
+      z2r_service_action start || echo -e "${red}Запуск zapret2 не удался — смотрите /tmp/nfqws2_1.err.${plain}"
       echo -e "${green}Выполнена команда запуска zapret2${plain}"
     fi
     pause_enter
@@ -2559,7 +2561,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "22")
     ensure_nfqws2_stopped
-    z2r_service_action start
+    z2r_service_action start || echo -e "${red}Запуск zapret2 не удался — смотрите /tmp/nfqws2_1.err.${plain}"
     echo -e "${green}Выполнена быстрая перезагрузка zapret2 (остановка + запуск)${plain}"
     pause_enter
     ;;
@@ -2570,7 +2572,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "3")
-    blockcheck2_run_summary
+    blockcheck2_run_summary || true
     pause_enter
     ;;
 
@@ -2862,7 +2864,7 @@ while true; do
  version_select
  
  #Скачивание, распаковка архива zapret2 и его удаление
- zapret_get
+ zapret_get || echo -e "${red}Не удалось скачать или распаковать zapret2 (сеть?). Продолжаю; поставить zapret2 можно позже из меню (п.5 -> п.6).${plain}"
  
  # Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
   # Повторная установка (смена версии zapret2): zator-контент уже развёрнут и
@@ -2874,7 +2876,7 @@ while true; do
   else
     Z2R_GET_REPO_SKIP_EXISTING=0
   fi
-  get_repo
+  get_repo || echo -e "${red}Часть файлов zator не скачана (сеть?). Продолжаю с имеющимися; недостающее доберётся при обновлении (п.5).${plain}"
   unset Z2R_GET_REPO_SKIP_EXISTING
   client_scope_config_restore
   if [ ! -s "$ORCH_LUA_LOCKED" ]; then
@@ -2888,20 +2890,20 @@ while true; do
  
  # Web-панель: при наличии — обновление, при отсутствии — установка
  if [ -d "$WEBUI_ROOT" ]; then
-   read -re -p $'\033[33mWeb-панель управления уже установлена. Обновить её файлы из репозитория? 1 - Да, Enter - нет\033[0m\n' webui_answer
+   read -re -p $'\033[33mWeb-панель управления уже установлена. Обновить её файлы из репозитория? 1 - Да, Enter - нет\033[0m\n' webui_answer || webui_answer=""
    case "$webui_answer" in
      "1")
-       webui_install
+       webui_install || echo -e "${yellow}Обновление Web-панели не удалось — продолжаю со старыми файлами.${plain}"
      ;;
      *)
        echo "Пропуск обновления Web-панели (текущие файлы не тронуты)"
      ;;
    esac
  else
-   read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
+   read -re -p $'\033[33mУстановить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer || webui_answer=""
    case "$webui_answer" in
      "1")
-       webui_install
+       webui_install || echo -e "${yellow}Установка Web-панели не удалась — продолжаю без неё.${plain}"
      ;;
      *)
        echo "Пропуск установки Web-панели"
@@ -2915,7 +2917,7 @@ while true; do
  
  #Для Keenetic и merlin
  if [[ "$OSystem" == "entware" ]]; then
-  entware_fixes
+  entware_fixes || echo -e "${yellow}entware_fixes: часть вспомогательных файлов не скачана (сеть?) — продолжаю.${plain}"
   # На Keenetic прописываем IFACE_WAN по default route до запуска install_easy.sh.
   config_keenetic_set_wan_iface_all
  fi
@@ -2924,16 +2926,16 @@ while true; do
   wrt_fixes || true
  fi
  
- profile_apply_all "$ZAPRET2_ROOT/config.default"
- 
+ profile_apply_all "$ZAPRET2_ROOT/config.default" || echo -e "${yellow}Не удалось применить сохранённые локи профилей — продолжаю.${plain}"
+
  #Для x-wrt
  if [[ "$release" == "x-wrt" ]]; then
- 	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' "$ZAPRET2_ROOT/common/installer.sh"
+ 	sed -i 's/kmod-nft-nat kmod-nft-offload/kmod-nft-nat/' "$ZAPRET2_ROOT/common/installer.sh" 2>/dev/null || true
  fi
- 
+
  #Запуск установочных скриптов и перезагрузка
  if [ "$hardware" = "keenetic" ]; then
- 	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
+ 	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default" || true
  fi
  patch_installer_zapret
  install_zapret_reboot

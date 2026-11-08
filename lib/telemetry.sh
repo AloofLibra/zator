@@ -38,7 +38,7 @@ init_telemetry() {
         echo ""
         echo -e "${green}Хотите отправлять анонимную статистику (Провайдер + Стратегии)?${plain}"
         echo -e "Это поможет понять, какие стратегии работают лучше всего."
-        read -p "Разрешить? (Enter - да, n - нет): " stats_yn
+        read -p "Разрешить? (Enter - да, n - нет): " stats_yn || stats_yn=""
 
         case "$stats_yn" in
             [NnНн]*) tel_enabled="0" ;;

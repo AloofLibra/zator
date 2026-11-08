@@ -223,8 +223,8 @@ config_keenetic_set_wan_iface() {
   [ "$hardware" = "keenetic" ] || return 0
   [ -f "$cfg" ] || return 0
 
-  wan4="$(config_keenetic_detect_default_iface 4)"
-  wan6="$(config_keenetic_detect_default_iface 6)"
+  wan4="$(config_keenetic_detect_default_iface 4)" || wan4=""
+  wan6="$(config_keenetic_detect_default_iface 6)" || wan6=""
 
   if [ -z "$wan4" ]; then
     echo -e "${yellow}Не удалось автоматически определить WAN интерфейс Keenetic. IFACE_WAN не изменён.${plain}"
