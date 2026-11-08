@@ -17,7 +17,11 @@ if [ ! -d "$launcher_dir/vendor" ]; then
     [ -f "$INSTALL_DIR/z2r.sh" ] || fail "не найден $INSTALL_DIR/z2r.sh"
     command -v bash >/dev/null 2>&1 || fail "bash не найден"
     [ -t 0 ] && exec bash "$INSTALL_DIR/z2r.sh" "$@"
-    exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/tty
+    if ( : < /dev/tty ) 2>/dev/null; then
+        exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/tty
+    else
+        exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/null
+    fi
 fi
 
 BUNDLE_DIR="$launcher_dir"
@@ -139,4 +143,8 @@ if [ "${Z2R_NO_EXEC:-0}" = "1" ]; then
 fi
 
 [ -t 0 ] && exec bash "$INSTALL_DIR/z2r.sh" "$@"
-exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/tty
+if ( : < /dev/tty ) 2>/dev/null; then
+    exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/tty
+else
+    exec bash "$INSTALL_DIR/z2r.sh" "$@" < /dev/null
+fi

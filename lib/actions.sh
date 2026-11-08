@@ -1210,7 +1210,7 @@ backup_helper_ask_and_create() {
   echo -e "${yellow}Создать резервную копию (бэкап) перед операцией?${plain}"
   echo -e "  ${Fcyan}1${plain} — да, создать бэкап"
   echo -e "  ${Fyellow}0${plain} — нет, продолжить без бэкапа"
-  read -re -p "Ваш выбор: " ans
+  read -re -p "Ваш выбор: " ans || ans=""
 
   case "$ans" in
     1|5|y|Y|д|Д)
