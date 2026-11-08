@@ -528,7 +528,7 @@ detect_os() {
 Enter - выход
 1 - Плюнуть и продолжить как OpenWRT
 2 - Плюнуть и продолжить как entware
-3 - Плюнуть и продолжить как VPS\033[0m\n' os_answer
+3 - Плюнуть и продолжить как VPS\033[0m\n' os_answer || os_answer=""
     case "$os_answer" in
     "1")
       OSystem="WRT"
@@ -928,7 +928,7 @@ blockcheck2_run_summary() {
     echo -e "${green}SUMMARY сохранен для просмотра: $summary_public${plain}"
     echo -e "${yellow}Пожалуйста, отправьте этот файл в чат z4r: $summary_public${plain}"
     echo -e "${yellow}Нажмите Enter чтобы продолжить${plain}"
-    read -r
+    read -r || true
   fi
 
   if [ "$was_running" -eq 1 ]; then
@@ -1738,7 +1738,7 @@ wrt_fixes() {
 
 #Запрос на установку 3x-ui или аналогов
 get_panel() {
- read -re -p $'\033[33mУстановить ПО для туннелирования?\033[0m \033[32m(3xui, marzban, wg, 3proxy или Enter для пропуска): \033[0m' answer_panel
+ read -re -p $'\033[33mУстановить ПО для туннелирования?\033[0m \033[32m(3xui, marzban, wg, 3proxy или Enter для пропуска): \033[0m' answer_panel || answer_panel=""
  # Удаляем лишние символы и пробелы, приводим к верхнему регистру
  clean_answer=$(echo "$answer_panel" | tr '[:lower:]' '[:upper:]')
  if [[ -z "$clean_answer" ]]; then
@@ -2335,7 +2335,7 @@ webui_submenu() {
     fi
     submenu_item "0" "Назад"
     echo ""
-    read -re -p "Ваш выбор: " webui_answer
+    read -re -p "Ваш выбор: " webui_answer || webui_answer=""
     case "$webui_answer" in
       "1")
         # Обновление существующей панели — из релизного архива webui (сверка
@@ -2578,7 +2578,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "4")
     echo -e "${yellow}Внимание! Это приведёт к полному удалению zator и zapret2.${plain}"
-    read -re -p $'\033[33mВы действительно хотите удалить zator и zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
+    read -re -p $'\033[33mВы действительно хотите удалить zator и zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm || del_confirm=""
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
@@ -2597,7 +2597,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "44")
     echo -e "${yellow}Внимание! Это удалит только zapret2 (каталог zator и его данные, включая Web-панель, останутся).${plain}"
-    read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm
+    read -re -p $'\033[33mВы действительно хотите удалить zapret2? Введите 5 - подтвердить удаление, 0 - отмена: \033[0m' del_confirm || del_confirm=""
     case "$del_confirm" in
       "5")
         backup_helper_ask_and_create
