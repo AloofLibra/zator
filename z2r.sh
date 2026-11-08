@@ -2532,7 +2532,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 	if [[ -f "$PREMIUM_FLAG" ]]; then
       echo -e "${red}999. Секретный пункт. Нажимать на свой страх и риск${plain}"
     fi
-  read -re -p "" answer_menu
+  read -re -p "" answer_menu || answer_menu=0
     case "$answer_menu" in
   "0")
     echo "Выход выполнен"
@@ -2792,14 +2792,18 @@ else
  if [[ -z "$commit_date" ]]; then
     echo -e "${red}Не был получен доступ к api.github.com (таймаут 30 сек). Возможны проблемы при установке.${plain}"
 	if [ "$hardware" = "keenetic" ]; then
-		echo "Добавляем ip с от DNS 1.1.1.1 к api.github.com и пытаемся снова"
 		_gh_ip="$(nslookup api.github.com 1.1.1.1 2>/dev/null | sed -n 's/^Address[ 0-9]*: \([0-9][0-9.]*\.[0-9][0-9.]*\).*/\1/p' | tail -n1)"
-		if [ -n "$_gh_ip" ]; then
-			ndmc -c "ip host api.github.com $_gh_ip" || echo -e "${yellow}ndmc не принял ip host — продолжаю без него.${plain}"
+		_gh_ip_local="$(nslookup api.github.com 2>/dev/null | sed -n 's/^Address[ 0-9]*: \([0-9][0-9.]*\.[0-9][0-9.]*\).*/\1/p' | tail -n1)"
+		if [ -n "$_gh_ip" ] && [ "$_gh_ip" != "$_gh_ip_local" ]; then
+			echo "Локальный DNS (${_gh_ip_local:-нет ответа}) расходится с DNS 1.1.1.1 ($_gh_ip) — прописываю ip host api.github.com"
+			if ndmc -c "ip host api.github.com $_gh_ip" 2>/dev/null; then
+				echo -e "${yellow}zeefeer обновлен (UTC +0): $(z2r_github_commit_date z2r.sh) ${plain}"
+			else
+				echo -e "${yellow}ndmc не принял ip host — продолжаю без него.${plain}"
+			fi
 		else
-			echo -e "${yellow}DNS 1.1.1.1 не ответил — продолжаю без прописывания ip host.${plain}"
+			echo -e "${yellow}IP api.github.com по локальному DNS и 1.1.1.1 совпадают (или 1.1.1.1 не ответил) — ip host не требуется.${plain}"
 		fi
-		echo -e "${yellow}zeefeer обновлен (UTC +0): $(z2r_github_commit_date z2r.sh) ${plain}"
 	fi
 else
     echo -e "${yellow}zeefeer обновлен (UTC +0): $commit_date ${plain}"
