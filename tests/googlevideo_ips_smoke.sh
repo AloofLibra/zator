@@ -15,6 +15,7 @@ MOCK_FWTYPE=iptables
 MOCK_NFT_SET="$TMP/nft-set"
 : > "$MOCK_NFT_SET"
 NFT_CREATED=0
+NFT_FAIL=0
 NFT_CALLS="$TMP/nft-calls"
 : > "$NFT_CALLS"
 unset ZAPRET_NFT_TABLE
@@ -44,6 +45,7 @@ ipset() {
 }
 nft() {
   printf '%s\n' "$*" >> "$NFT_CALLS"
+  [ "$NFT_FAIL" = 0 ] || return 1
   if [ "$2" = set ] && { [ "$1" = list ] || [ "$1" = add ]; }; then
     [ "$3" = inet ] && [ "$4" = "$MOCK_EXPECT_NFT_TABLE" ] || {
       echo "unexpected nft table: $*" >&2
@@ -140,6 +142,13 @@ tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_CALLS" = 3 ]
 [ "$UPLOAD_DATA" = '1.1.1.1' ]
 if googlevideo_local_spool_has_pending; then exit 1; fi
+
+# Keep the DNS observation visible even if the router temporarily rejects the
+# kernel-set update; the next DNS answer can retry that update.
+NFT_FAIL=1 GOOGLEVIDEO_KERNEL_FWTYPE=nftables googlevideo_observe_local rr4---sn-h5gtov-n8vl.googlevideo.com 9.9.9.10 300 A && exit 1
+grep -Fq 'rr4---sn-h5gtov-n8vl.googlevideo.com' "$GOOGLEVIDEO_LOCAL_FILE"
+grep -q '^9\.9\.9\.10[[:space:]]' "$GOOGLEVIDEO_PENDING_FILE"
+NFT_FAIL=0
 
 printf '# googlevideo IPv4; generated=x\n192.168.1.1\n' > "$TMP/private.txt"
 if googlevideo_ips_validate "$TMP/private.txt"; then exit 1; fi

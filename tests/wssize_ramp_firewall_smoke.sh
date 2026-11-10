@@ -2,11 +2,13 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=${TMPDIR:-/tmp}/wssize-ramp-firewall.$$
-trap 'rm -f "$TMP.rules" "$TMP.set" "$TMP.ips"' EXIT HUP INT TERM
+trap 'rm -f "$TMP.rules" "$TMP.set" "$TMP.ips" "$TMP.listener" "$TMP.listener.calls"' EXIT HUP INT TERM
 : >"$TMP.rules"; : >"$TMP.set"; NFT_SET_CREATED=0
 QNUM=300 FWTYPE=nftables NFQWS2_ENABLE=1 Z2R_WSSIZE_RAMP_ENABLE=1
 Z2R_WSSIZE_RAMP_IPSET="$TMP.ips" NFQWS2_TCP_PKT_OUT=20 NFQWS2_TCP_PKT_IN=10
 DESYNC_MARK=0x40000000 DESYNC_MARK_POSTNAT=0x20000000 ZAPRET_NFT_TABLE=zapret2 FLOWOFFLOAD=donttouch
+Z2R_GV_LISTENER="$TMP.listener"
+export Z2R_GV_LISTENER
 printf '# googlevideo IPv4; generated=test\n188.244.8.77\n188.244.8.78\n' > "$TMP.ips"
 get_postchain() { echo postnat; }; get_prechain() { echo prenat; }
 nft() {
@@ -28,7 +30,14 @@ nft_add_rule() { chain=$1; shift; printf '%s %s\n' "$chain" "$*" >> "$TMP.rules"
 nft_add_nfqws_flow_exempt_rule() { :; }
 . "$ROOT/tools/wssize-ramp-firewall.sh"
 
+cat > "$Z2R_GV_LISTENER" <<EOF
+#!/bin/sh
+echo "\$1" >> "$TMP.listener.calls"
+EOF
+chmod +x "$Z2R_GV_LISTENER"
+
 zapret_custom_firewall_nft
+[ "$(cat "$TMP.listener.calls")" = start ] || { echo "collector was not started by the non-procd firewall hook" >&2; exit 1; }
 [ "$(wc -l < "$TMP.rules" | tr -d ' ')" = 4 ] || { echo "expected two mark and two Full late rules" >&2; exit 1; }
 grep -Fq 'daddr @z2r_googlevideo4 tcp dport 443' "$TMP.rules"
 grep -Fq 'saddr @z2r_googlevideo4 tcp sport 443' "$TMP.rules"
@@ -57,4 +66,5 @@ before=$(wc -l < "$TMP.set")
 zapret_custom_firewall_nft
 [ "$(wc -l < "$TMP.rules" | tr -d ' ')" = 2 ]
 [ "$(wc -l < "$TMP.set")" = "$before" ]
+[ "$(tail -n 1 "$TMP.listener.calls")" = stop ] || { echo "collector was not stopped when Ramp was disabled" >&2; exit 1; }
 echo 'wssize_ramp nft set smoke ok'

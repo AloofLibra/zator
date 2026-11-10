@@ -64,27 +64,42 @@ Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips
 # its own static binary. This is optional: the central Googlevideo feed works
 # when the platform or asset is unavailable.
 z2r_install_googlevideo_sniffer() {
-  local arch base tmp compressed size
+  local arch base fallback tracking tmp compressed size
   [ "${Z2R_OFFLINE:-0}" != 1 ] || return 0
   arch="$(googlevideo_sniffer_arch)" || return 0
-  base="${Z2R_GV_SNIFFER_RELEASE_BASE:-https://github.com/AloofLibra/zator/releases/download/latest}"
+  base="${Z2R_GV_SNIFFER_RELEASE_BASE:-}"
+  fallback=""
+  if [ -z "$base" ]; then
+    tracking="$(sed -n 's/^TRACKING="\([A-Za-z0-9._-]*\)"$/\1/p' "$ZATOR_ROOT/extra_strats/cache/deploy/version.env" 2>/dev/null | head -n1)"
+    if [ -n "$tracking" ] && [ "$tracking" != latest ]; then
+      base="https://github.com/AloofLibra/zator/releases/download/$tracking"
+      fallback="https://github.com/AloofLibra/zator/releases/download/latest"
+    else
+      base="https://github.com/AloofLibra/zator/releases/download/latest"
+    fi
+  fi
   mkdir -p "$ZATOR_ROOT/tools/bin" || return 0
   tmp="$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer.tmp.$$"
   compressed="$tmp.gz"
-  if { if command -v curl >/dev/null 2>&1; then
-         curl -fLsS --connect-timeout 8 --max-time 30 "$base/z2r-googlevideo-dns-sniffer-linux-$arch.gz" -o "$compressed" 2>/dev/null
-       elif command -v wget >/dev/null 2>&1; then
-         wget -q -T 30 -O "$compressed" "$base/z2r-googlevideo-dns-sniffer-linux-$arch.gz" 2>/dev/null
-       else
-         false
-       fi
-     } && gzip -t "$compressed" 2>/dev/null; then
-    gzip -dc "$compressed" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$compressed"; return 0; }
-    size="$(wc -c < "$tmp" | tr -d ' ')"
-    case "$size" in ''|*[!0-9]*) rm -f "$tmp" "$compressed"; return 0 ;; esac
-    if [ "$size" -gt 131072 ] || [ ! -s "$tmp" ]; then rm -f "$tmp" "$compressed"; return 0; fi
-    chmod 755 "$tmp" && mv -f "$tmp" "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
-  fi
+  local release
+  for release in "$base" "$fallback"; do
+    [ -n "$release" ] || continue
+    if { if command -v curl >/dev/null 2>&1; then
+           curl -fLsS --connect-timeout 8 --max-time 30 "$release/z2r-googlevideo-dns-sniffer-linux-$arch.gz" -o "$compressed" 2>/dev/null
+         elif command -v wget >/dev/null 2>&1; then
+           wget -q -T 30 -O "$compressed" "$release/z2r-googlevideo-dns-sniffer-linux-$arch.gz" 2>/dev/null
+         else
+           false
+         fi
+       } && gzip -t "$compressed" 2>/dev/null; then
+      gzip -dc "$compressed" > "$tmp" 2>/dev/null || continue
+      size="$(wc -c < "$tmp" | tr -d ' ')"
+      case "$size" in ''|*[!0-9]*) continue ;; esac
+      if [ "$size" -le 131072 ] && [ -s "$tmp" ]; then
+        chmod 755 "$tmp" && mv -f "$tmp" "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer" && break
+      fi
+    fi
+  done
   rm -f "$tmp" "$compressed"
   return 0
 }

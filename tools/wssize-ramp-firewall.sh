@@ -7,6 +7,19 @@ Z2R_GOOGLEVIDEO_SET=z2r_googlevideo4
 Z2R_WSSIZE_MARK="${Z2R_WSSIZE_MARK:-0x04000000}"
 Z2R_WSSIZE_MARK_MASK="$Z2R_WSSIZE_MARK"
 
+z2r_wssize_collector_sync() {
+	local listener="${Z2R_GV_LISTENER:-/opt/zator/tools/googlevideo-dns-listener.sh}"
+	[ -x "$listener" ] || return 0
+	# OpenWrt starts the collector as a procd instance. SysV/Entware has no
+	# daemon callback on all zapret2 builds, so tie it to firewall activation.
+	command -v procd_open_instance >/dev/null 2>&1 && return 0
+	if [ "$1" = 1 ] && [ "$NFQWS2_ENABLE" = 1 ] && [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ]; then
+		"$listener" start
+	else
+		"$listener" stop
+	fi
+}
+
 zapret_custom_daemons() {
 	local listener=/opt/zator/tools/googlevideo-dns-listener.sh
 	[ -x "$listener" ] || return 0
@@ -153,6 +166,7 @@ z2r_wssize_nft_late_install() {
 }
 
 zapret_custom_firewall_nft() {
+	z2r_wssize_collector_sync 1
 	[ "$FWTYPE" = nftables ] || return 0
 	[ "$NFQWS2_ENABLE" = 1 ] && [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ] || return 0
 	z2r_wssize_nft_set_ensure || return 1
@@ -233,6 +247,7 @@ z2r_wssize_iptables_late_install() {
 
 zapret_custom_firewall() {
 	local action="${1:-}" ips out in qnum mark
+	z2r_wssize_collector_sync "$action"
 	[ "$FWTYPE" = iptables ] || return 0
 	case "$action" in 0) z2r_wssize_iptables_cleanup; return $? ;; 1) ;; *) echo "wssize_ramp: invalid iptables action" >&2; return 1 ;; esac
 	if [ "$NFQWS2_ENABLE" != 1 ] || [ "$Z2R_WSSIZE_RAMP_ENABLE" != 1 ]; then

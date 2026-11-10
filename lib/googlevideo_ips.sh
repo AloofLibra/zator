@@ -4,8 +4,8 @@ GOOGLEVIDEO_IPS_URL="${Z2R_GOOGLEVIDEO_IPS_URL:-https://alooflibra.fun/z4r/googl
 GOOGLEVIDEO_IPS_FILE="${Z2R_GOOGLEVIDEO_IPS_FILE:-${ZATOR_ROOT:-/opt/zator}/lists/googlevideo-ipv4.txt}"
 GOOGLEVIDEO_IPS_CACHE_TTL="${Z2R_GOOGLEVIDEO_IPS_CACHE_TTL-21600}"
 GOOGLEVIDEO_INGEST_URL="${Z2R_GOOGLEVIDEO_INGEST_URL:-https://alooflibra.fun/z4r/googlevideo-observations}"
-GOOGLEVIDEO_LOCAL_FILE="${GOOGLEVIDEO_LOCAL_FILE:-${Z2R_GOOGLEVIDEO_LOCAL_FILE:-${TMPDIR:-/tmp}/z2r-googlevideo/local.tsv}}"
-GOOGLEVIDEO_PENDING_FILE="${GOOGLEVIDEO_PENDING_FILE:-${Z2R_GOOGLEVIDEO_PENDING_FILE:-${TMPDIR:-/tmp}/z2r-googlevideo/pending.tsv}}"
+GOOGLEVIDEO_LOCAL_FILE="${GOOGLEVIDEO_LOCAL_FILE:-${Z2R_GOOGLEVIDEO_LOCAL_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/local.tsv}}"
+GOOGLEVIDEO_PENDING_FILE="${GOOGLEVIDEO_PENDING_FILE:-${Z2R_GOOGLEVIDEO_PENDING_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/pending.tsv}}"
 GOOGLEVIDEO_UPLOAD_INTERVAL="${Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL:-10800}"
 
 googlevideo_sniffer_arch() {
@@ -50,26 +50,9 @@ googlevideo_observe_local() {
   ttl=$((10#$ttl))
   [ "$ttl" -gt 0 ] || return 1
   [ "$ttl" -le 604800 ] || ttl=604800
-  # Kernel set is the union. Do not change the lifetime of a centrally sourced
-  # member; the local row below records provenance separately.
+  # Preserve the DNS observation even if a platform's kernel set is unavailable.
   if [ -s "$GOOGLEVIDEO_IPS_FILE" ] && grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE"; then
     central=1
-  else
-    fwtype="${GOOGLEVIDEO_KERNEL_FWTYPE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)}"
-    if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
-      ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || {
-        ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist >/dev/null 2>&1 || return 1
-        ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || return 1
-      }
-    elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-      table="$(googlevideo_nft_table_name)"
-      nft add element inet "$table" z2r_googlevideo4 "{ $ip timeout ${ttl}s }" >/dev/null 2>&1 || {
-        # A concurrent answer may have inserted it. Accept only if it is now present.
-        nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -Fq "$ip" || return 1
-      }
-    else
-      return 1
-    fi
   fi
   now="$(date +%s)"; expires=$((now + ttl))
   mkdir -p "${GOOGLEVIDEO_LOCAL_FILE%/*}" || return 1
@@ -90,6 +73,22 @@ googlevideo_observe_local() {
   if [ "$(wc -l < "$GOOGLEVIDEO_PENDING_FILE")" -gt 8192 ]; then
     tmp="${GOOGLEVIDEO_PENDING_FILE}.tmp.$$"
     tail -n 8192 "$GOOGLEVIDEO_PENDING_FILE" > "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_PENDING_FILE" || rm -f "$tmp"
+  fi
+  [ "$central" = 0 ] || return 0
+  fwtype="${GOOGLEVIDEO_KERNEL_FWTYPE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)}"
+  if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
+    ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || {
+      ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist >/dev/null 2>&1 || return 1
+      ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || return 1
+    }
+  elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
+    table="$(googlevideo_nft_table_name)"
+    nft add element inet "$table" z2r_googlevideo4 "{ $ip timeout ${ttl}s }" >/dev/null 2>&1 || {
+      # A concurrent answer may have inserted it. Accept only if it is now present.
+      nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -Fq "$ip" || return 1
+    }
+  else
+    return 1
   fi
 }
 

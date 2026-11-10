@@ -1,4 +1,14 @@
-#!/bin/bash
+#!/bin/sh
+# Keenetic/Entware keeps Bash under /opt/bin/bash, not /bin/bash.
+if [ -z "${BASH_VERSION:-}" ]; then
+  bash_bin=""
+  for candidate in /opt/bin/bash /bin/bash /usr/bin/bash; do
+    if [ -x "$candidate" ]; then bash_bin="$candidate"; break; fi
+  done
+  [ -n "$bash_bin" ] || bash_bin="$(command -v bash 2>/dev/null || true)"
+  [ -n "$bash_bin" ] || { echo 'googlevideo listener requires bash' >&2; exit 127; }
+  exec "$bash_bin" "$0" "$@"
+fi
 # Shared local observer: UBus events on OpenWrt, passive packet source elsewhere.
 ROOT="${Z2R_GV_ROOT:-/opt/zator}"
 LIB="$ROOT/z2r_lib/googlevideo_ips.sh"
@@ -40,9 +50,9 @@ observe_local() {
   ttl=$((10#$ttl)); [ "$ttl" -gt 0 ] || return 1; [ "$ttl" -le 604800 ] || ttl=604800
   key="$host|$ip"; now=$SECONDS
   [ "${recent[$key]:-0}" -gt "$now" ] && return 0
+  googlevideo_observe_local "$host" "$ip" "$ttl" "$type" || return 1
   recent[$key]=$((now + ttl)); seen_count=$((seen_count + 1))
   if [ "$seen_count" -gt 8192 ]; then unset recent; declare -A recent=(); seen_count=0; fi
-  GOOGLEVIDEO_LOCAL_FILE="${Z2R_GV_LOCAL_FILE:-/tmp/z2r-googlevideo/local.tsv}" googlevideo_observe_local "$host" "$ip" "$ttl" "$type"
 }
 
 maybe_upload_local_batch() {
@@ -105,6 +115,7 @@ run_packet_source() {
 
 run_listener() {
   . "$ROOT/z2r_lib/config.sh" || return 1
+  GOOGLEVIDEO_LOCAL_FILE="${Z2R_GV_LOCAL_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/local.tsv}"
   GOOGLEVIDEO_PENDING_FILE="${Z2R_GOOGLEVIDEO_PENDING_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/pending.tsv}"
   . "$LIB" || return 1
   mkdir -p "${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}"
