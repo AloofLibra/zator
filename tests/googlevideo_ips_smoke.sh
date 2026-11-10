@@ -143,6 +143,20 @@ tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_DATA" = '1.1.1.1' ]
 if googlevideo_local_spool_has_pending; then exit 1; fi
 
+# Manual force upload bypasses only the three-hour timer; consent and central
+# feed deduplication still apply.
+now="$(date +%s)"
+printf '2.2.2.2\t%s\n8.8.8.9\t%s\n' "$now" "$now" > "$GOOGLEVIDEO_PENDING_FILE"
+printf '%s\n' "$now" > "$TMP/upload-state/googlevideo-upload.ts"
+tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid force
+[ "$UPLOAD_CALLS" = 3 ]
+tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
+[ "$UPLOAD_CALLS" = 3 ] && [ "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" = throttled ]
+tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid force
+[ "$UPLOAD_CALLS" = 4 ] && [ "$UPLOAD_DATA" = '2.2.2.2' ]
+[ "$GOOGLEVIDEO_UPLOAD_LAST_COUNT" = 1 ] && [ "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" = uploaded ]
+if googlevideo_local_spool_has_pending; then exit 1; fi
+
 # Keep the DNS observation visible even if the router temporarily rejects the
 # kernel-set update; the next DNS answer can retry that update.
 NFT_FAIL=1 GOOGLEVIDEO_KERNEL_FWTYPE=nftables googlevideo_observe_local rr4---sn-h5gtov-n8vl.googlevideo.com 9.9.9.10 300 A && exit 1

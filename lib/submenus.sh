@@ -2373,6 +2373,7 @@ advanced_settings_submenu() {
       if [ "${OSystem:-}" = WRT ]; then googlevideo_collect_label="OpenWrt: локальный сбор через UBus."; else googlevideo_collect_label="Entware: пассивный локальный сбор DNS."; fi
       submenu_status_item "9" "$googlevideo_collect_label" "$googlevideo_collect_value" "cyan"
       submenu_status_item "" "Локально обнаружено адресов." "$(googlevideo_local_kernel_ips | wc -l | tr -d ' ')" "gray"
+      submenu_item "10" "Принудительно отправить новые локальные IP на сервер"
     fi
     submenu_item "0" "Назад"
     echo ""
@@ -2417,6 +2418,10 @@ advanced_settings_submenu() {
         fi
         pause_enter
         ;;
+      "10")
+        googlevideo_upload_local_manual
+        pause_enter
+        ;;
       "0"|"")
         return
         ;;
@@ -2425,6 +2430,37 @@ advanced_settings_submenu() {
         ;;
     esac
   done
+}
+
+googlevideo_upload_local_manual() {
+  local tel_enabled=0 tel_uuid="" TELEMETRY_CFG="${Z2R_GV_TELEMETRY_CFG:-${TELEMETRY_CFG:-${ZATOR_ROOT:-/opt/zator}/z2r_lib/telemetry.config}}"
+  if [ ! -r "$TELEMETRY_CFG" ]; then
+    echo -e "${yellow}Настройки телеметрии не найдены; отправка отменена.${plain}"
+    return 1
+  fi
+  . "$TELEMETRY_CFG"
+  if [ "$tel_enabled" != 1 ]; then
+    echo -e "${yellow}Телеметрия выключена; включите её, чтобы отправлять локальные наблюдения.${plain}"
+    return 1
+  fi
+  if ! googlevideo_local_spool_has_pending; then
+    echo -e "${green}Очередь локальных наблюдений пуста.${plain}"
+    return 0
+  fi
+  if ! googlevideo_ips_update force; then
+    echo -e "${yellow}Не удалось обновить центральный список; отправка не выполнена.${plain}"
+    return 1
+  fi
+  if googlevideo_upload_local_batch "$tel_uuid" force; then
+    case "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" in
+      uploaded) echo -e "${green}Отправлено новых IP: ${GOOGLEVIDEO_UPLOAD_LAST_COUNT}.${plain}" ;;
+      no-new) echo -e "${green}Новых IP относительно центрального списка нет.${plain}" ;;
+      *) echo -e "${green}Новых адресов для отправки нет.${plain}" ;;
+    esac
+    return 0
+  fi
+  echo -e "${yellow}Не удалось отправить наблюдения; очередь сохранена для повтора.${plain}"
+  return 1
 }
 
 wssize_ramp_submenu() {
