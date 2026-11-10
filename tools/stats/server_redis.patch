@@ -1,11 +1,12 @@
 --- a/server_redis.py
 +++ b/server_redis.py
-@@ -16,6 +16,13 @@
+@@ -16,6 +16,14 @@
  from urllib.parse import parse_qs, quote_plus, urlparse
  
  import redis
 +from recommendations import load_aliases, recommendations_tsv, validate_provider
-+from googlevideo_ips import render_ipset
++import hmac
++from googlevideo_ips import render_ipset, observe_local_ips
 +
 +# Deploy recommendations.py and the maintained data/providers/asn.txt beside this file.
 +RECOMMENDATION_ALIASES_PATH = os.environ.get(

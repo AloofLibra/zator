@@ -1481,9 +1481,10 @@ api_wssize_ramp_set() {
   [ "$scale" -le 14 ] 2>/dev/null || send_error "400 Bad Request" "Scale должен быть целым числом от 0 до 14"
   if [ "$enabled" = 1 ]; then
     [ -s "$ZATOR_ROOT/lua/wssize-ramp.lua" ] || send_error "503 Service Unavailable" "Файл wssize-ramp.lua отсутствует. Обновите Core zator."
+    googlevideo_ips_update >/dev/null 2>&1 || true
     count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
-    if [ "$count" -eq 0 ] 2>/dev/null; then googlevideo_ips_update >/dev/null 2>&1 || true; count="$(googlevideo_ips_count 2>/dev/null || echo 0)"; fi
-    [ "$count" -gt 0 ] 2>/dev/null || send_error "503 Service Unavailable" "Список IP Googlevideo пуст. Обновите список через CLI: меню 19 → 8."
+    # An empty central cache is valid on OpenWrt: dnsmasq can fill the shared
+    # kernel set after the next local googlevideo.com lookup.
   fi
   backup_smart_set_wssize_ramp "$CONFIG_FILE" "$enabled" "$mode" "$scale"; rc=$?
   case "$rc" in

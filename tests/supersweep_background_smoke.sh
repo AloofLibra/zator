@@ -276,7 +276,7 @@ printf '#!/bin/sh\n[ "${1:-}" != --help ] || { printf " --autoexclude=[0|1]\\n";
 chmod +x "$ZAPRET2_ROOT/nfq2/nfqws2"
 supersweep_probe_config 4 "$CONFIG_FILE"
 grep -q -- '--lua-init=@.*/lua/zapret-auto.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
-grep -q -- '--lua-init=@.*/lua/wssize-ramp.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -q -- '--lua-init=@.*/lua/wssize-ramp.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--uid=65533:65533' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--qnum=65535' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 grep -q -- '--autoexclude=0' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
@@ -290,8 +290,8 @@ grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 1
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE 1
 supersweep_probe_config 2 "$CONFIG_FILE"
-grep -qx -- '--lua-desync=wssize_ramp:mode=full:wsize=1:scale=1:open=1' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
-grep -qx -- '--ipset=/opt/zator/lists/googlevideo-ipv4.txt' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -q -- 'wssize_ramp' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -q -- '--ipset=/opt/zator/lists/googlevideo-ipv4.txt' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 0
 # A build without the autoexclude option must not receive it.
 cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK2'

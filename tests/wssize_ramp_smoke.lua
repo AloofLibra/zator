@@ -81,7 +81,7 @@ local narrow_ack = packet(1002, 100)
 narrow_ack.track.lua_state = narrow_scale.track.lua_state
 assert(wssize_ramp({}, narrow_ack) == nil and narrow_ack.dis.tcp.th_win == 100)
 
--- Destination selection is done by the NFQWS2 profile's managed ipset filter.
+-- Destination selection is done by the NFQWS2 packet-mark profile filter.
 local missing = {dis={tcp={th_flags=TH_SYN,th_win=100,options={}}},track={lua_state={}},outgoing=true,arg={}}
 wssize_ramp({}, missing)
 assert(calls == 1 and missing.dis.tcp.th_win == 100)

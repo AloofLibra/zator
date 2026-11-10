@@ -13,6 +13,7 @@ import time
 
 HOSTS_KEY = "z4r:googlevideo:v1:hosts"
 OBSERVATIONS_KEY = "z4r:googlevideo:v1:observations"
+LOCAL_IPS_KEY = "z4r:googlevideo:v1:local_ips"
 RUNS_KEY = "z4r:supersweep:runs"
 HOST_TTL = 45 * 86400
 IP_TTL = 7 * 86400
@@ -228,8 +229,38 @@ def render_ipset(rdb, now=None, max_age=IP_TTL):
             continue
         if address.is_global:
             ips.add(str(address))
+    for raw_ip, _ in rdb.zrangebyscore(LOCAL_IPS_KEY, now - IP_TTL, now, withscores=True):
+        try:
+            address = ipaddress.IPv4Address(_decode(raw_ip))
+        except ipaddress.AddressValueError:
+            continue
+        if address.is_global:
+            ips.add(str(address))
     stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return "# googlevideo IPv4; generated={0}; max_age={1}s\n".format(stamp, max_age) + "".join(ip + "\n" for ip in sorted(ips, key=lambda x: int(ipaddress.IPv4Address(x))))
+
+
+def observe_local_ips(rdb, values, now=None):
+    """Store a bounded batch of consented router dnsmasq set observations."""
+    if not isinstance(values, (list, tuple)) or len(values) > 512:
+        raise ValueError("invalid local IP batch")
+    now = int(time.time() if now is None else now)
+    ips = set()
+    for value in values:
+        try:
+            address = ipaddress.IPv4Address(value)
+        except (ipaddress.AddressValueError, TypeError):
+            raise ValueError("invalid IPv4 address")
+        if not address.is_global:
+            raise ValueError("non-public IPv4 address")
+        ips.add(str(address))
+    if ips:
+        pipe = rdb.pipeline(transaction=False)
+        pipe.zadd(LOCAL_IPS_KEY, {ip: now for ip in ips})
+        pipe.zremrangebyscore(LOCAL_IPS_KEY, "-inf", now - IP_TTL)
+        pipe.zremrangebyrank(LOCAL_IPS_KEY, 0, -MAX_IPS - 1)
+        pipe.execute()
+    return len(ips)
 
 
 def domain_summary(rdb, now=None, max_age=OBSERVATION_TTL):
@@ -267,14 +298,26 @@ def domain_summary(rdb, now=None, max_age=OBSERVATION_TTL):
                           "resolvers": sorted({resolver for info in data["ips"].values() for resolver in info["resolvers"]})})
     host_rows.sort(key=lambda row: (-row["last_seen"], row["host"]))
     cidr_rows = []
-    addresses = [ipaddress.IPv4Address(ip) for ip in ip_hosts]
-    for network in ipaddress.collapse_addresses(addresses):
-        members = [str(ip) for ip in network if str(ip) in ip_hosts]
-        domains = sorted({host for ip in members for host in ip_hosts[ip]})
+    local_ips = []
+    for raw_ip, score in rdb.zrangebyscore(LOCAL_IPS_KEY, now - IP_TTL, now, withscores=True):
+        try:
+            ip = str(ipaddress.IPv4Address(_decode(raw_ip)))
+        except ipaddress.AddressValueError:
+            continue
+        if ipaddress.IPv4Address(ip).is_global:
+            local_ips.append({"ip": ip, "last_seen": int(score)})
+    local_ips.sort(key=lambda row: int(ipaddress.IPv4Address(row["ip"])))
+    local_set = {row["ip"] for row in local_ips}
+    known = set(ip_hosts)
+    for network in ipaddress.collapse_addresses(ipaddress.IPv4Address(ip) for ip in known | local_set):
+        members = [str(ip) for ip in network if str(ip) in known | local_set]
+        domains = sorted({host for ip in members for host in ip_hosts.get(ip, set())})
         cidr_rows.append({"cidr": str(network), "ip_count": len(members), "domain_count": len(domains),
                           "domains": domains[:8], "more_domains": max(0, len(domains) - 8)})
+    cidr_rows.sort(key=lambda row: (ipaddress.ip_network(row["cidr"]).network_address, ipaddress.ip_network(row["cidr"]).prefixlen))
     return {"generated_at": now, "max_age": max_age,
-            "domain_count": len(host_rows), "ip_count": len(ip_hosts),
+            "domain_count": len(host_rows), "ip_count": len(known | local_set),
+            "local_ip_count": len(local_set), "local_ips": local_ips,
             "domains": host_rows, "cidrs": cidr_rows}
 
 

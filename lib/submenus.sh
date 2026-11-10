@@ -2405,7 +2405,6 @@ advanced_settings_submenu() {
         ;;
       "8")
         if googlevideo_ips_update; then
-          [ "$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_ENABLE)" = 1 ] && z2r_service_action restart || true
           echo -e "${green}Googlevideo IP список обновлён: $(googlevideo_ips_count) адресов.${plain}"
         else
           echo -e "${yellow}Не удалось обновить список; сохранённый файл не затронут.${plain}"
@@ -2424,7 +2423,6 @@ advanced_settings_submenu() {
         ;;
       "10")
         if googlevideo_openwrt_export_local; then
-          [ "$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_ENABLE)" = 1 ] && z2r_service_action restart || true
           echo -e "${green}Список содержит $(googlevideo_ips_count) центральных и локальных адресов.${plain}"
         else
           echo -e "${yellow}Не удалось экспортировать локальный набор; сохранённый файл не затронут.${plain}"
@@ -2468,11 +2466,7 @@ wssize_ramp_submenu() {
     if [ "$new_enabled" = 1 ] && [ ! -s /opt/zator/lua/wssize-ramp.lua ]; then
       echo -e "${red}Нет /opt/zator/lua/wssize-ramp.lua; обновите zator через меню 5.${plain}"; pause_enter; continue
     fi
-    if [ "$new_enabled" = 1 ] && [ "$count" -eq 0 ] 2>/dev/null; then
-      googlevideo_ips_update || true
-      count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
-      if [ "$count" -eq 0 ] 2>/dev/null; then echo -e "${red}Список Googlevideo пуст; сначала обновите его пунктом 8.${plain}"; pause_enter; continue; fi
-    fi
+    if [ "$new_enabled" = 1 ]; then googlevideo_ips_update || true; fi
     if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_mode" "$new_scale"; then
       z2r_service_action restart
       echo -e "${green}Настройки wssize_ramp применены.${plain}"

@@ -25,6 +25,7 @@ def install(stage, root):
     systemd = root / "etc/systemd/system"
     files = {
         stats / "server_redis.py": None,
+        root / "etc/z4r-stats.env": None,
         stats / "googlevideo_ips.py": stage / "googlevideo_ips.py",
         stats / "googlevideo-seed-hosts.txt": stage / "googlevideo-seed-hosts.txt",
         dashboard / "dashboard.py": None,
@@ -48,10 +49,10 @@ def install(stage, root):
 
     try:
         server = (stats / "server_redis.py").read_text(encoding="utf-8")
-        if "from googlevideo_ips import render_ipset" not in server:
+        if "from googlevideo_ips import render_ipset, observe_local_ips" not in server:
             server, count = re.subn(
                 r"(?m)^(from recommendations import .*\n)",
-                r"\1from googlevideo_ips import render_ipset\n",
+                r"\1from googlevideo_ips import render_ipset, observe_local_ips\n",
                 server, count=1)
             if count != 1:
                 raise RuntimeError("cannot find recommendations import in server_redis.py")
@@ -74,7 +75,55 @@ def install(stage, root):
             if server.count(anchor) != 1:
                 raise RuntimeError("cannot find unique do_GET anchor in server_redis.py")
             server = server.replace(anchor, anchor + route, 1)
+        if 'parsed.path == "/googlevideo-observations"' not in server:
+            anchor = "    def do_POST(self):\n"
+            route = '''        parsed = urlparse(self.path)
+        if parsed.path == "/googlevideo-observations":
+            expected = os.environ.get("Z4R_GOOGLEVIDEO_INGEST_TOKEN", "")
+            try:
+                length = int(self.headers.get("content-length", "0"))
+            except ValueError:
+                length = 0
+            if not expected or length < 1 or length > 8192:
+                self.send_json(503 if not expected else 413, {"ok": False, "error": "invalid or unavailable ingest"})
+                return
+            fields = parse_qs(self.rfile.read(length).decode("utf-8", "replace"), keep_blank_values=True)
+            token = fields.get("token", [""])[0]
+            if not hmac.compare_digest(token, expected):
+                self.send_json(403, {"ok": False, "error": "forbidden"})
+                return
+            values = fields.get("ips", [""])[0].split(",")
+            try:
+                accepted = observe_local_ips(rdb, values, now=int(time.time()))
+            except ValueError:
+                self.send_json(400, {"ok": False, "error": "invalid IP batch"})
+                return
+            self.send_json(200, {"ok": True, "accepted": accepted})
+            return
+'''
+            if server.count(anchor) != 1:
+                raise RuntimeError("cannot find unique do_POST anchor in server_redis.py")
+            server = server.replace(anchor, anchor + route, 1)
+        if "import hmac" not in server:
+            server, count = re.subn(r"(?m)^import redis$", "import redis\nimport hmac", server, count=1)
+            if count != 1:
+                raise RuntimeError("cannot add request token comparison import")
+        if "import time" not in server:
+            server, count = re.subn(r"(?m)^import hmac$", "import hmac\nimport time", server, count=1)
+            if count != 1:
+                raise RuntimeError("cannot add ingest timestamp import")
         (stats / "server_redis.py").write_text(server, encoding="utf-8")
+
+        if args.ingest_token:
+            env_file = root / "etc/z4r-stats.env"
+            if not env_file.exists():
+                raise FileNotFoundError(env_file)
+            env = env_file.read_text(encoding="utf-8")
+            env = re.sub(r"(?m)^Z4R_GOOGLEVIDEO_INGEST_TOKEN=.*\n?", "", env)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", args.ingest_token):
+                raise ValueError("invalid --ingest-token format")
+            env += "\nZ4R_GOOGLEVIDEO_INGEST_TOKEN=" + args.ingest_token + "\n"
+            env_file.write_text(env, encoding="utf-8")
 
         dashboard_py = (dashboard / "dashboard.py").read_text(encoding="utf-8")
         if "def googlevideo_data():" not in dashboard_py:
@@ -86,12 +135,12 @@ def install(stage, root):
                 "",
                 "def googlevideo_data():",
                 "    if googlevideo_module is None:",
-                "        return {\"generated_at\": int(time.time()), \"max_age\": 0, \"domain_count\": 0, \"ip_count\": 0, \"domains\": [], \"cidrs\": []}",
+                "        return {\"generated_at\": int(time.time()), \"max_age\": 0, \"domain_count\": 0, \"ip_count\": 0, \"local_ip_count\": 0, \"local_ips\": [], \"domains\": [], \"cidrs\": []}",
                 "    try:",
                 "        return googlevideo_module.domain_summary(legacy.rdb)",
                 "    except Exception:",
                 "        logging.exception('googlevideo dashboard data unavailable')",
-                "        return {\"generated_at\": int(time.time()), \"max_age\": 0, \"domain_count\": 0, \"ip_count\": 0, \"domains\": [], \"cidrs\": []}",
+                "        return {\"generated_at\": int(time.time()), \"max_age\": 0, \"domain_count\": 0, \"ip_count\": 0, \"local_ip_count\": 0, \"local_ips\": [], \"domains\": [], \"cidrs\": []}",
                 "",
             ])
             if dashboard_py.count(anchor) != 1:
@@ -120,7 +169,7 @@ def install(stage, root):
     const hostTable = '<div class="table-scroll"><table><thead><tr><th>Hostname</th><th>IP · время наблюдения · resolver</th><th>Всего IP</th></tr></thead><tbody>' + rows.map(row => `<tr><td class="mono">${e(row.host)}</td><td>${(row.addresses || []).map(a => `<div class="mono">${e(a.ip)} <span class="muted">${e(dateTime(a.last_seen))} · ${e((a.resolvers || []).join(', '))}</span></div>`).join('')}</td><td>${fmt((row.ips || []).length)}</td></tr>`).join('') + '</tbody></table></div>';
     const cidrTable = cidrs.length ? '<div class="table-scroll"><table><thead><tr><th>CIDR</th><th>IP</th><th>Домены</th></tr></thead><tbody>' + cidrs.map(row => `<tr><td class="mono">${e(row.cidr)}</td><td>${fmt(row.ip_count)}</td><td>${(row.domains || []).map(e).join(', ')}${row.more_domains ? ` и ещё ${fmt(row.more_domains)}` : ''}</td></tr>`).join('') + '</tbody></table></div>' : empty();
     const age = Math.round((Number(data.max_age) || 0) / 86400);
-    return panel('Googlevideo · hostname → IP', `${fmt(data.domain_count)} доменов · ${fmt(data.ip_count)} адресов · наблюдения за ${age} дн.`, hostTable, true) + panel('Googlevideo · сгруппированные сети', 'Смежные адреса объединены в минимальные CIDR; списки доменов ограничены первыми 8 для читаемости.', cidrTable, true);
+    return panel('Googlevideo · hostname → IP', `${fmt(data.domain_count)} доменов · ${fmt(data.ip_count)} адресов · локальных GGC: ${fmt(data.local_ip_count || 0)} · наблюдения за ${age} дн.`, hostTable, true) + panel('Googlevideo · сгруппированные сети', 'Смежные адреса объединены в минимальные CIDR; списки доменов ограничены первыми 8 для читаемости.', cidrTable, true);
   }
 """
             if app_js.count(anchor) != 1:
@@ -144,6 +193,17 @@ def install(stage, root):
 '''
             if snippet.count(anchor) != 1:
                 raise RuntimeError("cannot find recommendations endpoint in nginx stats snippet")
+            snippet = snippet.replace(anchor, route + anchor, 1)
+        if "location = /z4r/googlevideo-observations" not in snippet:
+            anchor = "location = /z4r/googlevideo-ips.txt {"
+            route = '''location = /z4r/googlevideo-observations {
+    client_max_body_size 8k;
+    proxy_pass http://127.0.0.1:17683/googlevideo-observations;
+}
+
+'''
+            if snippet.count(anchor) != 1:
+                raise RuntimeError("cannot find Googlevideo feed route in nginx stats snippet")
             snippet = snippet.replace(anchor, route + anchor, 1)
         nginx_conf.write_text(snippet, encoding="utf-8")
 
@@ -235,5 +295,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage-dir", default="/tmp")
     parser.add_argument("--root", default="/")
+    parser.add_argument("--ingest-token", default="", help="shared token for consented router IP batches")
     args = parser.parse_args()
     install(Path(args.stage_dir), Path(args.root))

@@ -78,6 +78,7 @@ NFQWS2_TCP_PKT_OUT=20
 NFQWS2_TCP_PKT_IN=10
 # Experimental Googlevideo-list wssize_ramp settings; disabled by default.
 Z2R_WSSIZE_RAMP_ENABLE=0
+Z2R_WSSIZE_MARK=0x04000000
 Z2R_WSSIZE_RAMP_IPSET=/opt/zator/lists/googlevideo-ipv4.txt
 Z2R_WSSIZE_RAMP_MODE=full
 Z2R_WSSIZE_RAMP_WSIZE=1
@@ -185,15 +186,14 @@ NFQWS2_OPT="
 
 #Z2R_AUTO_STANDARD_BEGIN
 # Googlevideo-list profile must precede hostlist profiles, which otherwise win first.
---new
-${Z2R_WSSIZE_RAMP_SKIP} --filter-l3=ipv4 --filter-tcp=443 --ipset=/opt/zator/lists/googlevideo-ipv4.txt
+${Z2R_WSSIZE_RAMP_SKIP} --filter-l3=ipv4 --filter-tcp=443 --filter-mark=${Z2R_WSSIZE_MARK}/${Z2R_WSSIZE_MARK}
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
---in-range=-s32768 --lua-desync=rst_guard_locked:key=1:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt:payload=tls_client_hello
 --out-range=a
 --in-range=a
---payload=all
+--payload=all,empty
 --lua-desync=wssize_ramp${Z2R_WSSIZE_RAMP_ARGS}
+--in-range=-s32768 --lua-desync=rst_guard_locked:key=2:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt:payload=tls_client_hello
 --import=z2r_tcp_tls_common
 
 --new

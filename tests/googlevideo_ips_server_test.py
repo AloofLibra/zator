@@ -127,6 +127,18 @@ class GoogleVideoTests(unittest.TestCase):
         self.assertEqual({row["cidr"] for row in summary["cidrs"]}, {"8.8.8.8/31"})
         self.assertEqual(summary["cidrs"][0]["domain_count"], 2)
 
+    def test_consented_local_dns_batch_is_bounded_and_distributed(self):
+        db = FakeRedis()
+        self.assertEqual(MODULE.observe_local_ips(db, ["8.8.4.4", "1.1.1.1", "8.8.4.4"], now=2000), 2)
+        body = MODULE.render_ipset(db, now=2000)
+        self.assertIn("8.8.4.4", body)
+        self.assertIn("1.1.1.1", body)
+        with self.assertRaises(ValueError):
+            MODULE.observe_local_ips(db, ["192.168.1.1"], now=2000)
+        summary = MODULE.domain_summary(db, now=2000)
+        self.assertEqual(summary["local_ip_count"], 2)
+        self.assertEqual({row["ip"] for row in summary["local_ips"]}, {"8.8.4.4", "1.1.1.1"})
+
 
 if __name__ == "__main__":
     unittest.main()

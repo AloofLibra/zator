@@ -3,6 +3,7 @@
 GOOGLEVIDEO_IPS_URL="${Z2R_GOOGLEVIDEO_IPS_URL:-https://alooflibra.fun/z4r/googlevideo-ips.txt}"
 GOOGLEVIDEO_IPS_FILE="${Z2R_GOOGLEVIDEO_IPS_FILE:-${ZATOR_ROOT:-/opt/zator}/lists/googlevideo-ipv4.txt}"
 GOOGLEVIDEO_IPS_CACHE_TTL="${Z2R_GOOGLEVIDEO_IPS_CACHE_TTL-21600}"
+GOOGLEVIDEO_INGEST_URL="${Z2R_GOOGLEVIDEO_INGEST_URL:-https://alooflibra.fun/z4r/googlevideo-observations}"
 
 googlevideo_ips_validate() {
   local file="$1" line count=0 oldifs octet
@@ -50,13 +51,49 @@ googlevideo_ips_count() {
   awk '!/^#/ && NF==1 {n++} END {print n+0}' "$GOOGLEVIDEO_IPS_FILE"
 }
 
+googlevideo_local_kernel_ips() {
+  local fwtype table raw sorted ip
+  fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
+  raw="${TMPDIR:-/tmp}/z2r-googlevideo-local.$$"
+  if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
+    ipset save z2r_googlevideo4 2>/dev/null | awk '$1=="add" && $2=="z2r_googlevideo4" {print $3}' > "$raw"
+  elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
+    table="${ZAPRET_NFT_TABLE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || echo zapret2)}"
+    nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' > "$raw" || :
+  else
+    rm -f "$raw"; return 0
+  fi
+  sorted="${raw}.sorted"
+  grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' "$raw" | sort -u | head -n 128 > "$sorted"
+  while IFS= read -r ip; do googlevideo_ipv4_public "$ip" && printf '%s\n' "$ip"; done < "$sorted"
+  rm -f "$raw" "$sorted"
+}
+
+# Called only from consented telemetry, and at most once every six hours.
+googlevideo_upload_local_batch() {
+  local uuid="$1" ips stamp now cache
+  [ "${tel_enabled:-0}" = 1 ] && [ -n "${STATS_TOKEN:-}" ] || return 0
+  cache="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/googlevideo-upload.ts"
+  stamp=0; [ ! -f "$cache" ] || read -r stamp < "$cache"
+  now="$(date +%s)"; case "$stamp:$now" in *[!0-9:]*) stamp=0 ;; esac
+  [ $((now - stamp)) -ge 21600 ] || return 0
+  ips="$(googlevideo_local_kernel_ips | paste -sd, -)"
+  [ -n "$ips" ] || return 0
+  if curl -4 -fsS --connect-timeout 3 --max-time 8 \
+      --data-urlencode "token=$STATS_TOKEN" --data-urlencode "uuid=$uuid" \
+      --data-urlencode "ips=$ips" "$GOOGLEVIDEO_INGEST_URL" >/dev/null 2>&1; then
+    mkdir -p "${cache%/*}" || return 1
+    printf '%s\n' "$now" > "$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache"
+  fi
+}
+
 googlevideo_ips_update() {
   local stamp now tmp request
   if [ -s "$GOOGLEVIDEO_IPS_FILE" ]; then
     stamp="$(stat -c %Y "$GOOGLEVIDEO_IPS_FILE" 2>/dev/null || stat -f %m "$GOOGLEVIDEO_IPS_FILE" 2>/dev/null || echo 0)"
     now="$(date +%s)"
     case "$stamp:$now" in *[!0-9:]*) stamp=0 ;; esac
-    [ $((now - stamp)) -lt "$GOOGLEVIDEO_IPS_CACHE_TTL" ] && return 0
+    if [ $((now - stamp)) -lt "$GOOGLEVIDEO_IPS_CACHE_TTL" ]; then googlevideo_kernel_set_sync || true; return 0; fi
   fi
   mkdir -p "${GOOGLEVIDEO_IPS_FILE%/*}" || return 1
   tmp="${GOOGLEVIDEO_IPS_FILE}.tmp.$$"
@@ -67,7 +104,7 @@ googlevideo_ips_update() {
     mv -f "$tmp" "$GOOGLEVIDEO_IPS_FILE" || { rm -f "$tmp"; return 1; }
     printf '%s\nok\n' "$(date +%s)" > "$request.tmp.$$"
     mv -f "$request.tmp.$$" "$request"
-    [ "${OSystem:-}" != WRT ] || googlevideo_openwrt_sync_central || true
+    googlevideo_kernel_set_sync || true
     return 0
   fi
   rm -f "$tmp"
@@ -76,32 +113,52 @@ googlevideo_ips_update() {
   return 1
 }
 
+googlevideo_kernel_set_sync() {
+  local fwtype table tmp attempt missing
+  fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
+  if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
+    ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist || return 1
+    [ -s "$GOOGLEVIDEO_IPS_FILE" ] || return 0
+    awk '!/^#/ && NF==1 {print "add z2r_googlevideo4 " $1 " -exist"}' "$GOOGLEVIDEO_IPS_FILE" | ipset restore -exist
+    return $?
+  fi
+  if [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
+    table="${ZAPRET_NFT_TABLE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || echo zapret2)}"
+    if ! nft list set inet "$table" z2r_googlevideo4 >/dev/null 2>&1; then
+      nft add set inet "$table" z2r_googlevideo4 '{ type ipv4_addr; flags timeout; timeout 7d; size 8192; }' || return 1
+    fi
+    [ -s "$GOOGLEVIDEO_IPS_FILE" ] || return 0
+    tmp="${TMPDIR:-/tmp}/z2r-googlevideo-nft.$$"
+    for attempt in 1 2; do
+      missing="$( { nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || :
+        printf '%s\n' '#Z2R_IP_END'
+        awk '!/^#/ && NF==1 {print $1}' "$GOOGLEVIDEO_IPS_FILE"
+      } | awk '$0 == "#Z2R_IP_END" { phase=1; next } !phase { present[$0]=1; next } NF && !present[$1] { print $1 }' | sort -u)" || { rm -f "$tmp"; return 1; }
+      [ -n "$missing" ] || { rm -f "$tmp"; return 0; }
+      awk -v table="$table" 'BEGIN {printf "add element inet %s z2r_googlevideo4 { ", table; sep=""} NF {printf "%s%s", sep, $1; sep=", "} END {if (sep!="") print " }"}' <<EOF > "$tmp"
+$missing
+EOF
+      nft -f "$tmp" && { rm -f "$tmp"; return 0; }
+    done
+    rm -f "$tmp"
+    return 1
+  fi
+  return 0
+}
+
 googlevideo_openwrt_sync_central() {
   local fwtype ip
   [ "${OSystem:-}" = WRT ] || return 0
-  [ -s "$GOOGLEVIDEO_IPS_FILE" ] || return 0
-  fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
-  if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
-    ipset list z2r_googlevideo4 >/dev/null 2>&1 || return 0
-    while IFS= read -r ip; do
-      case "$ip" in ''|\#*) continue ;; esac
-      ipset add z2r_googlevideo4 "$ip" timeout 604800 -exist >/dev/null 2>&1 || return 1
-    done < "$GOOGLEVIDEO_IPS_FILE"
-  elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-    nft list set inet fw4 z2r_googlevideo4 >/dev/null 2>&1 || return 0
-    while IFS= read -r ip; do
-      case "$ip" in ''|\#*) continue ;; esac
-      nft add element inet fw4 z2r_googlevideo4 "{ $ip timeout 7d }" >/dev/null 2>&1 || true
-    done < "$GOOGLEVIDEO_IPS_FILE"
-  fi
+  googlevideo_kernel_set_sync
 }
 
 googlevideo_openwrt_dnsmasq() {
-  local action="${1:-status}" fwtype section_type marker name domain include
+  local action="${1:-status}" fwtype section_type marker name domain include table
   command -v uci >/dev/null 2>&1 || return 1
   section_type="$(uci -q get dhcp.z2r_googlevideo 2>/dev/null || true)"
   marker="$(uci -q get dhcp.z2r_googlevideo.z2r_managed 2>/dev/null || true)"
   fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
+  table="${ZAPRET_NFT_TABLE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || echo zapret2)}"
   include=/etc/nftables.d/zz-z2r-googlevideo.nft
   case "$action" in
     status)
@@ -120,18 +177,7 @@ googlevideo_openwrt_dnsmasq() {
         ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist || return 1
       elif [ "$fwtype" = nftables ]; then
         dnsmasq -v 2>&1 | grep -qi nftset || { echo "Install dnsmasq-full with nftset support" >&2; return 1; }
-        [ ! -e "$include" ] || grep -q '^# z2r-managed-googlevideo$' "$include" || {
-          echo "Refusing to overwrite unmanaged $include" >&2; return 1;
-        }
-        mkdir -p "${include%/*}" || return 1
-        cat > "$include" <<'NFT'
-# z2r-managed-googlevideo
-set z2r_googlevideo4 {
-	type ipv4_addr
-	flags timeout
-	timeout 7d
-}
-NFT
+        googlevideo_kernel_set_sync || return 1
       else
         echo "Unsupported FWTYPE: $fwtype" >&2
         return 1
@@ -143,19 +189,25 @@ NFT
       uci add_list dhcp.z2r_googlevideo.name=z2r_googlevideo4 || return 1
       uci add_list dhcp.z2r_googlevideo.domain=googlevideo.com || return 1
       if [ "$fwtype" = nftables ]; then
-        uci set dhcp.z2r_googlevideo.table=fw4
+        uci set dhcp.z2r_googlevideo.table="$table"
         uci set dhcp.z2r_googlevideo.table_family=inet
         uci set dhcp.z2r_googlevideo.family=4
       fi
       uci commit dhcp || return 1
-      if [ "$fwtype" = nftables ]; then /etc/init.d/firewall reload >/dev/null 2>&1 || return 1; fi
+      if [ "$fwtype" = nftables ]; then
+        if [ -f "$include" ] && grep -q '^# z2r-managed-googlevideo$' "$include"; then rm -f "$include" || return 1; fi
+        /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+      fi
       /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
       ;;
     remove)
       [ "$marker" = 1 ] || return 0
       uci -q delete dhcp.z2r_googlevideo || return 1
       uci commit dhcp || return 1
-      if [ -f "$include" ] && grep -q '^# z2r-managed-googlevideo$' "$include"; then rm -f "$include"; /etc/init.d/firewall reload >/dev/null 2>&1 || true; fi
+      if [ "$fwtype" = nftables ] && [ -f "$include" ] && grep -q '^# z2r-managed-googlevideo$' "$include"; then
+        rm -f "$include" || return 1
+        /etc/init.d/firewall reload >/dev/null 2>&1 || true
+      fi
       if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then ipset destroy z2r_googlevideo4 >/dev/null 2>&1 || true; fi
       /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
       ;;
@@ -173,7 +225,7 @@ googlevideo_openwrt_export_local() {
     if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
       ipset save z2r_googlevideo4 2>/dev/null | awk '$1=="add" && $2=="z2r_googlevideo4" {print $3}'
     elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-      nft list set inet fw4 z2r_googlevideo4 2>/dev/null | sed -n '/elements = {/,/}/p' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true
+      nft list set inet "${ZAPRET_NFT_TABLE:-zapret2}" z2r_googlevideo4 2>/dev/null | sed -n '/elements = {/,/}/p' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true
     fi
   } | awk 'NF==1 && $0 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print}' | sort -u > "$raw" || { rm -f "$tmp" "$raw"; return 1; }
   {

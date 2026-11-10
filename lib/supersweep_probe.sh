@@ -22,6 +22,10 @@ supersweep_probe_config() {
     else
         ramp_enable=0
     fi
+    # The isolated sweep queue is selected by transport marks, not the live
+    # Googlevideo kernel set. Keep its strategy measurements independent of Ramp.
+    ramp_enable=0
+    ramp_args=
     # Пути попадут в Lua-строку и @config: не интерпретируем shell/Lua-код.
     case "$dir" in /*) ;; *) return 1 ;; esac
     case "$dir" in *[!a-zA-Z0-9_./-]*) return 1 ;; esac
@@ -61,8 +65,7 @@ supersweep_probe_config() {
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
             "--lua-init=@$dir/locked.lua" \
-            "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua" \
-            "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/wssize-ramp.lua"
+            "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
         awk -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" '
             /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
             opts && /^"[[:space:]]*$/ { opts=0 }
