@@ -13,7 +13,18 @@ MOCK_FWTYPE=iptables
 MOCK_NFT_SET="$TMP/nft-set"
 : > "$MOCK_NFT_SET"
 NFT_CREATED=0
-config_get_var() { [ "$2" = FWTYPE ] && echo "$MOCK_FWTYPE"; [ "$2" = ZAPRET_NFT_TABLE ] && echo zapret2; }
+NFT_CALLS="$TMP/nft-calls"
+: > "$NFT_CALLS"
+unset ZAPRET_NFT_TABLE
+MOCK_NFT_TABLE=""
+MOCK_EXPECT_NFT_TABLE=zapret2
+config_get_var() {
+  case "$2" in
+    FWTYPE) echo "$MOCK_FWTYPE" ;;
+    ZAPRET_NFT_TABLE) printf '%s\n' "$MOCK_NFT_TABLE" ;;
+  esac
+  return 0
+}
 ipset() {
   case "$1" in
     create) return 0 ;;
@@ -26,6 +37,13 @@ ipset() {
   esac
 }
 nft() {
+  printf '%s\n' "$*" >> "$NFT_CALLS"
+  if [ "$2" = set ] && { [ "$1" = list ] || [ "$1" = add ]; }; then
+    [ "$3" = inet ] && [ "$4" = "$MOCK_EXPECT_NFT_TABLE" ] || {
+      echo "unexpected nft table: $*" >&2
+      return 2
+    }
+  fi
   if [ "$1" = list ] && [ "$2" = set ]; then
     [ "$NFT_CREATED" = 1 ] || return 1
     [ ! -s "$MOCK_NFT_SET" ] || { printf 'elements = { '; paste -sd, "$MOCK_NFT_SET"; printf ' }\n'; }
@@ -97,9 +115,14 @@ if googlevideo_ips_validate "$TMP/malformed.txt"; then exit 1; fi
 MOCK_FWTYPE=nftables
 printf '# googlevideo IPv4; generated=test\n8.8.8.8\n' > "$GOOGLEVIDEO_IPS_FILE"
 googlevideo_kernel_set_sync
+grep -Fq 'add set inet zapret2 z2r_googlevideo4' "$NFT_CALLS"
 grep -Fxq 8.8.8.8 "$MOCK_NFT_SET"
 printf '# googlevideo IPv4; generated=test\n8.8.4.4\n' > "$GOOGLEVIDEO_IPS_FILE"
 googlevideo_kernel_set_sync
 grep -Fxq 8.8.8.8 "$MOCK_NFT_SET"
 grep -Fxq 8.8.4.4 "$MOCK_NFT_SET"
+MOCK_NFT_TABLE=custom_fw
+MOCK_EXPECT_NFT_TABLE=custom_fw
+googlevideo_kernel_set_sync
+grep -Fq 'list set inet custom_fw z2r_googlevideo4' "$NFT_CALLS"
 echo 'googlevideo IP cache and batch smoke ok'

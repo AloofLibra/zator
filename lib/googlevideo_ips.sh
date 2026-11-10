@@ -51,6 +51,14 @@ googlevideo_ips_count() {
   awk '!/^#/ && NF==1 {n++} END {print n+0}' "$GOOGLEVIDEO_IPS_FILE"
 }
 
+googlevideo_nft_table_name() {
+  local table="${ZAPRET_NFT_TABLE:-}"
+  if [ -z "$table" ]; then
+    table="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || true)"
+  fi
+  printf '%s\n' "${table:-zapret2}"
+}
+
 googlevideo_local_kernel_ips() {
   local fwtype table raw sorted ip
   fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
@@ -58,7 +66,7 @@ googlevideo_local_kernel_ips() {
   if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
     ipset save z2r_googlevideo4 2>/dev/null | awk '$1=="add" && $2=="z2r_googlevideo4" {print $3}' > "$raw"
   elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-    table="${ZAPRET_NFT_TABLE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || echo zapret2)}"
+    table="$(googlevideo_nft_table_name)"
     nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' > "$raw" || :
   else
     rm -f "$raw"; return 0
@@ -123,7 +131,7 @@ googlevideo_kernel_set_sync() {
     return $?
   fi
   if [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-    table="${ZAPRET_NFT_TABLE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || echo zapret2)}"
+    table="$(googlevideo_nft_table_name)"
     if ! nft list set inet "$table" z2r_googlevideo4 >/dev/null 2>&1; then
       nft add set inet "$table" z2r_googlevideo4 '{ type ipv4_addr; flags timeout; timeout 7d; size 8192; }' || return 1
     fi
@@ -158,7 +166,7 @@ googlevideo_openwrt_dnsmasq() {
   section_type="$(uci -q get dhcp.z2r_googlevideo 2>/dev/null || true)"
   marker="$(uci -q get dhcp.z2r_googlevideo.z2r_managed 2>/dev/null || true)"
   fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
-  table="${ZAPRET_NFT_TABLE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || echo zapret2)}"
+  table="$(googlevideo_nft_table_name)"
   include=/etc/nftables.d/zz-z2r-googlevideo.nft
   case "$action" in
     status)
@@ -225,7 +233,7 @@ googlevideo_openwrt_export_local() {
     if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
       ipset save z2r_googlevideo4 2>/dev/null | awk '$1=="add" && $2=="z2r_googlevideo4" {print $3}'
     elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-      nft list set inet "${ZAPRET_NFT_TABLE:-zapret2}" z2r_googlevideo4 2>/dev/null | sed -n '/elements = {/,/}/p' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true
+      nft list set inet "$(googlevideo_nft_table_name)" z2r_googlevideo4 2>/dev/null | sed -n '/elements = {/,/}/p' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true
     fi
   } | awk 'NF==1 && $0 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print}' | sort -u > "$raw" || { rm -f "$tmp" "$raw"; return 1; }
   {
