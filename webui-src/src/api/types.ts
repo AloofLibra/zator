@@ -104,6 +104,7 @@ export interface WssizeRampSettings {
   mode: 'full' | 'lite'
   scale: number
   googlevideo_ips: number
+  googlevideo_local_collection: 'enabled' | 'disabled' | 'unsupported'
 }
 
 export interface ModeSettingData {

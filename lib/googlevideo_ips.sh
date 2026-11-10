@@ -59,6 +59,34 @@ googlevideo_nft_table_name() {
   printf '%s\n' "${table:-zapret2}"
 }
 
+googlevideo_dnsmasq_has_feature() {
+  local feature="$1"
+  dnsmasq -v 2>&1 | sed -n 's/^Compile time options:[[:space:]]*//p' | tr ' ' '\n' | grep -Fxq "$feature"
+}
+
+googlevideo_dnsmasq_rule_present() {
+  local fwtype="$1" table="$2" file="$3" expected
+  case "$fwtype" in
+    nftables) expected="nftset=/googlevideo.com/4#inet#$table#z2r_googlevideo4" ;;
+    iptables) expected="ipset=/googlevideo.com/z2r_googlevideo4" ;;
+    *) return 1 ;;
+  esac
+  grep -Fxq "$expected" "$file"
+}
+
+googlevideo_openwrt_dnsmasq_state() {
+  local fwtype feature
+  if [ ! -r /etc/openwrt_release ] || ! command -v uci >/dev/null 2>&1; then
+    printf 'unsupported\n'; return 0
+  fi
+  fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
+  case "$fwtype" in nftables) feature=nftset ;; iptables) feature=ipset ;; *) printf 'unsupported\n'; return 0 ;; esac
+  if ! googlevideo_dnsmasq_has_feature "$feature"; then
+    printf 'unsupported\n'; return 0
+  fi
+  if googlevideo_openwrt_dnsmasq status >/dev/null 2>&1; then printf 'enabled\n'; else printf 'disabled\n'; fi
+}
+
 googlevideo_local_kernel_ips() {
   local fwtype table raw sorted ip
   fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
@@ -161,7 +189,7 @@ googlevideo_openwrt_sync_central() {
 }
 
 googlevideo_openwrt_dnsmasq() {
-  local action="${1:-status}" fwtype section_type marker name domain include table
+  local action="${1:-status}" fwtype section_type marker name domain include table file feature
   command -v uci >/dev/null 2>&1 || return 1
   section_type="$(uci -q get dhcp.z2r_googlevideo 2>/dev/null || true)"
   marker="$(uci -q get dhcp.z2r_googlevideo.z2r_managed 2>/dev/null || true)"
@@ -171,7 +199,15 @@ googlevideo_openwrt_dnsmasq() {
   case "$action" in
     status)
       [ "$marker" = 1 ] && [ "$section_type" = ipset ] || return 1
-      uci -q get dhcp.z2r_googlevideo.domain | grep -Fxq googlevideo.com
+      uci -q get dhcp.z2r_googlevideo.domain | grep -Fxq googlevideo.com || return 1
+      uci -q get dhcp.z2r_googlevideo.name | grep -Fxq z2r_googlevideo4 || return 1
+      case "$fwtype" in nftables) feature=nftset ;; iptables) feature=ipset ;; *) return 1 ;; esac
+      googlevideo_dnsmasq_has_feature "$feature" || return 1
+      for file in /var/etc/dnsmasq.conf.*; do
+        [ -f "$file" ] || continue
+        googlevideo_dnsmasq_rule_present "$fwtype" "$table" "$file" && return 0
+      done
+      return 1
       ;;
     setup)
       [ "${OSystem:-}" = WRT ] || { echo "dnsmasq GGC source is OpenWrt-only" >&2; return 1; }
@@ -181,10 +217,10 @@ googlevideo_openwrt_dnsmasq() {
       fi
       if [ "$fwtype" = iptables ]; then
         command -v ipset >/dev/null 2>&1 || { echo "Install ipset for dnsmasq GGC capture" >&2; return 1; }
-        dnsmasq -v 2>&1 | grep -qi ipset || { echo "Install dnsmasq-full with ipset support" >&2; return 1; }
+        googlevideo_dnsmasq_has_feature ipset || { echo "Install dnsmasq-full with ipset support" >&2; return 1; }
         ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist || return 1
       elif [ "$fwtype" = nftables ]; then
-        dnsmasq -v 2>&1 | grep -qi nftset || { echo "Install dnsmasq-full with nftset support" >&2; return 1; }
+        googlevideo_dnsmasq_has_feature nftset || { echo "Install dnsmasq-full built with nftset support" >&2; return 1; }
         googlevideo_kernel_set_sync || return 1
       else
         echo "Unsupported FWTYPE: $fwtype" >&2

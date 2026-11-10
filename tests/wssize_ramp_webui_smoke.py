@@ -25,7 +25,8 @@ base = "http://127.0.0.1:{0}/cgi-bin/settings.cgi".format(server.server_port)
 try:
     with urllib.request.urlopen(base + "?setting=wssize_ramp") as response:
         initial = json.load(response)
-    assert initial == {"enabled": False, "mode": "full", "scale": 1, "googlevideo_ips": 0}, initial
+    assert initial == {"enabled": False, "mode": "full", "scale": 1, "googlevideo_ips": 0,
+                       "googlevideo_local_collection": "unsupported"}, initial
 
     body = urllib.parse.urlencode({
         "setting": "wssize_ramp", "value": "1", "mode": "lite", "scale": "8",

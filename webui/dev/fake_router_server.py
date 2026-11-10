@@ -2241,6 +2241,7 @@ class FakeRouterState:
             "mode": config_get_var(self.cfg_text, "Z2R_WSSIZE_RAMP_MODE") or "full",
             "scale": scale if 0 <= scale <= 14 else 1,
             "googlevideo_ips": 0,
+            "googlevideo_local_collection": "unsupported",
         }
 
     def apply_wssize_ramp(self, enabled, mode, scale):

@@ -25,6 +25,8 @@ config_get_var() {
   esac
   return 0
 }
+dnsmasq() { printf 'Dnsmasq version 2.91\nCompile time options: IPv6 DHCP %s\n' "${MOCK_DNSMASQ_FEATURES:-nftset ipset}"; }
+uci() { return 1; }
 ipset() {
   case "$1" in
     create) return 0 ;;
@@ -125,4 +127,18 @@ MOCK_NFT_TABLE=custom_fw
 MOCK_EXPECT_NFT_TABLE=custom_fw
 googlevideo_kernel_set_sync
 grep -Fq 'list set inet custom_fw z2r_googlevideo4' "$NFT_CALLS"
+printf 'nftset=/googlevideo.com/4#inet#zapret2#z2r_googlevideo4\n' > "$TMP/dnsmasq.conf"
+googlevideo_dnsmasq_has_feature nftset
+googlevideo_dnsmasq_rule_present nftables zapret2 "$TMP/dnsmasq.conf"
+! googlevideo_dnsmasq_rule_present nftables custom_fw "$TMP/dnsmasq.conf"
+MOCK_DNSMASQ_FEATURES='IPv6 no-nftset no-ipset'
+! googlevideo_dnsmasq_has_feature nftset
+! googlevideo_dnsmasq_has_feature ipset
+OSystem=WRT
+if googlevideo_openwrt_dnsmasq setup; then
+  echo 'setup accepted dnsmasq without nftset support' >&2
+  exit 1
+fi
+printf 'ipset=/googlevideo.com/z2r_googlevideo4\n' > "$TMP/dnsmasq-ipset.conf"
+googlevideo_dnsmasq_rule_present iptables ignored "$TMP/dnsmasq-ipset.conf"
 echo 'googlevideo IP cache and batch smoke ok'

@@ -132,7 +132,7 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
   "wg_state": { /* settings.cgi?setting=wg_state */ },
   "fallback": { /* settings.cgi?setting=fallback */ },
   "udp_games":{ /* settings.cgi?setting=udp-games */ },
-  "wssize_ramp": {"enabled":false,"mode":"full","scale":1,"googlevideo_ips":0},
+  "wssize_ramp": {"enabled":false,"mode":"full","scale":1,"googlevideo_ips":0,"googlevideo_local_collection":"unsupported"},
   "auto_mode":{ /* settings.cgi?setting=auto_mode */ },
   "hostlist": { /* settings.cgi?setting=hostlist */ },
   "rst_guard":{ /* settings.cgi?setting=rst_guard */ },
@@ -371,7 +371,7 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
 | `wg_state` | `api_wg_state_get` | состояние WG (вкл/выкл) |
 | `fallback` | `api_fallback_get` | состояние fallback ([§7](#7-fallback-безразборный-режим)) |
 | `udp-games` | `api_udp_games_get` | состояние игрового UDP (профиль 7) |
-| `wssize_ramp` | `api_wssize_ramp_get` | состояние, размер списка Googlevideo, Full/Lite и scale |
+| `wssize_ramp` | `api_wssize_ramp_get` | состояние, размер центрального списка Googlevideo, локальный DNS-сбор (`enabled`, `disabled`, `unsupported`), Full/Lite и scale |
 | `auto_mode` | `api_auto_mode_get` | авторотация TCP/HTTP |
 | `hostlist` | `api_hostlist_get` | режим фильтрации по спискам |
 | `rst_guard` | `api_rst_guard_get` | защита от RST-инъекций |

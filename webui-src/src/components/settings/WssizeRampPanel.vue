@@ -8,6 +8,11 @@ import type { WssizeRampSettings } from '../../api/types'
 import { announceRestart, restartSuffix, showToast } from '../../stores/toast'
 
 const settings = computed(() => wssizeRampSettings.value)
+const localCollectionLabel = computed(() => ({
+  enabled: 'включён',
+  disabled: 'выключен',
+  unsupported: 'недоступен на этой платформе или dnsmasq без nftset/ipset',
+}[settings.value?.googlevideo_local_collection ?? 'unsupported']))
 const enabled = ref(false)
 const mode = ref<WssizeRampSettings['mode']>('full')
 const scale = ref(1)
@@ -48,7 +53,7 @@ async function submit() {
         {{ settings?.enabled ? 'включен' : 'выключен' }}
       </span>
     </div>
-    <p class="panel-desc">Настраивает TCP receive window для IP из списка Googlevideo ({{ settings?.googlevideo_ips ?? 0 }} адресов). После сохранения zapret2 перезапускается, если он запущен.</p>
+    <p class="panel-desc">Центральный список содержит {{ settings?.googlevideo_ips ?? 0 }} Googlevideo IP. Локальный DNS-сбор: {{ localCollectionLabel }}. Он пополняет kernel set через dnsmasq на OpenWrt; для управления используйте CLI, пункт 9 расширенных настроек. После сохранения zapret2 перезапускается, если он запущен.</p>
     <form id="wssize-ramp-form" class="settings-form" @submit.prevent="submit">
       <label class="toggle-field">
         <input id="wssize-ramp-toggle" type="checkbox" v-model="enabled" :disabled="busyActive">

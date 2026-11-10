@@ -612,14 +612,15 @@ api_state() {
   scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
   _snapshot_once
   local fake_dir="/opt/zator/files/fake" f b blobs_tls="" blobs_wg=""
-  local ws_enabled ws_mode ws_scale ws_count ws_json
+  local ws_enabled ws_mode ws_scale ws_count ws_dnsmasq ws_json
   ws_enabled="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE)"
   ws_mode="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_MODE)"; [ "$ws_mode" = lite ] || ws_mode=full
   ws_scale="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE)"
   case "$ws_scale" in ''|*[!0-9]*) ws_scale=1 ;; esac
   [ "$ws_scale" -le 14 ] 2>/dev/null || ws_scale=1
   ws_count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
-  ws_json="{\"enabled\":$([ "$ws_enabled" = 1 ] && echo true || echo false),\"mode\":\"$ws_mode\",\"scale\":$ws_scale,\"googlevideo_ips\":$ws_count}"
+  ws_dnsmasq="$(googlevideo_openwrt_dnsmasq_state 2>/dev/null || echo unsupported)"
+  ws_json="{\"enabled\":$([ "$ws_enabled" = 1 ] && echo true || echo false),\"mode\":\"$ws_mode\",\"scale\":$ws_scale,\"googlevideo_ips\":$ws_count,\"googlevideo_local_collection\":\"$ws_dnsmasq\"}"
   for f in "$fake_dir"/*.bin; do
     [ -f "$f" ] || continue
     b="${f##*/}"
@@ -1462,14 +1463,15 @@ api_dns_desync_set() {
 
 api_wssize_ramp_get() {
   _require_config
-  local enabled mode scale count
+  local enabled mode scale count dnsmasq_state
   enabled="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE)"
   mode="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_MODE)"
   scale="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE)"
   case "$scale" in ''|*[!0-9]*) scale=1 ;; esac
   [ "$scale" -le 14 ] 2>/dev/null || scale=1
   count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
-  send_json "200 OK" "{\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$(json_escape "${mode:-full}")\",\"scale\":$scale,\"googlevideo_ips\":$count}"
+  dnsmasq_state="$(googlevideo_openwrt_dnsmasq_state 2>/dev/null || echo unsupported)"
+  send_json "200 OK" "{\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$(json_escape "${mode:-full}")\",\"scale\":$scale,\"googlevideo_ips\":$count,\"googlevideo_local_collection\":\"$dnsmasq_state\"}"
 }
 
 api_wssize_ramp_set() {
@@ -1493,7 +1495,8 @@ api_wssize_ramp_set() {
     *) send_error "500 Internal Server Error" "Не удалось сохранить настройки wssize_ramp" ;;
   esac
   _service_apply_restart
-  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$mode\",\"scale\":$scale,\"googlevideo_ips\":$(googlevideo_ips_count 2>/dev/null || echo 0)}"
+  dnsmasq_state="$(googlevideo_openwrt_dnsmasq_state 2>/dev/null || echo unsupported)"
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$mode\",\"scale\":$scale,\"googlevideo_ips\":$(googlevideo_ips_count 2>/dev/null || echo 0),\"googlevideo_local_collection\":\"$dnsmasq_state\"}"
 }
 
 _ports_tokens_json() {

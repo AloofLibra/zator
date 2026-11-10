@@ -2301,7 +2301,7 @@ advanced_settings_submenu() {
     local quic_block quic_value quic_color
     local keenetic_status keenetic_color
     local wd_status wd_color
-    local wssize_value wssize_color
+    local wssize_value wssize_color googlevideo_collect_value
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -2365,7 +2365,12 @@ advanced_settings_submenu() {
     submenu_status_item "7" "Экспериментальный wssize_ramp (список Googlevideo)." "$wssize_value" "$wssize_color"
     submenu_item "8" "Обновить центральный список IPv4 Googlevideo. Сейчас: $(googlevideo_ips_count)"
     if [ "${OSystem:-}" = WRT ]; then
-      submenu_item "9" "OpenWrt: включить локальный сбор GGC через dnsmasq."
+      case "$(googlevideo_openwrt_dnsmasq_state)" in
+        enabled) googlevideo_collect_value="ВКЛ (9 — отключить)" ;;
+        disabled) googlevideo_collect_value="ВЫКЛ (9 — включить)" ;;
+        *) googlevideo_collect_value="НЕДОСТУПЕН: dnsmasq без поддержки set" ;;
+      esac
+      submenu_item "9" "OpenWrt: локальный сбор GGC через dnsmasq — $googlevideo_collect_value."
       submenu_item "10" "OpenWrt: объединить DNS-наблюдения с центральным списком."
     fi
     submenu_item "0" "Назад"
@@ -2412,12 +2417,18 @@ advanced_settings_submenu() {
         pause_enter
         ;;
       "9")
-        if googlevideo_openwrt_dnsmasq setup; then
+        if googlevideo_openwrt_dnsmasq status; then
+          if googlevideo_openwrt_dnsmasq remove; then
+            echo -e "${green}Локальный DNS-сбор Googlevideo выключен.${plain}"
+          else
+            echo -e "${yellow}Не удалось выключить локальный DNS-сбор.${plain}"
+          fi
+        elif googlevideo_openwrt_dnsmasq setup; then
           googlevideo_ips_update || true
           googlevideo_openwrt_sync_central || true
-          echo -e "${green}dnsmasq сохраняет IPv4 googlevideo.com в z2r_googlevideo4.${plain}"
+          echo -e "${green}Локальный DNS-сбор Googlevideo включён через dnsmasq.${plain}"
         else
-          echo -e "${yellow}Не удалось настроить dnsmasq; проверьте dnsmasq-full и FWTYPE.${plain}"
+          echo -e "${yellow}Локальный сбор не включён; проверьте сообщение dnsmasq выше и FWTYPE.${plain}"
         fi
         pause_enter
         ;;
