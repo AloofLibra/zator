@@ -65,7 +65,7 @@ for file in \
   "$REPO_DIR/webui/cgi-bin/_lib.sh" \
   "$REPO_DIR/webui/cgi-bin/settings.cgi" \
   "$REPO_DIR/webui/cgi-bin/backups.cgi"; do
-  bash -n "$file"
+  bash -n <(tr -d '\r' < "$file")
 done
 command -v node >/dev/null 2>&1 && node --check "$REPO_DIR/webui/app.js"
 command -v python >/dev/null 2>&1 && python -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$REPO_DIR/webui/dev/fake_router_server.py"
@@ -103,10 +103,10 @@ REQUEST_METHOD=GET QUERY_STRING=setting=ports bash "$TMP_DIR/panel/cgi-bin/setti
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '\$LIB_DIR/actions\.sh' "_lib.sh не подключает lib/actions.sh"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '\$LIB_DIR/provider\.sh' "_lib.sh не подключает lib/provider.sh"
 
-for fn in api_auto_mode_get api_hostlist_get api_rst_guard_get api_reasm_get api_quic443_get api_dns_desync_get api_ports_get api_provider_get; do
+for fn in api_auto_mode_get api_hostlist_get api_rst_guard_get api_reasm_get api_quic443_get api_dns_desync_get api_wssize_ramp_get api_ports_get api_provider_get; do
   assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" "$fn" "settings.cgi GET не вызывает $fn"
 done
-for fn in api_auto_mode_set api_hostlist_set api_rst_guard_set api_reasm_set api_quic443_set api_dns_desync_set api_ports_add api_ports_remove api_provider_set api_provider_redetect; do
+for fn in api_auto_mode_set api_hostlist_set api_rst_guard_set api_reasm_set api_quic443_set api_dns_desync_set api_wssize_ramp_set api_ports_add api_ports_remove api_provider_set api_provider_redetect; do
   assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" "$fn" "settings.cgi POST не вызывает $fn"
 done
 # per-profile TLS блоб: POST-ветка + общий сеттер из orchestra_state.sh
@@ -138,7 +138,7 @@ for key in auto_mode rst_guard reasm quic443 provider; do
 done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'rst-guard\.lua' "rst_guard set без guard на lua-файл"
 
-for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form ports-tcp-form ports-udp-form provider-form tls-blob-profile-form backup-create-btn backup-import-btn backup-import-file; do
+for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form wssize-ramp-form wssize-ramp-toggle wssize-ramp-ip wssize-ramp-mode wssize-ramp-scale ports-tcp-form ports-udp-form provider-form tls-blob-profile-form backup-create-btn backup-import-btn backup-import-file; do
   grep -rq "$id" "$REPO_DIR/webui-src/src" || fail "webui-src не содержит #$id"
 done
 
@@ -166,6 +166,8 @@ assert_contains "$app_js" 'update-check-btn' "webui-src без кнопки пр
 assert_contains "$app_js" 'runUpdateCheck' "webui-src без обработчика проверки обновлений"
 assert_contains "$(cat "$REPO_DIR/webui-src/src/components/status/StatusCards.vue")" "verClass === ''" "кнопка обновлений не спрятана при видимых обновлениях"
 assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" 'update_check' "fake_router_server.py без update_check"
+assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" 'apply_wssize_ramp' "fake_router_server.py не сохраняет wssize_ramp"
+assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" 'build_wssize_ramp_settings' "fake_router_server.py не отдаёт wssize_ramp"
 assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'update_check' "API_CONTRACT.md без update_check"
 assert_contains "$app_js" 'AUTO_MODE_GATED_PROFILES' "webui-src не гейтит профили 1-4 при авторотации"
 assert_contains "$app_js" 'fallback-hint' "webui-src без подсказки гейтинга профиля"

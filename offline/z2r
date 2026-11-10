@@ -3,7 +3,7 @@
 set -e
 
 INSTALL_DIR="${Z2R_INSTALL_DIR:-/opt}"
-LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 fail() {
     echo "Ошибка: $*" >&2
@@ -80,6 +80,8 @@ done
 
 if [ -n "${Z2R_BIN_PATH:-}" ]; then
     BIN_PATH="$Z2R_BIN_PATH"
+elif [ -x /sbin/procd ] && [ -d /bin ] && [ -w /bin ]; then
+    BIN_PATH="/bin/z2r"
 elif [ -d /opt/bin ]; then
     BIN_PATH="/opt/bin/z2r"
 elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then

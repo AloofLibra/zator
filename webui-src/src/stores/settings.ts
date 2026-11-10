@@ -2,7 +2,7 @@ import { reactive, ref } from 'vue'
 import { fetchSetting, fetchTlsBlobSettings } from '../api/endpoints'
 import type {
   FallbackSettings, ModeSettingData, PortsSettings, ProviderSettings,
-  TlsBlobSettings, UdpGamesSettings, WgBlobSettings, WgStateSettings,
+  TlsBlobSettings, UdpGamesSettings, WgBlobSettings, WgStateSettings, WssizeRampSettings,
 } from '../api/types'
 
 export const tlsBlobSettings = ref<TlsBlobSettings | null>(null)
@@ -10,6 +10,7 @@ export const wgBlobSettings = ref<WgBlobSettings | null>(null)
 export const wgStateSettings = ref<WgStateSettings | null>(null)
 export const fallbackSettings = ref<FallbackSettings | null>(null)
 export const udpGamesSettings = ref<UdpGamesSettings | null>(null)
+export const wssizeRampSettings = ref<WssizeRampSettings | null>(null)
 export const modeSettings = reactive<Record<string, ModeSettingData | undefined>>({})
 export const ports = ref<PortsSettings | null>(null)
 export const provider = ref<ProviderSettings | null>(null)
@@ -23,6 +24,7 @@ export const refreshWgBlobSettings = () => fetchSetting.wg_blob().then((data) =>
 export const refreshWgStateSettings = () => fetchSetting.wg_state().then((data) => { wgStateSettings.value = data })
 export const refreshFallbackSettings = () => fetchSetting.fallback().then((data) => { fallbackSettings.value = data })
 export const refreshUdpGamesSettings = () => fetchSetting['udp-games']().then((data) => { udpGamesSettings.value = data })
+export const refreshWssizeRampSettings = () => fetchSetting.wssize_ramp().then((data) => { wssizeRampSettings.value = data })
 export const refreshPorts = () => fetchSetting.ports().then((data) => { ports.value = data })
 export const refreshProvider = () => fetchSetting.provider().then((data) => { provider.value = data })
 

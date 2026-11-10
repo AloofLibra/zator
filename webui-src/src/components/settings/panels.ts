@@ -7,6 +7,7 @@ import WireGuardPanel from './WireGuardPanel.vue'
 import PortsPanel from './PortsPanel.vue'
 import ProviderPanel from './ProviderPanel.vue'
 import BackupsPanel from './BackupsPanel.vue'
+import WssizeRampPanel from './WssizeRampPanel.vue'
 
 export interface SettingsPanelEntry {
   id: string
@@ -16,6 +17,7 @@ export interface SettingsPanelEntry {
 
 export const settingsPanels: SettingsPanelEntry[] = [
   { id: 'tls-blob', component: TlsBlobPanel },
+  { id: 'wssize-ramp', component: WssizeRampPanel },
   { id: 'auto-mode', component: ModeTogglePanel, props: { setting: 'auto_mode' } },
   { id: 'fallback', component: FallbackPanel },
   { id: 'hostlist', component: ModeTogglePanel, props: { setting: 'hostlist' } },

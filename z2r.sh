@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh youtube_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
@@ -330,7 +330,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua strategy-validator.sh; do
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua wssize-ramp.lua strategy-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -363,6 +363,7 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
       -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
       -e 's#/opt/zapret2/lua/fake-adapt.lua#/opt/zator/lua/fake-adapt.lua#g' \
+      -e 's#/opt/zapret2/lua/wssize-ramp.lua#/opt/zator/lua/wssize-ramp.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
       -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
       -e 's#/opt/zapret2/extra_strats#/opt/zator/extra_strats#g' \
@@ -421,6 +422,7 @@ source "$LIB_DIR/orchestra_state.sh"
 # База подсказок по стратегиям (скачивание + вывод подсказки по провайдеру)
 # Функции: update_recommendations, show_hint
 source "$LIB_DIR/recommendations.sh"
+source "$LIB_DIR/googlevideo_ips.sh"
 
 # Проверка доступности ресурсов/сети (TLS 1.2/1.3) + получение домена кластера youtube (googlevideo)
 # Функции: get_yt_cluster_domain, check_access, check_access_list
@@ -609,6 +611,12 @@ CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
 DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
 FAKE_ADAPT_LUA="$ZATOR_ROOT/lua/fake-adapt.lua"
+WSSIZE_RAMP_LUA="$ZATOR_ROOT/lua/wssize-ramp.lua"
+case "$OSystem" in
+  WRT) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
+  entware|VPS) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
+  *) WSSIZE_RAMP_FIREWALL="" ;;
+esac
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
@@ -647,6 +655,12 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
   z2r_download_project_file "$FAKE_ADAPT_LUA" "lua/fake-adapt.lua" || return 1
+  z2r_download_project_file "$WSSIZE_RAMP_LUA" "lua/wssize-ramp.lua" || return 1
+  if [ -n "$WSSIZE_RAMP_FIREWALL" ] && [ -d "$(dirname "$WSSIZE_RAMP_FIREWALL")/.." ]; then
+    mkdir -p "$(dirname "$WSSIZE_RAMP_FIREWALL")"
+    z2r_download_project_file "$WSSIZE_RAMP_FIREWALL" "tools/wssize-ramp-firewall.sh" || return 1
+    chmod +x "$WSSIZE_RAMP_FIREWALL"
+  fi
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"

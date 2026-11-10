@@ -108,6 +108,9 @@ parse_params() {
   PARAM_NAME=""
   PARAM_CITY=""
   PARAM_PROTO=""
+  PARAM_IP=""
+  PARAM_MODE=""
+  PARAM_SCALE=""
   PARAM_SCOPE="default"
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
@@ -127,6 +130,9 @@ parse_params() {
       name) PARAM_NAME="$value" ;;
       city) PARAM_CITY="$value" ;;
       proto) PARAM_PROTO="$value" ;;
+      ip) PARAM_IP="$value" ;;
+      mode) PARAM_MODE="$value" ;;
+      scale) PARAM_SCALE="$value" ;;
       scope) PARAM_SCOPE="${value:-default}" ;;
     esac
   done
@@ -605,6 +611,15 @@ api_state() {
   scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
   _snapshot_once
   local fake_dir="/opt/zator/files/fake" f b blobs_tls="" blobs_wg=""
+  local ws_enabled ws_ip ws_mode ws_scale ws_json
+  ws_enabled="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE)"
+  ws_ip="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_IP)"
+  ws_mode="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_MODE)"; [ "$ws_mode" = lite ] || ws_mode=full
+  ws_scale="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE)"
+  case "$ws_scale" in ''|*[!0-9]*) ws_scale=5 ;; esac
+  [ "$ws_scale" -le 14 ] 2>/dev/null || ws_scale=5
+  _json_esc "$ws_ip"; ws_ip="$REPLY"
+  ws_json="{\"enabled\":$([ "$ws_enabled" = 1 ] && echo true || echo false),\"ip\":\"$ws_ip\",\"mode\":\"$ws_mode\",\"scale\":$ws_scale}"
   for f in "$fake_dir"/*.bin; do
     [ -f "$f" ] || continue
     b="${f##*/}"
@@ -698,7 +713,7 @@ api_state() {
     version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_release\":\"\",\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
   fi
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -1443,6 +1458,41 @@ api_dns_desync_set() {
   config_profile_dns_ports_apply "$CONFIG_FILE" "$value"
   _service_apply_restart
   send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"state\":\"$(json_escape "$(config_mode_text dns_desync "$CONFIG_FILE")")\"}"
+}
+
+api_wssize_ramp_get() {
+  _require_config
+  local enabled ip mode scale
+  enabled="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE)"
+  ip="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_IP)"
+  mode="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_MODE)"
+  scale="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE)"
+  case "$scale" in ''|*[!0-9]*) scale=5 ;; esac
+  [ "$scale" -le 14 ] 2>/dev/null || scale=5
+  send_json "200 OK" "{\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"ip\":\"$(json_escape "$ip")\",\"mode\":\"$(json_escape "${mode:-full}")\",\"scale\":$scale}"
+}
+
+api_wssize_ramp_set() {
+  local enabled="$PARAM_VALUE" ip="$PARAM_IP" mode="$PARAM_MODE" scale="$PARAM_SCALE" rc
+  _require_config
+  [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || send_error "400 Bad Request" "Некорректный флаг включения"
+  if [ "$enabled" = 1 ] || [ -n "$ip" ]; then
+    config_ipv4_valid "$ip" || send_error "400 Bad Request" "Укажите корректный IPv4-адрес"
+  fi
+  case "$mode" in full|lite) ;; *) send_error "400 Bad Request" "Режим должен быть full или lite" ;; esac
+  case "$scale" in ''|*[!0-9]*) send_error "400 Bad Request" "Scale должен быть целым числом от 0 до 14" ;; esac
+  [ "$scale" -le 14 ] 2>/dev/null || send_error "400 Bad Request" "Scale должен быть целым числом от 0 до 14"
+  if [ "$enabled" = 1 ]; then
+    [ -s "$ZATOR_ROOT/lua/wssize-ramp.lua" ] || send_error "503 Service Unavailable" "Файл wssize-ramp.lua отсутствует. Обновите Core zator."
+  fi
+  backup_smart_set_wssize_ramp "$CONFIG_FILE" "$enabled" "$ip" "$mode" "$scale"; rc=$?
+  case "$rc" in
+    0) ;;
+    2) send_error "503 Service Unavailable" "Профиль wssize_ramp отсутствует в config. Обновите конфиг через CLI (пункт 5)." ;;
+    *) send_error "500 Internal Server Error" "Не удалось сохранить настройки wssize_ramp" ;;
+  esac
+  _service_apply_restart
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"ip\":\"$ip\",\"mode\":\"$mode\",\"scale\":$scale}"
 }
 
 _ports_tokens_json() {

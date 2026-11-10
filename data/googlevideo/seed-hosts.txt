@@ -1,0 +1,2 @@
+# A concrete CDN hostname observed in the user's real signed video URL.
+rr2---sn-h5gtov-n8vl.googlevideo.com

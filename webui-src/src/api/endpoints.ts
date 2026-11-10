@@ -3,7 +3,7 @@ import type {
   ApplyResult, BackupsPayload, CheckPayload, DomainsImportResult, DomainsListPayload,
   FallbackSettings, ModeSettingData, PortInfo, PortsSettings, ProfileInfo, ProviderSettings,
   ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult,
-  WgBlobSettings, WgStateSettings, Recommendations, SupersweepPayload,
+  WgBlobSettings, WgStateSettings, Recommendations, SupersweepPayload, WssizeRampSettings,
 } from './types'
 
 export const fetchStatus = (scope: string) =>
@@ -55,6 +55,7 @@ export const fetchSetting = {
   ports: () => api<PortsSettings>('/cgi-bin/settings.cgi?setting=ports'),
   provider: () => api<ProviderSettings>('/cgi-bin/settings.cgi?setting=provider'),
   update_check: () => api<UpdateCheckResult>('/cgi-bin/settings.cgi?setting=update_check'),
+  wssize_ramp: () => api<WssizeRampSettings>('/cgi-bin/settings.cgi?setting=wssize_ramp'),
 }
 
 export const applySetting = {
@@ -98,6 +99,10 @@ export const applySetting = {
   provider_redetect: () =>
     api<ApplyResult>('/cgi-bin/settings.cgi',
       formBody({ setting: 'provider_redetect' })),
+  wssize_ramp: (settings: WssizeRampSettings) =>
+    api<ApplyResult & WssizeRampSettings>('/cgi-bin/settings.cgi',
+      formBody({ setting: 'wssize_ramp', value: settings.enabled ? '1' : '0', ip: settings.ip,
+        mode: settings.mode, scale: String(settings.scale) })),
 }
 
 export const fetchDomainsList = (list: string) =>

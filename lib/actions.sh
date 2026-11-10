@@ -1453,6 +1453,20 @@ backup_smart_set_rst_guard() {
   fi
 }
 
+backup_smart_set_wssize_ramp() {
+  local cfg="$1" enabled="$2" ip="$3" mode="$4" scale="$5"
+  [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || return 1
+  if [ "$enabled" = 1 ] || [ -n "$ip" ]; then config_ipv4_valid "$ip" || return 1; fi
+  case "$mode" in full|lite) ;; *) return 1 ;; esac
+  case "$scale" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$scale" -le 14 ] 2>/dev/null || return 1
+  grep -q -- '--lua-desync=wssize_ramp' "$cfg" || return 2
+  config_set_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE "$enabled"
+  config_set_var "$cfg" Z2R_WSSIZE_RAMP_IP "$ip"
+  config_set_var "$cfg" Z2R_WSSIZE_RAMP_MODE "$mode"
+  config_set_var "$cfg" Z2R_WSSIZE_RAMP_SCALE "$scale"
+}
+
 # Пункт 19: --reasm-disable (вставка/удаление строки после NFQWS2_OPT=").
 # Повторяет логическое ядро menu_action_toggle_reasm_disable().
 backup_smart_set_reasm() {

@@ -2301,6 +2301,7 @@ advanced_settings_submenu() {
     local quic_block quic_value quic_color
     local keenetic_status keenetic_color
     local wd_status wd_color
+    local wssize_value wssize_color
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -2356,6 +2357,17 @@ advanced_settings_submenu() {
       *) wd_color="yellow" ;;
     esac
     submenu_status_item "6" "Watchdog zapret2: перезапуск при падении/OOM." "$wd_status" "$wd_color"
+    if [ "$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_ENABLE)" = 1 ]; then
+      wssize_value="включен"; wssize_color="green"
+    else
+      wssize_value="выключен"; wssize_color="red"
+    fi
+    submenu_status_item "7" "Экспериментальный wssize_ramp (IP/режим/scale)." "$wssize_value" "$wssize_color"
+    submenu_item "8" "Обновить центральный список IPv4 Googlevideo. Сейчас: $(googlevideo_ips_count)"
+    if [ "${OSystem:-}" = WRT ]; then
+      submenu_item "9" "OpenWrt: включить локальный сбор GGC через dnsmasq."
+      submenu_item "10" "OpenWrt: объединить DNS-наблюдения с центральным списком."
+    fi
     submenu_item "0" "Назад"
     echo ""
 
@@ -2388,6 +2400,35 @@ advanced_settings_submenu() {
         watchdog_toggle || true
         pause_enter
         ;;
+      "7")
+        wssize_ramp_submenu
+        ;;
+      "8")
+        if googlevideo_ips_update; then
+          echo -e "${green}Googlevideo IP список обновлён: $(googlevideo_ips_count) адресов.${plain}"
+        else
+          echo -e "${yellow}Не удалось обновить список; сохранённый файл не затронут.${plain}"
+        fi
+        pause_enter
+        ;;
+      "9")
+        if googlevideo_openwrt_dnsmasq setup; then
+          googlevideo_ips_update || true
+          googlevideo_openwrt_sync_central || true
+          echo -e "${green}dnsmasq сохраняет IPv4 googlevideo.com в z2r_googlevideo4.${plain}"
+        else
+          echo -e "${yellow}Не удалось настроить dnsmasq; проверьте dnsmasq-full и FWTYPE.${plain}"
+        fi
+        pause_enter
+        ;;
+      "10")
+        if googlevideo_openwrt_export_local; then
+          echo -e "${green}Список содержит $(googlevideo_ips_count) центральных и локальных адресов.${plain}"
+        else
+          echo -e "${yellow}Не удалось экспортировать локальный набор; сохранённый файл не затронут.${plain}"
+        fi
+        pause_enter
+        ;;
       "0"|"")
         return
         ;;
@@ -2395,6 +2436,45 @@ advanced_settings_submenu() {
         ui_invalid_input
         ;;
     esac
+  done
+}
+
+wssize_ramp_submenu() {
+  local cfg=/opt/zapret2/config enabled ip mode scale ans new_enabled new_ip new_mode new_scale
+  [ -f "$cfg" ] || { echo -e "${red}Config не найден${plain}"; pause_enter; return 1; }
+  while true; do
+    enabled="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE)"; [ "$enabled" = 1 ] || enabled=0
+    ip="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_IP)"
+    mode="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE)"; [ -n "$mode" ] || mode=full
+    scale="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE)"; [ -n "$scale" ] || scale=5
+    clear -x
+    echo -e "${cyan}--- Экспериментальный wssize_ramp ---${plain}"
+    echo "Состояние: $([ "$enabled" = 1 ] && echo включен || echo выключен); IP: ${ip:-не задан}; режим: $mode; scale: $scale"
+    echo "1. Включить/выключить"
+    echo "2. Задать IPv4 сервера"
+    echo "3. Режим: Full/Lite"
+    echo "4. Scale (0–14)"
+    echo "0. Назад"
+    read -r -p "Ваш выбор: " ans || return
+    new_enabled="$enabled"; new_ip="$ip"; new_mode="$mode"; new_scale="$scale"
+    case "$ans" in
+      1) [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
+      2) read -r -p "IPv4 сервера: " new_ip || return ;;
+      3) read -r -p "Режим (full/lite): " new_mode || return ;;
+      4) read -r -p "Scale (0–14): " new_scale || return ;;
+      0|"") return ;;
+      *) ui_invalid_input; continue ;;
+    esac
+    if [ "$new_enabled" = 1 ] && [ ! -s /opt/zator/lua/wssize-ramp.lua ]; then
+      echo -e "${red}Нет /opt/zator/lua/wssize-ramp.lua; обновите zator через меню 5.${plain}"; pause_enter; continue
+    fi
+    if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_ip" "$new_mode" "$new_scale"; then
+      z2r_service_action restart
+      echo -e "${green}Настройки wssize_ramp применены.${plain}"
+    else
+      echo -e "${red}Проверьте IPv4, режим full/lite и scale 0–14. Конфигурация не применена.${plain}"
+    fi
+    pause_enter
   done
 }
 
