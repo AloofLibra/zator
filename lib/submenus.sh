@@ -2451,6 +2451,14 @@ googlevideo_upload_local_manual() {
     echo -e "${yellow}Не удалось обновить центральный список; отправка не выполнена.${plain}"
     return 1
   fi
+  if ! googlevideo_queue_local_observations; then
+    echo -e "${yellow}Не удалось подготовить локальные наблюдения к отправке.${plain}"
+    return 1
+  fi
+  if ! googlevideo_local_spool_has_pending; then
+    echo -e "${green}Новых адресов относительно центрального списка нет.${plain}"
+    return 0
+  fi
   if googlevideo_upload_local_batch "$tel_uuid" force; then
     case "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" in
       uploaded) echo -e "${green}Отправлено новых IP: ${GOOGLEVIDEO_UPLOAD_LAST_COUNT}.${plain}" ;;

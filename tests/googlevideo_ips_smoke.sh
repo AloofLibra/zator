@@ -7,6 +7,7 @@ export ZATOR_ROOT="$TMP/zator"
 export GOOGLEVIDEO_IPS_FILE="$TMP/zator/lists/googlevideo-ipv4.txt"
 export GOOGLEVIDEO_LOCAL_FILE="$TMP/local.tsv"
 export GOOGLEVIDEO_PENDING_FILE="$TMP/pending.tsv" Z2R_GV_TMPDIR="$TMP/upload-state" Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL=10800
+export GOOGLEVIDEO_LOG_FILE="$TMP/collector.log"
 export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=0
 source "$ROOT/lib/googlevideo_ips.sh"
 MOCK_SET="$TMP/kernel-set"
@@ -101,6 +102,8 @@ googlevideo_observe_local youtube.com 9.9.9.8 1200 A && exit 1
 grep -Fxq 9.9.9.9 "$MOCK_SET"
 [ "$(wc -l < "$MOCK_SET")" -eq 3 ]
 [ "$(wc -l < "$GOOGLEVIDEO_LOCAL_FILE")" -eq 3 ]
+grep -q 'result=queued' "$GOOGLEVIDEO_LOG_FILE"
+grep -q 'result=already_queued' "$GOOGLEVIDEO_LOG_FILE"
 [ "$(googlevideo_local_kernel_ips)" = 9.9.9.9 ]
 awk -F '\t' -v now="$(date +%s)" 'BEGIN {OFS="\t"} {print $1,$2,now-900}' "$GOOGLEVIDEO_LOCAL_FILE" > "$TMP/expired-local.tsv"
 mv "$TMP/expired-local.tsv" "$GOOGLEVIDEO_LOCAL_FILE"
@@ -109,21 +112,34 @@ grep -q '^9\.9\.9\.9[[:space:]]' "$GOOGLEVIDEO_PENDING_FILE"
 UPLOAD_CALLS=0
 UPLOAD_DATA=
 UPLOAD_RC=0
+UPLOAD_CALLS_FILE="$TMP/upload-calls"
+UPLOAD_DATA_FILE="$TMP/upload-data"
+: > "$UPLOAD_CALLS_FILE"
+: > "$UPLOAD_DATA_FILE"
+upload_calls() { wc -l < "$UPLOAD_CALLS_FILE" | tr -d ' '; }
+# Keenetic Entware does not necessarily ship `paste`; uploads must still work.
+paste() { echo 'unexpected paste dependency' >&2; return 127; }
 curl() {
   UPLOAD_CALLS=$((UPLOAD_CALLS + 1))
+  printf 'call\n' >> "$UPLOAD_CALLS_FILE"
   while [ "$#" -gt 0 ]; do
-    case "$1" in --data-urlencode) case "$2" in ips=*) UPLOAD_DATA=${2#ips=} ;; esac; shift 2 ;; *) shift ;; esac
+    case "$1" in
+      --data-urlencode) case "$2" in ips=*) UPLOAD_DATA=${2#ips=}; printf '%s' "$UPLOAD_DATA" > "$UPLOAD_DATA_FILE" ;; esac; shift 2 ;;
+      -w) echo 200; shift 2 ;;
+      *) shift ;;
+    esac
   done
   return "$UPLOAD_RC"
 }
 tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
-[ "$UPLOAD_CALLS" = 0 ]
+[ "$(upload_calls)" = 0 ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
-[ "$UPLOAD_CALLS" = 1 ]
-[ "$UPLOAD_DATA" = '9.9.9.9' ]
+[ "$(upload_calls)" = 1 ]
+[ "$(cat "$UPLOAD_DATA_FILE")" = '9.9.9.9' ]
+grep -q 'upload result=accepted http=200 ips=9.9.9.9' "$GOOGLEVIDEO_LOG_FILE"
 ! [ -s "$GOOGLEVIDEO_PENDING_FILE" ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
-[ "$UPLOAD_CALLS" = 1 ]
+[ "$(upload_calls)" = 1 ]
 
 # Pending observations outlive DNS TTL, are throttled to three hours, and retry
 # from tmpfs after a failed batch without losing the queued addresses.
@@ -131,7 +147,7 @@ now="$(date +%s)"
 printf '1.1.1.1\t%s\n8.8.8.9\t%s\n' "$((now - 900))" "$((now - 900))" > "$GOOGLEVIDEO_PENDING_FILE"
 printf '%s\n' "$((now - 10799))" > "$TMP/upload-state/googlevideo-upload.ts"
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
-[ "$UPLOAD_CALLS" = 1 ]
+[ "$(upload_calls)" = 1 ]
 printf '%s\n' "$((now - 10800))" > "$TMP/upload-state/googlevideo-upload.ts"
 UPLOAD_RC=22
 if tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid; then exit 1; fi
@@ -139,8 +155,8 @@ retry_files=( "$TMP"/pending.retry.* )
 [ -s "${retry_files[0]}" ]
 UPLOAD_RC=0
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
-[ "$UPLOAD_CALLS" = 3 ]
-[ "$UPLOAD_DATA" = '1.1.1.1' ]
+[ "$(upload_calls)" = 3 ]
+[ "$(cat "$UPLOAD_DATA_FILE")" = '1.1.1.1' ]
 if googlevideo_local_spool_has_pending; then exit 1; fi
 
 # Manual force upload bypasses only the three-hour timer; consent and central
@@ -149,13 +165,33 @@ now="$(date +%s)"
 printf '2.2.2.2\t%s\n8.8.8.9\t%s\n' "$now" "$now" > "$GOOGLEVIDEO_PENDING_FILE"
 printf '%s\n' "$now" > "$TMP/upload-state/googlevideo-upload.ts"
 tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid force
-[ "$UPLOAD_CALLS" = 3 ]
+[ "$(upload_calls)" = 3 ] && [ "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" = consent_or_token_missing ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
-[ "$UPLOAD_CALLS" = 3 ] && [ "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" = throttled ]
+[ "$(upload_calls)" = 3 ] && [ "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" = throttled ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid force
-[ "$UPLOAD_CALLS" = 4 ] && [ "$UPLOAD_DATA" = '2.2.2.2' ]
+[ "$(upload_calls)" = 4 ] && [ "$(cat "$UPLOAD_DATA_FILE")" = '2.2.2.2' ]
 [ "$GOOGLEVIDEO_UPLOAD_LAST_COUNT" = 1 ] && [ "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" = uploaded ]
 if googlevideo_local_spool_has_pending; then exit 1; fi
+
+# The manual path reconciles local.tsv into the queue without refreshing DNS
+# observation timestamps, including rows written by older three-column builds.
+saved_local_file="$GOOGLEVIDEO_LOCAL_FILE"
+saved_pending_file="$GOOGLEVIDEO_PENDING_FILE"
+GOOGLEVIDEO_LOCAL_FILE="$TMP/reconcile-local.tsv"
+GOOGLEVIDEO_PENDING_FILE="$TMP/reconcile-pending.tsv"
+now="$(date +%s)"
+printf 'rr.googlevideo.com\t8.8.8.9\t%s\t%s\nrr.googlevideo.com\t3.3.3.3\t%s\t%s\nrr.googlevideo.com\t4.4.4.4\t%s\nrr.googlevideo.com\t5.5.5.5\t%s\n' \
+  "$((now + 300))" "$((now - 60))" "$((now + 300))" "$((now - 1000))" "$((now + 1000))" "$((now - 1000))" "$((now - 1000))" > "$GOOGLEVIDEO_LOCAL_FILE"
+googlevideo_queue_local_observations
+[ "$GOOGLEVIDEO_QUEUED_LOCAL_COUNT" = 2 ]
+awk -F '\t' -v ts="$((now - 1000))" '$1=="3.3.3.3" && $2==ts {ok=1} END {exit !ok}' "$GOOGLEVIDEO_PENDING_FILE"
+awk -F '\t' -v ts="$((now - 603800))" '$1=="4.4.4.4" && $2==ts {ok=1} END {exit !ok}' "$GOOGLEVIDEO_PENDING_FILE"
+! grep -q '^8\.8\.8\.9[[:space:]]' "$GOOGLEVIDEO_PENDING_FILE"
+! grep -q '^5\.5\.5\.5[[:space:]]' "$GOOGLEVIDEO_PENDING_FILE"
+googlevideo_queue_local_observations
+[ "$(wc -l < "$GOOGLEVIDEO_PENDING_FILE")" -eq 2 ]
+GOOGLEVIDEO_LOCAL_FILE="$saved_local_file"
+GOOGLEVIDEO_PENDING_FILE="$saved_pending_file"
 
 # Keep the DNS observation visible even if the router temporarily rejects the
 # kernel-set update; the next DNS answer can retry that update.

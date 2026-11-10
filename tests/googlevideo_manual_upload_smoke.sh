@@ -12,6 +12,7 @@ export Z2R_GV_TELEMETRY_CFG="$TMP/telemetry.config"
 HAS_PENDING=0 FEED_RC=0 UPLOAD_RC=0 UPLOAD_STATUS=uploaded
 googlevideo_local_spool_has_pending() { [ "$HAS_PENDING" = 1 ]; }
 googlevideo_ips_update() { printf 'feed:%s\n' "$1" >> "$TMP/calls"; return "$FEED_RC"; }
+googlevideo_queue_local_observations() { echo queue >> "$TMP/calls"; return 0; }
 googlevideo_upload_local_batch() {
   printf 'upload:%s:%s\n' "$1" "$2" >> "$TMP/calls"
   GOOGLEVIDEO_UPLOAD_LAST_STATUS="$UPLOAD_STATUS"
@@ -37,6 +38,7 @@ grep -Fxq 'feed:force' "$TMP/calls"
 
 FEED_RC=0
 googlevideo_upload_local_manual > "$TMP/out"
+grep -A2 -F 'feed:force' "$TMP/calls" | grep -Fxq queue
 grep -Fxq 'upload:test-uuid:force' "$TMP/calls"
 grep -q 'Отправлено новых IP: 2' "$TMP/out"
 
