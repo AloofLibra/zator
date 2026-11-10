@@ -89,9 +89,11 @@ jobs:
             compiler="$(find "$RUNNER_TEMP/toolchain" -type f -name '*gcc' -print -quit)"
             strip="$(find "$RUNNER_TEMP/toolchain" -type f -name '*strip' -print -quit)"
             test -x "$compiler" && test -x "$strip"
+            cc1="$(find "$RUNNER_TEMP/toolchain" -type f -name cc1 -print -quit)"
+            test -x "$cc1"
             toolbin="$(dirname "$compiler")"
             PATH="$toolbin:$PATH" CC="$(basename "$compiler")" STRIP="$(basename "$strip")" \
-              STAGING_DIR="$RUNNER_TEMP" Z2R_GV_SNIFFER_CFLAGS='-march=5281' \
+              STAGING_DIR="$RUNNER_TEMP" Z2R_GV_SNIFFER_CFLAGS="-march=5281 -B$(dirname "$cc1")/" \
               Z2R_GV_SNIFFER_LDFLAGS='-lgcc_eh' \
               tools/build-googlevideo-dns-sniffer.sh "$RUNNER_TEMP/googlevideo-dns-sniffer-lexra"
           else
