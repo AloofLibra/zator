@@ -45,6 +45,24 @@ observe_local() {
   GOOGLEVIDEO_LOCAL_FILE="${Z2R_GV_LOCAL_FILE:-/tmp/z2r-googlevideo/local.tsv}" googlevideo_observe_local "$host" "$ip" "$ttl" "$type"
 }
 
+maybe_upload_local_batch() {
+  [ "${SECONDS:-0}" -ge "${next_upload_check:-0}" ] || return 0
+  next_upload_check=$((SECONDS + ${Z2R_GV_UPLOAD_CHECK_INTERVAL:-60}))
+  googlevideo_local_spool_has_pending || return 0
+  local telemetry_cfg="${Z2R_GV_TELEMETRY_CFG:-$ROOT/z2r_lib/telemetry.config}"
+  [ -r "$telemetry_cfg" ] && grep -Fxq 'tel_enabled=1' "$telemetry_cfg" || return 0
+  [ -z "${upload_worker:-}" ] || kill -0 "$upload_worker" 2>/dev/null || upload_worker=""
+  [ -z "${upload_worker:-}" ] || return 0
+  (
+    tel_enabled=0 tel_uuid=
+    [ -r "$ROOT/z2r_lib/telemetry.sh" ] && . "$ROOT/z2r_lib/telemetry.sh"
+    TELEMETRY_CFG="${Z2R_GV_TELEMETRY_CFG:-$ROOT/z2r_lib/telemetry.config}"
+    [ -r "$TELEMETRY_CFG" ] && . "$TELEMETRY_CFG"
+    googlevideo_upload_local_batch "${tel_uuid:-}" || :
+  ) >/dev/null 2>&1 &
+  upload_worker=$!
+}
+
 run_ubus_source() {
   local fifo="${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/ubus.fifo" subscriber= event
   [ -p "$fifo" ] || { rm -f "$fifo"; mkfifo "$fifo"; }
@@ -52,10 +70,12 @@ run_ubus_source() {
   while enabled; do
     "${Z2R_GV_UBUS:-ubus}" subscribe dnsmasq.dns > "$fifo" 2>/dev/null & subscriber=$!
     while kill -0 "$subscriber" 2>/dev/null; do
-      IFS= read -r -t 1 event <&3 || continue
-      [ -n "$event" ] || continue
-      googlevideo_dns_event_parse "$event" || continue
-      observe_local "$name" "$address" "$ttl" "$type" || :
+      if IFS= read -r -t 1 event <&3; then
+        if [ -n "$event" ] && googlevideo_dns_event_parse "$event"; then
+          observe_local "$name" "$address" "$ttl" "$type" || :
+        fi
+      fi
+      maybe_upload_local_batch
     done
     kill "$subscriber" 2>/dev/null || :; wait "$subscriber" 2>/dev/null || :
     sleep 1
@@ -70,10 +90,13 @@ run_packet_source() {
   while enabled; do
     "$SNIFFER" > "$fifo" 2>>"$LOG" & child=$!
     while kill -0 "$child" 2>/dev/null; do
-      IFS= read -r -t 1 row <&3 || continue
-      IFS="$(printf '\t')" read -r host ip ttl <<< "$row"
-      [ -n "$host" ] && [ -n "$ip" ] && [ -n "$ttl" ] || continue
-      observe_local "$host" "$ip" "$ttl" A || :
+      if IFS= read -r -t 1 row <&3; then
+        IFS="$(printf '\t')" read -r host ip ttl <<< "$row"
+        if [ -n "$host" ] && [ -n "$ip" ] && [ -n "$ttl" ]; then
+          observe_local "$host" "$ip" "$ttl" A || :
+        fi
+      fi
+      maybe_upload_local_batch
     done
     kill "$child" 2>/dev/null || :; wait "$child" 2>/dev/null || :
     sleep 1
@@ -82,10 +105,14 @@ run_packet_source() {
 
 run_listener() {
   . "$ROOT/z2r_lib/config.sh" || return 1
+  GOOGLEVIDEO_PENDING_FILE="${Z2R_GOOGLEVIDEO_PENDING_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/pending.tsv}"
   . "$LIB" || return 1
   mkdir -p "${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}"
   echo $$ > "$PIDFILE"
   declare -A recent=(); seen_count=0
+  next_upload_check=0; upload_worker=""
+  # The upload worker is a short one-shot (curl timeout 8s). Let it finish if
+  # the listener is stopped so a successful server response cannot be lost.
   stop_listener() { [ -z "${child:-}" ] || kill "$child" 2>/dev/null || :; [ -z "${subscriber:-}" ] || kill "$subscriber" 2>/dev/null || :; rm -f "$PIDFILE"; exit 0; }
   trap stop_listener TERM INT HUP
   if [ -r "${Z2R_GV_OPENWRT_RELEASE:-/etc/openwrt_release}" ] && command -v ubus >/dev/null 2>&1; then

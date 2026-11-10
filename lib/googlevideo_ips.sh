@@ -5,6 +5,8 @@ GOOGLEVIDEO_IPS_FILE="${Z2R_GOOGLEVIDEO_IPS_FILE:-${ZATOR_ROOT:-/opt/zator}/list
 GOOGLEVIDEO_IPS_CACHE_TTL="${Z2R_GOOGLEVIDEO_IPS_CACHE_TTL-21600}"
 GOOGLEVIDEO_INGEST_URL="${Z2R_GOOGLEVIDEO_INGEST_URL:-https://alooflibra.fun/z4r/googlevideo-observations}"
 GOOGLEVIDEO_LOCAL_FILE="${GOOGLEVIDEO_LOCAL_FILE:-${Z2R_GOOGLEVIDEO_LOCAL_FILE:-${TMPDIR:-/tmp}/z2r-googlevideo/local.tsv}}"
+GOOGLEVIDEO_PENDING_FILE="${GOOGLEVIDEO_PENDING_FILE:-${Z2R_GOOGLEVIDEO_PENDING_FILE:-${TMPDIR:-/tmp}/z2r-googlevideo/pending.tsv}}"
+GOOGLEVIDEO_UPLOAD_INTERVAL="${Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL:-10800}"
 
 googlevideo_sniffer_arch() {
   local machine cpu
@@ -38,7 +40,7 @@ googlevideo_hostname_valid() {
 # Event payload is passed as discrete fields by the UBus listener. Local
 # observations live on tmpfs and never get merged into the central feed file.
 googlevideo_observe_local() {
-  local host="${1,,}" ip="$2" ttl="$3" fwtype table now expires tmp
+  local host="${1,,}" ip="$2" ttl="$3" fwtype table now expires tmp central=0
   host="${host%.}"
   googlevideo_hostname_valid "$host" || return 1
   [ "${4:-A}" = A ] || return 1
@@ -50,7 +52,9 @@ googlevideo_observe_local() {
   [ "$ttl" -le 604800 ] || ttl=604800
   # Kernel set is the union. Do not change the lifetime of a centrally sourced
   # member; the local row below records provenance separately.
-  if [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || ! grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE"; then
+  if [ -s "$GOOGLEVIDEO_IPS_FILE" ] && grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE"; then
+    central=1
+  else
     fwtype="${GOOGLEVIDEO_KERNEL_FWTYPE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)}"
     if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
       ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || {
@@ -74,6 +78,19 @@ googlevideo_observe_local() {
   printf '%s\t%s\t%s\n' "$host" "$ip" "$expires" >> "$tmp"
   # Bound tmpfs state; newest rows survive.
   tail -n 8192 "$tmp" > "${tmp}.bounded" && mv -f "${tmp}.bounded" "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_LOCAL_FILE"
+  [ "$central" = 0 ] || return 0
+  # Keep a telemetry spool independent of the DNS/kernel TTL. It lives in tmpfs
+  # and is deleted only after the server acknowledges the batch.
+  mkdir -p "${GOOGLEVIDEO_PENDING_FILE%/*}" || return 1
+  # Repeated DNS answers for one address must not grow the spool continuously.
+  if [ -s "$GOOGLEVIDEO_PENDING_FILE" ] && awk -F '\t' -v ip="$ip" '$1==ip {found=1; exit} END {exit !found}' "$GOOGLEVIDEO_PENDING_FILE"; then
+    return 0
+  fi
+  printf '%s\t%s\n' "$ip" "$now" >> "$GOOGLEVIDEO_PENDING_FILE" || return 1
+  if [ "$(wc -l < "$GOOGLEVIDEO_PENDING_FILE")" -gt 8192 ]; then
+    tmp="${GOOGLEVIDEO_PENDING_FILE}.tmp.$$"
+    tail -n 8192 "$GOOGLEVIDEO_PENDING_FILE" > "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_PENDING_FILE" || rm -f "$tmp"
+  fi
 }
 
 googlevideo_ips_validate() {
@@ -174,22 +191,71 @@ googlevideo_local_kernel_ips() {
   done
 }
 
-# Called only from consented telemetry, and at most once every six hours.
-googlevideo_upload_local_batch() {
-  local uuid="$1" ips stamp now cache
+# Called by consented telemetry and the collector's low-rate timer. Successful
+# uploads advance the three-hour timer; failed batches remain in tmpfs.
+_googlevideo_upload_local_batch() {
+  local uuid="$1" ips stamp now cache snapshot tmp uploaded retry queue_dir
   [ "${tel_enabled:-0}" = 1 ] && [ -n "${STATS_TOKEN:-}" ] || return 0
-  cache="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/googlevideo-upload.ts"
+  cache="${Z2R_GV_TMPDIR:-${TMPDIR:-/tmp}/z2r-googlevideo}/googlevideo-upload.ts"
   stamp=0; [ ! -f "$cache" ] || read -r stamp < "$cache"
   now="$(date +%s)"; case "$stamp:$now" in *[!0-9:]*) stamp=0 ;; esac
-  [ $((now - stamp)) -ge 21600 ] || return 0
-  ips="$(googlevideo_local_kernel_ips | paste -sd, -)"
-  [ -n "$ips" ] || return 0
+  case "$GOOGLEVIDEO_UPLOAD_INTERVAL" in ''|*[!0-9]*) GOOGLEVIDEO_UPLOAD_INTERVAL=10800 ;; esac
+  [ "$GOOGLEVIDEO_UPLOAD_INTERVAL" -ge 1 ] || GOOGLEVIDEO_UPLOAD_INTERVAL=10800
+  [ $((now - stamp)) -ge "$GOOGLEVIDEO_UPLOAD_INTERVAL" ] || return 0
+  queue_dir="${GOOGLEVIDEO_PENDING_FILE%/*}"
+  snapshot=""
+  for retry in "$queue_dir"/pending.retry.*; do
+    [ -s "$retry" ] || continue
+    snapshot="${GOOGLEVIDEO_PENDING_FILE}.sending.$$"
+    mv -f "$retry" "$snapshot" 2>/dev/null || return 0
+    break
+  done
+  if [ -z "$snapshot" ] && [ -s "$GOOGLEVIDEO_PENDING_FILE" ]; then
+    snapshot="${GOOGLEVIDEO_PENDING_FILE}.sending.$$"
+    mv -f "$GOOGLEVIDEO_PENDING_FILE" "$snapshot" 2>/dev/null || return 0
+  fi
+  [ -n "$snapshot" ] && [ -s "$snapshot" ] || return 0
+  # Drop entries older than the server's seven-day observation window and IPs
+  # that have since entered the central feed. Queue rows are ip<TAB>observed_at.
+  ips="$(awk -F '\t' -v now="$now" -v maxage=604800 '$2+maxage>now {print $1}' "$snapshot" | sort -u | while IFS= read -r ip; do
+    googlevideo_ipv4_public "$ip" || continue
+    [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || ! grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE" || continue
+    printf '%s\n' "$ip"
+  done | head -n 512 | paste -sd, -)"
+  if [ -z "$ips" ]; then rm -f "$snapshot"; return 0; fi
   if curl -4 -fsS --connect-timeout 3 --max-time 8 \
       --data-urlencode "token=$STATS_TOKEN" --data-urlencode "uuid=$uuid" \
       --data-urlencode "ips=$ips" "$GOOGLEVIDEO_INGEST_URL" >/dev/null 2>&1; then
-    mkdir -p "${cache%/*}" || return 1
-    printf '%s\n' "$now" > "$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache"
+    mkdir -p "${cache%/*}" || { mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
+    printf '%s\n' "$now" > "$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache" || { rm -f "$cache.tmp.$$"; mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
+    uploaded="${GOOGLEVIDEO_PENDING_FILE}.uploaded.$$"
+    tmp="${GOOGLEVIDEO_PENDING_FILE}.leftover.$$"
+    printf '%s\n' "$ips" | tr ',' '\n' > "$uploaded"
+    [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || awk '!/^#/ && NF==1 {print}' "$GOOGLEVIDEO_IPS_FILE" >> "$uploaded"
+    awk -F '\t' -v now="$now" 'NR==FNR {sent[$1]=1; next} ($2+604800<=now) || sent[$1] {next} {print}' "$uploaded" "$snapshot" > "$tmp" || { rm -f "$uploaded" "$tmp"; mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
+    if [ -s "$tmp" ]; then mv -f "$tmp" "$queue_dir/pending.retry.$now.$$"; else rm -f "$tmp"; fi
+    rm -f "$uploaded" "$snapshot"
+  else
+    mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$" || rm -f "$snapshot"
+    return 1
   fi
+  return 0
+}
+
+googlevideo_upload_local_batch() {
+  local lock="${Z2R_GV_TMPDIR:-${TMPDIR:-/tmp}/z2r-googlevideo}/googlevideo-upload.lock" rc=0
+  mkdir -p "${lock%/*}" || return 1
+  mkdir "$lock" 2>/dev/null || return 0
+  _googlevideo_upload_local_batch "$@" || rc=$?
+  rmdir "$lock" 2>/dev/null || :
+  return "$rc"
+}
+
+googlevideo_local_spool_has_pending() {
+  local retry queue_dir="${GOOGLEVIDEO_PENDING_FILE%/*}"
+  [ -s "$GOOGLEVIDEO_PENDING_FILE" ] && return 0
+  for retry in "$queue_dir"/pending.retry.*; do [ -s "$retry" ] && return 0; done
+  return 1
 }
 
 googlevideo_ips_update() {

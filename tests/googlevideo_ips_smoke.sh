@@ -6,6 +6,7 @@ trap 'rm -rf "$TMP"' EXIT
 export ZATOR_ROOT="$TMP/zator"
 export GOOGLEVIDEO_IPS_FILE="$TMP/zator/lists/googlevideo-ipv4.txt"
 export GOOGLEVIDEO_LOCAL_FILE="$TMP/local.tsv"
+export GOOGLEVIDEO_PENDING_FILE="$TMP/pending.tsv" Z2R_GV_TMPDIR="$TMP/upload-state" Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL=10800
 export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=0
 source "$ROOT/lib/googlevideo_ips.sh"
 MOCK_SET="$TMP/kernel-set"
@@ -99,22 +100,46 @@ grep -Fxq 9.9.9.9 "$MOCK_SET"
 [ "$(wc -l < "$MOCK_SET")" -eq 3 ]
 [ "$(wc -l < "$GOOGLEVIDEO_LOCAL_FILE")" -eq 3 ]
 [ "$(googlevideo_local_kernel_ips)" = 9.9.9.9 ]
+awk -F '\t' -v now="$(date +%s)" 'BEGIN {OFS="\t"} {print $1,$2,now-900}' "$GOOGLEVIDEO_LOCAL_FILE" > "$TMP/expired-local.tsv"
+mv "$TMP/expired-local.tsv" "$GOOGLEVIDEO_LOCAL_FILE"
+[ -z "$(googlevideo_local_kernel_ips)" ]
+grep -q '^9\.9\.9\.9[[:space:]]' "$GOOGLEVIDEO_PENDING_FILE"
 UPLOAD_CALLS=0
 UPLOAD_DATA=
+UPLOAD_RC=0
 curl() {
   UPLOAD_CALLS=$((UPLOAD_CALLS + 1))
   while [ "$#" -gt 0 ]; do
     case "$1" in --data-urlencode) case "$2" in ips=*) UPLOAD_DATA=${2#ips=} ;; esac; shift 2 ;; *) shift ;; esac
   done
-  return 0
+  return "$UPLOAD_RC"
 }
 tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_CALLS" = 0 ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_CALLS" = 1 ]
 [ "$UPLOAD_DATA" = '9.9.9.9' ]
+! [ -s "$GOOGLEVIDEO_PENDING_FILE" ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_CALLS" = 1 ]
+
+# Pending observations outlive DNS TTL, are throttled to three hours, and retry
+# from tmpfs after a failed batch without losing the queued addresses.
+now="$(date +%s)"
+printf '1.1.1.1\t%s\n8.8.8.9\t%s\n' "$((now - 900))" "$((now - 900))" > "$GOOGLEVIDEO_PENDING_FILE"
+printf '%s\n' "$((now - 10799))" > "$TMP/upload-state/googlevideo-upload.ts"
+tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
+[ "$UPLOAD_CALLS" = 1 ]
+printf '%s\n' "$((now - 10800))" > "$TMP/upload-state/googlevideo-upload.ts"
+UPLOAD_RC=22
+if tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid; then exit 1; fi
+retry_files=( "$TMP"/pending.retry.* )
+[ -s "${retry_files[0]}" ]
+UPLOAD_RC=0
+tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
+[ "$UPLOAD_CALLS" = 3 ]
+[ "$UPLOAD_DATA" = '1.1.1.1' ]
+if googlevideo_local_spool_has_pending; then exit 1; fi
 
 printf '# googlevideo IPv4; generated=x\n192.168.1.1\n' > "$TMP/private.txt"
 if googlevideo_ips_validate "$TMP/private.txt"; then exit 1; fi

@@ -12,7 +12,11 @@ two event sources:
 
 Both paths validate the hostname and public IPv4 address, cap TTL at seven days,
 deduplicate observations in RAM, update `z2r_googlevideo4` immediately, and put
-local observations in tmpfs for consent-gated batch telemetry. Central feed rows
+local observations in a separate tmpfs upload queue. The queue does not expire
+with the DNS/kernel TTL; with telemetry consent, the listener checks it once a
+minute and uploads new addresses in batches no more often than every three
+hours. Entries are removed only after a successful server response; failures
+stay queued for retry. IPs already in the central feed are excluded. Central feed rows
 are not sent back as local observations. The sniffer itself prints TSV only;
 the shell listener performs the existing validation, storage and set update.
 
