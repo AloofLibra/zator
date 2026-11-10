@@ -83,6 +83,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/toolchain"
           if [ "$TARGET" = lexra ]; then
+            sudo dpkg --add-architecture i386
+            sudo apt-get update -qq
+            sudo apt-get install -y libc6:i386 zlib1g:i386
             curl -fsSL -o "$RUNNER_TEMP/toolchain.txz" \
               https://github.com/bol-van/build/raw/refs/heads/master/rsdk-4.6.4-5281-EB-3.10-0.9.33-m32ub-20141001.txz
             tar -xJf "$RUNNER_TEMP/toolchain.txz" -C "$RUNNER_TEMP/toolchain"
