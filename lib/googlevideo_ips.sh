@@ -4,6 +4,77 @@ GOOGLEVIDEO_IPS_URL="${Z2R_GOOGLEVIDEO_IPS_URL:-https://alooflibra.fun/z4r/googl
 GOOGLEVIDEO_IPS_FILE="${Z2R_GOOGLEVIDEO_IPS_FILE:-${ZATOR_ROOT:-/opt/zator}/lists/googlevideo-ipv4.txt}"
 GOOGLEVIDEO_IPS_CACHE_TTL="${Z2R_GOOGLEVIDEO_IPS_CACHE_TTL-21600}"
 GOOGLEVIDEO_INGEST_URL="${Z2R_GOOGLEVIDEO_INGEST_URL:-https://alooflibra.fun/z4r/googlevideo-observations}"
+GOOGLEVIDEO_LOCAL_FILE="${GOOGLEVIDEO_LOCAL_FILE:-${Z2R_GOOGLEVIDEO_LOCAL_FILE:-${TMPDIR:-/tmp}/z2r-googlevideo/local.tsv}}"
+
+googlevideo_sniffer_arch() {
+  local machine cpu
+  machine="$(uname -m 2>/dev/null)"
+  case "$machine" in
+    aarch64|arm64) echo arm64 ;;
+    arm|armv6l|armv7l|armv8l) echo arm ;;
+    mips64) echo mips64 ;;
+    mipsel*|mipsle*)
+      cpu="$(tr '[:upper:]' '[:lower:]' <"${Z2R_GV_CPUINFO:-/proc/cpuinfo}" 2>/dev/null)"
+      case "$cpu" in *lexra*|*5281*) echo lexra ;; *) echo mipselsf ;; esac ;;
+    mips*) echo mipssf ;;
+    powerpc|ppc) echo ppc ;;
+    i386|i486|i586|i686) echo x86 ;;
+    x86_64|amd64) echo x86_64 ;;
+    riscv64) echo riscv64 ;;
+    *) return 1 ;;
+  esac
+}
+
+googlevideo_hostname_valid() {
+  local host="${1,,}"
+  host="${host%.}"
+  case "$host" in
+    *[!a-z0-9.-]*|.*|*..*|*.) return 1 ;;
+    *.googlevideo.com) [ "$host" != googlevideo.com ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Event payload is passed as discrete fields by the UBus listener. Local
+# observations live on tmpfs and never get merged into the central feed file.
+googlevideo_observe_local() {
+  local host="${1,,}" ip="$2" ttl="$3" fwtype table now expires tmp
+  host="${host%.}"
+  googlevideo_hostname_valid "$host" || return 1
+  [ "${4:-A}" = A ] || return 1
+  googlevideo_ipv4_public "$ip" || return 1
+  case "$ttl" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${#ttl}" -le 6 ] || ttl=604800
+  ttl=$((10#$ttl))
+  [ "$ttl" -gt 0 ] || return 1
+  [ "$ttl" -le 604800 ] || ttl=604800
+  # Kernel set is the union. Do not change the lifetime of a centrally sourced
+  # member; the local row below records provenance separately.
+  if [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || ! grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE"; then
+    fwtype="${GOOGLEVIDEO_KERNEL_FWTYPE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)}"
+    if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
+      ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || {
+        ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist >/dev/null 2>&1 || return 1
+        ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || return 1
+      }
+    elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
+      table="$(googlevideo_nft_table_name)"
+      nft add element inet "$table" z2r_googlevideo4 "{ $ip timeout ${ttl}s }" >/dev/null 2>&1 || {
+        # A concurrent answer may have inserted it. Accept only if it is now present.
+        nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -Fq "$ip" || return 1
+      }
+    else
+      return 1
+    fi
+  fi
+  now="$(date +%s)"; expires=$((now + ttl))
+  mkdir -p "${GOOGLEVIDEO_LOCAL_FILE%/*}" || return 1
+  tmp="${GOOGLEVIDEO_LOCAL_FILE}.tmp.$$"
+  awk -F '\t' -v h="$host" -v ip="$ip" -v now="$now" '$3>now && !($1==h && $2==ip) {print}' "$GOOGLEVIDEO_LOCAL_FILE" 2>/dev/null > "$tmp" || :
+  printf '%s\t%s\t%s\n' "$host" "$ip" "$expires" >> "$tmp"
+  # Bound tmpfs state; newest rows survive.
+  tail -n 8192 "$tmp" > "${tmp}.bounded" && mv -f "${tmp}.bounded" "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_LOCAL_FILE"
+}
 
 googlevideo_ips_validate() {
   local file="$1" line count=0 oldifs octet
@@ -39,6 +110,10 @@ googlevideo_ipv4_public() {
   [ "$a" -eq 172 ] && [ "$b" -ge 16 ] && [ "$b" -le 31 ] && return 1
   [ "$a" -eq 192 ] && [ "$b" -eq 168 ] && return 1
   [ "$a" -eq 192 ] && [ "$b" -eq 0 ] && [ "$c" -le 2 ] && return 1
+  [ "$a" -eq 192 ] && [ "$b" -eq 88 ] && [ "$c" -eq 99 ] && return 1
+  [ "$a" -eq 192 ] && [ "$b" -eq 31 ] && [ "$c" -eq 196 ] && return 1
+  [ "$a" -eq 192 ] && [ "$b" -eq 52 ] && [ "$c" -eq 193 ] && return 1
+  [ "$a" -eq 192 ] && [ "$b" -eq 175 ] && [ "$c" -eq 48 ] && return 1
   [ "$a" -eq 198 ] && { [ "$b" -eq 18 ] || [ "$b" -eq 19 ]; } && return 1
   [ "$a" -eq 198 ] && [ "$b" -eq 51 ] && [ "$c" -eq 100 ] && return 1
   [ "$a" -eq 203 ] && [ "$b" -eq 0 ] && [ "$c" -eq 113 ] && return 1
@@ -52,7 +127,7 @@ googlevideo_ips_count() {
 }
 
 googlevideo_nft_table_name() {
-  local table="${ZAPRET_NFT_TABLE:-}"
+  local table="${GOOGLEVIDEO_KERNEL_NFT_TABLE:-${ZAPRET_NFT_TABLE:-}}"
   if [ -z "$table" ]; then
     table="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || true)"
   fi
@@ -75,34 +150,28 @@ googlevideo_dnsmasq_rule_present() {
 }
 
 googlevideo_openwrt_dnsmasq_state() {
-  local fwtype feature
-  if [ ! -r /etc/openwrt_release ] || ! command -v uci >/dev/null 2>&1; then
-    printf 'unsupported\n'; return 0
+  local listener="${Z2R_GV_LISTENER:-/opt/zator/tools/googlevideo-dns-listener.sh}" supported=0
+  if [ -r /etc/openwrt_release ] && command -v ubus >/dev/null 2>&1 && ubus list 2>/dev/null | grep -Fxq dnsmasq.dns; then
+    supported=1
+  else
+    [ -x "${Z2R_GV_SNIFFER:-/opt/zator/tools/bin/googlevideo-dns-sniffer}" ] && supported=1
   fi
-  fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
-  case "$fwtype" in nftables) feature=nftset ;; iptables) feature=ipset ;; *) printf 'unsupported\n'; return 0 ;; esac
-  if ! googlevideo_dnsmasq_has_feature "$feature"; then
-    printf 'unsupported\n'; return 0
+  [ "$supported" = 1 ] || { printf 'unsupported\n'; return 0; }
+  if [ -x "$listener" ] && "$listener" status; then
+    printf 'enabled\n'
+  else
+    printf 'disabled\n'
   fi
-  if googlevideo_openwrt_dnsmasq status >/dev/null 2>&1; then printf 'enabled\n'; else printf 'disabled\n'; fi
 }
 
 googlevideo_local_kernel_ips() {
-  local fwtype table raw sorted ip
-  fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
-  raw="${TMPDIR:-/tmp}/z2r-googlevideo-local.$$"
-  if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
-    ipset save z2r_googlevideo4 2>/dev/null | awk '$1=="add" && $2=="z2r_googlevideo4" {print $3}' > "$raw"
-  elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-    table="$(googlevideo_nft_table_name)"
-    nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' > "$raw" || :
-  else
-    rm -f "$raw"; return 0
-  fi
-  sorted="${raw}.sorted"
-  grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' "$raw" | sort -u | head -n 128 > "$sorted"
-  while IFS= read -r ip; do googlevideo_ipv4_public "$ip" && printf '%s\n' "$ip"; done < "$sorted"
-  rm -f "$raw" "$sorted"
+  local now="$(date +%s)" ip
+  [ -s "$GOOGLEVIDEO_LOCAL_FILE" ] || return 0
+  awk -F '\t' -v now="$now" '$3>now {print $2}' "$GOOGLEVIDEO_LOCAL_FILE" | sort -u | head -n 128 | while IFS= read -r ip; do
+    googlevideo_ipv4_public "$ip" || continue
+    [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || ! grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE" || continue
+    printf '%s\n' "$ip"
+  done
 }
 
 # Called only from consented telemetry, and at most once every six hours.
@@ -216,11 +285,11 @@ googlevideo_openwrt_dnsmasq() {
         return 1
       fi
       if [ "$fwtype" = iptables ]; then
-        command -v ipset >/dev/null 2>&1 || { echo "Install ipset for dnsmasq GGC capture" >&2; return 1; }
-        googlevideo_dnsmasq_has_feature ipset || { echo "Install dnsmasq-full with ipset support" >&2; return 1; }
+        command -v ipset >/dev/null 2>&1 || { echo "Optional dnsmasq→ipset needs ipset; automatic UBus collection does not" >&2; return 1; }
+        googlevideo_dnsmasq_has_feature ipset || { echo "Optional dnsmasq→ipset is unavailable; automatic UBus collection does not need dnsmasq-full" >&2; return 1; }
         ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist || return 1
       elif [ "$fwtype" = nftables ]; then
-        googlevideo_dnsmasq_has_feature nftset || { echo "Install dnsmasq-full built with nftset support" >&2; return 1; }
+        googlevideo_dnsmasq_has_feature nftset || { echo "Optional dnsmasq→nftset is unavailable; automatic UBus collection does not need dnsmasq-full" >&2; return 1; }
         googlevideo_kernel_set_sync || return 1
       else
         echo "Unsupported FWTYPE: $fwtype" >&2
@@ -252,7 +321,6 @@ googlevideo_openwrt_dnsmasq() {
         rm -f "$include" || return 1
         /etc/init.d/firewall reload >/dev/null 2>&1 || true
       fi
-      if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then ipset destroy z2r_googlevideo4 >/dev/null 2>&1 || true; fi
       /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
       ;;
     *) return 2 ;;
@@ -260,23 +328,6 @@ googlevideo_openwrt_dnsmasq() {
 }
 
 googlevideo_openwrt_export_local() {
-  local fwtype tmp ip raw
-  fwtype="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)"
-  tmp="${GOOGLEVIDEO_IPS_FILE}.tmp.$$"
-  raw="${tmp}.raw"
-  {
-    [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || sed -n '2,$p' "$GOOGLEVIDEO_IPS_FILE"
-    if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
-      ipset save z2r_googlevideo4 2>/dev/null | awk '$1=="add" && $2=="z2r_googlevideo4" {print $3}'
-    elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-      nft list set inet "$(googlevideo_nft_table_name)" z2r_googlevideo4 2>/dev/null | sed -n '/elements = {/,/}/p' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true
-    fi
-  } | awk 'NF==1 && $0 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print}' | sort -u > "$raw" || { rm -f "$tmp" "$raw"; return 1; }
-  {
-    printf '# googlevideo IPv4 local OpenWrt DNS + central; generated=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    while IFS= read -r ip; do googlevideo_ipv4_public "$ip" && printf '%s\n' "$ip"; done < "$raw"
-  } > "$tmp"
-  rm -f "$raw"
-  googlevideo_ips_validate "$tmp" || { rm -f "$tmp"; return 1; }
-  mv -f "$tmp" "$GOOGLEVIDEO_IPS_FILE"
+  [ -s "$GOOGLEVIDEO_LOCAL_FILE" ] || return 1
+  printf '%s\n' "$GOOGLEVIDEO_LOCAL_FILE"
 }

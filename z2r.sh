@@ -60,6 +60,35 @@ ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
 Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
+# Release assets are separate from the deploy tar so each router stores only
+# its own static binary. This is optional: the central Googlevideo feed works
+# when the platform or asset is unavailable.
+z2r_install_googlevideo_sniffer() {
+  local arch base tmp compressed size
+  [ "${Z2R_OFFLINE:-0}" != 1 ] || return 0
+  arch="$(googlevideo_sniffer_arch)" || return 0
+  base="${Z2R_GV_SNIFFER_RELEASE_BASE:-https://github.com/AloofLibra/zator/releases/download/latest}"
+  mkdir -p "$ZATOR_ROOT/tools/bin" || return 0
+  tmp="$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer.tmp.$$"
+  compressed="$tmp.gz"
+  if { if command -v curl >/dev/null 2>&1; then
+         curl -fLsS --connect-timeout 8 --max-time 30 "$base/z2r-googlevideo-dns-sniffer-linux-$arch.gz" -o "$compressed" 2>/dev/null
+       elif command -v wget >/dev/null 2>&1; then
+         wget -q -T 30 -O "$compressed" "$base/z2r-googlevideo-dns-sniffer-linux-$arch.gz" 2>/dev/null
+       else
+         false
+       fi
+     } && gzip -t "$compressed" 2>/dev/null; then
+    gzip -dc "$compressed" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$compressed"; return 0; }
+    size="$(wc -c < "$tmp" | tr -d ' ')"
+    case "$size" in ''|*[!0-9]*) rm -f "$tmp" "$compressed"; return 0 ;; esac
+    if [ "$size" -gt 131072 ] || [ ! -s "$tmp" ]; then rm -f "$tmp" "$compressed"; return 0; fi
+    chmod 755 "$tmp" && mv -f "$tmp" "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
+  fi
+  rm -f "$tmp" "$compressed"
+  return 0
+}
+
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
 #                  пересоздаётся при обновлении zapret2.
@@ -661,6 +690,11 @@ circular_runtime_update_from_repo() {
     z2r_download_project_file "$WSSIZE_RAMP_FIREWALL" "tools/wssize-ramp-firewall.sh" || return 1
     chmod +x "$WSSIZE_RAMP_FIREWALL"
   fi
+  if [ "$OSystem" = WRT ] || [ "$OSystem" = entware ]; then
+    mkdir -p "$ZATOR_ROOT/tools"
+    z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh" || return 1
+    chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
+  fi
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
@@ -1027,6 +1061,10 @@ z2r_install_runtime_libs_from_archive() {
   for lib in $Z2R_LIB_FILES; do
     z2r_download_project_file "$ZATOR_ROOT/z2r_lib/$lib" "lib/$lib" || return 1
   done
+  mkdir -p "$ZATOR_ROOT/tools"
+  z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh" || return 1
+  chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
+  z2r_install_googlevideo_sniffer
 }
 
 # Обёртка загрузки для get_repo: при повторной установке zapret2 (меню 2/5->6,
@@ -1101,6 +1139,9 @@ get_repo() {
     :
   else
     circular_runtime_update_from_repo || return 1
+  fi
+  if [ "$OSystem" = WRT ] || [ "$OSystem" = entware ]; then
+    z2r_install_googlevideo_sniffer
   fi
   if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
     :

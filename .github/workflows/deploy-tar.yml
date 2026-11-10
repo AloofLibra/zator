@@ -49,10 +49,78 @@ permissions:
   contents: write
 
 jobs:
-  pack-and-release:
+  build-googlevideo-sniffer:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-unknown-linux-musl
+          - arch: arm
+            target: armv6-unknown-linux-musleabi
+          - arch: mips64
+            target: mips64-unknown-linux-musl
+          - arch: mipselsf
+            target: mipsel-unknown-linux-muslsf
+          - arch: mipssf
+            target: mips-unknown-linux-muslsf
+          - arch: ppc
+            target: powerpc-unknown-linux-musl
+          - arch: x86
+            target: i586-unknown-linux-musl
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+          - arch: riscv64
+            target: riscv64-unknown-linux-musl
+          - arch: lexra
+            target: lexra
     steps:
       - uses: actions/checkout@v5
+      - name: Install target toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/toolchain"
+          if [ "$TARGET" = lexra ]; then
+            curl -fsSL -o "$RUNNER_TEMP/toolchain.txz" \
+              https://github.com/bol-van/build/raw/refs/heads/master/rsdk-4.6.4-5281-EB-3.10-0.9.33-m32ub-20141001.txz
+            tar -xJf "$RUNNER_TEMP/toolchain.txz" -C "$RUNNER_TEMP/toolchain"
+            compiler="$(find "$RUNNER_TEMP/toolchain" -type f -name '*gcc' -print -quit)"
+            strip="$(find "$RUNNER_TEMP/toolchain" -type f -name '*strip' -print -quit)"
+            test -x "$compiler" && test -x "$strip"
+            CC="$compiler" STRIP="$strip" Z2R_GV_SNIFFER_CFLAGS='-march=5281' \
+              Z2R_GV_SNIFFER_LDFLAGS='-lgcc_eh' \
+              tools/build-googlevideo-dns-sniffer.sh "$RUNNER_TEMP/googlevideo-dns-sniffer-lexra"
+          else
+            curl -fsSL -o "$RUNNER_TEMP/toolchain.tar.xz" \
+              "https://github.com/bol-van/musl-cross/releases/download/latest/$TARGET.tar.xz"
+            tar -xJf "$RUNNER_TEMP/toolchain.tar.xz" -C "$RUNNER_TEMP/toolchain"
+            compiler="$(find "$RUNNER_TEMP/toolchain" -type f -name "$TARGET-gcc" -print -quit)"
+            strip="$(find "$RUNNER_TEMP/toolchain" -type f -name "$TARGET-strip" -print -quit)"
+            test -x "$compiler" && test -x "$strip"
+            CC="$compiler" STRIP="$strip" STAGING_DIR="$RUNNER_TEMP/toolchain" \
+              tools/build-googlevideo-dns-sniffer.sh "$RUNNER_TEMP/googlevideo-dns-sniffer-${{ matrix.arch }}"
+          fi
+          gzip -n -9 -c "$RUNNER_TEMP/googlevideo-dns-sniffer-${{ matrix.arch }}" \
+            > "$RUNNER_TEMP/z2r-googlevideo-dns-sniffer-linux-${{ matrix.arch }}.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: googlevideo-sniffer-${{ matrix.arch }}
+          path: ${{ runner.temp }}/z2r-googlevideo-dns-sniffer-linux-${{ matrix.arch }}.gz
+          if-no-files-found: error
+
+  pack-and-release:
+    runs-on: ubuntu-latest
+    needs: build-googlevideo-sniffer
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: googlevideo-sniffer-*
+          merge-multiple: true
+          path: webui-src/dist
 
       - uses: actions/setup-node@v5
         with:

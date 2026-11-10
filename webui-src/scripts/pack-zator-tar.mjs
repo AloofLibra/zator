@@ -207,6 +207,7 @@ for (const name of readdirSync(join(repoRoot, 'fake')).sort()) {
 }
 
 add('_root/z2r.sh', 'z2r.sh', { executable: true })
+add('tools/googlevideo-dns-listener.sh', 'tools/googlevideo-dns-listener.sh', { executable: true })
 add('_payload/config.default', 'config.default', { cls: 'payload' })
 add('_payload/fake_files.tar.gz', 'fake_files.tar.gz', { cls: 'payload' })
 add('_payload/Entware/keenetic-policy.sh', 'Entware/keenetic-policy.sh', { cls: 'payload', executable: true })

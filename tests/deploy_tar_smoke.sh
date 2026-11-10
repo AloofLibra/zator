@@ -148,11 +148,12 @@ grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fa
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"
 grep -q '^_root/z2r.sh|/opt/z2r.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без _root/z2r.sh"
 grep -q '^_payload/config.default|/opt/zator/.deploy-payload/config.default|payload|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без payload"
+if grep -q '^tools/bin/googlevideo-dns-sniffer-' "$STAGE/extra_strats/cache/deploy/manifest.tsv"; then fail "архив содержит архитектурные DNS-сборщики"; fi
 grep -q '^lists/netrogat.txt|.*|keep-if-exists|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без keep-if-exists у netrogat"
 check_symlink "$STAGE/webui/www/cgi-bin" || fail "нет symlink webui/www/cgi-bin"
 grep -q $'\r' "$STAGE/lists/netrogat.txt" 2>/dev/null && fail "CRLF в netrogat.txt"
 expected_ver="$(sed -n 's/^ZATOR_VERSION="\(.*\)"$/\1/p' "$STAGE/extra_strats/cache/deploy/version.env")"
-ok "архив: version.env, manifest.tsv, symlink, LF"
+ok "архив: version.env, manifest.tsv без лишних архитектурных бинарников, symlink, LF"
 
 # --- 3-4. deploy_from_tar, режим A, защиты ---
 

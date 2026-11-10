@@ -7,6 +7,25 @@ Z2R_GOOGLEVIDEO_SET=z2r_googlevideo4
 Z2R_WSSIZE_MARK="${Z2R_WSSIZE_MARK:-0x04000000}"
 Z2R_WSSIZE_MARK_MASK="$Z2R_WSSIZE_MARK"
 
+zapret_custom_daemons() {
+	local listener=/opt/zator/tools/googlevideo-dns-listener.sh
+	[ -x "$listener" ] || return 0
+	if [ "$1" != 1 ]; then "$listener" stop; return 0; fi
+	[ "$NFQWS2_ENABLE" = 1 ] && [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ] || return 0
+	if command -v procd_open_instance >/dev/null 2>&1; then
+		command -v ubus >/dev/null 2>&1 || return 0
+		ubus list 2>/dev/null | grep -Fxq dnsmasq.dns || return 0
+		procd_open_instance z2r_googlevideo_dns
+		procd_set_param command /bin/bash "$listener" run
+		procd_set_param respawn 3600 5 5
+		procd_set_param stdout 1
+		procd_set_param stderr 1
+		procd_close_instance
+	else
+		"$listener" start
+	fi
+}
+
 z2r_wssize_ramp_valid_ipv4() {
 	local ip="$1" oldifs="$IFS"
 	case "$ip" in *[!0-9.]*|.*|*.|*..*) return 1 ;; esac

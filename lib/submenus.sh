@@ -2364,14 +2364,15 @@ advanced_settings_submenu() {
     fi
     submenu_status_item "7" "Экспериментальный wssize_ramp (список Googlevideo)." "$wssize_value" "$wssize_color"
     submenu_item "8" "Обновить центральный список IPv4 Googlevideo. Сейчас: $(googlevideo_ips_count)"
-    if [ "${OSystem:-}" = WRT ]; then
+    if [ "${OSystem:-}" = WRT ] || [ "${OSystem:-}" = entware ]; then
       case "$(googlevideo_openwrt_dnsmasq_state)" in
-        enabled) googlevideo_collect_value="ВКЛ (9 — отключить)" ;;
-        disabled) googlevideo_collect_value="ВЫКЛ (9 — включить)" ;;
-        *) googlevideo_collect_value="НЕДОСТУПЕН: dnsmasq без поддержки set" ;;
+        enabled) googlevideo_collect_value="ВКЛ" ;;
+        disabled) googlevideo_collect_value="ожидает запуска Ramp" ;;
+        *) googlevideo_collect_value="недоступен; используется центральный список" ;;
       esac
-      submenu_item "9" "OpenWrt: локальный сбор GGC через dnsmasq — $googlevideo_collect_value."
-      submenu_item "10" "OpenWrt: объединить DNS-наблюдения с центральным списком."
+      if [ "${OSystem:-}" = WRT ]; then googlevideo_collect_label="OpenWrt: локальный сбор через UBus."; else googlevideo_collect_label="Entware: пассивный локальный сбор DNS."; fi
+      submenu_status_item "9" "$googlevideo_collect_label" "$googlevideo_collect_value" "cyan"
+      submenu_status_item "" "Локально обнаружено адресов." "$(googlevideo_local_kernel_ips | wc -l | tr -d ' ')" "gray"
     fi
     submenu_item "0" "Назад"
     echo ""
@@ -2413,30 +2414,6 @@ advanced_settings_submenu() {
           echo -e "${green}Googlevideo IP список обновлён: $(googlevideo_ips_count) адресов.${plain}"
         else
           echo -e "${yellow}Не удалось обновить список; сохранённый файл не затронут.${plain}"
-        fi
-        pause_enter
-        ;;
-      "9")
-        if googlevideo_openwrt_dnsmasq status; then
-          if googlevideo_openwrt_dnsmasq remove; then
-            echo -e "${green}Локальный DNS-сбор Googlevideo выключен.${plain}"
-          else
-            echo -e "${yellow}Не удалось выключить локальный DNS-сбор.${plain}"
-          fi
-        elif googlevideo_openwrt_dnsmasq setup; then
-          googlevideo_ips_update || true
-          googlevideo_openwrt_sync_central || true
-          echo -e "${green}Локальный DNS-сбор Googlevideo включён через dnsmasq.${plain}"
-        else
-          echo -e "${yellow}Локальный сбор не включён; проверьте сообщение dnsmasq выше и FWTYPE.${plain}"
-        fi
-        pause_enter
-        ;;
-      "10")
-        if googlevideo_openwrt_export_local; then
-          echo -e "${green}Список содержит $(googlevideo_ips_count) центральных и локальных адресов.${plain}"
-        else
-          echo -e "${yellow}Не удалось экспортировать локальный набор; сохранённый файл не затронут.${plain}"
         fi
         pause_enter
         ;;

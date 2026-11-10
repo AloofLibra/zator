@@ -5,6 +5,7 @@ TMP="$(mktemp -d /tmp/z2r-googlevideo.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 export ZATOR_ROOT="$TMP/zator"
 export GOOGLEVIDEO_IPS_FILE="$TMP/zator/lists/googlevideo-ipv4.txt"
+export GOOGLEVIDEO_LOCAL_FILE="$TMP/local.tsv"
 export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=0
 source "$ROOT/lib/googlevideo_ips.sh"
 MOCK_SET="$TMP/kernel-set"
@@ -30,6 +31,8 @@ uci() { return 1; }
 ipset() {
   case "$1" in
     create) return 0 ;;
+    test) grep -Fxq "$3" "$MOCK_SET" ;;
+    add) grep -Fxq "$3" "$MOCK_SET" || echo "$3" >> "$MOCK_SET" ;;
     restore)
       while IFS= read -r row; do
         case "$row" in add\ z2r_googlevideo4\ *) ip=${row#add z2r_googlevideo4 }; ip=${ip%% *}; grep -Fxq "$ip" "$MOCK_SET" || echo "$ip" >> "$MOCK_SET" ;; esac
@@ -86,8 +89,16 @@ googlevideo_ips_update
 grep -Fxq 8.8.8.8 "$MOCK_SET"
 grep -Fxq 8.8.8.9 "$MOCK_SET"
 
-echo 9.9.9.9 >> "$MOCK_SET"
-[ "$(googlevideo_local_kernel_ips)" = $'8.8.8.8\n8.8.8.9\n9.9.9.9' ]
+googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+googlevideo_observe_local rr2---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+googlevideo_observe_local rr3---sn-h5gtov-n8vl.googlevideo.com 8.8.8.9 1200 A
+googlevideo_observe_local rr2.googlevideo.com 192.168.1.1 1200 A && exit 1
+googlevideo_observe_local youtube.com 9.9.9.8 1200 A && exit 1
+grep -Fxq 9.9.9.9 "$MOCK_SET"
+[ "$(wc -l < "$MOCK_SET")" -eq 3 ]
+[ "$(wc -l < "$GOOGLEVIDEO_LOCAL_FILE")" -eq 3 ]
+[ "$(googlevideo_local_kernel_ips)" = 9.9.9.9 ]
 UPLOAD_CALLS=0
 UPLOAD_DATA=
 curl() {
@@ -101,7 +112,7 @@ tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_CALLS" = 0 ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_CALLS" = 1 ]
-[ "$UPLOAD_DATA" = '8.8.8.8,8.8.8.9,9.9.9.9' ]
+[ "$UPLOAD_DATA" = '9.9.9.9' ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$UPLOAD_CALLS" = 1 ]
 
