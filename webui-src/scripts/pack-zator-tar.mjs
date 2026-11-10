@@ -162,6 +162,7 @@ const EXTRA_STRATS = walkRepo('extra_strats').map((p) => [p, extraStratFlat(p)])
 const KEEP_IF_EXISTS = new Set([
   'lists/netrogat.txt',
   'lists/netrogat_substrings.txt',
+  'lists/googlevideo-ipv4.txt', // runtime feed, retain the router's current list
   'extra_strats/TCP_Custom.txt',
   'extra_strats/TCP_RKN_domains_by_substring.txt',
   'files/fake/custom_tls.bin',

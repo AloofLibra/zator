@@ -1,7 +1,5 @@
 -- Reduce the advertised receive window until the client ACKs server data,
 -- then compensate for the reduced Window Scale on every later outbound packet.
-local wssize_ramp_ip_cache = {}
-
 function wssize_ramp(ctx, desync)
 	local dis = desync.dis
 	if not dis.tcp then
@@ -11,21 +9,6 @@ function wssize_ramp(ctx, desync)
 	-- Only outgoing packets carry the client receive window we adjust.
 	if not desync.outgoing then return end
 	if not direction_check(desync) then return end
-	local ip = desync.arg.ip
-	if not ip then return end
-	local ipraw = wssize_ramp_ip_cache[ip]
-	if not ipraw then
-		local a, b, c, d = ip:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
-		a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
-		if not a or a > 255 or b > 255 or c > 255 or d > 255 then error("wssize_ramp: ip must be an IPv4 address") end
-		ipraw = string.char(a, b, c, d)
-		wssize_ramp_ip_cache[ip] = ipraw
-	end
-	local hdr = dis.ip
-	if not hdr then return end
-	local packet_ip = desync.outgoing and hdr.ip_dst or hdr.ip_src
-	if packet_ip ~= ipraw then return end
-
 	local track = desync.track
 	if not track then
 		instance_cutoff_shim(ctx, desync)

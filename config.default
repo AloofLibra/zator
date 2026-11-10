@@ -76,17 +76,17 @@ NFQWS2_PORTS_UDP=443,2408,2053,2083,2087,2096,8443,51820,50000-50099,1400,3478-3
 # PKT_IN means connbytes dir reply
 NFQWS2_TCP_PKT_OUT=20
 NFQWS2_TCP_PKT_IN=10
-# Experimental single-IPv4 wssize_ramp settings; disabled by default.
+# Experimental Googlevideo-list wssize_ramp settings; disabled by default.
 Z2R_WSSIZE_RAMP_ENABLE=0
-Z2R_WSSIZE_RAMP_IP=
+Z2R_WSSIZE_RAMP_IPSET=/opt/zator/lists/googlevideo-ipv4.txt
 Z2R_WSSIZE_RAMP_MODE=full
 Z2R_WSSIZE_RAMP_WSIZE=1
-Z2R_WSSIZE_RAMP_SCALE=5
+Z2R_WSSIZE_RAMP_SCALE=1
 Z2R_WSSIZE_RAMP_OPEN=1
 Z2R_WSSIZE_RAMP_ARGS=
 Z2R_WSSIZE_RAMP_SKIP=--skip
 if [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ]; then
-  Z2R_WSSIZE_RAMP_ARGS=":ip=$Z2R_WSSIZE_RAMP_IP:mode=$Z2R_WSSIZE_RAMP_MODE:wsize=$Z2R_WSSIZE_RAMP_WSIZE:scale=$Z2R_WSSIZE_RAMP_SCALE:open=$Z2R_WSSIZE_RAMP_OPEN"
+  Z2R_WSSIZE_RAMP_ARGS=":mode=$Z2R_WSSIZE_RAMP_MODE:wsize=$Z2R_WSSIZE_RAMP_WSIZE:scale=$Z2R_WSSIZE_RAMP_SCALE:open=$Z2R_WSSIZE_RAMP_OPEN"
   Z2R_WSSIZE_RAMP_SKIP=
 fi
 NFQWS2_UDP_PKT_OUT=5
@@ -184,9 +184,9 @@ NFQWS2_OPT="
 --new
 
 #Z2R_AUTO_STANDARD_BEGIN
-# Exact-IP profile must precede hostlist profiles, which otherwise win first.
+# Googlevideo-list profile must precede hostlist profiles, which otherwise win first.
 --new
-${Z2R_WSSIZE_RAMP_SKIP} --filter-l3=ipv4 --filter-tcp=443 --ipset-ip=${Z2R_WSSIZE_RAMP_IP:-0.0.0.0}
+${Z2R_WSSIZE_RAMP_SKIP} --filter-l3=ipv4 --filter-tcp=443 --ipset=/opt/zator/lists/googlevideo-ipv4.txt
 --payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
 --out-range=-s34228
 --in-range=-s32768 --lua-desync=rst_guard_locked:key=1:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt:payload=tls_client_hello

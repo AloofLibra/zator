@@ -81,15 +81,12 @@ local narrow_ack = packet(1002, 100)
 narrow_ack.track.lua_state = narrow_scale.track.lua_state
 assert(wssize_ramp({}, narrow_ack) == nil and narrow_ack.dis.tcp.th_win == 100)
 
-local other = packet(1002)
-other.dis.ip.ip_dst = string.char(1,1,1,1)
-assert(wssize_ramp({}, other) == nil and other.dis.tcp.th_win == 1)
-
-local missing = {dis={ip={ip_dst=string.char(188,244,8,77)},tcp={th_flags=TH_SYN,th_win=100,options={}}},track={lua_state={}},outgoing=true,arg={ip="188.244.8.77"}}
+-- Destination selection is done by the NFQWS2 profile's managed ipset filter.
+local missing = {dis={tcp={th_flags=TH_SYN,th_win=100,options={}}},track={lua_state={}},outgoing=true,arg={}}
 wssize_ramp({}, missing)
 assert(calls == 1 and missing.dis.tcp.th_win == 100)
 
-local no_track = {dis={ip={ip_dst=string.char(188,244,8,77)},tcp={th_flags=TH_ACK,th_ack=1002,th_win=100,options={}}},outgoing=true,arg={ip="188.244.8.77"}}
+local no_track = {dis={tcp={th_flags=TH_ACK,th_ack=1002,th_win=100,options={}}},outgoing=true,arg={}}
 wssize_ramp({}, no_track)
 assert(calls == 2 and no_track.dis.tcp.th_win == 100)
 print("wssize_ramp smoke ok")

@@ -101,9 +101,9 @@ export interface UdpGamesSettings {
 
 export interface WssizeRampSettings {
   enabled: boolean
-  ip: string
   mode: 'full' | 'lite'
   scale: number
+  googlevideo_ips: number
 }
 
 export interface ModeSettingData {

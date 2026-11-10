@@ -9,26 +9,22 @@ import { announceRestart, restartSuffix, showToast } from '../../stores/toast'
 
 const settings = computed(() => wssizeRampSettings.value)
 const enabled = ref(false)
-const ip = ref('')
 const mode = ref<WssizeRampSettings['mode']>('full')
-const scale = ref(5)
+const scale = ref(1)
 watch(settings, (value) => {
   if (!value) return
   enabled.value = value.enabled
-  ip.value = value.ip
   mode.value = value.mode
   scale.value = value.scale
 }, { immediate: true })
 
-const validIp = computed(() => (!enabled.value && !ip.value.trim())
-  || /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(ip.value.trim()))
 const unchanged = computed(() => !!settings.value && enabled.value === settings.value.enabled
-  && ip.value.trim() === settings.value.ip && mode.value === settings.value.mode
+  && mode.value === settings.value.mode
   && scale.value === settings.value.scale)
 
 async function submit() {
-  if (!validIp.value || !Number.isInteger(scale.value) || scale.value < 0 || scale.value > 14) return
-  const value = { enabled: enabled.value, ip: ip.value.trim(), mode: mode.value, scale: scale.value }
+  if (!Number.isInteger(scale.value) || scale.value < 0 || scale.value > 14) return
+  const value = { ...settings.value!, enabled: enabled.value, mode: mode.value, scale: scale.value }
   try {
     await withBusy('wssize-ramp', async () => {
       announceRestart()
@@ -52,16 +48,11 @@ async function submit() {
         {{ settings?.enabled ? 'включен' : 'выключен' }}
       </span>
     </div>
-    <p class="panel-desc">Настраивает TCP receive window для одного IPv4 сервера. После сохранения zapret2 перезапускается, если он запущен.</p>
+    <p class="panel-desc">Настраивает TCP receive window для IP из списка Googlevideo ({{ settings?.googlevideo_ips ?? 0 }} адресов). После сохранения zapret2 перезапускается, если он запущен.</p>
     <form id="wssize-ramp-form" class="settings-form" @submit.prevent="submit">
       <label class="toggle-field">
         <input id="wssize-ramp-toggle" type="checkbox" v-model="enabled" :disabled="busyActive">
         <span>Включить wssize_ramp</span>
-      </label>
-      <label>
-        <span>IPv4 сервера</span>
-        <input id="wssize-ramp-ip" v-model="ip" inputmode="decimal" autocomplete="off" :disabled="busyActive"
-          placeholder="например, 188.244.8.77">
       </label>
       <label>
         <span>Режим</span>
@@ -76,7 +67,7 @@ async function submit() {
       </label>
       <div class="card-actions">
         <button type="submit" class="primary" :class="{ 'is-busy': busyButton === 'wssize-ramp' }"
-          :disabled="busyActive || unchanged || !validIp || !Number.isInteger(scale) || scale < 0 || scale > 14">Сохранить</button>
+          :disabled="busyActive || unchanged || !Number.isInteger(scale) || scale < 0 || scale > 14">Сохранить</button>
       </div>
     </form>
   </section>

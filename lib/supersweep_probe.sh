@@ -4,29 +4,21 @@
 
 supersweep_probe_config() {
     local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" f
-    local ramp_enable ramp_ip ramp_mode ramp_wsize ramp_scale ramp_open ramp_args=
+    local ramp_enable ramp_mode ramp_wsize ramp_scale ramp_open ramp_args=
     case "$profile" in 1|2|3|4) ;; *) return 1 ;; esac
     # config.default is shell-expanded by the production launcher, but this
     # probe builder reads its text directly. Resolve this one known argument
     # macro from config values so the isolated argv stays valid nfqws2 syntax.
     ramp_enable=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null || echo 0)
     if [ "$ramp_enable" = 1 ]; then
-        ramp_ip=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_IP 2>/dev/null) || return 1
         ramp_mode=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE 2>/dev/null) || return 1
         ramp_wsize=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_WSIZE 2>/dev/null) || return 1
         ramp_scale=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE 2>/dev/null) || return 1
         ramp_open=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_OPEN 2>/dev/null) || return 1
-        case "$ramp_ip" in *[!0-9.]*|.*|*.|*..*) return 1 ;; esac
-        oldifs="$IFS"; IFS=.; set -- $ramp_ip; IFS="$oldifs"
-        [ "$#" = 4 ] || return 1
-        for f in "$@"; do
-            case "$f" in ''|*[!0-9]*) return 1 ;; esac
-            [ "$f" -le 255 ] 2>/dev/null || return 1
-        done
         case "$ramp_mode" in full|lite) ;; *) return 1 ;; esac
         case "$ramp_wsize:$ramp_scale:$ramp_open" in *[!0-9:]*|:*|*:) return 1 ;; esac
         [ "$ramp_wsize" -le 65535 ] && [ "$ramp_scale" -le 14 ] && [ "$ramp_open" -ge 1 ] || return 1
-        ramp_args=":ip=$ramp_ip:mode=$ramp_mode:wsize=$ramp_wsize:scale=$ramp_scale:open=$ramp_open"
+        ramp_args=":mode=$ramp_mode:wsize=$ramp_wsize:scale=$ramp_scale:open=$ramp_open"
     else
         ramp_enable=0
     fi
@@ -110,10 +102,11 @@ supersweep_probe_config() {
                 print "--filter-tcp=443\n--filter-l7=tls"
                 print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
                 print "--out-range=-s34228"
-                if (ramp_enable == 1) print "--lua-desync=wssize_ramp" ramp_args
+                if (ramp_enable == 1 && p == 2) print "--lua-desync=wssize_ramp" ramp_args
                 print "--in-range=-s32768"
                 print "--lua-desync=circular_locked:key=" p
             }
+            if (p == 2 && ramp_enable == 1 && /--filter-tcp=443/) print "--ipset=/opt/zator/lists/googlevideo-ipv4.txt"
             if (/^--import=/) { print; plan=1 }
             if (/^--lua-desync=/ && /:strategy=[0-9]+/) {
                 n = split($0, piece, / --lua-desync=/)

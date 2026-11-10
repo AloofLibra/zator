@@ -101,7 +101,7 @@ export const applySetting = {
       formBody({ setting: 'provider_redetect' })),
   wssize_ramp: (settings: WssizeRampSettings) =>
     api<ApplyResult & WssizeRampSettings>('/cgi-bin/settings.cgi',
-      formBody({ setting: 'wssize_ramp', value: settings.enabled ? '1' : '0', ip: settings.ip,
+      formBody({ setting: 'wssize_ramp', value: settings.enabled ? '1' : '0',
         mode: settings.mode, scale: String(settings.scale) })),
 }
 

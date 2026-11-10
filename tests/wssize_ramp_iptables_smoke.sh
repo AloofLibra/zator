@@ -66,7 +66,9 @@ assert_chains_removed() {
 FWTYPE=iptables
 NFQWS2_ENABLE=1
 Z2R_WSSIZE_RAMP_ENABLE=1
-Z2R_WSSIZE_RAMP_IP=178.17.48.174
+Z2R_WSSIZE_RAMP_IPSET="${TMPDIR:-/tmp}/wssize-ramp-iptables-ips.$$"
+printf '# googlevideo IPv4; generated=test\n178.17.48.174\n' > "$Z2R_WSSIZE_RAMP_IPSET"
+trap 'rm -f "$Z2R_WSSIZE_RAMP_IPSET"' EXIT
 NFQWS2_TCP_PKT_OUT=20
 NFQWS2_TCP_PKT_IN=10
 QNUM=300
@@ -89,20 +91,20 @@ zapret_custom_firewall 1
 [ "$(printf '%s\n' "$MOCK_RULES" | grep -c '^FORWARD|-j Z2R_WS_IN$')" = 1 ]
 
 # An address change replaces the owned chain content instead of leaving stale IP rules.
-Z2R_WSSIZE_RAMP_IP=178.17.48.175
+printf '# googlevideo IPv4; generated=test\n178.17.48.175\n' > "$Z2R_WSSIZE_RAMP_IPSET"
 zapret_custom_firewall 1
 assert_no_rule Z2R_WS_OUT '-d 178.17.48.174 -p tcp --dport 443 -m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 21: -m mark ! --mark 0x40000000/0x40000000 -j NFQUEUE --queue-num 300 --queue-bypass'
 assert_rule Z2R_WS_OUT '-d 178.17.48.175 -p tcp --dport 443 -m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 21: -m mark ! --mark 0x40000000/0x40000000 -j NFQUEUE --queue-num 300 --queue-bypass'
 
 # Invalid input leaves the currently installed rules intact; disable and stop remove all owned rules.
-Z2R_WSSIZE_RAMP_IP=999.1.1.1
+printf '# googlevideo IPv4; generated=test\n999.1.1.1\n' > "$Z2R_WSSIZE_RAMP_IPSET"
 if zapret_custom_firewall 1 2>/dev/null; then echo 'invalid IP accepted' >&2; exit 1; fi
 assert_rule Z2R_WS_OUT '-d 178.17.48.175 -p tcp --dport 443 -m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 21: -m mark ! --mark 0x40000000/0x40000000 -j NFQUEUE --queue-num 300 --queue-bypass'
 Z2R_WSSIZE_RAMP_ENABLE=0
 zapret_custom_firewall 1
 assert_chains_removed
 Z2R_WSSIZE_RAMP_ENABLE=1
-Z2R_WSSIZE_RAMP_IP=178.17.48.174
+printf '# googlevideo IPv4; generated=test\n178.17.48.174\n' > "$Z2R_WSSIZE_RAMP_IPSET"
 zapret_custom_firewall 1
 zapret_custom_firewall 0
 assert_chains_removed

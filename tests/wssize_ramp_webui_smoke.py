@@ -25,36 +25,24 @@ base = "http://127.0.0.1:{0}/cgi-bin/settings.cgi".format(server.server_port)
 try:
     with urllib.request.urlopen(base + "?setting=wssize_ramp") as response:
         initial = json.load(response)
-    assert initial == {"enabled": False, "ip": "", "mode": "full", "scale": 5}, initial
+    assert initial == {"enabled": False, "mode": "full", "scale": 1, "googlevideo_ips": 0}, initial
 
     body = urllib.parse.urlencode({
-        "setting": "wssize_ramp", "value": "1", "ip": "188.244.8.77",
-        "mode": "lite", "scale": "8",
+        "setting": "wssize_ramp", "value": "1", "mode": "lite", "scale": "8",
     }).encode()
     request = urllib.request.Request(base, data=body, method="POST")
     with urllib.request.urlopen(request) as response:
         applied = json.load(response)
-    assert applied["enabled"] and applied["ip"] == "188.244.8.77"
+    assert applied["enabled"]
     assert applied["mode"] == "lite" and applied["scale"] == 8
     assert applied["restarted"] is True
 
     body = urllib.parse.urlencode({
-        "setting": "wssize_ramp", "value": "1", "ip": "999.1.1.1",
-        "mode": "full", "scale": "5",
-    }).encode()
-    try:
-        urllib.request.urlopen(urllib.request.Request(base, data=body, method="POST"))
-        raise AssertionError("invalid address accepted")
-    except urllib.error.HTTPError as error:
-        assert error.code == 400
-
-    body = urllib.parse.urlencode({
-        "setting": "wssize_ramp", "value": "0", "ip": "",
-        "mode": "full", "scale": "5",
+        "setting": "wssize_ramp", "value": "0", "mode": "full", "scale": "1",
     }).encode()
     with urllib.request.urlopen(urllib.request.Request(base, data=body, method="POST")) as response:
         disabled = json.load(response)
-    assert disabled["enabled"] is False and disabled["ip"] == ""
+    assert disabled["enabled"] is False and disabled["scale"] == 1
 finally:
     server.shutdown()
     server.server_close()

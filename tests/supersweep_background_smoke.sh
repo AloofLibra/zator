@@ -288,9 +288,10 @@ grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 ! grep -q ' --' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 ! grep -qE '^--lua-desync=[^ ]* --lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 1
-config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_IP 188.244.8.77
-supersweep_probe_config 4 "$CONFIG_FILE"
-grep -qx -- '--lua-desync=wssize_ramp:ip=188.244.8.77:mode=full:wsize=1:scale=5:open=1' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE 1
+supersweep_probe_config 2 "$CONFIG_FILE"
+grep -qx -- '--lua-desync=wssize_ramp:mode=full:wsize=1:scale=1:open=1' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--ipset=/opt/zator/lists/googlevideo-ipv4.txt' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 0
 # A build without the autoexclude option must not receive it.
 cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK2'

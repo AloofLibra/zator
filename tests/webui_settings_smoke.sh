@@ -138,7 +138,7 @@ for key in auto_mode rst_guard reasm quic443 provider; do
 done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'rst-guard\.lua' "rst_guard set без guard на lua-файл"
 
-for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form wssize-ramp-form wssize-ramp-toggle wssize-ramp-ip wssize-ramp-mode wssize-ramp-scale ports-tcp-form ports-udp-form provider-form tls-blob-profile-form backup-create-btn backup-import-btn backup-import-file; do
+for id in auto-mode-form hostlist-form rst-guard-form reasm-form quic443-form dns-desync-form wssize-ramp-form wssize-ramp-toggle wssize-ramp-mode wssize-ramp-scale ports-tcp-form ports-udp-form provider-form tls-blob-profile-form backup-create-btn backup-import-btn backup-import-file; do
   grep -rq "$id" "$REPO_DIR/webui-src/src" || fail "webui-src не содержит #$id"
 done
 
