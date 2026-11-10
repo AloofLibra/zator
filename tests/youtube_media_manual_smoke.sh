@@ -154,4 +154,15 @@ for scenario in cancel save fallback expired signal; do
         esac
     )
 done
+
+# The main menu's 01 connectivity check must use the bundled default video,
+# while direct calls can still offer the existing custom-video prompt.
+(
+    check_dns() { return 0; }
+    check_access() { :; }
+    z2r_media_check_manual() { printf '%s\n' "$Z2R_MEDIA_VIDEO_ID" > "$tmp/menu-video"; }
+    z2r_media_ask_video() { echo 'FAIL: menu 01 must not prompt' >&2; return 1; }
+    check_access_list
+    test "$(cat "$tmp/menu-video")" = "$Z2R_MEDIA_DEFAULT_VIDEO_ID"
+)
 echo 'youtube media manual smoke ok'

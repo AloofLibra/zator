@@ -1181,7 +1181,7 @@ check_access_list() {
 
    echo "Проверка доступности youtube.com (YT TCP)"
    check_access "https://www.youtube.com/"
-   check_googlevideo_access
+   check_googlevideo_access "${Z2R_MEDIA_DEFAULT_VIDEO_ID:-}"
    echo "Проверка доступности meduza.io (RKN list)"
    check_access "https://meduza.io"
    echo "Проверка доступности www.instagram.com (RKN list + нужен рабочий DNS)"
