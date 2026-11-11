@@ -39,6 +39,10 @@ googlevideo_sniffer_arch() {
   esac
 }
 
+googlevideo_local_collection_supported() {
+  case "${1:-}" in WRT|entware|VPS) return 0 ;; *) return 1 ;; esac
+}
+
 googlevideo_hostname_valid() {
   local host="${1,,}"
   host="${host%.}"

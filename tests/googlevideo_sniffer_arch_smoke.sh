@@ -23,6 +23,10 @@ check powerpc '' ppc
 check i686 '' x86
 check x86_64 '' x86_64
 check riscv64 '' riscv64
+googlevideo_local_collection_supported VPS
+googlevideo_local_collection_supported WRT
+googlevideo_local_collection_supported entware
+if googlevideo_local_collection_supported merlin; then echo 'unsupported local collector platform accepted' >&2; exit 1; fi
 MOCK_UNAME=loongarch64
 if googlevideo_sniffer_arch >/dev/null; then echo 'unsupported architecture accepted' >&2; exit 1; fi
 echo 'Googlevideo sniffer architecture mapping smoke ok'

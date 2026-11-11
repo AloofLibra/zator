@@ -705,7 +705,7 @@ circular_runtime_update_from_repo() {
     z2r_download_project_file "$WSSIZE_RAMP_FIREWALL" "tools/wssize-ramp-firewall.sh" || return 1
     chmod +x "$WSSIZE_RAMP_FIREWALL"
   fi
-  if [ "$OSystem" = WRT ] || [ "$OSystem" = entware ]; then
+  if googlevideo_local_collection_supported "$OSystem"; then
     mkdir -p "$ZATOR_ROOT/tools"
     z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh" || return 1
     chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
@@ -1155,7 +1155,12 @@ get_repo() {
   else
     circular_runtime_update_from_repo || return 1
   fi
-  if [ "$OSystem" = WRT ] || [ "$OSystem" = entware ]; then
+  if googlevideo_local_collection_supported "$OSystem"; then
+    mkdir -p "$ZATOR_ROOT/tools"
+    if [ ! -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
+      z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh" || return 1
+      chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
+    fi
     z2r_install_googlevideo_sniffer
   fi
   if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
