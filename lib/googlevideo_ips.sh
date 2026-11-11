@@ -206,6 +206,19 @@ googlevideo_openwrt_dnsmasq_state() {
   fi
 }
 
+googlevideo_local_last_observation() {
+  local row host ip observed now age
+  [ -s "$GOOGLEVIDEO_LOCAL_FILE" ] || { printf 'нет наблюдений\n'; return 0; }
+  row="$(awk -F '\t' '$4 ~ /^[0-9]+$/ && $4>seen {seen=$4; host=$1; ip=$2} END {if (seen) printf "%s\t%s\t%d\n", host, ip, seen}' "$GOOGLEVIDEO_LOCAL_FILE")"
+  [ -n "$row" ] || { printf 'нет наблюдений\n'; return 0; }
+  IFS="$(printf '\t')" read -r host ip observed <<EOF
+$row
+EOF
+  now="$(date +%s)"
+  age=$((now - observed)); [ "$age" -ge 0 ] || age=0
+  printf '%s → %s; %s с назад\n' "$host" "$ip" "$age"
+}
+
 googlevideo_local_kernel_ips() {
   local now="$(date +%s)" ip
   [ -s "$GOOGLEVIDEO_LOCAL_FILE" ] || return 0

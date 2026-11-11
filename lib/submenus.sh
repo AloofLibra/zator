@@ -2364,14 +2364,19 @@ advanced_settings_submenu() {
     fi
     submenu_status_item "7" "Экспериментальный wssize_ramp (список Googlevideo)." "$wssize_value" "$wssize_color"
     submenu_item "8" "Обновить центральный список IPv4 Googlevideo. Сейчас: $(googlevideo_ips_count)"
-    if [ "${OSystem:-}" = WRT ] || [ "${OSystem:-}" = entware ]; then
+    if googlevideo_local_collection_supported "${OSystem:-}"; then
       case "$(googlevideo_openwrt_dnsmasq_state)" in
-        enabled) googlevideo_collect_value="ВКЛ" ;;
-        disabled) googlevideo_collect_value="ожидает запуска Ramp" ;;
+        enabled) googlevideo_collect_value="listener запущен" ;;
+        disabled) googlevideo_collect_value="listener не запущен" ;;
         *) googlevideo_collect_value="недоступен; используется центральный список" ;;
       esac
-      if [ "${OSystem:-}" = WRT ]; then googlevideo_collect_label="OpenWrt: локальный сбор через UBus."; else googlevideo_collect_label="Entware: пассивный локальный сбор DNS."; fi
+      case "${OSystem:-}" in
+        WRT) googlevideo_collect_label="OpenWrt: локальный сбор через UBus." ;;
+        entware) googlevideo_collect_label="Entware: пассивный локальный сбор DNS." ;;
+        *) googlevideo_collect_label="VPS: пассивный захват DNS через AF_PACKET." ;;
+      esac
       submenu_status_item "9" "$googlevideo_collect_label" "$googlevideo_collect_value" "cyan"
+      submenu_status_item "" "Последний захваченный DNS-ответ." "$(googlevideo_local_last_observation)" "gray"
       submenu_status_item "" "Локально обнаружено адресов." "$(googlevideo_local_kernel_ips | wc -l | tr -d ' ')" "gray"
       submenu_item "10" "Принудительно отправить новые локальные IP на сервер"
     fi

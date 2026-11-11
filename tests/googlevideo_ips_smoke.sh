@@ -11,6 +11,12 @@ export GOOGLEVIDEO_REPORTED_FILE="$TMP/reported.tsv"
 export GOOGLEVIDEO_LOG_FILE="$TMP/collector.log"
 export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=0
 source "$ROOT/lib/googlevideo_ips.sh"
+[[ "$(googlevideo_local_last_observation)" = 'нет наблюдений' ]]
+obs_now="$(date +%s)"
+printf 'old.googlevideo.com\t9.9.9.8\t%s\t%s\nnew.googlevideo.com\t9.9.9.9\t%s\t%s\n' \
+  "$((obs_now + 60))" "$((obs_now - 20))" "$((obs_now + 60))" "$((obs_now - 3))" > "$GOOGLEVIDEO_LOCAL_FILE"
+[[ "$(googlevideo_local_last_observation)" = "new.googlevideo.com → 9.9.9.9; 3 с назад" ]]
+rm -f "$GOOGLEVIDEO_LOCAL_FILE"
 MOCK_SET="$TMP/kernel-set"
 : > "$MOCK_SET"
 MOCK_FWTYPE=iptables
