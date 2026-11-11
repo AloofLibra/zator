@@ -78,6 +78,7 @@ config_apply_from_default() {
   fi
 
   profile_apply_all "$root/config.default"
+  config_fwtype_apply_default "$root/config.default" || return 1
 
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then

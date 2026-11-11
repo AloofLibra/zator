@@ -320,6 +320,13 @@ fwtype_nft_available() {
   nft list tables >/dev/null 2>&1
 }
 
+# Единый выбор для установки и применения обновлённого config.default.
+config_fwtype_apply_default() {
+  if fwtype_nft_available; then
+    sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$1"
+  fi
+}
+
 fwtype_iptables_available() {
   command -v iptables >/dev/null 2>&1 || return 1
   iptables -L -n >/dev/null 2>&1

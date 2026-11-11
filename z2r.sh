@@ -1241,9 +1241,7 @@ get_repo() {
     z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
   fi
-  if fwtype_nft_available; then
-    sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$ZAPRET2_ROOT/config.default"
-  fi
+  config_fwtype_apply_default "$ZAPRET2_ROOT/config.default" || return 1
 # cache
 mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
