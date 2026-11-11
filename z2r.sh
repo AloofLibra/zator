@@ -1125,6 +1125,15 @@ get_repo() {
       chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
     fi
     z2r_install_googlevideo_sniffer
+    # Reinstall-skip above bypasses circular_runtime_update_from_repo(), where
+    # the SysV/OpenWrt callback is normally deployed. Without this hook the
+    # collector assets exist, but nothing starts the listener with zapret2.
+    if [ -n "$WSSIZE_RAMP_FIREWALL" ] && [ -d "$(dirname "$WSSIZE_RAMP_FIREWALL")/.." ] \
+      && [ ! -x "$WSSIZE_RAMP_FIREWALL" ]; then
+      mkdir -p "$(dirname "$WSSIZE_RAMP_FIREWALL")"
+      z2r_download_project_file "$WSSIZE_RAMP_FIREWALL" "tools/wssize-ramp-firewall.sh" || return 1
+      chmod +x "$WSSIZE_RAMP_FIREWALL"
+    fi
   fi
   if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
     :
