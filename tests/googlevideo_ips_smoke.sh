@@ -7,6 +7,7 @@ export ZATOR_ROOT="$TMP/zator"
 export GOOGLEVIDEO_IPS_FILE="$TMP/zator/lists/googlevideo-ipv4.txt"
 export GOOGLEVIDEO_LOCAL_FILE="$TMP/local.tsv"
 export GOOGLEVIDEO_PENDING_FILE="$TMP/pending.tsv" Z2R_GV_TMPDIR="$TMP/upload-state" Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL=10800
+export GOOGLEVIDEO_REPORTED_FILE="$TMP/reported.tsv"
 export GOOGLEVIDEO_LOG_FILE="$TMP/collector.log"
 export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=0
 source "$ROOT/lib/googlevideo_ips.sh"
@@ -114,8 +115,10 @@ UPLOAD_DATA=
 UPLOAD_RC=0
 UPLOAD_CALLS_FILE="$TMP/upload-calls"
 UPLOAD_DATA_FILE="$TMP/upload-data"
+UPLOAD_OBSERVATIONS_FILE="$TMP/upload-observations"
 : > "$UPLOAD_CALLS_FILE"
 : > "$UPLOAD_DATA_FILE"
+: > "$UPLOAD_OBSERVATIONS_FILE"
 upload_calls() { wc -l < "$UPLOAD_CALLS_FILE" | tr -d ' '; }
 # Keenetic Entware does not necessarily ship `paste`; uploads must still work.
 paste() { echo 'unexpected paste dependency' >&2; return 127; }
@@ -124,7 +127,12 @@ curl() {
   printf 'call\n' >> "$UPLOAD_CALLS_FILE"
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --data-urlencode) case "$2" in ips=*) UPLOAD_DATA=${2#ips=}; printf '%s' "$UPLOAD_DATA" > "$UPLOAD_DATA_FILE" ;; esac; shift 2 ;;
+      --data-urlencode)
+        case "$2" in
+          ips=*) UPLOAD_DATA=${2#ips=}; printf '%s' "$UPLOAD_DATA" > "$UPLOAD_DATA_FILE" ;;
+          observations=*) printf '%s' "${2#observations=}" > "$UPLOAD_OBSERVATIONS_FILE" ;;
+        esac
+        shift 2 ;;
       -w) echo 200; shift 2 ;;
       *) shift ;;
     esac
@@ -135,8 +143,13 @@ tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$(upload_calls)" = 0 ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$(upload_calls)" = 1 ]
-[ "$(cat "$UPLOAD_DATA_FILE")" = '9.9.9.9' ]
-grep -q 'upload result=accepted http=200 ips=9.9.9.9' "$GOOGLEVIDEO_LOG_FILE"
+[ -z "$(cat "$UPLOAD_DATA_FILE")" ]
+expected_pairs='rr1---sn-h5gtov-n8vl.googlevideo.com=9.9.9.9,rr2---sn-h5gtov-n8vl.googlevideo.com=9.9.9.9,rr3---sn-h5gtov-n8vl.googlevideo.com=8.8.8.9'
+[ "$(cat "$UPLOAD_OBSERVATIONS_FILE")" = "$expected_pairs" ]
+grep -q 'upload result=accepted http=200' "$GOOGLEVIDEO_LOG_FILE"
+grep -q '^rr1---sn-h5gtov-n8vl.googlevideo.com[[:space:]]9\.9\.9\.9[[:space:]]' "$GOOGLEVIDEO_REPORTED_FILE"
+googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+! [ -s "$GOOGLEVIDEO_PENDING_FILE" ] || ! grep -q '^9\.9\.9\.9[[:space:]].*rr1---sn-h5gtov-n8vl.googlevideo.com$' "$GOOGLEVIDEO_PENDING_FILE"
 ! [ -s "$GOOGLEVIDEO_PENDING_FILE" ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$(upload_calls)" = 1 ]
@@ -183,13 +196,13 @@ now="$(date +%s)"
 printf 'rr.googlevideo.com\t8.8.8.9\t%s\t%s\nrr.googlevideo.com\t3.3.3.3\t%s\t%s\nrr.googlevideo.com\t4.4.4.4\t%s\nrr.googlevideo.com\t5.5.5.5\t%s\n' \
   "$((now + 300))" "$((now - 60))" "$((now + 300))" "$((now - 1000))" "$((now + 1000))" "$((now - 1000))" "$((now - 1000))" > "$GOOGLEVIDEO_LOCAL_FILE"
 googlevideo_queue_local_observations
-[ "$GOOGLEVIDEO_QUEUED_LOCAL_COUNT" = 2 ]
+[ "$GOOGLEVIDEO_QUEUED_LOCAL_COUNT" = 3 ]
 awk -F '\t' -v ts="$((now - 1000))" '$1=="3.3.3.3" && $2==ts {ok=1} END {exit !ok}' "$GOOGLEVIDEO_PENDING_FILE"
 awk -F '\t' -v ts="$((now - 603800))" '$1=="4.4.4.4" && $2==ts {ok=1} END {exit !ok}' "$GOOGLEVIDEO_PENDING_FILE"
-! grep -q '^8\.8\.8\.9[[:space:]]' "$GOOGLEVIDEO_PENDING_FILE"
+grep -q '^8\.8\.8\.9[[:space:]].*rr.googlevideo.com$' "$GOOGLEVIDEO_PENDING_FILE"
 ! grep -q '^5\.5\.5\.5[[:space:]]' "$GOOGLEVIDEO_PENDING_FILE"
 googlevideo_queue_local_observations
-[ "$(wc -l < "$GOOGLEVIDEO_PENDING_FILE")" -eq 2 ]
+[ "$(wc -l < "$GOOGLEVIDEO_PENDING_FILE")" -eq 3 ]
 GOOGLEVIDEO_LOCAL_FILE="$saved_local_file"
 GOOGLEVIDEO_PENDING_FILE="$saved_pending_file"
 

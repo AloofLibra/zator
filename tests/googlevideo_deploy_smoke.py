@@ -65,20 +65,26 @@ def api():
     DEPLOY.args = SimpleNamespace(ingest_token="shared_token_1234567890")
     try:
         DEPLOY.install(stage, root)
+        server = stats / "server_redis.py"
+        deployed = server.read_text()
+        assert 'parsed.path == "/googlevideo-observations"' in deployed
+        assert "observe_local_ips(rdb" in deployed
+        assert "observe_local_observations(rdb, pairs" in deployed
+        assert '"accepted_observations": accepted_observations' in deployed
+        assert "import hmac" in deployed and "import time" in deployed
+        assert "Z4R_GOOGLEVIDEO_INGEST_TOKEN=shared_token_1234567890" in (root / "etc/z4r-stats.env").read_text()
+        assert "location = /z4r/googlevideo-observations" in nginx.read_text()
+        py_compile.compile(str(server), doraise=True)
+        py_compile.compile(str(dashboard / "dashboard.py"), doraise=True)
+        DEPLOY.install(stage, root)
+        deployed = server.read_text()
+        assert deployed.count('parsed.path == "/googlevideo-observations"') == 1
+        assert deployed.count("observe_local_observations(rdb, pairs") == 1
     finally:
         DEPLOY.checked = original_checked
         DEPLOY.subprocess.check_output = original_check_output
         DEPLOY.subprocess.run = original_run
         DEPLOY.urllib.request.urlopen = original_urlopen
 
-    server = stats / "server_redis.py"
-    deployed = server.read_text()
-    assert 'parsed.path == "/googlevideo-observations"' in deployed
-    assert "observe_local_ips(rdb" in deployed
-    assert "import hmac" in deployed and "import time" in deployed
-    assert "Z4R_GOOGLEVIDEO_INGEST_TOKEN=shared_token_1234567890" in (root / "etc/z4r-stats.env").read_text()
-    assert "location = /z4r/googlevideo-observations" in nginx.read_text()
-    py_compile.compile(str(server), doraise=True)
-    py_compile.compile(str(dashboard / "dashboard.py"), doraise=True)
 
 print("googlevideo deploy smoke ok")

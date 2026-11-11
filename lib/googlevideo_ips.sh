@@ -6,6 +6,7 @@ GOOGLEVIDEO_IPS_CACHE_TTL="${Z2R_GOOGLEVIDEO_IPS_CACHE_TTL-21600}"
 GOOGLEVIDEO_INGEST_URL="${Z2R_GOOGLEVIDEO_INGEST_URL:-https://alooflibra.fun/z4r/googlevideo-observations}"
 GOOGLEVIDEO_LOCAL_FILE="${GOOGLEVIDEO_LOCAL_FILE:-${Z2R_GOOGLEVIDEO_LOCAL_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/local.tsv}}"
 GOOGLEVIDEO_PENDING_FILE="${GOOGLEVIDEO_PENDING_FILE:-${Z2R_GOOGLEVIDEO_PENDING_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/pending.tsv}}"
+GOOGLEVIDEO_REPORTED_FILE="${GOOGLEVIDEO_REPORTED_FILE:-${Z2R_GV_REPORTED_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/reported.tsv}}"
 GOOGLEVIDEO_LOG_FILE="${GOOGLEVIDEO_LOG_FILE:-${Z2R_GV_LOG_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/collector.log}}"
 GOOGLEVIDEO_UPLOAD_INTERVAL="${Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL:-10800}"
 
@@ -72,17 +73,25 @@ googlevideo_observe_local() {
   printf '%s\t%s\t%s\t%s\n' "$host" "$ip" "$expires" "$now" >> "$tmp"
   # Bound tmpfs state; newest rows survive.
   tail -n 8192 "$tmp" > "${tmp}.bounded" && mv -f "${tmp}.bounded" "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_LOCAL_FILE"
-  if [ "$central" = 1 ]; then googlevideo_log "observation host=$host ip=$ip result=central_feed local=updated"; return 0; fi
+  # Queue hostname/IP history even when the IP already appears in the central feed.
+  if [ -s "$GOOGLEVIDEO_REPORTED_FILE" ] && awk -F '\t' -v h="$host" -v ip="$ip" -v cutoff="$((now - 2592000))" '$1==h && $2==ip && $3>=cutoff {found=1; exit} END {exit !found}' "$GOOGLEVIDEO_REPORTED_FILE"; then
+    googlevideo_log "observation host=$host ip=$ip result=already_reported"
+    return 0
+  fi
   # Keep a telemetry spool independent of the DNS/kernel TTL. It lives in tmpfs
   # and is deleted only after the server acknowledges the batch.
   mkdir -p "${GOOGLEVIDEO_PENDING_FILE%/*}" || { googlevideo_log "queue_error host=$host ip=$ip reason=mkdir"; return 1; }
   # Repeated DNS answers for one address must not grow the spool continuously.
-  if [ -s "$GOOGLEVIDEO_PENDING_FILE" ] && awk -F '\t' -v ip="$ip" '$1==ip {found=1; exit} END {exit !found}' "$GOOGLEVIDEO_PENDING_FILE"; then
-    googlevideo_log "observation host=$host ip=$ip result=already_queued"
-    return 0
-  fi
-  printf '%s\t%s\n' "$ip" "$now" >> "$GOOGLEVIDEO_PENDING_FILE" || { googlevideo_log "queue_error host=$host ip=$ip reason=append"; return 1; }
-  googlevideo_log "observation host=$host ip=$ip result=queued observed_at=$now"
+  local candidate
+  for candidate in "$GOOGLEVIDEO_PENDING_FILE" "$GOOGLEVIDEO_PENDING_FILE".sending.* "${GOOGLEVIDEO_PENDING_FILE%/*}"/pending.retry.*; do
+    [ -s "$candidate" ] || continue
+    if awk -F '\t' -v ip="$ip" -v h="$host" '$1==ip && $3==h {found=1; exit} END {exit !found}' "$candidate"; then
+      googlevideo_log "observation host=$host ip=$ip result=already_queued"
+      return 0
+    fi
+  done
+  printf '%s\t%s\t%s\n' "$ip" "$now" "$host" >> "$GOOGLEVIDEO_PENDING_FILE" || { googlevideo_log "queue_error host=$host ip=$ip reason=append"; return 1; }
+  googlevideo_log "observation host=$host ip=$ip result=queued observed_at=$now central_ip=$central"
   if [ "$(wc -l < "$GOOGLEVIDEO_PENDING_FILE")" -gt 8192 ]; then
     tmp="${GOOGLEVIDEO_PENDING_FILE}.tmp.$$"
     tail -n 8192 "$GOOGLEVIDEO_PENDING_FILE" > "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_PENDING_FILE" || rm -f "$tmp"
@@ -206,7 +215,7 @@ googlevideo_local_kernel_ips() {
 # Called by consented telemetry and the collector's low-rate timer. Successful
 # uploads advance the three-hour timer; failed batches remain in tmpfs.
 _googlevideo_upload_local_batch() {
-  local uuid="$1" force="${2:-0}" ips stamp now cache snapshot tmp uploaded retry queue_dir curl_rc=0 http_code=000
+  local uuid="$1" force="${2:-0}" ips observations stamp now cache snapshot tmp uploaded retry queue_dir reported_tmp curl_rc=0 http_code=000
   GOOGLEVIDEO_UPLOAD_LAST_COUNT=0
   GOOGLEVIDEO_UPLOAD_LAST_STATUS=disabled
   if [ "${tel_enabled:-0}" != 1 ] || [ -z "${STATS_TOKEN:-}" ]; then
@@ -239,14 +248,19 @@ _googlevideo_upload_local_batch() {
     googlevideo_log "upload claimed source=pending.tsv"
   fi
   [ -n "$snapshot" ] && [ -s "$snapshot" ] || { GOOGLEVIDEO_UPLOAD_LAST_STATUS=no-pending; googlevideo_log "upload skipped reason=no_pending"; return 0; }
-  # Drop entries older than the server's seven-day observation window and IPs
-  # that have since entered the central feed. Queue rows are ip<TAB>observed_at.
-  ips="$(awk -F '\t' -v now="$now" -v maxage=604800 '$2+maxage>now {print $1}' "$snapshot" | sort -u | while IFS= read -r ip; do
+  # New rows are ip<TAB>observed_at<TAB>hostname. Older two-column rows are
+  # still uploaded as IP-only batches for upgrade compatibility.
+  observations="$(awk -F '\t' -v now="$now" '$3!="" && $2+604800>now {print $3 "\t" $1}' "$snapshot" | while IFS="$(printf '\t')" read -r host ip; do
+    googlevideo_hostname_valid "$host" && googlevideo_ipv4_public "$ip" || continue
+    if [ -s "$GOOGLEVIDEO_REPORTED_FILE" ] && awk -F '\t' -v h="$host" -v ip="$ip" -v cutoff="$((now - 2592000))" '$1==h && $2==ip && $3>=cutoff {found=1; exit} END {exit !found}' "$GOOGLEVIDEO_REPORTED_FILE"; then continue; fi
+    printf '%s=%s\n' "$host" "$ip"
+  done | head -n 24 | awk 'BEGIN { sep="" } NF { printf "%s%s", sep, $0; sep="," } END { print "" }')"
+  ips="$(awk -F '\t' -v now="$now" '$3=="" && $2+604800>now {print $1}' "$snapshot" | sort -u | while IFS= read -r ip; do
     googlevideo_ipv4_public "$ip" || continue
     [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || ! grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE" || continue
     printf '%s\n' "$ip"
-  done | head -n 512 | awk 'BEGIN { sep="" } NF { printf "%s%s", sep, $0; sep="," } END { print "" }')"
-  if [ -z "$ips" ]; then
+  done | head -n 64 | awk 'BEGIN { sep="" } NF { printf "%s%s", sep, $0; sep="," } END { print "" }')"
+  if [ -z "$ips" ] && [ -z "$observations" ]; then
     local rows age_valid
     rows="$(wc -l < "$snapshot" | tr -d ' ')"
     age_valid="$(awk -F '\t' -v now="$now" '$2+604800>now {n++} END {print n+0}' "$snapshot")"
@@ -255,29 +269,38 @@ _googlevideo_upload_local_batch() {
     googlevideo_log "upload discarded rows=$rows age_valid=$age_valid reason=no_valid_unlisted_ips"
     return 0
   fi
-  googlevideo_log "upload sending count=$(printf '%s\n' "$ips" | tr ',' '\n' | wc -l | tr -d ' ') ips=$ips"
+  local -a curl_args=(--data-urlencode "token=$STATS_TOKEN" --data-urlencode "uuid=$uuid")
+  [ -z "$ips" ] || curl_args+=(--data-urlencode "ips=$ips")
+  [ -z "$observations" ] || curl_args+=(--data-urlencode "observations=$observations")
+  googlevideo_log "upload sending legacy_ips=$(printf '%s\n' "$ips" | tr ',' '\n' | awk 'NF{n++} END{print n+0}') host_ip_pairs=$(printf '%s\n' "$observations" | tr ',' '\n' | awk 'NF{n++} END{print n+0}')"
   http_code="$(curl -4 -fsS --connect-timeout 3 --max-time 8 -o /dev/null -w '%{http_code}' \
-      --data-urlencode "token=$STATS_TOKEN" --data-urlencode "uuid=$uuid" \
-      --data-urlencode "ips=$ips" "$GOOGLEVIDEO_INGEST_URL" 2>/dev/null)" || curl_rc=$?
+      "${curl_args[@]}" "$GOOGLEVIDEO_INGEST_URL" 2>/dev/null)" || curl_rc=$?
   if [ "$curl_rc" -eq 0 ] && [ "$http_code" -ge 200 ] 2>/dev/null && [ "$http_code" -lt 300 ] 2>/dev/null; then
     mkdir -p "${cache%/*}" || { mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
     printf '%s\n' "$now" > "$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache" || { rm -f "$cache.tmp.$$"; mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
     uploaded="${GOOGLEVIDEO_PENDING_FILE}.uploaded.$$"
     tmp="${GOOGLEVIDEO_PENDING_FILE}.leftover.$$"
-    printf '%s\n' "$ips" | tr ',' '\n' > "$uploaded"
-    [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || awk '!/^#/ && NF==1 {print}' "$GOOGLEVIDEO_IPS_FILE" >> "$uploaded"
-    awk -F '\t' -v now="$now" 'NR==FNR {sent[$1]=1; next} ($2+604800<=now) || sent[$1] {next} {print}' "$uploaded" "$snapshot" > "$tmp" || { rm -f "$uploaded" "$tmp"; mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
+    reported_tmp="${GOOGLEVIDEO_REPORTED_FILE}.tmp.$$"
+    : > "$uploaded"
+    printf '%s\n' "$ips" | tr ',' '\n' | while IFS= read -r ip; do [ -n "$ip" ] && printf '%s\t\n' "$ip"; done >> "$uploaded"
+    printf '%s\n' "$observations" | tr ',' '\n' | while IFS='=' read -r host ip; do [ -n "$host" ] && printf '%s\t%s\n' "$ip" "$host"; done >> "$uploaded"
+    mkdir -p "${GOOGLEVIDEO_REPORTED_FILE%/*}" || { rm -f "$uploaded"; mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
+    awk -F '\t' -v cutoff="$((now - 2592000))" '$3>=cutoff {print}' "$GOOGLEVIDEO_REPORTED_FILE" 2>/dev/null > "$reported_tmp" || :
+    printf '%s\n' "$observations" | tr ',' '\n' | while IFS='=' read -r host ip; do [ -n "$host" ] && printf '%s\t%s\t%s\n' "$host" "$ip" "$now"; done >> "$reported_tmp"
+    tail -n 8192 "$reported_tmp" > "${reported_tmp}.bounded" && mv -f "${reported_tmp}.bounded" "$reported_tmp" && mv -f "$reported_tmp" "$GOOGLEVIDEO_REPORTED_FILE"
+    [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || awk '!/^#/ && NF==1 {print $1 "\t"}' "$GOOGLEVIDEO_IPS_FILE" >> "$uploaded"
+    awk -F '\t' -v now="$now" 'NR==FNR {if ($2=="") sent_ip[$1]=1; else sent_pair[$1 SUBSEP $2]=1; next} ($2+604800<=now) || (NF>=3 && sent_pair[$1 SUBSEP $3]) || (NF<3 && sent_ip[$1]) {next} {print}' "$uploaded" "$snapshot" > "$tmp" || { rm -f "$uploaded" "$tmp"; mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
     if [ -s "$tmp" ]; then mv -f "$tmp" "$queue_dir/pending.retry.$now.$$"; else rm -f "$tmp"; fi
     rm -f "$uploaded" "$snapshot"
-    GOOGLEVIDEO_UPLOAD_LAST_COUNT="$(printf '%s\n' "$ips" | tr ',' '\n' | wc -l | tr -d ' ')"
+    GOOGLEVIDEO_UPLOAD_LAST_COUNT="$(printf '%s\n%s\n' "$ips" "$observations" | tr ',' '\n' | awk 'NF{n++} END{print n+0}')"
     GOOGLEVIDEO_UPLOAD_LAST_STATUS=uploaded
-    googlevideo_log "upload result=accepted http=$http_code ips=$ips"
+    googlevideo_log "upload result=accepted http=$http_code legacy_ips=$ips host_ip_pairs=$observations"
   else
     if mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; then
-      googlevideo_log "upload result=failed curl_rc=$curl_rc http=$http_code retry=pending.retry.$now.$$ ips=$ips"
+      googlevideo_log "upload result=failed curl_rc=$curl_rc http=$http_code retry=pending.retry.$now.$$ legacy_ips=$ips host_ip_pairs=$observations"
     else
       rm -f "$snapshot"
-      googlevideo_log "upload result=failed curl_rc=$curl_rc http=$http_code retry=restore_failed snapshot_removed=1 ips=$ips"
+      googlevideo_log "upload result=failed curl_rc=$curl_rc http=$http_code retry=restore_failed snapshot_removed=1 legacy_ips=$ips host_ip_pairs=$observations"
     fi
     GOOGLEVIDEO_UPLOAD_LAST_STATUS=failed
     return 1
@@ -319,14 +342,15 @@ googlevideo_queue_local_observations() {
     [ "$observed" -le "$now" ] || continue
     [ $((now - observed)) -le 604800 ] || continue
     googlevideo_ipv4_public "$ip" || continue
-    [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || ! grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE" || continue
+    googlevideo_hostname_valid "$host" || continue
+    if [ -s "$GOOGLEVIDEO_REPORTED_FILE" ] && awk -F '\t' -v h="$host" -v ip="$ip" -v cutoff="$((now - 2592000))" '$1==h && $2==ip && $3>=cutoff {found=1; exit} END {exit !found}' "$GOOGLEVIDEO_REPORTED_FILE"; then continue; fi
     duplicate=0
     for candidate in "$GOOGLEVIDEO_PENDING_FILE" "$GOOGLEVIDEO_PENDING_FILE".sending.* "${GOOGLEVIDEO_PENDING_FILE%/*}"/pending.retry.*; do
       [ -s "$candidate" ] || continue
-      if awk -F '\t' -v ip="$ip" '$1==ip {found=1; exit} END {exit !found}' "$candidate"; then duplicate=1; break; fi
+      if awk -F '\t' -v ip="$ip" -v h="$host" '$1==ip && $3==h {found=1; exit} END {exit !found}' "$candidate"; then duplicate=1; break; fi
     done
     [ "$duplicate" = 0 ] || continue
-    printf '%s\t%s\n' "$ip" "$observed" >> "$GOOGLEVIDEO_PENDING_FILE" || return 1
+    printf '%s\t%s\t%s\n' "$ip" "$observed" "$host" >> "$GOOGLEVIDEO_PENDING_FILE" || return 1
     GOOGLEVIDEO_QUEUED_LOCAL_COUNT=$((GOOGLEVIDEO_QUEUED_LOCAL_COUNT + 1))
   done < "$GOOGLEVIDEO_LOCAL_FILE"
 }

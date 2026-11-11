@@ -139,6 +139,25 @@ class GoogleVideoTests(unittest.TestCase):
         self.assertEqual(summary["local_ip_count"], 2)
         self.assertEqual({row["ip"] for row in summary["local_ips"]}, {"8.8.4.4", "1.1.1.1"})
 
+    def test_consented_local_host_ip_pairs_track_mapping_changes(self):
+        db = FakeRedis()
+        db.zsets[MODULE.OBSERVATIONS_KEY] = {"rr-existing.googlevideo.com\tgoogle\t8.8.4.6": 1999}
+        self.assertEqual(MODULE.observe_local_observations(db, [
+            "rr1.googlevideo.com=8.8.4.4", "rr1.googlevideo.com=8.8.4.5",
+            "rr2.googlevideo.com=8.8.4.4"], now=2000), 3)
+        self.assertEqual(MODULE.observe_local_observations(db, [
+            "rr1.googlevideo.com=8.8.4.4", "rr-existing.googlevideo.com=8.8.4.6"], now=2001), 0)
+        summary = MODULE.domain_summary(db, now=2000)
+        rr1 = next(row for row in summary["domains"] if row["host"] == "rr1.googlevideo.com")
+        self.assertEqual(set(rr1["ips"]), {"8.8.4.4", "8.8.4.5"})
+        self.assertEqual({resolver for address in rr1["addresses"] for resolver in address["resolvers"]}, {"local"})
+        self.assertEqual(summary["local_ip_count"], 2)
+        self.assertNotIn("local", next(row for row in summary["domains"] if row["host"] == "rr-existing.googlevideo.com")["resolvers"])
+        with self.assertRaises(ValueError):
+            MODULE.observe_local_observations(db, ["youtube.com=8.8.4.8"], now=2001)
+        with self.assertRaises(ValueError):
+            MODULE.observe_local_observations(db, ["rr3.googlevideo.com=192.168.1.1"], now=2001)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,10 +49,15 @@ def install(stage, root):
 
     try:
         server = (stats / "server_redis.py").read_text(encoding="utf-8")
-        if "from googlevideo_ips import render_ipset, observe_local_ips" not in server:
+        googlevideo_import = re.search(r"(?m)^from googlevideo_ips import (.*)$", server)
+        if googlevideo_import:
+            names = set(googlevideo_import.group(1).split(", "))
+            names.update(("render_ipset", "observe_local_ips", "observe_local_observations"))
+            server = server[:googlevideo_import.start()] + "from googlevideo_ips import " + ", ".join(sorted(names)) + server[googlevideo_import.end():]
+        else:
             server, count = re.subn(
                 r"(?m)^(from recommendations import .*\n)",
-                r"\1from googlevideo_ips import render_ipset, observe_local_ips\n",
+                r"\1from googlevideo_ips import observe_local_ips, observe_local_observations, render_ipset\n",
                 server, count=1)
             if count != 1:
                 raise RuntimeError("cannot find recommendations import in server_redis.py")
@@ -93,6 +98,25 @@ def install(stage, root):
                 self.send_json(403, {"ok": False, "error": "forbidden"})
                 return
             values = fields.get("ips", [""])[0].split(",")
+            pairs = fields.get("observations", [""])[0].split(",")
+            try:
+                accepted_ips = observe_local_ips(rdb, values, now=int(time.time())) if values != [""] else 0
+                accepted_observations = observe_local_observations(rdb, pairs, now=int(time.time())) if pairs != [""] else 0
+            except ValueError:
+                self.send_json(400, {"ok": False, "error": "invalid IP or observation batch"})
+                return
+            if values == [""] and pairs == [""]:
+                self.send_json(400, {"ok": False, "error": "empty batch"})
+                return
+            self.send_json(200, {"ok": True, "accepted": accepted_ips + accepted_observations,
+                                 "accepted_ips": accepted_ips, "accepted_observations": accepted_observations})
+            return
+'''
+            if server.count(anchor) != 1:
+                raise RuntimeError("cannot find unique do_POST anchor in server_redis.py")
+            server = server.replace(anchor, anchor + route, 1)
+        else:
+            old = '''            values = fields.get("ips", [""])[0].split(",")
             try:
                 accepted = observe_local_ips(rdb, values, now=int(time.time()))
             except ValueError:
@@ -101,9 +125,25 @@ def install(stage, root):
             self.send_json(200, {"ok": True, "accepted": accepted})
             return
 '''
-            if server.count(anchor) != 1:
-                raise RuntimeError("cannot find unique do_POST anchor in server_redis.py")
-            server = server.replace(anchor, anchor + route, 1)
+            new = '''            values = fields.get("ips", [""])[0].split(",")
+            pairs = fields.get("observations", [""])[0].split(",")
+            try:
+                accepted_ips = observe_local_ips(rdb, values, now=int(time.time())) if values != [""] else 0
+                accepted_observations = observe_local_observations(rdb, pairs, now=int(time.time())) if pairs != [""] else 0
+            except ValueError:
+                self.send_json(400, {"ok": False, "error": "invalid IP or observation batch"})
+                return
+            if values == [""] and pairs == [""]:
+                self.send_json(400, {"ok": False, "error": "empty batch"})
+                return
+            self.send_json(200, {"ok": True, "accepted": accepted_ips + accepted_observations,
+                                 "accepted_ips": accepted_ips, "accepted_observations": accepted_observations})
+            return
+'''
+            if old in server:
+                server = server.replace(old, new, 1)
+            elif "observe_local_observations(rdb, pairs" not in server:
+                raise RuntimeError("cannot upgrade existing Googlevideo ingest route")
         if "import hmac" not in server:
             server, count = re.subn(r"(?m)^import redis$", "import redis\nimport hmac", server, count=1)
             if count != 1:

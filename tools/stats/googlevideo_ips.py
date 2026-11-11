@@ -263,6 +263,60 @@ def observe_local_ips(rdb, values, now=None):
     return len(ips)
 
 
+def observe_local_observations(rdb, values, now=None):
+    """Store consented router hostname/IP pairs for the central domain history."""
+    if not isinstance(values, (list, tuple)) or len(values) > 512:
+        raise ValueError("invalid local observation batch")
+    now = int(time.time() if now is None else now)
+    pairs = set()
+    for value in values:
+        if not isinstance(value, str) or value.count("=") != 1:
+            raise ValueError("invalid local observation")
+        raw_host, raw_ip = value.split("=", 1)
+        host = normalize_host(raw_host)
+        try:
+            address = ipaddress.IPv4Address(raw_ip)
+        except (ipaddress.AddressValueError, TypeError):
+            raise ValueError("invalid IPv4 address")
+        if not host or not address.is_global:
+            raise ValueError("invalid public Googlevideo observation")
+        ip = str(address)
+        pairs.add((host, ip))
+    if pairs:
+        known_pairs, known_ips = set(), set()
+        for member, score in rdb.zrangebyscore(OBSERVATIONS_KEY, now - OBSERVATION_TTL, now, withscores=True):
+            fields = _decode(member).split("\t")
+            host = normalize_host(fields[0]) if len(fields) == 3 else None
+            if not host:
+                continue
+            try:
+                known_ip = str(ipaddress.IPv4Address(fields[2]))
+            except ipaddress.AddressValueError:
+                continue
+            known_pairs.add((host, known_ip))
+            if score >= now - IP_TTL and ipaddress.IPv4Address(known_ip).is_global:
+                known_ips.add(known_ip)
+        for raw_ip, _score in rdb.zrangebyscore(LOCAL_IPS_KEY, now - IP_TTL, now, withscores=True):
+            try:
+                known_ips.add(str(ipaddress.IPv4Address(_decode(raw_ip))))
+            except ipaddress.AddressValueError:
+                continue
+        new_pairs = pairs - known_pairs
+        if not new_pairs:
+            return 0
+        new_ips = {ip: now for _, ip in new_pairs if ip not in known_ips}
+        pipe = rdb.pipeline(transaction=False)
+        if new_ips:
+            pipe.zadd(LOCAL_IPS_KEY, new_ips)
+        pipe.zadd(OBSERVATIONS_KEY, {"\t".join((host, "local", ip)): now for host, ip in new_pairs})
+        pipe.zremrangebyscore(LOCAL_IPS_KEY, "-inf", now - IP_TTL)
+        pipe.zremrangebyrank(LOCAL_IPS_KEY, 0, -MAX_IPS - 1)
+        pipe.zremrangebyscore(OBSERVATIONS_KEY, "-inf", now - OBSERVATION_TTL)
+        pipe.zremrangebyrank(OBSERVATIONS_KEY, 0, -MAX_IPS * 3 - 1)
+        pipe.execute()
+    return len(pairs)
+
+
 def domain_summary(rdb, now=None, max_age=OBSERVATION_TTL):
     """Return compact host/IP history for the authenticated Zator dashboard."""
     now = int(time.time() if now is None else now)
@@ -274,7 +328,7 @@ def domain_summary(rdb, now=None, max_age=OBSERVATION_TTL):
             continue
         host, resolver, raw_ip = fields
         host = normalize_host(host)
-        if not host or resolver not in DNS_RESOLVERS:
+        if not host or resolver not in set(DNS_RESOLVERS) | {"local"}:
             continue
         try:
             address = ipaddress.IPv4Address(raw_ip)
