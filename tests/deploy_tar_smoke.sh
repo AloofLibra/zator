@@ -169,6 +169,9 @@ printf 'lock-runtime\n' > "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.tsv"
 printf 'pid\n' > "$ZATOR_ROOT/webui/run/webui.pid"
 
 source "$REPO_DIR/lib/deploy.sh"
+source "$REPO_DIR/lib/googlevideo_ips.sh"
+export SNIF_INSTALL_MARK="$WORK/sniffer-install.mark"
+googlevideo_sniffer_install() { echo installed >> "$SNIF_INSTALL_MARK"; }
 
 # изоляция zapret2-корня для deploy_apply_config_default (эталон config.default)
 export ZAPRET2_ROOT="$WORK/zapret2"
@@ -356,6 +359,7 @@ grep -q '/etc/cron.d/pwn' "$BAD_MAN_DIR/out.txt" || fail "манифест с /e
 ok "харденинг: tar с ../ и манифест с чужим dest отклоняются"
 
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
+[ "$(wc -l < "$SNIF_INSTALL_MARK" | tr -d ' ')" = 1 ] || fail "full/core deploy не обновил отдельный VPS sniffer asset"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$ZATOR_ROOT/lua/locked.lua" ] || fail "runtime lua/locked.lua не установлен"
 tr -d '\r' < "$REPO_DIR/orchestra/locked.lua" > "$WORK/expected-locked.lua"
@@ -372,6 +376,28 @@ cmp -s "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.defaul
 [ -x "$ZATOR_ROOT/webui/run-webui.sh" ] || fail "run-webui.sh не исполняемый"
 check_symlink "$ZATOR_ROOT/webui/www/cgi-bin" || fail "symlink cgi-bin не создан"
 ok "deploy_from_tar A: файлы, payload, z2r.sh, symlink"
+
+# Standalone z2r --version path executes deploy.sh without loading z2r.sh
+# functions. The deployed archive must still install its matching arch asset.
+mkdir -p "$WORK/sniffer-bin"
+cat > "$WORK/sniffer-bin/curl" <<'EOF'
+#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac
+done
+[ -n "$out" ] || exit 2
+printf 'standalone sniffer fixture\n' | gzip -c > "$out"
+EOF
+chmod +x "$WORK/sniffer-bin/curl"
+SNIF_STANDALONE_ROOT="$WORK/standalone-zator"
+PATH="$WORK/sniffer-bin:$PATH" ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="$WORK/standalone-zapret2" \
+  Z2R_GV_SNIFFER_RELEASE_BASE=https://assets.invalid/release \
+  bash "$REPO_DIR/lib/deploy.sh" from-tar "$DIST/zator-full.tar.gz" full googlevideo-fix-beta.smoke \
+  >/dev/null 2>&1 || fail "standalone deploy failed"
+[ -x "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" ] || fail "standalone deploy did not install platform sniffer"
+[ "$(cat "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer")" = 'standalone sniffer fixture' ] || fail "standalone sniffer asset content mismatch"
+ok "standalone tar deploy installs architecture-specific sniffer asset"
 
 # Обычные режимы A/B используют тот же SHA256-пропуск, что и экономный D.
 for mode in A B; do
@@ -422,7 +448,9 @@ z2r_service_action() { echo "$1" >> "$RESTART_W_MARK"; }
 backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
 printf 'LIVE-CONFIG-WEBUI\n' > "$ZAPRET2_ROOT/config"
 cfgdef_sum_before="$(cksum "$ZAPRET2_ROOT/config.default" 2>/dev/null)"
+sniffer_calls_before="$(wc -l < "$SNIF_INSTALL_MARK" | tr -d ' ')"
 deploy_from_tar "$DIST/zator-webui.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (webui) упал"
+[ "$(wc -l < "$SNIF_INSTALL_MARK" | tr -d ' ')" = "$sniffer_calls_before" ] || fail "webui-only deploy обновлял platform sniffer asset"
 [ -s "$APPLY_W_MARK" ] && fail "webui-деплой вызвал config_apply_from_default"
 [ -s "$RESTART_W_MARK" ] && fail "webui-деплой дёрнул zapret2 (stop/restart)"
 grep -q '^LIVE-CONFIG-WEBUI$' "$ZAPRET2_ROOT/config" || fail "webui-деплой изменил живой config"

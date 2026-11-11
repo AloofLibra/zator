@@ -43,6 +43,46 @@ googlevideo_local_collection_supported() {
   case "${1:-}" in WRT|entware|VPS) return 0 ;; *) return 1 ;; esac
 }
 
+googlevideo_sniffer_install() {
+  local arch base fallback tracking tmp compressed size release
+  [ "${Z2R_OFFLINE:-0}" != 1 ] || return 0
+  arch="$(googlevideo_sniffer_arch)" || return 0
+  base="${Z2R_GV_SNIFFER_RELEASE_BASE:-}"
+  fallback=""
+  if [ -z "$base" ]; then
+    tracking="$(sed -n 's/^TRACKING="\([A-Za-z0-9._-]*\)"$/\1/p' "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/deploy/version.env" 2>/dev/null | head -n1)"
+    if [ -n "$tracking" ] && [ "$tracking" != latest ]; then
+      base="https://github.com/AloofLibra/zator/releases/download/$tracking"
+      fallback="https://github.com/AloofLibra/zator/releases/download/latest"
+    else
+      base="https://github.com/AloofLibra/zator/releases/download/latest"
+    fi
+  fi
+  mkdir -p "${ZATOR_ROOT:-/opt/zator}/tools/bin" || return 0
+  tmp="${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer.tmp.$$"
+  compressed="$tmp.gz"
+  for release in "$base" "$fallback"; do
+    [ -n "$release" ] || continue
+    if { if command -v curl >/dev/null 2>&1; then
+           curl -fLsS --connect-timeout 8 --max-time 30 "$release/z2r-googlevideo-dns-sniffer-linux-$arch.gz" -o "$compressed" 2>/dev/null
+         elif command -v wget >/dev/null 2>&1; then
+           wget -q -T 30 -O "$compressed" "$release/z2r-googlevideo-dns-sniffer-linux-$arch.gz" 2>/dev/null
+         else
+           false
+         fi
+       } && gzip -t "$compressed" 2>/dev/null; then
+      gzip -dc "$compressed" > "$tmp" 2>/dev/null || continue
+      size="$(wc -c < "$tmp" | tr -d ' ')"
+      case "$size" in ''|*[!0-9]*) continue ;; esac
+      if [ "$size" -le 131072 ] && [ -s "$tmp" ]; then
+        chmod 755 "$tmp" && mv -f "$tmp" "${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer" && break
+      fi
+    fi
+  done
+  rm -f "$tmp" "$compressed"
+  return 0
+}
+
 googlevideo_hostname_valid() {
   local host="${1,,}"
   host="${host%.}"

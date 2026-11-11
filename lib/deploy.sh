@@ -518,6 +518,17 @@ deploy_post_apply() {
   fi
   deploy_write_version "$tree/extra_strats/cache/deploy/version.env" "$has_core" "$has_webui" "$tracking" || return 1
 
+  # Platform binaries are separate release assets. Source the new core helper
+  # here so both CLI and the standalone z2r launcher install the matching arch.
+  if [ "$has_core" = 1 ] && [ -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
+    if ! type googlevideo_sniffer_install >/dev/null 2>&1 && [ -r "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" ]; then
+      . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || true
+    fi
+    if type googlevideo_sniffer_install >/dev/null 2>&1; then
+      googlevideo_sniffer_install || echo "Не удалось обновить Googlevideo DNS sniffer." >&2
+    fi
+  fi
+
   if [ "$webui_updated" = 1 ]; then
     deploy_fix_interpreters
     if deploy_webui_running; then
