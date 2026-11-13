@@ -724,7 +724,7 @@ deploy_apply_config_to_live() {
   fi
   if [ "${DEPLOY_ECONOMY:-0}" = 1 ]; then
     # Сервис уже остановлен; /tmp должен быть очищен до единственного старта в EXIT.
-    config_apply_from_default
+    config_apply_from_default preserve_wssize
     return "$?"
   fi
   if type backup_helper_ask_and_create >/dev/null 2>&1; then
@@ -733,7 +733,7 @@ deploy_apply_config_to_live() {
   if type z2r_service_action >/dev/null 2>&1; then
     z2r_service_action stop >/dev/null 2>&1 || true
   fi
-  if ! config_apply_from_default; then
+  if ! config_apply_from_default preserve_wssize; then
     echo -e "${red}Не удалось применить config.default к живому конфигу.${plain}"
     if type z2r_service_action >/dev/null 2>&1; then
       z2r_service_action start >/dev/null 2>&1 || true

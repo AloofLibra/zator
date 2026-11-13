@@ -67,6 +67,7 @@ menu_action_toggle_keenetic_policy_mode() {
 # остановлен, старт/рестарт — забота вызывающего.
 config_apply_from_default() {
   local root="${ZAPRET2_ROOT:-/opt/zapret2}"
+  local preserve_ramp="${1:-}" ramp_enable ramp_mode ramp_scale ramp_wsize ramp_open
   local old_scope_cfg="/tmp/z2r_client_scope_config_$$"
   cp -f "$root/config" "$old_scope_cfg" 2>/dev/null || true
 
@@ -84,6 +85,22 @@ config_apply_from_default() {
   if [ -f "$old_scope_cfg" ]; then
     config_client_scope_apply "$old_scope_cfg" "$root/config" || true
     [ "$hardware" = "keenetic" ] && { config_keenetic_policy_apply "$old_scope_cfg" "$root/config" || true; }
+    # Routine upgrades keep the three Ramp controls; explicit config reset calls
+    # this function without the flag and continues to use shipped defaults.
+    if [ "$preserve_ramp" = preserve_wssize ]; then
+      ramp_enable="$(config_get_var "$old_scope_cfg" Z2R_WSSIZE_RAMP_ENABLE)"
+      ramp_mode="$(config_get_var "$old_scope_cfg" Z2R_WSSIZE_RAMP_MODE)"
+      ramp_scale="$(config_get_var "$old_scope_cfg" Z2R_WSSIZE_RAMP_SCALE)"
+      ramp_wsize="$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_WSIZE)"
+      ramp_open="$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_OPEN)"
+      [ -z "$ramp_enable" ] || config_set_var "$root/config" Z2R_WSSIZE_RAMP_ENABLE "$ramp_enable"
+      [ -z "$ramp_mode" ] || config_set_var "$root/config" Z2R_WSSIZE_RAMP_MODE "$ramp_mode"
+      [ -z "$ramp_scale" ] || config_set_var "$root/config" Z2R_WSSIZE_RAMP_SCALE "$ramp_scale"
+      if [ "$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_ENABLE)" = 1 ]; then
+        config_set_var "$root/config" Z2R_WSSIZE_RAMP_ARGS ":mode=$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_MODE):wsize=$ramp_wsize:scale=$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_SCALE):open=$ramp_open"
+        config_set_var "$root/config" Z2R_WSSIZE_RAMP_SKIP ""
+      fi
+    fi
     rm -f "$old_scope_cfg"
   fi
   config_client_scope_ensure "$root/config" || true
