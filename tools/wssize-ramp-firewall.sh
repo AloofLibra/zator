@@ -29,7 +29,7 @@ zapret_custom_daemons() {
 		command -v ubus >/dev/null 2>&1 || return 0
 		ubus list 2>/dev/null | grep -Fxq dnsmasq.dns || return 0
 		procd_open_instance z2r_googlevideo_dns
-		procd_set_param command /bin/bash "$listener" run
+		procd_set_param command "$listener" run
 		procd_set_param respawn 3600 5 5
 		procd_set_param stdout 1
 		procd_set_param stderr 1

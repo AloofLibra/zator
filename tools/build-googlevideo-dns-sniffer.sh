@@ -5,7 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT=${1:-"$ROOT/tools/bin/googlevideo-dns-sniffer-$(uname -m)"}
 CC=${CC:-cc}
 STRIP=${STRIP:-strip}
-MAX_BYTES=${Z2R_GV_SNIFFER_MAX_BYTES:-131072}
+MAX_BYTES=${Z2R_GV_SNIFFER_MAX_BYTES:-139264}
 TMP="${OUT}.tmp.$$"
 trap 'rm -f "$TMP"' EXIT HUP INT TERM
 mkdir -p "$(dirname "$OUT")"

@@ -2416,7 +2416,7 @@ advanced_settings_submenu() {
         wssize_ramp_submenu
         ;;
       "8")
-        if googlevideo_ips_update; then
+        if googlevideo_ips_update force; then
           echo -e "${green}Googlevideo IP список обновлён: $(googlevideo_ips_count) адресов.${plain}"
         else
           echo -e "${yellow}Не удалось обновить список; сохранённый файл не затронут.${plain}"

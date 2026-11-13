@@ -74,7 +74,7 @@ googlevideo_sniffer_install() {
       gzip -dc "$compressed" > "$tmp" 2>/dev/null || continue
       size="$(wc -c < "$tmp" | tr -d ' ')"
       case "$size" in ''|*[!0-9]*) continue ;; esac
-      if [ "$size" -le 131072 ] && [ -s "$tmp" ]; then
+      if [ "$size" -le 139264 ] && [ -s "$tmp" ]; then
         chmod 755 "$tmp" && mv -f "$tmp" "${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer" && break
       fi
     fi
@@ -311,7 +311,7 @@ _googlevideo_upload_local_batch() {
     googlevideo_hostname_valid "$host" && googlevideo_ipv4_public "$ip" || continue
     if [ -s "$GOOGLEVIDEO_REPORTED_FILE" ] && awk -F '\t' -v h="$host" -v ip="$ip" -v cutoff="$((now - 2592000))" '$1==h && $2==ip && $3>=cutoff {found=1; exit} END {exit !found}' "$GOOGLEVIDEO_REPORTED_FILE"; then continue; fi
     printf '%s=%s\n' "$host" "$ip"
-  done | head -n 24 | awk 'BEGIN { sep="" } NF { printf "%s%s", sep, $0; sep="," } END { print "" }')"
+  done | sort -u | head -n 24 | awk 'BEGIN { sep="" } NF { printf "%s%s", sep, $0; sep="," } END { print "" }')"
   ips="$(awk -F '\t' -v now="$now" '$3=="" && $2+604800>now {print $1}' "$snapshot" | sort -u | while IFS= read -r ip; do
     googlevideo_ipv4_public "$ip" || continue
     [ ! -s "$GOOGLEVIDEO_IPS_FILE" ] || ! grep -Fxq "$ip" "$GOOGLEVIDEO_IPS_FILE" || continue

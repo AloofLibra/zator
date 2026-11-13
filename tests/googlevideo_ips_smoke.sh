@@ -9,8 +9,9 @@ export GOOGLEVIDEO_LOCAL_FILE="$TMP/local.tsv"
 export GOOGLEVIDEO_PENDING_FILE="$TMP/pending.tsv" Z2R_GV_TMPDIR="$TMP/upload-state" Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL=10800
 export GOOGLEVIDEO_REPORTED_FILE="$TMP/reported.tsv"
 export GOOGLEVIDEO_LOG_FILE="$TMP/collector.log"
-export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=0
+export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=21600
 source "$ROOT/lib/googlevideo_ips.sh"
+grep -Fq 'if googlevideo_ips_update force; then' "$ROOT/lib/submenus.sh"
 [[ "$(googlevideo_local_last_observation)" = 'нет наблюдений' ]]
 obs_now="$(date +%s)"
 printf 'old.googlevideo.com\t9.9.9.8\t%s\t%s\nnew.googlevideo.com\t9.9.9.9\t%s\t%s\n' \
@@ -74,12 +75,14 @@ nft() {
   return 2
 }
 
+UPDATES_CALLS=0
 curl() {
+  UPDATES_CALLS=$((UPDATES_CALLS + 1))
   local output=""; while [ "$#" -gt 0 ]; do
     case "$1" in -o) output="$2"; shift 2 ;; *) shift ;; esac
   done
   [ -n "$output" ] || return 2
-  cp "$GOOGLEVIDEO_TEST_PAYLOAD" "$output"
+  if [ -n "${SNIF_GZ:-}" ]; then cp "$SNIF_GZ" "$output"; else cp "$GOOGLEVIDEO_TEST_PAYLOAD" "$output"; fi
 }
 
 GOOGLEVIDEO_TEST_PAYLOAD="$TMP/valid.txt"
@@ -88,17 +91,39 @@ googlevideo_ips_update
 [ "$(googlevideo_ips_count)" = 1 ]
 grep -Fxq 8.8.8.8 "$MOCK_SET"
 
-# Central cache updates are merged live and a router batch contains only local
-# DNS members, is consent-gated, and is throttled rather than sent per address.
-GOOGLEVIDEO_TEST_PAYLOAD="$TMP/invalid.txt"
-printf '# googlevideo IPv4; generated=2026-11-10T00:00:00Z; max_age=604800s\n10.0.0.1\n' > "$GOOGLEVIDEO_TEST_PAYLOAD"
-if googlevideo_ips_update; then exit 1; fi
-grep -Fxq 8.8.8.8 "$GOOGLEVIDEO_IPS_FILE"
+# Explicit menu refresh bypasses the six-hour cache window.
 GOOGLEVIDEO_TEST_PAYLOAD="$TMP/valid2.txt"
 printf '# googlevideo IPv4; generated=2026-11-10T00:00:00Z; max_age=604800s\n8.8.8.9\n' > "$GOOGLEVIDEO_TEST_PAYLOAD"
 googlevideo_ips_update
+[ "$UPDATES_CALLS" = 1 ]
+[ "$(googlevideo_ips_count)" = 1 ]
+googlevideo_ips_update force
+[ "$UPDATES_CALLS" = 2 ]
+[ "$(googlevideo_ips_count)" = 1 ]
+grep -Fxq 8.8.8.9 "$GOOGLEVIDEO_IPS_FILE"
+
+# Invalid forced refresh leaves the last valid cache intact. Central cache
+# updates are merged live and a router batch contains only local
+# DNS members, is consent-gated, and is throttled rather than sent per address.
+GOOGLEVIDEO_TEST_PAYLOAD="$TMP/invalid.txt"
+printf '# googlevideo IPv4; generated=2026-11-10T00:00:00Z; max_age=604800s\n10.0.0.1\n' > "$GOOGLEVIDEO_TEST_PAYLOAD"
+if googlevideo_ips_update force; then exit 1; fi
+grep -Fxq 8.8.8.9 "$GOOGLEVIDEO_IPS_FILE"
 grep -Fxq 8.8.8.8 "$MOCK_SET"
 grep -Fxq 8.8.8.9 "$MOCK_SET"
+
+# Release sniffer builds are slightly above 128 KiB; the updater must accept
+# the same 136 KiB ceiling as the cross-architecture build script.
+mkdir -p "$TMP/sniffer-src"
+head -c 133008 /dev/zero > "$TMP/sniffer-src/binary"
+gzip -n -c "$TMP/sniffer-src/binary" > "$TMP/sniffer.gz"
+mkdir -p "$ZATOR_ROOT/extra_strats/cache/deploy"
+printf 'TRACKING="latest"\n' > "$ZATOR_ROOT/extra_strats/cache/deploy/version.env"
+SNIF_GZ="$TMP/sniffer.gz"
+googlevideo_sniffer_arch() { echo arm64; }
+googlevideo_sniffer_install
+[ "$(wc -c < "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer" | tr -d ' ')" = 133008 ]
+unset SNIF_GZ
 
 googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
 googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
@@ -145,6 +170,8 @@ curl() {
   done
   return "$UPLOAD_RC"
 }
+# A previous concurrent collector may have queued the same host/IP twice.
+printf '9.9.9.9\t%s\trr1---sn-h5gtov-n8vl.googlevideo.com\n' "$(date +%s)" >> "$GOOGLEVIDEO_PENDING_FILE"
 tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$(upload_calls)" = 0 ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
