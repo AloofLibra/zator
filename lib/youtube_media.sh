@@ -38,7 +38,9 @@ z2r_media_ask_video() {
         IFS= read -r answer || return 1
         case "$answer" in 0) return 1 ;; '') answer=$default ;; esac
         if id=$(z2r_media_video_id "$answer"); then printf '%s\n' "$id"; return 0; fi
-        echo 'Неверный YouTube URL или video ID (нужно 11 символов). Повторите ввод.' >&2
+        # Готовая подписанная ссылка googlevideo: пропустить резолвер.
+        if z2r_media_url_valid "$answer"; then printf '%s\n' "$answer"; return 0; fi
+        echo 'Неверный YouTube URL, video ID или googlevideo-ссылка. Повторите ввод.' >&2
     done
 }
 
@@ -317,6 +319,67 @@ z2r_media_fresh() {
     [ "$expires" -gt "$((now + 120))" ]
 }
 
+# Прямая подписанная videoplayback-ссылка: resolve не нужен — expire/clen/mime/
+# itag/id лежат в самом URL. Разбор только whitelist-параметров, значения
+# валидируются посимвольно; запись кеша — те же файлы, что у резолвера.
+# Проверяется ровно один поток (audio ИЛИ video), не пара.
+z2r_media_direct_prepare() (
+    umask 077
+    local url="$1" dir="$2" authority host query part key value
+    local kind="" length="" mime="" expire="" itag="" vid=""
+    z2r_media_url_valid "$url" || { z2r_media_status direct_invalid "$dir"; return 1; }
+    authority=${url#https://}; host=${authority%%/*}
+    query=${url#*\?}
+    while [ -n "$query" ]; do
+        part=${query%%&*}
+        case "$query" in *'&'*) query=${query#*&} ;; *) query="" ;; esac
+        case "$part" in *=*) key=${part%%=*}; value=${part#*=} ;; *) continue ;; esac
+        case "$key" in
+            expire)
+                case "$value" in ''|*[!0-9]*|0?*) z2r_media_status direct_invalid "$dir"; return 1 ;; esac
+                [ "${#value}" -le 12 ] || { z2r_media_status direct_invalid "$dir"; return 1; }
+                expire=$value ;;
+            clen)
+                case "$value" in ''|*[!0-9]*|0?*) z2r_media_status direct_invalid "$dir"; return 1 ;; esac
+                [ "${#value}" -le 15 ] || { z2r_media_status direct_invalid "$dir"; return 1; }
+                length=$value ;;
+            itag)
+                case "$value" in ''|*[!0-9]*|0?*) z2r_media_status direct_invalid "$dir"; return 1 ;; esac
+                [ "${#value}" -le 6 ] || { z2r_media_status direct_invalid "$dir"; return 1; }
+                itag=$value ;;
+            id)
+                case "$value" in ''|*[!a-zA-Z0-9_-]*) z2r_media_status direct_invalid "$dir"; return 1 ;; esac
+                [ "${#value}" = 11 ] || { z2r_media_status direct_invalid "$dir"; return 1; }
+                vid=$value ;;
+            mime)
+                # URL-decode только %2F; набор символов ограничен, как у резолвера.
+                value=$(printf '%s' "$value" | awk '{gsub(/%2[Ff]/,"/"); print}')
+                case "$value" in
+                    audio/mp4|audio/webm) kind=audio ;;
+                    video/mp4|video/webm) kind=video ;;
+                    *[!a-z0-9/+.-]*|'') z2r_media_status direct_invalid "$dir"; return 1 ;;
+                    *) z2r_media_status direct_invalid "$dir"; return 1 ;;
+                esac
+                mime=$value ;;
+        esac
+    done
+    if [ -z "$kind" ] || [ -z "$length" ] || [ -z "$expire" ]; then
+        z2r_media_status direct_invalid "$dir"; return 1
+    fi
+    printf '%s|%s|%s|%s\n' "$length" "$mime" "$host" "$expire" > "$dir/$kind.params" || return 1
+    printf 'url = "%s"\n' "$url" > "$dir/$kind.curl" || return 1
+    printf '%s\n' "$expire" > "$dir/expires" || return 1
+    z2r_media_fresh "$dir" || { z2r_media_status expired "$dir"; return 1; }
+    if [ "$kind" = audio ]; then
+        printf '{"video_id":"%s","audio_itag":%s,"mime_type":{"audio":"%s"},"cdn_hostname":{"audio":"%s"},"audio_length":%s,"audio_expires_at":%s,"expires_at":%s,"resolver_status":"direct"}\n' \
+            "$vid" "${itag:-0}" "$mime" "$host" "$length" "$expire" "$expire" > "$dir/meta.json" || return 1
+    else
+        printf '{"video_id":"%s","video_itag":%s,"mime_type":{"video":"%s"},"cdn_hostname":{"video":"%s"},"video_length":%s,"video_expires_at":%s,"expires_at":%s,"resolver_status":"direct"}\n' \
+            "$vid" "${itag:-0}" "$mime" "$host" "$length" "$expire" "$expire" > "$dir/meta.json" || return 1
+    fi
+    z2r_media_status ready "$dir"
+)
+
 z2r_media_request() {
     printf '%s' '{"context":{"client":{"clientName":"VISIONOS","clientVersion":"1.04","clientScreen":"WATCH","platform":"MOBILE","deviceMake":"Apple","deviceModel":"RealityDevice17,1","osName":"visionOS","osVersion":"26.6.0.23O770","hl":"en","gl":"US","utcOffsetMinutes":0'
     [ -z "${3:-}" ] || printf ',"visitorData":"%s"' "$3"
@@ -378,13 +441,23 @@ z2r_media_resolve() (
 )
 
 # Подготовка через рабочее соединение ДО установки тестового транспорта.
+# В Z2R_MEDIA_VIDEO_ID допустима готовая подписанная googlevideo-ссылка:
+# тогда резолвер (и JSON-парсер) не нужны — кеш строится из самого URL.
 z2r_media_prepare() {
-    local status kind length mime host expire
+    local status kind length mime host expire direct=0
     Z2R_MEDIA_DIR=$(umask 077; mktemp -d /tmp/zator-media.XXXXXX) || return 1
     Z2R_MEDIA_READY=0
-    if z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$Z2R_MEDIA_DIR"; then
-        Z2R_MEDIA_READY=1
-    fi
+    case "${Z2R_MEDIA_VIDEO_ID:-}" in
+        https://*)
+            if z2r_media_direct_prepare "$Z2R_MEDIA_VIDEO_ID" "$Z2R_MEDIA_DIR"; then
+                Z2R_MEDIA_READY=1
+                direct=1
+            fi ;;
+        *)
+            if z2r_media_resolve "${Z2R_MEDIA_VIDEO_ID:-$Z2R_MEDIA_DEFAULT_VIDEO_ID}" "$Z2R_MEDIA_DIR"; then
+                Z2R_MEDIA_READY=1
+            fi ;;
+    esac
     IFS= read -r status < "$Z2R_MEDIA_DIR/status"
     status=${status%%|*}
     if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then
@@ -392,8 +465,13 @@ z2r_media_prepare() {
     fi
     if [ "$Z2R_MEDIA_READY" = 1 ]; then
         if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then cp "$Z2R_MEDIA_DIR/meta.json" "$Z2R_SUPERSWEEP_DIR/media-meta.json"; fi
-        echo 'Googlevideo: подписанные media URL подготовлены; аудио + видео + удалённый диапазон, TCP (QUIC не проверяется).' >&2
+        if [ "$direct" = 1 ]; then
+            echo 'Googlevideo: готовая ссылка принята; проверка её потока (начало + середина), TCP (QUIC не проверяется).' >&2
+        else
+            echo 'Googlevideo: подписанные media URL подготовлены; аудио + видео + удалённый диапазон, TCP (QUIC не проверяется).' >&2
+        fi
         for kind in audio video; do
+            [ -f "$Z2R_MEDIA_DIR/$kind.params" ] || continue
             IFS='|' read -r length mime host expire < "$Z2R_MEDIA_DIR/$kind.params" || return 1
             printf 'Googlevideo %s: %s\n' "$kind" "$host" >&2
         done
@@ -426,14 +504,24 @@ z2r_media_check_manual() (
     z2r_media_target '' both print
 )
 
-# Один план audio/video/middle для всех режимов.
+# Один план для всех режимов: аудио+видео+удалённый диапазон у резолвера;
+# у прямой ссылки — начало и середина её единственного потока.
 z2r_media_check() {
     local strategy="${1:-}" item kind count middle row state reason
     local rc code bytes tcp tls ttfb total speed
     if [ "${Z2R_MEDIA_READY:-0}" != 1 ]; then
         printf 'UNKNOWN|resolver_unavailable|0|000|0|0|0|0|0|0\n'; return 0
     fi
-    for item in "audio:${Z2R_MEDIA_AUDIO_BYTES:-262144}:0" "video:${Z2R_MEDIA_VIDEO_BYTES:-1048576}:0" "video:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"; do
+    if [ -f "$Z2R_MEDIA_DIR/audio.params" ] && [ -f "$Z2R_MEDIA_DIR/video.params" ]; then
+        set -- "audio:${Z2R_MEDIA_AUDIO_BYTES:-262144}:0" "video:${Z2R_MEDIA_VIDEO_BYTES:-1048576}:0" "video:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"
+    elif [ -f "$Z2R_MEDIA_DIR/audio.params" ]; then
+        set -- "audio:${Z2R_MEDIA_AUDIO_BYTES:-262144}:0" "audio:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"
+    elif [ -f "$Z2R_MEDIA_DIR/video.params" ]; then
+        set -- "video:${Z2R_MEDIA_VIDEO_BYTES:-1048576}:0" "video:${Z2R_MEDIA_VERIFY_BYTES:-2097152}:1"
+    else
+        printf 'UNKNOWN|no_stream|0|000|0|0|0|0|0|0\n'; return 0
+    fi
+    for item in "$@"; do
         kind=${item%%:*}; item=${item#*:}; count=${item%%:*}; middle=${item#*:}
         row=$(z2r_media_probe "$Z2R_MEDIA_DIR" "$kind" "$count" "$middle" "${Z2R_SUPERSWEEP_ISOLATED:-0}") || row='UNKNOWN|probe_error|0|000|0|0|0|0|0|0'
         if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then
