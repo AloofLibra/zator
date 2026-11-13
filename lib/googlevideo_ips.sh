@@ -43,6 +43,29 @@ googlevideo_local_collection_supported() {
   case "${1:-}" in WRT|entware|VPS) return 0 ;; *) return 1 ;; esac
 }
 
+# Tar-based core updates must restore the zapret2 callback as well as the
+# listener binary; zapret2 upgrades can remove this file from init.d.
+googlevideo_listener_hook_install() {
+  local init_root="${ZAPRET2_ROOT:-/opt/zapret2}/init.d" source="${ZATOR_ROOT:-/opt/zator}/tools/wssize-ramp-firewall.sh" dest
+  [ -x "$source" ] || return 0
+  case "${OSystem:-}" in
+    WRT) dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
+    entware|VPS) dest="$init_root/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
+    *)
+      if [ -d "$init_root/openwrt" ] && [ ! -d "$init_root/sysv" ]; then
+        dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh"
+      elif [ -d "$init_root/sysv" ] && [ ! -d "$init_root/openwrt" ]; then
+        dest="$init_root/sysv/custom.d/90-z2r-wssize-ramp.sh"
+      else
+        return 0
+      fi
+      ;;
+  esac
+  [ -d "$init_root" ] || return 0
+  mkdir -p "${dest%/*}" || return 1
+  cp -f "$source" "$dest" && chmod 755 "$dest"
+}
+
 googlevideo_sniffer_install() {
   local arch base fallback tracking tmp compressed size release
   [ "${Z2R_OFFLINE:-0}" != 1 ] || return 0

@@ -518,11 +518,14 @@ deploy_post_apply() {
   fi
   deploy_write_version "$tree/extra_strats/cache/deploy/version.env" "$has_core" "$has_webui" "$tracking" || return 1
 
-  # Platform binaries are separate release assets. Source the new core helper
-  # here so both CLI and the standalone z2r launcher install the matching arch.
-  if [ "$has_core" = 1 ] && [ -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
-    if ! type googlevideo_sniffer_install >/dev/null 2>&1 && [ -r "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" ]; then
+  # Platform binaries and the zapret2 startup callback are installed separately
+  # from the runtime package assets; restore both on core updates.
+  if [ "$has_core" = 1 ] && [ -r "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" ]; then
+    if ! type googlevideo_sniffer_install >/dev/null 2>&1 || ! type googlevideo_listener_hook_install >/dev/null 2>&1; then
       . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || true
+    fi
+    if type googlevideo_listener_hook_install >/dev/null 2>&1; then
+      googlevideo_listener_hook_install || echo "Не удалось восстановить запуск Googlevideo DNS listener." >&2
     fi
     if type googlevideo_sniffer_install >/dev/null 2>&1; then
       googlevideo_sniffer_install || echo "Не удалось обновить Googlevideo DNS sniffer." >&2

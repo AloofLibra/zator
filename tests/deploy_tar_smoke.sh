@@ -148,6 +148,7 @@ grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fa
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"
 grep -q '^_root/z2r.sh|/opt/z2r.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без _root/z2r.sh"
 grep -q '^_payload/config.default|/opt/zator/.deploy-payload/config.default|payload|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без payload"
+grep -q '^tools/wssize-ramp-firewall.sh|/opt/zator/tools/wssize-ramp-firewall.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без startup hook для Ramp"
 if grep -q '^tools/bin/googlevideo-dns-sniffer-' "$STAGE/extra_strats/cache/deploy/manifest.tsv"; then fail "архив содержит архитектурные DNS-сборщики"; fi
 grep -q '^lists/netrogat.txt|.*|keep-if-exists|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без keep-if-exists у netrogat"
 check_symlink "$STAGE/webui/www/cgi-bin" || fail "нет symlink webui/www/cgi-bin"
@@ -391,12 +392,14 @@ printf 'standalone sniffer fixture\n' | gzip -c > "$out"
 EOF
 chmod +x "$WORK/sniffer-bin/curl"
 SNIF_STANDALONE_ROOT="$WORK/standalone-zator"
+mkdir -p "$WORK/standalone-zapret2/init.d/sysv"
 PATH="$WORK/sniffer-bin:$PATH" ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="$WORK/standalone-zapret2" \
   Z2R_GV_SNIFFER_RELEASE_BASE=https://assets.invalid/release \
   bash "$REPO_DIR/lib/deploy.sh" from-tar "$DIST/zator-full.tar.gz" full googlevideo-fix-beta.smoke \
   >/dev/null 2>&1 || fail "standalone deploy failed"
 [ -x "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" ] || fail "standalone deploy did not install platform sniffer"
 [ "$(cat "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer")" = 'standalone sniffer fixture' ] || fail "standalone sniffer asset content mismatch"
+[ -x "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ] || fail "standalone deploy did not restore SysV collector hook"
 ok "standalone tar deploy installs architecture-specific sniffer asset"
 
 # Обычные режимы A/B используют тот же SHA256-пропуск, что и экономный D.
