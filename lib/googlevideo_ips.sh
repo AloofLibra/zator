@@ -20,6 +20,17 @@ googlevideo_log() {
   fi
 }
 
+googlevideo_sniffer_elf_endian() {
+  local elf="${Z2R_GV_ELF_FILE:-/bin/busybox}" value
+  [ -r "$elf" ] || return 1
+  value="$(dd if="$elf" bs=1 skip=5 count=1 2>/dev/null | od -A n -t u1 2>/dev/null | tr -d '[:space:]')"
+  case "$value" in
+    1) echo little ;;
+    2) echo big ;;
+    *) return 1 ;;
+  esac
+}
+
 googlevideo_sniffer_arch() {
   local machine cpu
   machine="$(uname -m 2>/dev/null)"
@@ -30,7 +41,19 @@ googlevideo_sniffer_arch() {
     mipsel*|mipsle*)
       cpu="$(tr '[:upper:]' '[:lower:]' <"${Z2R_GV_CPUINFO:-/proc/cpuinfo}" 2>/dev/null)"
       case "$cpu" in *lexra*|*5281*) echo lexra ;; *) echo mipselsf ;; esac ;;
-    mips*) echo mipssf ;;
+    mips*)
+      cpu="$(tr '[:upper:]' '[:lower:]' <"${Z2R_GV_CPUINFO:-/proc/cpuinfo}" 2>/dev/null)"
+      case "$cpu" in
+        *lexra*|*5281*) echo lexra ;;
+        *)
+          case "$(googlevideo_sniffer_elf_endian)" in
+            little) echo mipselsf ;;
+            big) echo mipssf ;;
+            *) return 1 ;;
+          esac
+          ;;
+      esac
+      ;;
     powerpc|ppc) echo ppc ;;
     i386|i486|i586|i686) echo x86 ;;
     x86_64|amd64) echo x86_64 ;;

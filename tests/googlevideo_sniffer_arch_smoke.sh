@@ -5,6 +5,7 @@ source "$ROOT/lib/googlevideo_ips.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export Z2R_GV_CPUINFO="$tmp/cpuinfo"
+export Z2R_GV_ELF_FILE="$tmp/busybox"
 MOCK_UNAME=""
 uname() { printf '%s\n' "$MOCK_UNAME"; }
 check() {
@@ -18,6 +19,9 @@ check armv7l '' arm
 check mips64 '' mips64
 check mipsel 'system type : Lexra 5281' lexra
 check mipsel 'system type : MIPS 24Kc' mipselsf
+printf '\177ELF\001\001' > "$Z2R_GV_ELF_FILE"
+check mips 'system type : MediaTek MT7621 SoC' mipselsf
+printf '\177ELF\001\002' > "$Z2R_GV_ELF_FILE"
 check mips 'system type : MIPS 24Kc' mipssf
 check powerpc '' ppc
 check i686 '' x86
