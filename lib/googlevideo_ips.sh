@@ -52,7 +52,11 @@ googlevideo_listener_hook_install() {
     WRT) dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
     entware|VPS) dest="$init_root/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
     *)
-      if [ -d "$init_root/openwrt" ] && [ ! -d "$init_root/sysv" ]; then
+      if [ -r /etc/openwrt_release ] && command -v ubus >/dev/null 2>&1; then
+        dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh"
+      elif command -v systemctl >/dev/null 2>&1 || [ -d /opt/etc/init.d ]; then
+        dest="$init_root/sysv/custom.d/90-z2r-wssize-ramp.sh"
+      elif [ -d "$init_root/openwrt" ] && [ ! -d "$init_root/sysv" ]; then
         dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh"
       elif [ -d "$init_root/sysv" ] && [ ! -d "$init_root/openwrt" ]; then
         dest="$init_root/sysv/custom.d/90-z2r-wssize-ramp.sh"

@@ -42,6 +42,11 @@ OSystem=WRT
 mkdir -p "$ZAPRET2_ROOT/init.d/openwrt"
 googlevideo_listener_hook_install
 [ -x "$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ]
+unset OSystem
+systemctl() { :; }
+googlevideo_listener_hook_install
+[ -x "$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ]
+cmp -s "$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" "$ROOT/tools/wssize-ramp-firewall.sh"
 
 MOCK_UNAME=loongarch64
 if googlevideo_sniffer_arch >/dev/null; then echo 'unsupported architecture accepted' >&2; exit 1; fi
