@@ -530,6 +530,14 @@ deploy_post_apply() {
     if type googlevideo_sniffer_install >/dev/null 2>&1; then
       googlevideo_sniffer_install || echo "Не удалось обновить Googlevideo DNS sniffer." >&2
     fi
+    # A tar update does not necessarily restart zapret2 (for example, when
+    # config.default is unchanged), so its custom-daemon callback may never
+    # run. Start the collector directly after restoring its assets; it checks
+    # the live config itself and does not restart nfqws2.
+    if [ -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
+      "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" start \
+        || echo "Не удалось запустить Googlevideo DNS listener после обновления." >&2
+    fi
   fi
 
   if [ "$webui_updated" = 1 ]; then
