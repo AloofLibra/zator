@@ -2831,6 +2831,15 @@ case "$OSystem" in
   entware|VPS) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
   *) WSSIZE_RAMP_FIREWALL="" ;;
 esac
+# Tar updates may not restart zapret2 when its config is unchanged. The
+# launcher runs this freshly deployed z2r.sh immediately after extraction, so
+# start the enabled collector here without restarting nfqws2.
+if googlevideo_local_collection_supported "$OSystem"; then
+  googlevideo_listener="${ZATOR_ROOT}/tools/googlevideo-dns-listener.sh"
+  if [ -x "$googlevideo_listener" ]; then
+    "$googlevideo_listener" start || echo -e "${yellow}Не удалось запустить Googlevideo DNS listener.${plain}" >&2
+  fi
+fi
 z2r_archive_preflight
 
 #Инфа о времени обновления скрпта
