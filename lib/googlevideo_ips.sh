@@ -52,7 +52,10 @@ googlevideo_listener_hook_install() {
     WRT) dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
     entware|VPS) dest="$init_root/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
     *)
-      if [ -r /etc/openwrt_release ] && command -v ubus >/dev/null 2>&1; then
+      # Detect OpenWrt from the platform marker alone. During standalone beta
+      # deployment PATH can be restricted, so requiring `ubus` in PATH can
+      # silently skip the startup hook even though procd will run it later.
+      if [ -r /etc/openwrt_release ]; then
         dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh"
       elif [ -x "$init_root/sysv/zapret2" ]; then
         dest="$init_root/sysv/custom.d/90-z2r-wssize-ramp.sh"

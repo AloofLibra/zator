@@ -1686,6 +1686,12 @@ unpatch_installer_zapret() {
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh"
  cleanup_zapret2_init_dirs
+ # install_easy may refresh platform init files; restore the Googlevideo
+ # listener assets after that step so the service restart below sees them.
+ if googlevideo_local_collection_supported "$OSystem"; then
+  z2r_install_googlevideo_sniffer || echo -e "${yellow}Не удалось обновить Googlevideo sniffer; listener останется недоступен до следующей попытки.${plain}" >&2
+  googlevideo_listener_hook_install || echo -e "${yellow}Не удалось восстановить hook запуска Googlevideo listener.${plain}" >&2
+ fi
  client_scope_firewall_apply_active_config
  z2r_service_action restart
  if pidof nfqws2 >/dev/null; then
