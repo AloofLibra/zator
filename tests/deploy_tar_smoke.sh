@@ -172,7 +172,8 @@ printf 'pid\n' > "$ZATOR_ROOT/webui/run/webui.pid"
 source "$REPO_DIR/lib/deploy.sh"
 source "$REPO_DIR/lib/googlevideo_ips.sh"
 export SNIF_INSTALL_MARK="$WORK/sniffer-install.mark"
-googlevideo_sniffer_install() { echo installed >> "$SNIF_INSTALL_MARK"; }
+export Z2R_GV_SNIFFER_RELEASE_BASE=https://assets.invalid/release
+curl() { echo installed >> "$SNIF_INSTALL_MARK"; return 1; }
 
 # изоляция zapret2-корня для deploy_apply_config_default (эталон config.default)
 export ZAPRET2_ROOT="$WORK/zapret2"
@@ -393,6 +394,9 @@ EOF
 chmod +x "$WORK/sniffer-bin/curl"
 SNIF_STANDALONE_ROOT="$WORK/standalone-zator"
 mkdir -p "$WORK/standalone-zapret2/init.d/sysv"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/standalone-zapret2/init.d/sysv/zapret2"
+chmod +x "$WORK/standalone-zapret2/init.d/sysv/zapret2"
+mkdir -p "$WORK/standalone-zapret2/init.d/openwrt"
 PATH="$WORK/sniffer-bin:$PATH" ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="$WORK/standalone-zapret2" \
   Z2R_GV_SNIFFER_RELEASE_BASE=https://assets.invalid/release \
   bash "$REPO_DIR/lib/deploy.sh" from-tar "$DIST/zator-full.tar.gz" full googlevideo-fix-beta.smoke \
@@ -400,7 +404,23 @@ PATH="$WORK/sniffer-bin:$PATH" ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="
 [ -x "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" ] || fail "standalone deploy did not install platform sniffer"
 [ "$(cat "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer")" = 'standalone sniffer fixture' ] || fail "standalone sniffer asset content mismatch"
 [ -x "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ] || fail "standalone deploy did not restore SysV collector hook"
-ok "standalone tar deploy installs architecture-specific sniffer asset"
+ok "standalone tar deploy installs sniffer and SysV hook despite both init trees"
+
+# Simulate a self-update process that already loaded stale helper functions.
+# deploy_post_apply must source the just-deployed helper and restore the hook.
+(
+  export ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="$WORK/standalone-zapret2" Z2R_OFFLINE=1 OSystem=VPS
+  mkdir -p "$SNIF_STANDALONE_ROOT/extra_strats/cache/deploy"
+  printf '# path|dest|class|sha256|size|exec\n' > "$SNIF_STANDALONE_ROOT/extra_strats/cache/deploy/manifest.tsv"
+  printf 'ZATOR_VERSION="stale-helper-smoke"\n' > "$SNIF_STANDALONE_ROOT/extra_strats/cache/deploy/version.env"
+  . "$REPO_DIR/lib/deploy.sh"
+  googlevideo_listener_hook_install() { return 0; }
+  googlevideo_sniffer_install() { return 0; }
+  rm -f "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh"
+  deploy_post_apply "$SNIF_STANDALONE_ROOT" stale-helper-smoke 0 0
+  [ -x "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ]
+) || fail "self-update did not reload the deployed helper before restoring hook"
+ok "self-update reloads fresh Googlevideo helper"
 
 # Обычные режимы A/B используют тот же SHA256-пропуск, что и экономный D.
 for mode in A B; do

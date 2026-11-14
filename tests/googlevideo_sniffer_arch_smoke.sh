@@ -43,7 +43,8 @@ mkdir -p "$ZAPRET2_ROOT/init.d/openwrt"
 googlevideo_listener_hook_install
 [ -x "$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ]
 unset OSystem
-systemctl() { :; }
+printf '#!/bin/sh\nexit 0\n' > "$ZAPRET2_ROOT/init.d/sysv/zapret2"
+chmod +x "$ZAPRET2_ROOT/init.d/sysv/zapret2"
 googlevideo_listener_hook_install
 [ -x "$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ]
 cmp -s "$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" "$ROOT/tools/wssize-ramp-firewall.sh"

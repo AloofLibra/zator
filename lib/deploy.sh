@@ -521,9 +521,9 @@ deploy_post_apply() {
   # Platform binaries and the zapret2 startup callback are installed separately
   # from the runtime package assets; restore both on core updates.
   if [ "$has_core" = 1 ] && [ -r "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" ]; then
-    if ! type googlevideo_sniffer_install >/dev/null 2>&1 || ! type googlevideo_listener_hook_install >/dev/null 2>&1; then
-      . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || true
-    fi
+    # A self-update may have replaced this library after the running menu
+    # already sourced an older copy; use the freshly deployed implementation.
+    . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || true
     if type googlevideo_listener_hook_install >/dev/null 2>&1; then
       googlevideo_listener_hook_install || echo "Не удалось восстановить запуск Googlevideo DNS listener." >&2
     fi
