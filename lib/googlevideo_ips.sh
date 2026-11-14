@@ -21,7 +21,7 @@ googlevideo_log() {
 }
 
 googlevideo_sniffer_elf_endian() {
-  local elf="${Z2R_GV_ELF_FILE:-/bin/busybox}" value
+  local elf="${1:-${Z2R_GV_ELF_FILE:-/bin/busybox}}" value
   [ -r "$elf" ] || return 1
   value="$(dd if="$elf" bs=1 skip=5 count=1 2>/dev/null | od -A n -t u1 2>/dev/null | tr -d '[:space:]')"
   case "$value" in
@@ -29,6 +29,30 @@ googlevideo_sniffer_elf_endian() {
     2) echo big ;;
     *) return 1 ;;
   esac
+}
+
+googlevideo_sniffer_binary_matches_arch() {
+  local arch="${1:-}" binary="${2:-${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer}" wanted actual
+  [ -x "$binary" ] || return 1
+  case "$arch" in
+    mipselsf|lexra) wanted=little ;;
+    mipssf) wanted=big ;;
+    *) return 0 ;;
+  esac
+  actual="$(googlevideo_sniffer_elf_endian "$binary")" || return 1
+  [ "$actual" = "$wanted" ]
+}
+
+googlevideo_sniffer_ensure_installed() {
+  local arch
+  arch="$(googlevideo_sniffer_arch)" || return 0
+  googlevideo_sniffer_binary_matches_arch "$arch" && return 0
+  googlevideo_log "sniffer_arch_mismatch expected=$arch; downloading matching binary"
+  googlevideo_sniffer_install || return 1
+  googlevideo_sniffer_binary_matches_arch "$arch" || {
+    googlevideo_log "sniffer_arch_mismatch_after_install expected=$arch"
+    return 1
+  }
 }
 
 googlevideo_sniffer_arch() {

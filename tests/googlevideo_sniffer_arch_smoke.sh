@@ -23,6 +23,23 @@ printf '\177ELF\001\001' > "$Z2R_GV_ELF_FILE"
 check mips 'system type : MediaTek MT7621 SoC' mipselsf
 printf '\177ELF\001\002' > "$Z2R_GV_ELF_FILE"
 check mips 'system type : MIPS 24Kc' mipssf
+
+# A mislabeled beta asset must be replaced before the listener tries to exec it.
+export ZATOR_ROOT="$tmp/zator"
+mkdir -p "$ZATOR_ROOT/tools/bin"
+cp "$Z2R_GV_ELF_FILE" "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
+chmod +x "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
+if googlevideo_sniffer_binary_matches_arch mipselsf; then echo 'big-endian MIPS binary accepted for MT7621' >&2; exit 1; fi
+printf '\177ELF\001\001' > "$tmp/little-endian"
+printf '\177ELF\001\001' > "$Z2R_GV_ELF_FILE"
+chmod +x "$tmp/little-endian"
+googlevideo_sniffer_binary_matches_arch mipselsf "$tmp/little-endian"
+googlevideo_sniffer_install() {
+  cp "$tmp/little-endian" "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
+  chmod +x "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
+}
+googlevideo_sniffer_ensure_installed
+googlevideo_sniffer_binary_matches_arch mipselsf
 check powerpc '' ppc
 check i686 '' x86
 check x86_64 '' x86_64
@@ -34,7 +51,7 @@ if googlevideo_local_collection_supported merlin; then echo 'unsupported local c
 
 # Core tar updates restore the platform startup hook, including the SysV path
 # used by VPS; repeated deployment remains an overwrite, not an extra hook.
-export ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" OSystem=VPS
+export ZAPRET2_ROOT="$tmp/zapret2" OSystem=VPS
 mkdir -p "$ZATOR_ROOT/tools" "$ZAPRET2_ROOT/init.d/sysv"
 cp "$ROOT/tools/wssize-ramp-firewall.sh" "$ZATOR_ROOT/tools/wssize-ramp-firewall.sh"
 googlevideo_listener_hook_install
