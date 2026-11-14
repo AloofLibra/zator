@@ -146,4 +146,4 @@ jobs:
           gh release create "$TAG" webui-src/dist/* \
             --target "$GITHUB_SHA" \
             --title "$TAG" \
-            --notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG."
+            --notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG"
