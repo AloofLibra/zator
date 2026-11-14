@@ -46,7 +46,7 @@ if [ "$first_pid" = "$LISTENER_PID" ]; then loser=$duplicate_pid; else loser=$LI
 wait "$loser" 2>/dev/null || true
 kill -0 "$first_pid"
 ! grep -Eiq 'add rule|delete rule|nfqws' "$TMP/nft-calls"
-grep -Fq '9.9.9.99 timeout 1200s' "$TMP/nft-calls"
+grep -Fq '9.9.9.99 timeout 3600s' "$TMP/nft-calls"
 [ "$(cat "$TMP/run/listener.pid")" = "$first_pid" ]
 kill "$first_pid"; wait "$first_pid" || true
 LISTENER_PID=

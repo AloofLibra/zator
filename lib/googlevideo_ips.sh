@@ -125,7 +125,7 @@ googlevideo_hostname_valid() {
 # Event payload is passed as discrete fields by the UBus listener. Local
 # observations live on tmpfs and never get merged into the central feed file.
 googlevideo_observe_local() {
-  local host="${1,,}" ip="$2" ttl="$3" fwtype table now expires tmp central=0
+  local host="${1,,}" ip="$2" ttl="$3" now expires tmp central=0 set_rc=0
   host="${host%.}"
   googlevideo_hostname_valid "$host" || { googlevideo_log "observation rejected reason=hostname host=$host ip=$ip"; return 1; }
   [ "${4:-A}" = A ] || { googlevideo_log "observation rejected reason=record_type host=$host ip=$ip type=${4:-A}"; return 1; }
@@ -146,10 +146,14 @@ googlevideo_observe_local() {
   printf '%s\t%s\t%s\t%s\n' "$host" "$ip" "$expires" "$now" >> "$tmp"
   # Bound tmpfs state; newest rows survive.
   tail -n 8192 "$tmp" > "${tmp}.bounded" && mv -f "${tmp}.bounded" "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_LOCAL_FILE"
+  googlevideo_kernel_set_add "$ip" "$ttl" "$central" || {
+    set_rc=1
+    googlevideo_log "set_add_failed host=$host ip=$ip fwtype=$(googlevideo_kernel_fwtype)"
+  }
   # Queue hostname/IP history even when the IP already appears in the central feed.
   if [ -s "$GOOGLEVIDEO_REPORTED_FILE" ] && awk -F '\t' -v h="$host" -v ip="$ip" -v cutoff="$((now - 2592000))" '$1==h && $2==ip && $3>=cutoff {found=1; exit} END {exit !found}' "$GOOGLEVIDEO_REPORTED_FILE"; then
     googlevideo_log "observation host=$host ip=$ip result=already_reported"
-    return 0
+    return "$set_rc"
   fi
   # Keep a telemetry spool independent of the DNS/kernel TTL. It lives in tmpfs
   # and is deleted only after the server acknowledges the batch.
@@ -160,7 +164,7 @@ googlevideo_observe_local() {
     [ -s "$candidate" ] || continue
     if awk -F '\t' -v ip="$ip" -v h="$host" '$1==ip && $3==h {found=1; exit} END {exit !found}' "$candidate"; then
       googlevideo_log "observation host=$host ip=$ip result=already_queued"
-      return 0
+      return "$set_rc"
     fi
   done
   printf '%s\t%s\t%s\n' "$ip" "$now" "$host" >> "$GOOGLEVIDEO_PENDING_FILE" || { googlevideo_log "queue_error host=$host ip=$ip reason=append"; return 1; }
@@ -169,22 +173,8 @@ googlevideo_observe_local() {
     tmp="${GOOGLEVIDEO_PENDING_FILE}.tmp.$$"
     tail -n 8192 "$GOOGLEVIDEO_PENDING_FILE" > "$tmp" && mv -f "$tmp" "$GOOGLEVIDEO_PENDING_FILE" || rm -f "$tmp"
   fi
-  [ "$central" = 0 ] || return 0
-  fwtype="${GOOGLEVIDEO_KERNEL_FWTYPE:-$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" FWTYPE 2>/dev/null || true)}"
-  if [ "$fwtype" = iptables ] && command -v ipset >/dev/null 2>&1; then
-    ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || {
-      ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist >/dev/null 2>&1 || return 1
-      ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1 || return 1
-    }
-  elif [ "$fwtype" = nftables ] && command -v nft >/dev/null 2>&1; then
-    table="$(googlevideo_nft_table_name)"
-    nft add element inet "$table" z2r_googlevideo4 "{ $ip timeout ${ttl}s }" >/dev/null 2>&1 || {
-      # A concurrent answer may have inserted it. Accept only if it is now present.
-      nft list set inet "$table" z2r_googlevideo4 2>/dev/null | grep -Fq "$ip" || return 1
-    }
-  else
-    return 1
-  fi
+  [ "$central" = 0 ] || return "$set_rc"
+  return "$set_rc"
 }
 
 googlevideo_ips_validate() {
@@ -243,6 +233,56 @@ googlevideo_nft_table_name() {
     table="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" ZAPRET_NFT_TABLE 2>/dev/null || true)"
   fi
   printf '%s\n' "${table:-zapret2}"
+}
+
+googlevideo_kernel_fwtype() {
+  local fwtype="${GOOGLEVIDEO_KERNEL_FWTYPE:-}" config="${ZAPRET2_ROOT:-/opt/zapret2}/config" table
+  if [ -z "$fwtype" ] && type config_get_var >/dev/null 2>&1; then
+    fwtype="$(config_get_var "$config" FWTYPE 2>/dev/null || true)"
+  fi
+  if [ -z "$fwtype" ] && [ -r "$config" ]; then
+    fwtype="$(sed -n 's/^[[:space:]]*FWTYPE[[:space:]]*=[[:space:]]*//p' "$config" | sed -n '1p' | tr -d "\"'[:space:]")"
+  fi
+  if [ -z "$fwtype" ]; then
+    table="$(googlevideo_nft_table_name)"
+    if command -v nft >/dev/null 2>&1 && nft list set inet "$table" z2r_googlevideo4 >/dev/null 2>&1; then
+      fwtype=nftables
+    elif command -v ipset >/dev/null 2>&1 && ipset list z2r_googlevideo4 >/dev/null 2>&1; then
+      fwtype=iptables
+    fi
+  fi
+  printf '%s\n' "$fwtype"
+}
+
+googlevideo_kernel_set_add() {
+  local ip="$1" ttl="$2" central="${3:-0}" fwtype table tmp rc
+  [ "$central" = 1 ] && ttl=604800
+  [ "$ttl" -ge 3600 ] 2>/dev/null || ttl=3600
+  fwtype="$(googlevideo_kernel_fwtype)"
+  case "$fwtype" in
+    iptables)
+      command -v ipset >/dev/null 2>&1 || return 1
+      ipset create z2r_googlevideo4 hash:ip family inet timeout 604800 -exist >/dev/null 2>&1 || return 1
+      ipset add z2r_googlevideo4 "$ip" timeout "$ttl" -exist >/dev/null 2>&1
+      ;;
+    nftables)
+      command -v nft >/dev/null 2>&1 || return 1
+      table="$(googlevideo_nft_table_name)"
+      if nft add element inet "$table" z2r_googlevideo4 "{ $ip timeout ${ttl}s }" >/dev/null 2>&1; then
+        return 0
+      fi
+      nft get element inet "$table" z2r_googlevideo4 "{ $ip }" >/dev/null 2>&1 || return 1
+      tmp="${TMPDIR:-/tmp}/z2r-googlevideo-set.$$"
+      {
+        printf 'delete element inet %s z2r_googlevideo4 { %s }\n' "$table" "$ip"
+        printf 'add element inet %s z2r_googlevideo4 { %s timeout %ss }\n' "$table" "$ip" "$ttl"
+      } > "$tmp" || return 1
+      nft -f "$tmp" >/dev/null 2>&1; rc=$?
+      rm -f "$tmp"
+      return "$rc"
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 googlevideo_dnsmasq_has_feature() {

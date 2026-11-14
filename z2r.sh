@@ -619,11 +619,6 @@ SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
 DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
 FAKE_ADAPT_LUA="$ZATOR_ROOT/lua/fake-adapt.lua"
 WSSIZE_RAMP_LUA="$ZATOR_ROOT/lua/wssize-ramp.lua"
-case "$OSystem" in
-  WRT) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
-  entware|VPS) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
-  *) WSSIZE_RAMP_FIREWALL="" ;;
-esac
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
@@ -2825,6 +2820,11 @@ esac
 
 detect_os
 set_zapret2_init
+case "$OSystem" in
+  WRT) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
+  entware|VPS) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
+  *) WSSIZE_RAMP_FIREWALL="" ;;
+esac
 z2r_archive_preflight
 
 #Инфа о времени обновления скрпта

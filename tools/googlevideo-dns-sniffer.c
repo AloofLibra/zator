@@ -384,7 +384,12 @@ static int set_add(const char *ip,uint32_t ttl) {
         /* The IP may already have been inserted by dnsmasq or a concurrent event. */
         snprintf(element,sizeof(element),"{ %s }",ip);
         char *check[]={"nft","get","element","inet",nft_table,"z2r_googlevideo4",element,NULL};
-        return run_argv(check)==0?0:rc;
+        if(run_argv(check))return rc;
+        char *del[]={"nft","delete","element","inet",nft_table,"z2r_googlevideo4",element,NULL};
+        if(run_argv(del))return rc;
+        snprintf(element,sizeof(element),"{ %s timeout %us }",ip,ttl);
+        char *refresh[]={"nft","add","element","inet",nft_table,"z2r_googlevideo4",element,NULL};
+        return run_argv(refresh);
     }
     return -1;
 }
@@ -407,7 +412,9 @@ static void observe_dns(const char *raw_host,const char *ip,uint32_t ttl) {
     uint64_t now=wall_seconds();
     if(local_write(host,ip,now+ttl,now)) { log_msg("local_write_failed host=%s ip=%s",host,ip); return; }
     if(pending_append(host,ip,now))log_msg("queue_failed host=%s ip=%s",host,ip);
-    if(!central_has_ip(ip)&&!set_recently_added(ip,ttl))log_msg("set_add_failed fwtype=%s host=%s ip=%s",fwtype,host,ip);
+    uint32_t set_ttl=ttl<3600?3600:ttl;
+    if(central_has_ip(ip))set_ttl=604800;
+    if(!set_recently_added(ip,set_ttl))log_msg("set_add_failed fwtype=%s host=%s ip=%s",fwtype,host,ip);
     log_msg("observation host=%s ip=%s ttl=%u result=stored",host,ip,ttl);
 }
 static int json_string(const char *json,const char *key,char *out,size_t cap) {

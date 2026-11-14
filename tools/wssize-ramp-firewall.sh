@@ -26,8 +26,6 @@ zapret_custom_daemons() {
 	if [ "$1" != 1 ]; then "$listener" stop; return 0; fi
 	[ "$NFQWS2_ENABLE" = 1 ] && [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ] || return 0
 	if command -v procd_open_instance >/dev/null 2>&1; then
-		command -v ubus >/dev/null 2>&1 || return 0
-		ubus list 2>/dev/null | grep -Fxq dnsmasq.dns || return 0
 		procd_open_instance z2r_googlevideo_dns
 		procd_set_param command "$listener" run
 		procd_set_param respawn 3600 5 5

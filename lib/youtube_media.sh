@@ -547,7 +547,7 @@ z2r_media_probe() (
         curl -q -4 --noproxy '*' --proto '=https' --http1.1 -s \
             --config "$config" -A "$(z2r_media_ua)" "$@" \
             --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
-            --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 5 \
+            --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 10 \
             -D "$dir/headers" -o "$body" \
             -w '%{http_code}|%{size_download}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}' \
             > "$dir/metrics" 2>/dev/null </dev/null &
