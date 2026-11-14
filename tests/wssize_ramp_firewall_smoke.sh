@@ -2,7 +2,7 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=${TMPDIR:-/tmp}/wssize-ramp-firewall.$$
-trap 'rm -f "$TMP.rules" "$TMP.set" "$TMP.ips" "$TMP.listener" "$TMP.listener.calls"' EXIT HUP INT TERM
+trap 'rm -f "$TMP.rules" "$TMP.set" "$TMP.ips" "$TMP.listener" "$TMP.listener.calls" "$TMP.lifecycle"' EXIT HUP INT TERM
 : >"$TMP.rules"; : >"$TMP.set"; NFT_SET_CREATED=0
 QNUM=300 FWTYPE=nftables NFQWS2_ENABLE=1 Z2R_WSSIZE_RAMP_ENABLE=1
 Z2R_WSSIZE_RAMP_IPSET="$TMP.ips" NFQWS2_TCP_PKT_OUT=20 NFQWS2_TCP_PKT_IN=10
@@ -33,6 +33,7 @@ nft_add_nfqws_flow_exempt_rule() { :; }
 cat > "$Z2R_GV_LISTENER" <<EOF
 #!/bin/sh
 echo "\$1" >> "$TMP.listener.calls"
+echo "listener:\$1" >> "$TMP.lifecycle"
 EOF
 chmod +x "$Z2R_GV_LISTENER"
 
@@ -67,4 +68,15 @@ zapret_custom_firewall_nft
 [ "$(wc -l < "$TMP.rules" | tr -d ' ')" = 2 ]
 [ "$(wc -l < "$TMP.set")" = "$before" ]
 [ "$(tail -n 1 "$TMP.listener.calls")" = stop ] || { echo "collector was not stopped when Ramp was disabled" >&2; exit 1; }
+
+# If a tar update started an unmanaged listener, the next procd startup must
+# stop it before registering a supervised instance.
+Z2R_WSSIZE_RAMP_ENABLE=1
+: > "$TMP.lifecycle"
+procd_open_instance() { echo procd-open >> "$TMP.lifecycle"; }
+procd_set_param() { echo "procd-set-$1" >> "$TMP.lifecycle"; }
+procd_close_instance() { echo procd-close >> "$TMP.lifecycle"; }
+zapret_custom_daemons 1
+[ "$(sed -n '1p' "$TMP.lifecycle")" = listener:stop ] || { echo "orphan listener was not stopped before procd registration" >&2; exit 1; }
+[ "$(sed -n '2p' "$TMP.lifecycle")" = procd-open ] || { echo "procd listener was not registered after cleanup" >&2; exit 1; }
 echo 'wssize_ramp nft set smoke ok'

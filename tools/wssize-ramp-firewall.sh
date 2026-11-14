@@ -21,11 +21,14 @@ z2r_wssize_collector_sync() {
 }
 
 zapret_custom_daemons() {
-	local listener=/opt/zator/tools/googlevideo-dns-listener.sh
+	local listener="${Z2R_GV_LISTENER:-/opt/zator/tools/googlevideo-dns-listener.sh}"
 	[ -x "$listener" ] || return 0
 	if [ "$1" != 1 ]; then "$listener" stop; return 0; fi
 	[ "$NFQWS2_ENABLE" = 1 ] && [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ] || return 0
 	if command -v procd_open_instance >/dev/null 2>&1; then
+		# A package update can start the listener outside procd. Stop that
+		# orphaned instance before registering the supervised procd command.
+		"$listener" stop || return 1
 		procd_open_instance z2r_googlevideo_dns
 		procd_set_param command "$listener" run
 		procd_set_param respawn 3600 5 5
