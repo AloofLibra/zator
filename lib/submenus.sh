@@ -990,7 +990,12 @@ strategies_submenu() {
       "5")
         if type z2r_quic_media_run >/dev/null 2>&1; then
           echo -e "${cyan}Проверка видео по QUIC: A - автопрогон, проверяется и ручной выбор стратегии.${plain}"
-          echo -e "${cyan}Без h3-curl будет предложена установка с релизов z2r-curl-h3.${plain}"
+          if ! z2r_quic_curl_detect >/dev/null 2>&1; then
+            # Спросить про установку сразу (фидбэк: оффер в конце «слишком поздно»).
+            z2r_quic_offer_install \
+              || echo -e "${yellow}Без h3-curl проверка видео недоступна, подбор продолжится без неё.${plain}"
+            Z2R_QUIC_OFFER_DONE=1
+          fi
         fi
         echo -e "${yellow}Проверьте работоспособность в браузере.${plain}"
         orch_profile_try "5" "Профиль 5: UDP 443 (QUIC)" "udp" ""

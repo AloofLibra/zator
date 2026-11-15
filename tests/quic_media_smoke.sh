@@ -44,7 +44,7 @@ grep -q 'z2r_quic_single_round' lib/strategies.sh \
 grep -q '_z2r_quic_trial _orch_profile_manual_sweep' lib/strategies.sh \
   || fail "проводка: ручной подбор профиля 5 не обёрнут в QUIC-trial"
 
-# == 1. архитектура артефакта =================================================
+# == 1. архитектура артефакта =========*
 printf '\177ELF\001\001' > "$TMP_DIR/elf-little"   # EI_DATA=1
 printf '\177ELF\001\002' > "$TMP_DIR/elf-big"      # EI_DATA=2
 uname() { case "$1" in -m) echo "${MOCK_UNAME:-}" ;; *) command uname "$@" ;; esac; }
@@ -555,9 +555,10 @@ orch_locked_clear 5 udp
     test "$(orch_locked_get 5 udp)" = 22 \
       || fail "ручной подбор (отмена): прежний лок 22 потерян"
     orch_locked_clear 5 udp
+)
 
-    # == 7h. ручной подбор БЕЗ h3-curl: предложение установки -> успех -> проверка
-    (
+# == 7h. ручной подбор БЕЗ h3-curl: оффер установки ДО промпта стратегии ======
+(
         unset Z2R_QUIC_CURL   # секция 5 экспортировала мок — здесь нужен честный детект
         : > "$TMP_DIR/mock-config"
         get_config_file() { echo "$TMP_DIR/mock-config"; }
@@ -573,7 +574,8 @@ orch_locked_clear 5 udp
         }
         z2r_quic_single_round() { echo 'green|2500000|h3 5/5 (кусок 1, кусок 2, кусок 3, середина, конец): 0.5 МБ/с'; }
         orch_locked_clear 5 udp
-        out_c="$(ansi_clean "$(printf '23\nM7lc1UVf-VE\n1\n1\n\n' | Z2R_QUIC_ASSUME_TTY=1 orch_profile_try 5 "Профиль 5" "udp" "" 2>&1)")"
+        # Оффер теперь ПЕРВЫЙ (до промпта стратегии): вход 1, стратегия, видео, сохранить.
+        out_c="$(ansi_clean "$(printf '1\n23\nM7lc1UVf-VE\n1\n\n' | Z2R_QUIC_ASSUME_TTY=1 orch_profile_try 5 "Профиль 5" "udp" "" 2>&1)")"
         # read -p не печатает промпт при пайпе — assert'им вход оффера и факт установки.
         printf '%s' "$out_c" | grep -q "h3-curl не найден: проверка видео" \
           || fail "ручной без curl: нет входа в предложение установки: $out_c"
@@ -585,6 +587,13 @@ orch_locked_clear 5 udp
           || fail "ручной без curl: после установки нет QUIC-вердикта: $out_c"
         test "$(orch_locked_get 5 udp)" = 23 \
           || fail "ручной без curl: лок = $(orch_locked_get 5 udp), ожидался 23"
+        # Оффер идёт ДО старта подбора (фидбэк «слишком поздно»).
+        # (read -p промпт не печатается при пайпе, а grep-пайплайны под
+        # pipefail без guard'а молча убивают скрипт — потому || true.)
+        line_offer="$(printf '%s\n' "$out_c" | grep -n "h3-curl не найден: проверка видео" | head -1 | cut -d: -f1 || true)"
+        line_applied="$(printf '%s\n' "$out_c" | grep -n "применена" | head -1 | cut -d: -f1 || true)"
+        [ -n "$line_offer" ] && [ -n "$line_applied" ] && [ "$line_offer" -lt "$line_applied" ] \
+          || fail "оффер должен идти до старта подбора: $out_c"
         # Не-tty: предложение установки НЕ появляется, деградация без проверки.
         rm -f "$ZATOR_ROOT/tools/bin/curl-h3-i686"
         orch_locked_clear 5 udp
@@ -623,7 +632,6 @@ orch_locked_clear 5 udp
         test ! -d "$TMP_DIR/quiclock-torture.lock" || fail "set -e: trap не убрал mutex после сбоя"
         echo survived
     ) | grep -q survived || fail "set -e: QUIC-путь роняет вызывающего"
-)
 
 # == 8. режим «без проверки» ==================================================
 export Z2R_QUIC_BLIND_PAUSE=0
