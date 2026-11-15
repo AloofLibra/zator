@@ -988,6 +988,9 @@ strategies_submenu() {
         orch_profile_try "4" "Профиль 4: TCP 443 (Discord)" "tls" "https://discord.com/"
         ;;
       "5")
+        if type z2r_quic_media_run >/dev/null 2>&1 && z2r_quic_curl_detect >/dev/null 2>&1; then
+          echo -e "${cyan}Проверка видео по QUIC: A - автопрогон, проверяется и ручной выбор стратегии.${plain}"
+        fi
         echo -e "${yellow}Проверьте работоспособность в браузере.${plain}"
         orch_profile_try "5" "Профиль 5: UDP 443 (QUIC)" "udp" ""
         ;;
