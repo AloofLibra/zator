@@ -2424,7 +2424,7 @@ advanced_settings_submenu() {
         pause_enter
         ;;
       "10")
-        googlevideo_upload_local_manual
+        googlevideo_upload_local_manual || true
         pause_enter
         ;;
       "0"|"")

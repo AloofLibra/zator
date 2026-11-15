@@ -664,9 +664,12 @@ circular_runtime_update_from_repo() {
     chmod +x "$WSSIZE_RAMP_FIREWALL"
   fi
   if googlevideo_local_collection_supported "$OSystem"; then
-    mkdir -p "$ZATOR_ROOT/tools"
-    z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh" || return 1
-    chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
+    if mkdir -p "$ZATOR_ROOT/tools" \
+      && z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh"; then
+      chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" || echo -e "${yellow}Не удалось выставить права на Googlevideo listener.${plain}" >&2
+    else
+      echo -e "${yellow}Не удалось обновить Googlevideo listener; будет использоваться центральный список.${plain}" >&2
+    fi
   fi
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
@@ -1034,10 +1037,13 @@ z2r_install_runtime_libs_from_archive() {
   for lib in $Z2R_LIB_FILES; do
     z2r_download_project_file "$ZATOR_ROOT/z2r_lib/$lib" "lib/$lib" || return 1
   done
-  mkdir -p "$ZATOR_ROOT/tools"
-  z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh" || return 1
-  chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
-  z2r_install_googlevideo_sniffer
+  if mkdir -p "$ZATOR_ROOT/tools" \
+    && z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh"; then
+    chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" || echo -e "${yellow}Не удалось выставить права на Googlevideo listener.${plain}" >&2
+  else
+    echo -e "${yellow}Не удалось установить Googlevideo listener; будет использоваться центральный список.${plain}" >&2
+  fi
+  z2r_install_googlevideo_sniffer || echo -e "${yellow}Не удалось установить Googlevideo sniffer; локальный сбор будет недоступен.${plain}" >&2
 }
 
 # Обёртка загрузки для get_repo: при повторной установке zapret2 (меню 2/5->6,
@@ -1114,12 +1120,15 @@ get_repo() {
     circular_runtime_update_from_repo || return 1
   fi
   if googlevideo_local_collection_supported "$OSystem"; then
-    mkdir -p "$ZATOR_ROOT/tools"
     if [ ! -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
-      z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh" || return 1
-      chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh"
+      if mkdir -p "$ZATOR_ROOT/tools" \
+        && z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh"; then
+        chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" || echo -e "${yellow}Не удалось выставить права на Googlevideo listener.${plain}" >&2
+      else
+        echo -e "${yellow}Не удалось установить Googlevideo listener; будет использоваться центральный список.${plain}" >&2
+      fi
     fi
-    z2r_install_googlevideo_sniffer
+    z2r_install_googlevideo_sniffer || echo -e "${yellow}Не удалось обновить Googlevideo sniffer; локальный сбор останется недоступен до следующей попытки.${plain}" >&2
     # Reinstall-skip above bypasses circular_runtime_update_from_repo(), where
     # the SysV/OpenWrt callback is normally deployed. Without this hook the
     # collector assets exist, but nothing starts the listener with zapret2.

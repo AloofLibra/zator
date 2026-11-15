@@ -27,10 +27,24 @@ upload_once() {
     GOOGLEVIDEO_PENDING_FILE=${Z2R_GOOGLEVIDEO_PENDING_FILE:-${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}/pending.tsv}
     . "$ROOT/z2r_lib/googlevideo_ips.sh" || exit 1
     tel_enabled=0 tel_uuid=
-    [ -r "$ROOT/z2r_lib/telemetry.sh" ] && . "$ROOT/z2r_lib/telemetry.sh"
+    . "$ROOT/z2r_lib/telemetry.sh" || exit 1
     TELEMETRY_CFG=${Z2R_GV_TELEMETRY_CFG:-$ROOT/z2r_lib/telemetry.config}
     [ -r "$TELEMETRY_CFG" ] && . "$TELEMETRY_CFG"
     googlevideo_upload_local_batch "${tel_uuid:-}"
+  '
+}
+
+refresh_feed_once() {
+  bash_bin=
+  for candidate in /opt/bin/bash /bin/bash /usr/bin/bash; do
+    if [ -x "$candidate" ]; then bash_bin=$candidate; break; fi
+  done
+  [ -n "$bash_bin" ] || bash_bin=$(command -v bash 2>/dev/null || true)
+  [ -n "$bash_bin" ] || exit 127
+  ZATOR_ROOT="$ROOT" "$bash_bin" -c '
+    . "$ZATOR_ROOT/z2r_lib/config.sh" || exit 1
+    . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || exit 1
+    googlevideo_ips_update force
   '
 }
 
@@ -51,6 +65,7 @@ prepare_sniffer() {
 
 case ${1:-start} in
   upload-once) upload_once ;;
+  refresh-feed) refresh_feed_once ;;
   start)
     enabled || exit 0
     prepare_sniffer || { echo "Googlevideo sniffer is missing, mismatched, or could not be downloaded" >&2; exit 1; }

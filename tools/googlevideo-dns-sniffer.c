@@ -491,6 +491,7 @@ static void write_upload_attempt(uint64_t now) {
     if(!rc)rename(tmp,path); else unlink(tmp);
 }
 static pid_t upload_child=-1;
+static pid_t feed_child=-1;
 static void maybe_upload(void) {
     if(upload_child>0) { int st; pid_t r=waitpid(upload_child,&st,WNOHANG); if(r==upload_child||r<0)upload_child=-1; }
     static uint64_t next_check;
@@ -499,6 +500,45 @@ static void maybe_upload(void) {
     pid_t p=fork(); if(p<0)return;
     if(!p){execl("/bin/sh","sh",upload_helper,"upload-once",(char *)NULL);_exit(127);}
     upload_child=p; write_upload_attempt(now);
+}
+static int feed_refresh_due(uint64_t now) {
+    char path[MAX_PATH_LEN],line[64]; uint64_t stamp=0,attempt=0; unsigned interval=3600;
+    const char *e=getenv("Z2R_GOOGLEVIDEO_FEED_INTERVAL");
+    if(e&&*e){char *end; unsigned long x=strtoul(e,&end,10);if(!*end&&x>=60&&x<=604800)interval=(unsigned)x;}
+    if(path_join(path,sizeof(path),gv_tmpdir,"googlevideo-feed.ts"))return 0;
+    FILE *f=fopen(path,"r"); if(f){if(fgets(line,sizeof(line),f))stamp=strtoull(line,NULL,10);fclose(f);}
+    if(path_join(path,sizeof(path),gv_tmpdir,"googlevideo-feed-attempt.ts"))return 0;
+    f=fopen(path,"r"); if(f){if(fgets(line,sizeof(line),f))attempt=strtoull(line,NULL,10);fclose(f);}
+    if(attempt>stamp)stamp=attempt;
+    return now>=stamp&&now-stamp>=interval;
+}
+static void write_feed_attempt(uint64_t now) {
+    char path[MAX_PATH_LEN],tmp[MAX_PATH_LEN],value[32],suffix[32];
+    if(path_join(path,sizeof(path),gv_tmpdir,"googlevideo-feed-attempt.ts"))return;
+    int n=snprintf(value,sizeof(value),"%llu\n",(unsigned long long)now);
+    snprintf(suffix,sizeof(suffix),".tmp.%ld",(long)getpid());
+    if(path_suffix(tmp,sizeof(tmp),path,suffix))return;
+    int fd=open(tmp,O_WRONLY|O_CREAT|O_TRUNC,0644); if(fd<0)return;
+    int rc=write(fd,value,(size_t)n)==n?0:-1; if(close(fd))rc=-1;
+    if(!rc)rename(tmp,path); else unlink(tmp);
+}
+static void maybe_refresh_feed(void) {
+    if(feed_child>0){int st;pid_t r=waitpid(feed_child,&st,WNOHANG);if(r==feed_child||r<0){
+        if(r==feed_child&&WIFEXITED(st)&&WEXITSTATUS(st)==0){char path[MAX_PATH_LEN],tmp[MAX_PATH_LEN],value[32],suffix[32];
+            if(!path_join(path,sizeof(path),gv_tmpdir,"googlevideo-feed.ts")){
+                int n=snprintf(value,sizeof(value),"%llu\n",(unsigned long long)wall_seconds());snprintf(suffix,sizeof(suffix),".tmp.%ld",(long)getpid());
+                if(!path_suffix(tmp,sizeof(tmp),path,suffix)){int fd=open(tmp,O_WRONLY|O_CREAT|O_TRUNC,0644);if(fd>=0){int rc=write(fd,value,(size_t)n)==n?0:-1;if(close(fd))rc=-1;if(!rc)rename(tmp,path);else unlink(tmp);}}
+            }
+            log_msg("feed_refresh result=ok");
+        }else log_msg("feed_refresh result=failed");
+        feed_child=-1;
+    }}
+    static uint64_t next_check;
+    uint64_t now=wall_seconds();if(now<next_check)return;next_check=now+60;
+    if(feed_child>0||!feed_refresh_due(now))return;
+    pid_t p=fork();if(p<0)return;
+    if(!p){execl("/bin/sh","sh",upload_helper,"refresh-feed",(char *)NULL);_exit(127);}
+    feed_child=p;write_feed_attempt(now);log_msg("feed_refresh started interval=3600");
 }
 static int acquire_pid(void) {
     if(mkdir_parent(pid_file))return -1;
@@ -541,7 +581,7 @@ static int ubus_available(void) {
 static int run_ubus_collector(void) {
     pid_t child=-1; int fd=-1; char buf[8192]; size_t used=0;
     while(running&&collector_enabled()) {
-        if(fd<0) { fd=open_ubus_pipe(&child); if(fd<0){sleep(1);maybe_upload();continue;} used=0; }
+        if(fd<0) { fd=open_ubus_pipe(&child); if(fd<0){sleep(1);maybe_upload();maybe_refresh_feed();continue;} used=0; }
         struct pollfd p={.fd=fd,.events=POLLIN|POLLHUP|POLLERR}; int rc=poll(&p,1,1000);
         if(rc>0&&(p.revents&POLLIN)) {
             char chunk[1024]; ssize_t n=read(fd,chunk,sizeof(chunk));
@@ -559,7 +599,7 @@ static int run_ubus_collector(void) {
             if(child>0){kill(child,SIGTERM);while(waitpid(child,NULL,0)<0&&errno==EINTR){}child=-1;}
             sleep(1);
         }
-        maybe_upload();
+        maybe_upload(); maybe_refresh_feed();
     }
     if(fd>=0)close(fd);
     if(child>0){kill(child,SIGTERM);waitpid(child,NULL,0);}
@@ -572,7 +612,7 @@ static int run_packet_collector(void) {
     while(running&&collector_enabled()) {
         int rc=poll(&p,1,1000); if(rc<0){if(errno==EINTR)continue;break;}
         if(rc>0&&(p.revents&POLLIN)){ssize_t n=recv(fd,b,sizeof(b),0);if(n>0)dns_packet(b,(size_t)n);}
-        maybe_upload();
+        maybe_upload(); maybe_refresh_feed();
     }
     close(fd); return 0;
 }
@@ -588,6 +628,7 @@ static int run_collector(void) {
     collector_mode=1; log_msg("collector_started source=%s",ubus_available()?"ubus":"af_packet");
     int rc=ubus_available()?run_ubus_collector():run_packet_collector();
     if(upload_child>0){int st; if(waitpid(upload_child,&st,WNOHANG)==0){sleep(1);if(waitpid(upload_child,&st,WNOHANG)==0){kill(upload_child,SIGTERM);waitpid(upload_child,&st,0);}}}
+    if(feed_child>0){int st;if(waitpid(feed_child,&st,WNOHANG)==0){sleep(1);if(waitpid(feed_child,&st,WNOHANG)==0){kill(feed_child,SIGTERM);waitpid(feed_child,&st,0);}}}
     remove_pid(); log_msg("collector_stopped"); return rc;
 }
 
