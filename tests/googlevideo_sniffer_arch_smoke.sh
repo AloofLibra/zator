@@ -46,6 +46,21 @@ googlevideo_sniffer_install() {
 }
 googlevideo_sniffer_ensure_installed
 googlevideo_sniffer_binary_matches_arch mipselsf
+printf '#!/bin/sh\n[ "${1:-}" = --replay ]\n' > "$tmp/runtime-probe-ok"
+chmod 755 "$tmp/runtime-probe-ok"
+printf '#!/bin/sh\nexit 1\n' > "$tmp/runtime-probe-bad"
+chmod 755 "$tmp/runtime-probe-bad"
+command() {
+  if [ "$1" = -v ]; then
+    case "${2:-}" in hexdump|od) return 1 ;; esac
+  fi
+  builtin command "$@"
+}
+googlevideo_sniffer_binary_matches_arch mipselsf "$tmp/runtime-probe-ok"
+if googlevideo_sniffer_binary_matches_arch mipselsf "$tmp/runtime-probe-bad"; then
+  echo 'runtime probe accepted a binary that cannot execute' >&2; exit 1
+fi
+unset -f command
 write_mips_elf big "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
 chmod 755 "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
 googlevideo_sniffer_install() { return 1; }

@@ -107,7 +107,13 @@ googlevideo_sniffer_binary_matches_arch() {
     riscv64) expected_class=2; expected_machine=243; data=1 ;;
     *) return 1 ;;
   esac
-  identity="$(googlevideo_sniffer_elf_identity "$binary")" || return 1
+  identity="$(googlevideo_sniffer_elf_identity "$binary")" || {
+    # Some minimal OpenWrt images ship neither hexdump nor od. In that case,
+    # let the kernel validate the executable ABI with the collector's
+    # side-effect-free DNS replay mode.
+    "$binary" --replay </dev/null >/dev/null 2>&1
+    return $?
+  }
   [ "$identity" = "$expected_class:$data:$expected_machine" ]
 }
 
