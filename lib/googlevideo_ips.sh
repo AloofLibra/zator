@@ -20,15 +20,48 @@ googlevideo_log() {
   fi
 }
 
+# Byte 6 of the ELF header: 1 = little-endian data, 2 = big-endian.
+# With an explicit file argument the answer is about THAT file only —
+# googlevideo_sniffer_binary_matches_arch relies on it. Without an argument
+# this is a platform probe: Z2R_GV_ELF_FILE override first, then the running
+# interpreter (/proc/self/exe — always present on Linux, always the right
+# ABI) and well-known binaries. OpenWRT keeps busybox in /bin, Entware on
+# Keenetic in /opt/bin — hardcoding either one silently breaks the other.
 googlevideo_sniffer_elf_endian() {
-  local elf="${1:-${Z2R_GV_ELF_FILE:-/bin/busybox}}" value
-  [ -r "$elf" ] || return 1
-  value="$(dd if="$elf" bs=1 skip=5 count=1 2>/dev/null | od -A n -t u1 2>/dev/null | tr -d '[:space:]')"
+  local elf value
+  if [ -n "${1:-}" ]; then
+    [ -r "$1" ] || return 1
+    elf="$1"
+  else
+    elf=""
+    for elf in "${Z2R_GV_ELF_FILE:-}" /proc/self/exe /bin/busybox /opt/bin/busybox /bin/sh /opt/bin/bash /opt/bin/opkg; do
+      { [ -n "$elf" ] && [ -r "$elf" ]; } && break
+      elf=""
+    done
+    [ -n "$elf" ] || return 1
+  fi
+  # od -b (octal bytes) is the only byte-dump form present in BOTH GNU od and
+  # the compact busybox od shipped by Entware (-A/-t do not exist there).
+  value="$(dd if="$elf" bs=1 skip=5 count=1 2>/dev/null | od -b 2>/dev/null | awk 'NR==1 {print $2; exit}')"
   case "$value" in
-    1) echo little ;;
-    2) echo big ;;
+    001|1) echo little; return 0 ;;
+    002|2) echo big; return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Package manager config is independent evidence of the platform ABI:
+# Entware reports mipsel-3.4 / mips-3.4, OpenWRT mipsel_24kc / mips_24kc etc.
+# The first non-generic line (highest priority) is the platform itself.
+googlevideo_sniffer_opkg_endian() {
+  command -v opkg >/dev/null 2>&1 || return 1
+  local arch
+  arch="$(opkg print-architecture 2>/dev/null | awk '$2 != "all" && $2 != "noarch" {print $2; exit}')"
+  case "$arch" in
+    mipsel*|mipsle*) echo little; return 0 ;;
+    mips*) echo big; return 0 ;;
+  esac
+  return 1
 }
 
 googlevideo_sniffer_binary_matches_arch() {
@@ -70,10 +103,23 @@ googlevideo_sniffer_arch() {
       case "$cpu" in
         *lexra*|*5281*) echo lexra ;;
         *)
+          # uname(2) on MIPS returns "mips" with no endianness — resolve it
+          # from the running binary's ELF header, then from opkg's platform
+          # architecture. Little-endian is the last-resort guess (MT762x and
+          # friends dominate the router space); the warning keeps it visible.
           case "$(googlevideo_sniffer_elf_endian)" in
             little) echo mipselsf ;;
             big) echo mipssf ;;
-            *) return 1 ;;
+            *)
+              case "$(googlevideo_sniffer_opkg_endian)" in
+                little) echo mipselsf ;;
+                big) echo mipssf ;;
+                *)
+                  echo "googlevideo: MIPS endianness not detected (uname=$(uname -m 2>/dev/null), no ELF/opkg evidence), assuming little-endian" >&2
+                  echo mipselsf
+                  ;;
+              esac
+              ;;
           esac
           ;;
       esac
@@ -123,9 +169,12 @@ googlevideo_listener_hook_install() {
 }
 
 googlevideo_sniffer_install() {
-  local arch base fallback tracking tmp compressed size release
+  local arch base fallback tracking tmp compressed size release reason
   [ "${Z2R_OFFLINE:-0}" != 1 ] || return 0
-  arch="$(googlevideo_sniffer_arch)" || return 0
+  arch="$(googlevideo_sniffer_arch)" || {
+    echo "Googlevideo sniffer: не удалось определить архитектуру платформы ($(uname -m 2>/dev/null)), установка пропущена." >&2
+    return 0
+  }
   base="${Z2R_GV_SNIFFER_RELEASE_BASE:-}"
   fallback=""
   if [ -z "$base" ]; then
@@ -137,11 +186,18 @@ googlevideo_sniffer_install() {
       base="https://github.com/AloofLibra/zator/releases/download/latest"
     fi
   fi
-  mkdir -p "${ZATOR_ROOT:-/opt/zator}/tools/bin" || return 0
+  mkdir -p "${ZATOR_ROOT:-/opt/zator}/tools/bin" || {
+    echo "Googlevideo sniffer: не удалось создать каталог ${ZATOR_ROOT:-/opt/zator}/tools/bin." >&2
+    return 0
+  }
   tmp="${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer.tmp.$$"
   compressed="$tmp.gz"
+  # Every failure path leaves a visible reason — silent skips here cost hours
+  # of debugging (the release binary can also outgrow the size cap on CI).
+  reason="не удалось скачать z2r-googlevideo-dns-sniffer-linux-$arch.gz (нет curl/wget или источник недоступен)"
   for release in "$base" "$fallback"; do
     [ -n "$release" ] || continue
+    reason="не удалось скачать z2r-googlevideo-dns-sniffer-linux-$arch.gz с $release"
     if { if command -v curl >/dev/null 2>&1; then
            curl -fLsS --connect-timeout 8 --max-time 30 "$release/z2r-googlevideo-dns-sniffer-linux-$arch.gz" -o "$compressed" 2>/dev/null
          elif command -v wget >/dev/null 2>&1; then
@@ -150,14 +206,16 @@ googlevideo_sniffer_install() {
            false
          fi
        } && gzip -t "$compressed" 2>/dev/null; then
-      gzip -dc "$compressed" > "$tmp" 2>/dev/null || continue
+      gzip -dc "$compressed" > "$tmp" 2>/dev/null || { reason="повреждённый архив с $release"; continue; }
       size="$(wc -c < "$tmp" | tr -d ' ')"
-      case "$size" in ''|*[!0-9]*) continue ;; esac
+      case "$size" in ''|*[!0-9]*) reason="нечитаемый размер артефакта с $release"; continue ;; esac
       if [ "$size" -le 139264 ] && [ -s "$tmp" ]; then
-        chmod 755 "$tmp" && mv -f "$tmp" "${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer" && break
+        chmod 755 "$tmp" && mv -f "$tmp" "${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer" && reason="" && break
       fi
+      reason="артефакт с $release отброшен: ${size:-?} байт при лимите 139264"
     fi
   done
+  [ -z "$reason" ] || echo "Googlevideo sniffer: бинарник не установлен ($reason)." >&2
   rm -f "$tmp" "$compressed"
   return 0
 }
@@ -445,12 +503,16 @@ _googlevideo_upload_local_batch() {
     googlevideo_log "upload discarded rows=$rows age_valid=$age_valid reason=no_valid_unlisted_ips"
     return 0
   fi
-  local -a curl_args=(--data-urlencode "token=$STATS_TOKEN" --data-urlencode "uuid=$uuid")
-  [ -z "$ips" ] || curl_args+=(--data-urlencode "ips=$ips")
-  [ -z "$observations" ] || curl_args+=(--data-urlencode "observations=$observations")
+  # POSIX-совместимые аргументы curl: файл целиком парсится busybox ash
+  # (listener живёт в /bin/sh и вызывается ndm-хуками без bash), поэтому
+  # bash-массивы здесь недопустимы. uuid уже сохранён в local выше, $@ после
+  # этого блока не используется.
+  set -- --data-urlencode "token=$STATS_TOKEN" --data-urlencode "uuid=$uuid"
+  [ -z "$ips" ] || set -- "$@" --data-urlencode "ips=$ips"
+  [ -z "$observations" ] || set -- "$@" --data-urlencode "observations=$observations"
   googlevideo_log "upload sending legacy_ips=$(printf '%s\n' "$ips" | tr ',' '\n' | awk 'NF{n++} END{print n+0}') host_ip_pairs=$(printf '%s\n' "$observations" | tr ',' '\n' | awk 'NF{n++} END{print n+0}')"
   http_code="$(curl -4 -fsS --connect-timeout 3 --max-time 8 -o /dev/null -w '%{http_code}' \
-      "${curl_args[@]}" "$GOOGLEVIDEO_INGEST_URL" 2>/dev/null)" || curl_rc=$?
+      "$@" "$GOOGLEVIDEO_INGEST_URL" 2>/dev/null)" || curl_rc=$?
   if [ "$curl_rc" -eq 0 ] && [ "$http_code" -ge 200 ] 2>/dev/null && [ "$http_code" -lt 300 ] 2>/dev/null; then
     mkdir -p "${cache%/*}" || { mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }
     printf '%s\n' "$now" > "$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache" || { rm -f "$cache.tmp.$$"; mv -f "$snapshot" "$queue_dir/pending.retry.$now.$$"; return 1; }

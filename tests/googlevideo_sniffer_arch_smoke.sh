@@ -44,10 +44,32 @@ check powerpc '' ppc
 check i686 '' x86
 check x86_64 '' x86_64
 check riscv64 '' riscv64
-googlevideo_local_collection_supported VPS
-googlevideo_local_collection_supported WRT
-googlevideo_local_collection_supported entware
-if googlevideo_local_collection_supported merlin; then echo 'unsupported local collector platform accepted' >&2; exit 1; fi
+
+# Keenetic/Entware: uname says plain "mips" and the old probe hardcoded
+# /bin/busybox (absent on Entware — the install silently no-op'd). The fix:
+# a candidate list (/proc/self/exe first, Entware paths included) plus an
+# opkg layer. The cascade answer for a little-endian board is platform-
+# independent (on Linux /proc/self/exe decides, elsewhere the loud default).
+unset Z2R_GV_ELF_FILE
+check mips 'system type : MediaTek MT7621 SoC' mipselsf
+
+# Deterministic opkg layer: suppress the ELF probe entirely.
+gv_elf_endian_real="$(declare -f googlevideo_sniffer_elf_endian)"
+googlevideo_sniffer_elf_endian() { return 1; }
+opkg() { printf 'arch all 100\narch mipsel-3.4 150\narch mipsel-3.4_kn 200\n'; }
+check mips 'system type : MediaTek MT7621 SoC' mipselsf
+opkg() { printf 'arch all 100\narch mips-3.4 150\n'; }
+check mips 'system type : MIPS 24Kc' mipssf
+# No ELF evidence and no opkg: last-resort guess is little-endian, loudly.
+opkg() { return 127; }
+got="$(googlevideo_sniffer_arch 2>"$tmp/warn")"
+[ "$got" = mipselsf ] || { echo "no-evidence fallback: expected mipselsf, got $got" >&2; exit 1; }
+grep -q 'endianness not detected' "$tmp/warn" || { echo 'no-evidence fallback must warn on stderr' >&2; exit 1; }
+unset -f opkg
+eval "$gv_elf_endian_real"
+# The explicit-argument probe stays authoritative: an unreadable file is an
+# error, not a platform fallback to the running interpreter.
+if googlevideo_sniffer_elf_endian "$tmp/absent" >/dev/null 2>&1; then echo 'unreadable explicit ELF accepted' >&2; exit 1; fi
 
 # Core tar updates restore the platform startup hook, including the SysV path
 # used by VPS; repeated deployment remains an overwrite, not an extra hook.
