@@ -595,6 +595,34 @@ orch_locked_clear 5 udp
           && fail "ручной без curl (не-tty): не должен предлагать установку"
         orch_locked_clear 5 udp
     )
+
+    # == 7i. set -e-гигиена QUIC-путей: ничего не убивает меню ===================
+    (
+        set -e
+        export Z2R_QUIC_SETTLE=0 Z2R_QUIC_ATTEMPT_PAUSE=0
+        # 7i-1: пауза/устаканивание с нулём (rc 1 у [) не убивают под set -e.
+        _z2r_quic_settle
+        _z2r_quic_settle 0
+        _z2r_quic_attempt_pause
+        # 7i-2: ручной путь целиком под set -e с нулевыми паузами.
+        config_profile_max_strategy() { case "$1" in 5) echo 32 ;; *) echo 0 ;; esac; }
+        z2r_quic_single_round() { echo 'green|2500000|h3 5/5 (кусок 1, кусок 2, кусок 3, середина, конец): 0.5 МБ/с'; }
+        orch_locked_clear 5 udp
+        out_c="$(ansi_clean "$(printf '12\nM7lc1UVf-VE\n1\n\n' | orch_profile_try 5 "Профиль 5" "udp" "" 2>&1)")"
+        printf '%s' "$out_c" | grep -q "Стратегия 12 сохранена для профиля 5." \
+          || fail "set -e: ручной путь с SETTLE=0 упал: $out_c"
+        # 7i-3: сбой записи лока на восстановлении — вызывающий жив.
+        orch_locked_set() { return 1; }
+        orch_locked_clear() { return 1; }
+        z2r_quic_check() { echo 'FAIL|network_error|28|0|000|0|0|0|0|15.0|0'; }
+        printf '0\n' | z2r_quic_sweep_run >/dev/null
+        # 7i-4: сбой записи в EXIT-trap trial — mutex убран, вызывающий жив.
+        z2r_media_prepare() { Z2R_MEDIA_DIR="$media"; Z2R_MEDIA_READY=1; return 0; }
+        fail_run() { touched=1; return 1; }
+        Z2R_QUIC_LOCK_DIR="$TMP_DIR/quiclock-torture" _z2r_quic_trial fail_run >/dev/null 2>&1 || true
+        test ! -d "$TMP_DIR/quiclock-torture.lock" || fail "set -e: trap не убрал mutex после сбоя"
+        echo survived
+    ) | grep -q survived || fail "set -e: QUIC-путь роняет вызывающего"
 )
 
 # == 8. режим «без проверки» ==================================================

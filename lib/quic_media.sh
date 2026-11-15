@@ -156,7 +156,13 @@ z2r_quic_curl_install() {
             size="$(wc -c < "$tmp" | tr -d ' ')"
             case "$size" in ''|*[!0-9]*) reason="нечитаемый размер артефакта с $release"; continue ;; esac
             if [ "$size" -le "$Z2R_QUIC_CURL_SIZE_LIMIT" ] && [ "$size" -ge 1048576 ] && [ -s "$tmp" ]; then
-                chmod 755 "$tmp" && mv -f "$tmp" "$dest" && reason="" && break
+                # set -e: сбой chmod/mv не должен убить вызывающее меню — уйти в следующий source.
+                if chmod 755 "$tmp" && mv -f "$tmp" "$dest"; then
+                    reason=""
+                    break
+                fi
+                reason="не удалось установить артефакт с $release (chmod/mv)"
+                continue
             fi
             reason="артефакт с $release отброшен: ${size:-?} байт при лимите $Z2R_QUIC_CURL_SIZE_LIMIT"
         fi
@@ -188,7 +194,7 @@ _z2r_quic_settle() {
     local s="${1:-${Z2R_QUIC_SETTLE:-3}}"
     case "$s" in ''|*[!0-9]*) s=3 ;; esac
     [ "$s" -gt 0 ] && sleep "$s"
-    return 0
+    return 0   # set -e: s=0 даёт rc 1 у [ — не должен убивать вызывающего
 }
 
 _z2r_quic_attempt_pause() {
@@ -594,8 +600,8 @@ z2r_quic_sweep_blind() {
     case "${s:-0}" in ''|0|*[!0-9]*)
         # Ни одна стратегия не успела примениться — просто вернуть как было.
         case "$prev" in
-            ''|auto) orch_locked_clear 5 udp ;;
-            *) orch_locked_set 5 udp "$prev" ;;
+            ''|auto) orch_locked_clear 5 udp || true ;;
+            *) orch_locked_set 5 udp "$prev" || true ;;
         esac
         echo "Ни одна стратегия не применялась, состояние профиля не менялось."
         return 0
@@ -607,8 +613,8 @@ z2r_quic_sweep_blind() {
     read -re -p "Enter - сохранить ${s}, 0 - вернуть как было: " answer || answer="0"
     if [ "$answer" = "0" ]; then
         case "$prev" in
-            ''|auto) orch_locked_clear 5 udp ;;
-            *) orch_locked_set 5 udp "$prev" ;;
+            ''|auto) orch_locked_clear 5 udp || true ;;
+            *) orch_locked_set 5 udp "$prev" || true ;;
         esac
         echo "Изменения отменены, прежняя стратегия профиля возвращена."
     else
@@ -617,7 +623,10 @@ z2r_quic_sweep_blind() {
                 && echo "Стратегия ${s} сохранена для профиля 5." \
                 || echo -e "${red}Не удалось сохранить стратегию ${s} для профиля 5.${plain}"
         else
-            orch_locked_set 5 udp "$s" && echo "Стратегия ${s} сохранена для профиля 5."
+            # set -e: неудача записи не должна убивать меню.
+            orch_locked_set 5 udp "$s" \
+                && echo "Стратегия ${s} сохранена для профиля 5." \
+                || echo -e "${red}Не удалось сохранить стратегию ${s} для профиля 5.${plain}"
         fi
         type telemetry_notify >/dev/null 2>&1 && telemetry_notify
     fi
@@ -819,12 +828,15 @@ z2r_quic_sweep_run() {
                 echo -e "${red}Не удалось сохранить стратегию ${answer} для профиля 5.${plain}"
             fi
         else
-            orch_locked_set 5 udp "$answer" && echo "Стратегия ${answer} сохранена для профиля 5."
+            # set -e: неудача записи не должна убивать меню.
+            orch_locked_set 5 udp "$answer" \
+                && echo "Стратегия ${answer} сохранена для профиля 5." \
+                || echo -e "${red}Не удалось сохранить стратегию ${answer} для профиля 5.${plain}"
         fi
     else
         case "$prev" in
-            ''|auto) orch_locked_clear 5 udp ;;
-            *) orch_locked_set 5 udp "$prev" ;;
+            ''|auto) orch_locked_clear 5 udp || true ;;
+            *) orch_locked_set 5 udp "$prev" || true ;;
         esac
         echo "Изменения отменены, прежняя стратегия профиля возвращена."
     fi
@@ -872,8 +884,8 @@ _z2r_quic_trial() (
     trap 'trap "" INT TERM HUP
         if [ "$completed" = 0 ] && [ "$touched" = 1 ]; then
             case "$prior" in
-                ""|auto) orch_locked_clear 5 udp ;;
-                *) orch_locked_set 5 udp "$prior" ;;
+                ""|auto) orch_locked_clear 5 udp || true ;;
+                *) orch_locked_set 5 udp "$prior" || true ;;
             esac
         fi
         [ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"
