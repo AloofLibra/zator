@@ -425,9 +425,12 @@ _z2r_quic_fail_short() {
 # speed — сумма скоростей прошедших проб (сравнима между стратегиями).
 # Ход проб показывается строкой-анимацией в stderr (только на tty),
 # чтобы между баннером и первым вердиктом не было ощущения «висит».
+# Анимация: «стереть-потом-писать» (\r\033[K перед текстом) и тексты
+# КОРОЧЕ 40 символов — длинные строки переносятся на узких терминалах,
+# и \r чистит только первую строку экрана (хвосты вида «…т ответа»).
 z2r_quic_single_round() {
     local s="$1"
-    local key label row st re bt tt sp out
+    local key label row st re bt tt sp out mark
     local ok_n=0 speed_sum=0 ok_positions="" fail_details=""
     local re_first="" re_last="" i=0 total
     for key in $(_z2r_quic_plan); do
@@ -435,7 +438,7 @@ z2r_quic_single_round() {
         [ "$i" = 0 ] || _z2r_quic_attempt_pause
         i=$((i + 1))
         if [ -t 2 ]; then
-            printf '\r  стратегия %s, проба %d/5 (%s)...' "$s" "$i" "$label" >&2
+            printf '\r\033[K[%s] проба %d/5 (%s)...' "$s" "$i" "$label" >&2
         fi
         row="$(z2r_quic_check "$key")" || row=""
         case "$row" in
@@ -451,16 +454,16 @@ EOF
             speed_sum="$(awk -v a="$speed_sum" -v b="$sp" 'BEGIN{printf "%.0f", a + b}')"
             ok_positions="${ok_positions}${ok_positions:+, }${label}"
             if [ -t 2 ]; then
-                printf '\r  стратегия %s, проба %d/5 (%s): OK, %s МБ/с\033[K' \
+                printf '\r\033[K[%s] проба %d/5 (%s): OK, %s МБ/с' \
                     "$s" "$i" "$label" "$(_z2r_quic_speed_mbps "$sp")" >&2
             fi
         else
-            fail_details="${fail_details}${fail_details:+, }${label} — $(_z2r_quic_fail_mark "$re")"
+            mark="$(_z2r_quic_fail_mark "$re")"
+            fail_details="${fail_details}${fail_details:+, }${label} — ${mark}"
             [ -n "$re_first" ] || re_first="$re"
             re_last="$re"
             if [ -t 2 ]; then
-                printf '\r  стратегия %s, проба %d/5 (%s): %s\033[K' \
-                    "$s" "$i" "$label" "$(_z2r_quic_fail_mark "$re")" >&2
+                printf '\r\033[K[%s] проба %d/5 (%s): %s' "$s" "$i" "$label" "$mark" >&2
             fi
         fi
     done
