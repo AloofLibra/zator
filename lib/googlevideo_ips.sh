@@ -250,14 +250,14 @@ googlevideo_sniffer_install() {
       gzip -dc "$compressed" > "$tmp" 2>/dev/null || { reason="повреждённый архив с $release"; continue; }
       size="$(wc -c < "$tmp" | tr -d ' ')"
       case "$size" in ''|*[!0-9]*) reason="нечитаемый размер артефакта с $release"; continue ;; esac
-      if [ "$size" -le 139264 ] && [ -s "$tmp" ]; then
+      if [ "$size" -le 143360 ] && [ -s "$tmp" ]; then
         if chmod 755 "$tmp" && googlevideo_sniffer_binary_matches_arch "$arch" "$tmp"; then
           mv -f "$tmp" "${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer" && reason="" && break
         fi
         reason="артефакт с $release не подходит архитектуре $arch"
         googlevideo_log "sniffer_download_invalid arch=$arch release=$release"
       else
-        reason="артефакт с $release отброшен: ${size:-?} байт при лимите 139264"
+        reason="артефакт с $release отброшен: ${size:-?} байт при лимите 143360"
       fi
     fi
   done

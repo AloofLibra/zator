@@ -136,7 +136,7 @@ grep -Fxq 8.8.8.8 "$MOCK_SET"
 grep -Fxq 8.8.8.9 "$MOCK_SET"
 
 # Release sniffer builds are slightly above 128 KiB; the updater must accept
-# the same 136 KiB ceiling as the cross-architecture build script.
+# the same 140 KiB ceiling as the cross-architecture build script.
 mkdir -p "$TMP/sniffer-src"
 head -c 133008 /dev/zero > "$TMP/sniffer-src/binary"
 printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\267\000' \
