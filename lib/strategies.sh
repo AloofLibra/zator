@@ -54,10 +54,10 @@ orch_profile_try() {
     echo "Текущее состояние: ${current_state/auto/def}"
     # Общая точка входа всех меню подбора, включая Discord.
     type show_hint >/dev/null 2>&1 && show_hint "$profile"
-    # Профиль 5: при найденном h3-curl в промпте есть A — QUIC-медиапроверка.
+    # Профиль 5: при наличии QUIC-модуля в промпте есть A. h3-curl может
+    # отсутствовать — A сам предложит установку (как и ручной путь ниже).
     local quic_ok=0
-    if [ "$profile" = 5 ] && type z2r_quic_media_run >/dev/null 2>&1 \
-        && z2r_quic_curl_detect >/dev/null 2>&1; then
+    if [ "$profile" = 5 ] && type z2r_quic_media_run >/dev/null 2>&1; then
         quic_ok=1
     fi
     local prompt_text="Введите номер стратегии 1-${max_strat} (0 - отключить профиль"

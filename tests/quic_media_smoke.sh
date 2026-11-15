@@ -555,6 +555,46 @@ orch_locked_clear 5 udp
     test "$(orch_locked_get 5 udp)" = 22 \
       || fail "ручной подбор (отмена): прежний лок 22 потерян"
     orch_locked_clear 5 udp
+
+    # == 7h. ручной подбор БЕЗ h3-curl: предложение установки -> успех -> проверка
+    (
+        unset Z2R_QUIC_CURL   # секция 5 экспортировала мок — здесь нужен честный детект
+        : > "$TMP_DIR/mock-config"
+        get_config_file() { echo "$TMP_DIR/mock-config"; }
+        config_profile_max_strategy() { case "$1" in 5) echo 32 ;; *) echo 0 ;; esac; }
+        ZATOR_ROOT="$TMP_DIR/zator-t"
+        mkdir -p "$ZATOR_ROOT/tools/bin"
+        z2r_media_prepare() { Z2R_MEDIA_DIR="$media"; Z2R_MEDIA_READY=1; return 0; }
+        z2r_quic_curl_install() {
+            cp "$TMP_DIR/bin/curl-h3-mock" "$ZATOR_ROOT/tools/bin/curl-h3-i686"
+            chmod 755 "$ZATOR_ROOT/tools/bin/curl-h3-i686"
+            echo "h3-curl: установлен (мок)" >&2
+            return 0
+        }
+        z2r_quic_single_round() { echo 'green|2500000|h3 5/5 (кусок 1, кусок 2, кусок 3, середина, конец): 0.5 МБ/с'; }
+        orch_locked_clear 5 udp
+        out_c="$(ansi_clean "$(printf '23\nM7lc1UVf-VE\n1\n1\n\n' | Z2R_QUIC_ASSUME_TTY=1 orch_profile_try 5 "Профиль 5" "udp" "" 2>&1)")"
+        # read -p не печатает промпт при пайпе — assert'им вход оффера и факт установки.
+        printf '%s' "$out_c" | grep -q "h3-curl не найден: проверка видео" \
+          || fail "ручной без curl: нет входа в предложение установки: $out_c"
+        printf '%s' "$out_c" | grep -q "h3-curl: установлен (мок)" \
+          || fail "ручной без curl: установка не вызвалась: $out_c"
+        test -s "$ZATOR_ROOT/tools/bin/curl-h3-i686" \
+          || fail "ручной без curl: мок-установка не сработала"
+        printf '%s' "$out_c" | grep -q "QUIC: OK" \
+          || fail "ручной без curl: после установки нет QUIC-вердикта: $out_c"
+        test "$(orch_locked_get 5 udp)" = 23 \
+          || fail "ручной без curl: лок = $(orch_locked_get 5 udp), ожидался 23"
+        # Не-tty: предложение установки НЕ появляется, деградация без проверки.
+        rm -f "$ZATOR_ROOT/tools/bin/curl-h3-i686"
+        orch_locked_clear 5 udp
+        out_c="$(ansi_clean "$(printf '7\nM7lc1UVf-VE\n0\n\n' | orch_profile_try 5 "Профиль 5" "udp" "" 2>&1)")"
+        printf '%s' "$out_c" | grep -q "подбор без QUIC-проверки" \
+          || fail "ручной без curl (не-tty): нет сообщения деградации: $out_c"
+        printf '%s' "$out_c" | grep -q "h3-curl: установлен (мок)" \
+          && fail "ручной без curl (не-tty): не должен предлагать установку"
+        orch_locked_clear 5 udp
+    )
 )
 
 # == 8. режим «без проверки» ==================================================

@@ -176,7 +176,7 @@ z2r_quic_offer_install() {
     z2r_quic_curl_detect >/dev/null 2>&1 && return 0
     echo -e "${yellow}h3-curl не найден: проверка видео по HTTP/3 недоступна.${plain}" >&2
     local ans
-    read -re -p "Скачать и установить h3-curl с релизов zator? 1 - да, Enter - нет: " ans || ans=""
+    read -re -p "Скачать и установить h3-curl (репозиторий z2r-curl-h3)? 1 - да, Enter - нет: " ans || ans=""
     [ "$ans" = "1" ] || return 1
     z2r_quic_curl_install || return 1
     z2r_quic_curl_detect >/dev/null 2>&1
@@ -884,16 +884,27 @@ _z2r_quic_trial() (
     Z2R_QUIC_SWEEP_DIR=$(umask 077; mktemp -d /tmp/z2r-quic-sweep.XXXXXX) || return 1
     Z2R_QUIC_CURL="$(z2r_quic_curl_detect 2>/dev/null)" || true
     if [ -z "$Z2R_QUIC_CURL" ]; then
-        if [ "${Z2R_QUIC_TRIAL_SOFT:-0}" = 1 ]; then
-            # Ручной подбор: без проверки, но подбор сам продолжается.
-            echo -e "${yellow}h3-curl не найден: подбор без QUIC-проверки.${plain}" >&2
-            "$run" "$@" || return 1
-            completed=1
+        # Ручной подбор на живом терминале: предложить установить h3-curl
+        # (как A-путь; иначе пользователь не узнает, что установка вообще
+        # возможна). Z2R_QUIC_ASSUME_TTY=1 — хук для тестов.
+        if [ "${Z2R_QUIC_TRIAL_SOFT:-0}" = 1 ] \
+            && { [ -t 0 ] || [ "${Z2R_QUIC_ASSUME_TTY:-0}" = 1 ]; }; then
+            if z2r_quic_offer_install; then
+                Z2R_QUIC_CURL="$(z2r_quic_curl_detect 2>/dev/null)" || true
+            fi
+        fi
+        if [ -z "$Z2R_QUIC_CURL" ]; then
+            if [ "${Z2R_QUIC_TRIAL_SOFT:-0}" = 1 ]; then
+                # Ручной подбор: без проверки, но подбор сам продолжается.
+                echo -e "${yellow}h3-curl не найден: подбор без QUIC-проверки.${plain}" >&2
+                "$run" "$@" || return 1
+                completed=1
+                return 0
+            fi
+            echo -e "${yellow}h3-curl не найден: проверка видео недоступна.${plain}" >&2
+            z2r_quic_offer_blind || :
             return 0
         fi
-        echo -e "${yellow}h3-curl не найден: проверка видео недоступна.${plain}" >&2
-        z2r_quic_offer_blind || :
-        return 0
     fi
     # Резолвер VISIONOS тоже зовёт curl с -q: на Entware компилированный
     # CA-путь curl не существует — дать бандл всему прогону (проба ставит
