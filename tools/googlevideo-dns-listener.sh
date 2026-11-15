@@ -34,10 +34,26 @@ upload_once() {
   '
 }
 
+prepare_sniffer() {
+  bash_bin=
+  for candidate in /opt/bin/bash /bin/bash /usr/bin/bash; do
+    if [ -x "$candidate" ]; then bash_bin=$candidate; break; fi
+  done
+  [ -n "$bash_bin" ] || bash_bin=$(command -v bash 2>/dev/null || true)
+  [ -n "$bash_bin" ] || return 127
+  ZATOR_ROOT="$ROOT" "$bash_bin" -c '
+    . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || exit 1
+    arch=$(googlevideo_sniffer_arch) || exit 1
+    googlevideo_sniffer_ensure_installed || exit 1
+    googlevideo_sniffer_binary_matches_arch "$arch"
+  '
+}
+
 case ${1:-start} in
   upload-once) upload_once ;;
   start)
     enabled || exit 0
+    prepare_sniffer || { echo "Googlevideo sniffer is missing, mismatched, or could not be downloaded" >&2; exit 1; }
     [ -x "$SNIFFER" ] || { echo "Googlevideo collector binary missing: $SNIFFER" >&2; exit 1; }
     if [ -s "$PIDFILE" ]; then
       old=$(cat "$PIDFILE" 2>/dev/null || true)
@@ -46,8 +62,23 @@ case ${1:-start} in
     mkdir -p "$(dirname "$PIDFILE")" "${Z2R_GV_TMPDIR:-/tmp/z2r-googlevideo}"
     rm -f "$PIDFILE"
     "$SNIFFER" --collector >>"$LOG" 2>&1 </dev/null &
+    tries=0
+    while [ "$tries" -lt 3 ] && [ ! -s "$PIDFILE" ]; do
+      kill -0 "$!" 2>/dev/null || break
+      sleep 1
+      tries=$((tries + 1))
+    done
+    if [ ! -s "$PIDFILE" ]; then
+      echo "Googlevideo sniffer exited before becoming ready; see $LOG" >&2
+      tail -n 20 "$LOG" >&2 2>/dev/null || :
+      return 1
+    fi
+    pid=$(cat "$PIDFILE" 2>/dev/null || true)
+    case $pid in *[!0-9]*|'') return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || { echo "Googlevideo sniffer failed after startup; see $LOG" >&2; return 1; }
     ;;
   run)
+    prepare_sniffer || { echo "Googlevideo sniffer is missing, mismatched, or could not be downloaded" >&2; exit 1; }
     [ -x "$SNIFFER" ] || exit 127
     exec "$SNIFFER" --collector
     ;;

@@ -2836,9 +2836,13 @@ esac
 # start the enabled collector here without restarting nfqws2.
 if googlevideo_local_collection_supported "$OSystem"; then
   googlevideo_listener="${ZATOR_ROOT}/tools/googlevideo-dns-listener.sh"
-  googlevideo_sniffer_ensure_installed \
-    || echo -e "${yellow}Не удалось установить Googlevideo sniffer для архитектуры устройства.${plain}" >&2
-  if [ -x "$googlevideo_listener" ]; then
+  if googlevideo_sniffer_ensure_installed; then
+    sniffer_ready=1
+  else
+    sniffer_ready=0
+    echo -e "${yellow}Googlevideo sniffer отсутствует или не подходит архитектуре; listener не запущен. Подробности: /tmp/z2r-googlevideo/collector.log${plain}" >&2
+  fi
+  if [ "$sniffer_ready" = 1 ] && [ -x "$googlevideo_listener" ]; then
     "$googlevideo_listener" start || echo -e "${yellow}Не удалось запустить Googlevideo DNS listener.${plain}" >&2
   fi
 fi

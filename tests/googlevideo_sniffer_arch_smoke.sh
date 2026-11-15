@@ -6,6 +6,12 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export Z2R_GV_CPUINFO="$tmp/cpuinfo"
 export Z2R_GV_ELF_FILE="$tmp/busybox"
+write_mips_elf() {
+  case "$1" in
+    little) printf '\177ELF\001\001\001\000\000\000\000\000\000\000\000\000\002\000\010\000' > "$2" ;;
+    big) printf '\177ELF\001\002\001\000\000\000\000\000\000\000\000\000\000\002\000\000\010' > "$2" ;;
+  esac
+}
 MOCK_UNAME=""
 uname() { printf '%s\n' "$MOCK_UNAME"; }
 check() {
@@ -19,9 +25,9 @@ check armv7l '' arm
 check mips64 '' mips64
 check mipsel 'system type : Lexra 5281' lexra
 check mipsel 'system type : MIPS 24Kc' mipselsf
-printf '\177ELF\001\001' > "$Z2R_GV_ELF_FILE"
+write_mips_elf little "$Z2R_GV_ELF_FILE"
 check mips 'system type : MediaTek MT7621 SoC' mipselsf
-printf '\177ELF\001\002' > "$Z2R_GV_ELF_FILE"
+write_mips_elf big "$Z2R_GV_ELF_FILE"
 check mips 'system type : MIPS 24Kc' mipssf
 
 # A mislabeled beta asset must be replaced before the listener tries to exec it.
@@ -30,8 +36,8 @@ mkdir -p "$ZATOR_ROOT/tools/bin"
 cp "$Z2R_GV_ELF_FILE" "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
 chmod +x "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
 if googlevideo_sniffer_binary_matches_arch mipselsf; then echo 'big-endian MIPS binary accepted for MT7621' >&2; exit 1; fi
-printf '\177ELF\001\001' > "$tmp/little-endian"
-printf '\177ELF\001\001' > "$Z2R_GV_ELF_FILE"
+write_mips_elf little "$tmp/little-endian"
+write_mips_elf little "$Z2R_GV_ELF_FILE"
 chmod +x "$tmp/little-endian"
 googlevideo_sniffer_binary_matches_arch mipselsf "$tmp/little-endian"
 googlevideo_sniffer_install() {
@@ -40,6 +46,11 @@ googlevideo_sniffer_install() {
 }
 googlevideo_sniffer_ensure_installed
 googlevideo_sniffer_binary_matches_arch mipselsf
+write_mips_elf big "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
+chmod 755 "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer"
+googlevideo_sniffer_install() { return 1; }
+if googlevideo_sniffer_ensure_installed; then echo 'failed sniffer download reported success' >&2; exit 1; fi
+googlevideo_sniffer_binary_matches_arch mipselsf && { echo 'mismatched sniffer accepted after failed download' >&2; exit 1; }
 check powerpc '' ppc
 check i686 '' x86
 check x86_64 '' x86_64

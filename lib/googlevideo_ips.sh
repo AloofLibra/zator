@@ -31,21 +31,52 @@ googlevideo_sniffer_elf_endian() {
   esac
 }
 
+googlevideo_sniffer_elf_identity() {
+  local binary="${1:-}" bytes
+  [ -r "$binary" ] || return 1
+  if command -v hexdump >/dev/null 2>&1; then
+    bytes="$(hexdump -v -n 20 -e '1/1 "%u "' "$binary" 2>/dev/null)" || return 1
+  elif command -v od >/dev/null 2>&1; then
+    bytes="$(dd if="$binary" bs=1 count=20 2>/dev/null | od -b 2>/dev/null | awk '
+      function octal(s, i, n) { n=0; for(i=1;i<=length(s);i++) n=n*8+substr(s,i,1); return n }
+      { for(i=2;i<=NF;i++) if ($i ~ /^[0-7][0-7][0-7]$/) printf "%d ", octal($i) }
+    ')" || return 1
+  else
+    return 1
+  fi
+  printf '%s\n' "$bytes" | awk '
+    NF == 20 && $1 == 127 && $2 == 69 && $3 == 76 && $4 == 70 {
+      class=$5; data=$6; lo=$19; hi=$20
+      if (data == 1) machine=lo + hi * 256
+      else if (data == 2) machine=lo * 256 + hi
+      else exit 1
+      printf "%d:%d:%d", class, data, machine
+    }
+  '
+}
+
 googlevideo_sniffer_binary_matches_arch() {
-  local arch="${1:-}" binary="${2:-${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer}" wanted actual
+  local arch="${1:-}" binary="${2:-${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer}" identity expected_class expected_machine data
   [ -x "$binary" ] || return 1
   case "$arch" in
-    mipselsf|lexra) wanted=little ;;
-    mipssf) wanted=big ;;
-    *) return 0 ;;
+    arm) expected_class=1; expected_machine=40; data=1 ;;
+    arm64) expected_class=2; expected_machine=183; data=1 ;;
+    lexra|mipselsf) expected_class=1; expected_machine=8; data=1 ;;
+    mipssf) expected_class=1; expected_machine=8; data=2 ;;
+    mips64) expected_class=2; expected_machine=8; data=2 ;;
+    ppc) expected_class=1; expected_machine=20; data=2 ;;
+    x86) expected_class=1; expected_machine=3; data=1 ;;
+    x86_64) expected_class=2; expected_machine=62; data=1 ;;
+    riscv64) expected_class=2; expected_machine=243; data=1 ;;
+    *) return 1 ;;
   esac
-  actual="$(googlevideo_sniffer_elf_endian "$binary")" || return 1
-  [ "$actual" = "$wanted" ]
+  identity="$(googlevideo_sniffer_elf_identity "$binary")" || return 1
+  [ "$identity" = "$expected_class:$data:$expected_machine" ]
 }
 
 googlevideo_sniffer_ensure_installed() {
   local arch
-  arch="$(googlevideo_sniffer_arch)" || return 0
+  arch="$(googlevideo_sniffer_arch)" || return 1
   googlevideo_sniffer_binary_matches_arch "$arch" && return 0
   googlevideo_log "sniffer_arch_mismatch expected=$arch; downloading matching binary"
   googlevideo_sniffer_install || return 1
@@ -123,7 +154,7 @@ googlevideo_listener_hook_install() {
 }
 
 googlevideo_sniffer_install() {
-  local arch base fallback tracking tmp compressed size release
+  local arch base fallback tracking tmp compressed size release installed=0
   [ "${Z2R_OFFLINE:-0}" != 1 ] || return 0
   arch="$(googlevideo_sniffer_arch)" || return 0
   base="${Z2R_GV_SNIFFER_RELEASE_BASE:-}"
@@ -154,12 +185,17 @@ googlevideo_sniffer_install() {
       size="$(wc -c < "$tmp" | tr -d ' ')"
       case "$size" in ''|*[!0-9]*) continue ;; esac
       if [ "$size" -le 139264 ] && [ -s "$tmp" ]; then
-        chmod 755 "$tmp" && mv -f "$tmp" "${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer" && break
+        if chmod 755 "$tmp" && googlevideo_sniffer_binary_matches_arch "$arch" "$tmp"; then
+          mv -f "$tmp" "${ZATOR_ROOT:-/opt/zator}/tools/bin/googlevideo-dns-sniffer" && installed=1 && break
+        fi
+        googlevideo_log "sniffer_download_invalid arch=$arch release=$release"
       fi
     fi
   done
   rm -f "$tmp" "$compressed"
-  return 0
+  if [ "$installed" = 1 ]; then return 0; fi
+  googlevideo_log "sniffer_download_failed arch=$arch tracking=${tracking:-latest}"
+  return 1
 }
 
 googlevideo_hostname_valid() {

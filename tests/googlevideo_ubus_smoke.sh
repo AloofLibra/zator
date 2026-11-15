@@ -5,8 +5,10 @@ TMP="$(mktemp -d /tmp/z2r-ubus-smoke.XXXXXX)"
 LISTENER_PID=
 cleanup() { [ -z "$LISTENER_PID" ] || kill "$LISTENER_PID" 2>/dev/null || true; [ -z "$LISTENER_PID" ] || wait "$LISTENER_PID" 2>/dev/null || true; rm -rf "$TMP"; }
 trap cleanup EXIT
-mkdir -p "$TMP/root/z2r_lib" "$TMP/root/tools" "$TMP/root/lists" "$TMP/bin" "$TMP/run"
+mkdir -p "$TMP/root/z2r_lib" "$TMP/root/tools/bin" "$TMP/root/lists" "$TMP/bin" "$TMP/run"
+cp "$REPO_ROOT/lib/googlevideo_ips.sh" "$TMP/root/z2r_lib/googlevideo_ips.sh"
 "${CC:-cc}" -std=c99 -Os -Wall -Wextra -Werror -o "$TMP/root/tools/googlevideo-dns-sniffer" "$REPO_ROOT/tools/googlevideo-dns-sniffer.c"
+cp "$TMP/root/tools/googlevideo-dns-sniffer" "$TMP/root/tools/bin/googlevideo-dns-sniffer"
 printf 'FWTYPE=nftables\nZ2R_WSSIZE_RAMP_ENABLE=1\nNFQWS2_ENABLE=1\n' > "$TMP/config"
 : > "$TMP/nft-elements"; : > "$TMP/nft-calls"; echo 0 > "$TMP/subscriptions"
 touch "$TMP/openwrt_release"

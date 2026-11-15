@@ -139,6 +139,8 @@ grep -Fxq 8.8.8.9 "$MOCK_SET"
 # the same 136 KiB ceiling as the cross-architecture build script.
 mkdir -p "$TMP/sniffer-src"
 head -c 133008 /dev/zero > "$TMP/sniffer-src/binary"
+printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\267\000' \
+  | dd of="$TMP/sniffer-src/binary" conv=notrunc 2>/dev/null
 gzip -n -c "$TMP/sniffer-src/binary" > "$TMP/sniffer.gz"
 mkdir -p "$ZATOR_ROOT/extra_strats/cache/deploy"
 printf 'TRACKING="latest"\n' > "$ZATOR_ROOT/extra_strats/cache/deploy/version.env"
