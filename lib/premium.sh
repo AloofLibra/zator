@@ -1,3 +1,4 @@
+# This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
 # ---- ZEFEER PREMIUM (777/999) ----
 # Сделано исключительно ради мемов. Практического смысла не несёт. 
 PREMIUM_FLAG="$CACHE_DIR/premium.enabled"

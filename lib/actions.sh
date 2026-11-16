@@ -1,3 +1,4 @@
+# This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
 keenetic_policy_get_mark() {
   local name="$1"
   ndmc -c "show ip policy" 2>/dev/null | awk -v policy="$name" '

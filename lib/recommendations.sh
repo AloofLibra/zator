@@ -1,3 +1,4 @@
+# This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
 # Подсказки: сервер агрегирует Redis, роутер читает не более 17 строк TSV.
 RECS_URL="${Z2R_RECS_URL:-https://alooflibra.fun/z4r/recommendations.tsv}"
 RECS_FILE="${RECS_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/recommendations.tsv}"

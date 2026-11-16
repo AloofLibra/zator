@@ -1,3 +1,4 @@
+# This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
 #!/bin/sh
 # Необязательный resolver/probe. URL живут только в приватном tmpfs вне архива sweep.
 Z2R_MEDIA_DEFAULT_VIDEO_ID=BPk1uJ4txPc
