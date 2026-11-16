@@ -1458,7 +1458,11 @@ function circular_quality(ctx, desync)
     -- loads locked.lua first, so auto and manual counterparts stay equivalent.
     local allow_nohost = desync_allow_nohost(desync)
     if not desync.track and not allow_nohost then
-        DLOG_ERR("circular_quality: conntrack is missing but required")
+        -- Тот же случай, что и circular_locked; дедупликация 10 сек.
+        if os.time() - (_Z2R_CONNTRACK_NOTE_TS or 0) >= 10 then
+            _Z2R_CONNTRACK_NOTE_TS = os.time()
+            DLOG_ERR("circular_quality: conntrack is missing but required (connection started before nfqws2 start, packet passed undesynced - normal after daemon restart)")
+        end
         return
     end
 
