@@ -2806,11 +2806,14 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     echo "--- Ошибки nfqws2 (последний запуск) ---"
     if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
       z2r_err_journal /tmp/nfqws2_1.err
-      echo ""
-      echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2; seccomp-заметки и мимолётные rawsend 'Network unreachable' / 'Message too large' скрыты; на Entware также скрыт rawsend 'Invalid argument')${plain}"
       ct_n=0
       ct_n="$(grep -c "conntrack is missing but required" /tmp/nfqws2_1.err 2>/dev/null)" || ct_n=0
       z2r_err_conntrack_note "$ct_n"
+      # Подсказка о скрытых строках — только когда они реально были.
+      if grep -qE '^seccomp:|rawsend: sendto' /tmp/nfqws2_1.err 2>/dev/null; then
+        echo ""
+        echo -e "${yellow}Безвредные строки (seccomp, мимолётный rawsend) скрыты; файл целиком: /tmp/nfqws2_1.err (очищается при рестарте zapret2).${plain}"
+      fi
     elif command -v logread >/dev/null 2>&1 \
       && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | z2r_err_journal | grep -q .; then
       logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | z2r_err_journal | tail -20
