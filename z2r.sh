@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Release assets are separate from the deploy tar so each router stores only
 # its own static binary. This is optional: the central Googlevideo feed works
@@ -393,8 +393,8 @@ else
 fi
 for lib in $Z2R_LIB_FILES; do
   if [ ! -f "$LIB_DIR/$lib" ]; then
-    # Старый bootstrap не знает необязательный media-модуль: CLI должен открыть fallback.
-    [ "$lib" != youtube_media.sh ] || continue
+    # Старый bootstrap не знает необязательные media-модули: CLI должен открыть fallback.
+    case "$lib" in youtube_media.sh|quic_media.sh) continue ;; esac
     missing_libs=1
     break
   fi
@@ -448,6 +448,13 @@ source "$LIB_DIR/strategies.sh"
 # Функции: supersweep_run, supersweep_menu, supersweep_cancel_running
 source "$LIB_DIR/supersweep.sh"
 source "$LIB_DIR/supersweep_probe.sh"
+
+# QUIC-медиапроверка профиля 5: детект/установка h3-curl, перебор UDP-стратегий
+# с проверкой видео по HTTP/3. Не обязательный модуль (как youtube_media.sh):
+# старый bootstrap может его не доставить, пункт A подбора профиля 5 деградирует.
+if [ -f "$LIB_DIR/quic_media.sh" ]; then
+  source "$LIB_DIR/quic_media.sh"
+fi
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
