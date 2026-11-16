@@ -144,6 +144,12 @@ def install(stage, root):
                 server = server.replace(old, new, 1)
             elif "observe_local_observations(rdb, pairs" not in server:
                 raise RuntimeError("cannot upgrade existing Googlevideo ingest route")
+        # A duplicate valid observation is an acknowledged no-op, not an
+        # empty request. Otherwise routers keep retrying the same queue forever.
+        server = server.replace(
+            "if not accepted_ips and not accepted_observations:",
+            'if values == [""] and pairs == [""]:',
+        )
         if "import hmac" not in server:
             server, count = re.subn(r"(?m)^import redis$", "import redis\nimport hmac", server, count=1)
             if count != 1:

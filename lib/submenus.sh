@@ -988,6 +988,15 @@ strategies_submenu() {
         orch_profile_try "4" "Профиль 4: TCP 443 (Discord)" "tls" "https://discord.com/"
         ;;
       "5")
+        if type z2r_quic_media_run >/dev/null 2>&1; then
+          echo -e "${cyan}Проверка видео по QUIC: A - автопрогон, проверяется и ручной выбор стратегии.${plain}"
+          if ! z2r_quic_curl_detect >/dev/null 2>&1; then
+            # Спросить про установку сразу (фидбэк: оффер в конце «слишком поздно»).
+            z2r_quic_offer_install \
+              || echo -e "${yellow}Без h3-curl проверка видео недоступна, подбор продолжится без неё.${plain}"
+            Z2R_QUIC_OFFER_DONE=1
+          fi
+        fi
         echo -e "${yellow}Проверьте работоспособность в браузере.${plain}"
         orch_profile_try "5" "Профиль 5: UDP 443 (QUIC)" "udp" ""
         ;;
@@ -2416,7 +2425,7 @@ advanced_settings_submenu() {
         wssize_ramp_submenu
         ;;
       "8")
-        if googlevideo_ips_update; then
+        if googlevideo_ips_update force; then
           echo -e "${green}Googlevideo IP список обновлён: $(googlevideo_ips_count) адресов.${plain}"
         else
           echo -e "${yellow}Не удалось обновить список; сохранённый файл не затронут.${plain}"
@@ -2424,7 +2433,7 @@ advanced_settings_submenu() {
         pause_enter
         ;;
       "10")
-        googlevideo_upload_local_manual
+        googlevideo_upload_local_manual || true
         pause_enter
         ;;
       "0"|"")

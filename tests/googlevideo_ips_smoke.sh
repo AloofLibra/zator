@@ -9,8 +9,9 @@ export GOOGLEVIDEO_LOCAL_FILE="$TMP/local.tsv"
 export GOOGLEVIDEO_PENDING_FILE="$TMP/pending.tsv" Z2R_GV_TMPDIR="$TMP/upload-state" Z2R_GOOGLEVIDEO_UPLOAD_INTERVAL=10800
 export GOOGLEVIDEO_REPORTED_FILE="$TMP/reported.tsv"
 export GOOGLEVIDEO_LOG_FILE="$TMP/collector.log"
-export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=0
+export Z2R_GOOGLEVIDEO_IPS_CACHE_TTL=21600
 source "$ROOT/lib/googlevideo_ips.sh"
+grep -Fq 'if googlevideo_ips_update force; then' "$ROOT/lib/submenus.sh"
 [[ "$(googlevideo_local_last_observation)" = 'нет наблюдений' ]]
 obs_now="$(date +%s)"
 printf 'old.googlevideo.com\t9.9.9.8\t%s\t%s\nnew.googlevideo.com\t9.9.9.9\t%s\t%s\n' \
@@ -19,6 +20,8 @@ printf 'old.googlevideo.com\t9.9.9.8\t%s\t%s\nnew.googlevideo.com\t9.9.9.9\t%s\t
 rm -f "$GOOGLEVIDEO_LOCAL_FILE"
 MOCK_SET="$TMP/kernel-set"
 : > "$MOCK_SET"
+IPSET_CALLS="$TMP/ipset-calls"
+: > "$IPSET_CALLS"
 MOCK_FWTYPE=iptables
 MOCK_NFT_SET="$TMP/nft-set"
 : > "$MOCK_NFT_SET"
@@ -26,6 +29,7 @@ NFT_CREATED=0
 NFT_FAIL=0
 NFT_CALLS="$TMP/nft-calls"
 : > "$NFT_CALLS"
+NFT_BATCH="$TMP/nft-batch"
 unset ZAPRET_NFT_TABLE
 MOCK_NFT_TABLE=""
 MOCK_EXPECT_NFT_TABLE=zapret2
@@ -39,8 +43,10 @@ config_get_var() {
 dnsmasq() { printf 'Dnsmasq version 2.91\nCompile time options: IPv6 DHCP %s\n' "${MOCK_DNSMASQ_FEATURES:-nftset ipset}"; }
 uci() { return 1; }
 ipset() {
+  printf '%s\n' "$*" >> "$IPSET_CALLS"
   case "$1" in
     create) return 0 ;;
+    list) return 0 ;;
     test) grep -Fxq "$3" "$MOCK_SET" ;;
     add) grep -Fxq "$3" "$MOCK_SET" || echo "$3" >> "$MOCK_SET" ;;
     restore)
@@ -66,7 +72,25 @@ nft() {
     return 0
   fi
   if [ "$1" = add ] && [ "$2" = set ]; then NFT_CREATED=1; return 0; fi
+  if [ "$1" = add ] && [ "$2" = element ]; then
+    ip="$(printf '%s\n' "$*" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)"
+    grep -Fxq "$ip" "$MOCK_NFT_SET" && return 1
+    echo "$ip" >> "$MOCK_NFT_SET"
+    return 0
+  fi
+  if [ "$1" = get ] && [ "$2" = element ]; then
+    ip="$(printf '%s\n' "$*" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)"
+    grep -Fxq "$ip" "$MOCK_NFT_SET"
+    return $?
+  fi
+  if [ "$1" = delete ] && [ "$2" = element ]; then
+    ip="$(printf '%s\n' "$*" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)"
+    grep -Fvx "$ip" "$MOCK_NFT_SET" > "${MOCK_NFT_SET}.tmp" || :
+    mv -f "${MOCK_NFT_SET}.tmp" "$MOCK_NFT_SET"
+    return 0
+  fi
   if [ "$1" = -f ]; then
+    cp "$2" "$NFT_BATCH"
     sed -n 's/.*{ \(.*\) }/\1/p' "$2" | tr ',' '\n' | tr -d ' ' >> "$MOCK_NFT_SET"
     sort -u "$MOCK_NFT_SET" -o "$MOCK_NFT_SET"
     return 0
@@ -74,12 +98,14 @@ nft() {
   return 2
 }
 
+UPDATES_CALLS=0
 curl() {
+  UPDATES_CALLS=$((UPDATES_CALLS + 1))
   local output=""; while [ "$#" -gt 0 ]; do
     case "$1" in -o) output="$2"; shift 2 ;; *) shift ;; esac
   done
   [ -n "$output" ] || return 2
-  cp "$GOOGLEVIDEO_TEST_PAYLOAD" "$output"
+  if [ -n "${SNIF_GZ:-}" ]; then cp "$SNIF_GZ" "$output"; else cp "$GOOGLEVIDEO_TEST_PAYLOAD" "$output"; fi
 }
 
 GOOGLEVIDEO_TEST_PAYLOAD="$TMP/valid.txt"
@@ -88,20 +114,48 @@ googlevideo_ips_update
 [ "$(googlevideo_ips_count)" = 1 ]
 grep -Fxq 8.8.8.8 "$MOCK_SET"
 
-# Central cache updates are merged live and a router batch contains only local
-# DNS members, is consent-gated, and is throttled rather than sent per address.
-GOOGLEVIDEO_TEST_PAYLOAD="$TMP/invalid.txt"
-printf '# googlevideo IPv4; generated=2026-11-10T00:00:00Z; max_age=604800s\n10.0.0.1\n' > "$GOOGLEVIDEO_TEST_PAYLOAD"
-if googlevideo_ips_update; then exit 1; fi
-grep -Fxq 8.8.8.8 "$GOOGLEVIDEO_IPS_FILE"
+# Explicit menu refresh bypasses the six-hour cache window.
 GOOGLEVIDEO_TEST_PAYLOAD="$TMP/valid2.txt"
 printf '# googlevideo IPv4; generated=2026-11-10T00:00:00Z; max_age=604800s\n8.8.8.9\n' > "$GOOGLEVIDEO_TEST_PAYLOAD"
 googlevideo_ips_update
+[ "$UPDATES_CALLS" = 1 ]
+[ "$(googlevideo_ips_count)" = 1 ]
+googlevideo_ips_update force
+[ "$UPDATES_CALLS" = 2 ]
+[ "$(googlevideo_ips_count)" = 1 ]
+grep -Fxq 8.8.8.9 "$GOOGLEVIDEO_IPS_FILE"
+
+# Invalid forced refresh leaves the last valid cache intact. Central cache
+# updates are merged live and a router batch contains only local
+# DNS members, is consent-gated, and is throttled rather than sent per address.
+GOOGLEVIDEO_TEST_PAYLOAD="$TMP/invalid.txt"
+printf '# googlevideo IPv4; generated=2026-11-10T00:00:00Z; max_age=604800s\n10.0.0.1\n' > "$GOOGLEVIDEO_TEST_PAYLOAD"
+if googlevideo_ips_update force; then exit 1; fi
+grep -Fxq 8.8.8.9 "$GOOGLEVIDEO_IPS_FILE"
 grep -Fxq 8.8.8.8 "$MOCK_SET"
 grep -Fxq 8.8.8.9 "$MOCK_SET"
 
+# Release sniffer builds are slightly above 128 KiB; the updater must accept
+# the same 140 KiB ceiling as the cross-architecture build script.
+mkdir -p "$TMP/sniffer-src"
+head -c 133008 /dev/zero > "$TMP/sniffer-src/binary"
+printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\267\000' \
+  | dd of="$TMP/sniffer-src/binary" conv=notrunc 2>/dev/null
+gzip -n -c "$TMP/sniffer-src/binary" > "$TMP/sniffer.gz"
+mkdir -p "$ZATOR_ROOT/extra_strats/cache/deploy"
+printf 'TRACKING="latest"\n' > "$ZATOR_ROOT/extra_strats/cache/deploy/version.env"
+SNIF_GZ="$TMP/sniffer.gz"
+googlevideo_sniffer_arch() { echo arm64; }
+googlevideo_sniffer_install
+[ "$(wc -c < "$ZATOR_ROOT/tools/bin/googlevideo-dns-sniffer" | tr -d ' ')" = 133008 ]
+unset SNIF_GZ
+
 googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+: > "$MOCK_SET"
 googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+grep -Fxq 9.9.9.9 "$MOCK_SET"
+grep -Fq 'add z2r_googlevideo4 9.9.9.9 timeout 3600 -exist' "$IPSET_CALLS"
+printf '8.8.8.8\n8.8.8.9\n' >> "$MOCK_SET"
 googlevideo_observe_local rr2---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
 googlevideo_observe_local rr3---sn-h5gtov-n8vl.googlevideo.com 8.8.8.9 1200 A
 googlevideo_observe_local rr2.googlevideo.com 192.168.1.1 1200 A && exit 1
@@ -145,6 +199,8 @@ curl() {
   done
   return "$UPLOAD_RC"
 }
+# A previous concurrent collector may have queued the same host/IP twice.
+printf '9.9.9.9\t%s\trr1---sn-h5gtov-n8vl.googlevideo.com\n' "$(date +%s)" >> "$GOOGLEVIDEO_PENDING_FILE"
 tel_enabled=0 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$(upload_calls)" = 0 ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
@@ -155,10 +211,41 @@ expected_pairs='rr1---sn-h5gtov-n8vl.googlevideo.com=9.9.9.9,rr2---sn-h5gtov-n8v
 grep -q 'upload result=accepted http=200' "$GOOGLEVIDEO_LOG_FILE"
 grep -q '^rr1---sn-h5gtov-n8vl.googlevideo.com[[:space:]]9\.9\.9\.9[[:space:]]' "$GOOGLEVIDEO_REPORTED_FILE"
 googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+: > "$MOCK_SET"
+googlevideo_observe_local rr1---sn-h5gtov-n8vl.googlevideo.com 9.9.9.9 1200 A
+grep -Fxq 9.9.9.9 "$MOCK_SET"
 ! [ -s "$GOOGLEVIDEO_PENDING_FILE" ] || ! grep -q '^9\.9\.9\.9[[:space:]].*rr1---sn-h5gtov-n8vl.googlevideo.com$' "$GOOGLEVIDEO_PENDING_FILE"
 ! [ -s "$GOOGLEVIDEO_PENDING_FILE" ]
 tel_enabled=1 STATS_TOKEN=testtoken googlevideo_upload_local_batch testuuid
 [ "$(upload_calls)" = 1 ]
+
+# The collector must resolve FWTYPE without config_get_var and keep a local
+# kernel-set entry for at least an hour even when the DNS TTL is shorter.
+ZAPRET2_ROOT="$TMP/router-config"
+mkdir -p "$ZAPRET2_ROOT"
+printf 'FWTYPE=iptables\n' > "$ZAPRET2_ROOT/config"
+unset -f config_get_var
+: > "$MOCK_SET"
+googlevideo_observe_local rr7---sn-h5gtov-n8vl.googlevideo.com 9.9.9.11 120 A
+grep -Fxq 9.9.9.11 "$MOCK_SET"
+grep -Fq 'add z2r_googlevideo4 9.9.9.11 timeout 3600 -exist' "$IPSET_CALLS"
+printf 'FWTYPE=\n' > "$ZAPRET2_ROOT/config"
+NFT_CREATED=1
+printf '9.9.9.12\n' > "$MOCK_NFT_SET"
+unset GOOGLEVIDEO_KERNEL_FWTYPE
+[ "$(googlevideo_kernel_fwtype)" = nftables ]
+googlevideo_kernel_set_add 9.9.9.12 120
+grep -Fq 'add element inet zapret2 z2r_googlevideo4 { 9.9.9.12 timeout 3600s }' "$NFT_BATCH"
+NFT_CREATED=0
+: > "$MOCK_NFT_SET"
+unset ZAPRET2_ROOT
+config_get_var() {
+  case "$2" in
+    FWTYPE) echo "$MOCK_FWTYPE" ;;
+    ZAPRET_NFT_TABLE) printf '%s\n' "$MOCK_NFT_TABLE" ;;
+  esac
+  return 0
+}
 
 # Pending observations outlive DNS TTL, are throttled to three hours, and retry
 # from tmpfs after a failed batch without losing the queued addresses.

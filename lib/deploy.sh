@@ -518,14 +518,25 @@ deploy_post_apply() {
   fi
   deploy_write_version "$tree/extra_strats/cache/deploy/version.env" "$has_core" "$has_webui" "$tracking" || return 1
 
-  # Platform binaries are separate release assets. Source the new core helper
-  # here so both CLI and the standalone z2r launcher install the matching arch.
-  if [ "$has_core" = 1 ] && [ -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
-    if ! type googlevideo_sniffer_install >/dev/null 2>&1 && [ -r "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" ]; then
-      . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || true
+  # Platform binaries and the zapret2 startup callback are installed separately
+  # from the runtime package assets; restore both on core updates.
+  if [ "$has_core" = 1 ] && [ -r "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" ]; then
+    # A self-update may have replaced this library after the running menu
+    # already sourced an older copy; use the freshly deployed implementation.
+    . "$ZATOR_ROOT/z2r_lib/googlevideo_ips.sh" || true
+    if type googlevideo_listener_hook_install >/dev/null 2>&1; then
+      googlevideo_listener_hook_install || echo "Не удалось восстановить запуск Googlevideo DNS listener." >&2
     fi
     if type googlevideo_sniffer_install >/dev/null 2>&1; then
       googlevideo_sniffer_install || echo "Не удалось обновить Googlevideo DNS sniffer." >&2
+    fi
+    # A tar update does not necessarily restart zapret2 (for example, when
+    # config.default is unchanged), so its custom-daemon callback may never
+    # run. Start the collector directly after restoring its assets; it checks
+    # the live config itself and does not restart nfqws2.
+    if [ -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
+      "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" start \
+        || echo "Не удалось запустить Googlevideo DNS listener после обновления." >&2
     fi
   fi
 
@@ -724,7 +735,7 @@ deploy_apply_config_to_live() {
   fi
   if [ "${DEPLOY_ECONOMY:-0}" = 1 ]; then
     # Сервис уже остановлен; /tmp должен быть очищен до единственного старта в EXIT.
-    config_apply_from_default
+    config_apply_from_default preserve_wssize
     return "$?"
   fi
   if type backup_helper_ask_and_create >/dev/null 2>&1; then
@@ -733,7 +744,7 @@ deploy_apply_config_to_live() {
   if type z2r_service_action >/dev/null 2>&1; then
     z2r_service_action stop >/dev/null 2>&1 || true
   fi
-  if ! config_apply_from_default; then
+  if ! config_apply_from_default preserve_wssize; then
     echo -e "${red}Не удалось применить config.default к живому конфигу.${plain}"
     if type z2r_service_action >/dev/null 2>&1; then
       z2r_service_action start >/dev/null 2>&1 || true

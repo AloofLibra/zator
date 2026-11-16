@@ -76,10 +76,16 @@ def api():
         assert "location = /z4r/googlevideo-observations" in nginx.read_text()
         py_compile.compile(str(server), doraise=True)
         py_compile.compile(str(dashboard / "dashboard.py"), doraise=True)
+        server.write_text(deployed.replace(
+            'if values == [""] and pairs == [""]:',
+            "if not accepted_ips and not accepted_observations:",
+        ))
         DEPLOY.install(stage, root)
         deployed = server.read_text()
         assert deployed.count('parsed.path == "/googlevideo-observations"') == 1
         assert deployed.count("observe_local_observations(rdb, pairs") == 1
+        assert 'if values == [""] and pairs == [""]:' in deployed
+        assert "if not accepted_ips and not accepted_observations:" not in deployed
     finally:
         DEPLOY.checked = original_checked
         DEPLOY.subprocess.check_output = original_check_output
