@@ -302,7 +302,7 @@ orch_gv_trial() (
     local Z2R_SUPERSWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
     local Z2R_SUPERSWEEP_ISOLATED=0 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
     local Z2R_SUPERSWEEP_SETTLE="${Z2R_SUPERSWEEP_SETTLE:-2}"
-    local completed=0 trial_touched=0 prior
+    local completed=0 trial_touched=0 prior gh
     case "$Z2R_SUPERSWEEP_SETTLE" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
     prior="$(orch_locked_state_get 2 tls)"
     (umask 077; mkdir "$shared_lock") 2>/dev/null || {
@@ -324,6 +324,21 @@ orch_gv_trial() (
         z2r_media_prepare || return 1
     else
         echo 'Googlevideo Media UNKNOWN: нет media-модуля. Плюшевый TLS/CDN-тест, без выбора media-победителя.' >&2
+    fi
+    # DNS-гейт googlevideo: мусорный резолв — громкое предупреждение перед
+    # прогоном. Хост — CDN из media-кеша (его и резолвят media-пробы);
+    # prepare упал — гейтим хост цели из test_url. Прогон не останавливаем.
+    if type z2r_gv_dns_gate >/dev/null 2>&1; then
+        gh=""
+        if [ "${Z2R_MEDIA_READY:-0}" = 1 ] && [ -s "${Z2R_MEDIA_DIR:-}/video.params" ]; then
+            IFS='|' read -r _ _ gh _ < "${Z2R_MEDIA_DIR}/video.params" 2>/dev/null || gh=""
+        fi
+        if [ -z "$gh" ]; then
+            gh="${4:-}"; gh="${gh#*://}"; gh="${gh%%/*}"
+        fi
+        if [ -n "$gh" ]; then
+            z2r_gv_dns_gate "$gh" >&2 || :
+        fi
     fi
     "$run" "$@" || return 1
     completed=1

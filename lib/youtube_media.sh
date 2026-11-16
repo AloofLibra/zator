@@ -465,10 +465,16 @@ z2r_media_prepare() {
     fi
     if [ "$Z2R_MEDIA_READY" = 1 ]; then
         if [ -n "${Z2R_SUPERSWEEP_DIR:-}" ]; then cp "$Z2R_MEDIA_DIR/meta.json" "$Z2R_SUPERSWEEP_DIR/media-meta.json"; fi
+        # Хвост сообщения: в QUIC-контексте «TCP (QUIC не проверяется)»
+        # сбивает с толку. Ставится вызывающей стороной (quic_media.sh).
+        local prep_tail=', TCP (QUIC не проверяется)'
+        if [ "${_Z2R_MEDIA_FOR_QUIC:-0}" = 1 ]; then
+            prep_tail=', дальше QUIC-проверка'
+        fi
         if [ "$direct" = 1 ]; then
-            echo 'Googlevideo: готовая ссылка принята; проверка её потока (начало + середина), TCP (QUIC не проверяется).' >&2
+            echo "Googlevideo: готовая ссылка принята; проверка её потока (начало + середина)${prep_tail}." >&2
         else
-            echo 'Googlevideo: подписанные media URL подготовлены; аудио + видео + удалённый диапазон, TCP (QUIC не проверяется).' >&2
+            echo "Googlevideo: подписанные media URL подготовлены; аудио + видео + удалённый диапазон${prep_tail}." >&2
         fi
         for kind in audio video; do
             [ -f "$Z2R_MEDIA_DIR/$kind.params" ] || continue

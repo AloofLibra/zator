@@ -265,6 +265,9 @@ z2r_quic_probe() (
             sleep 1
         done
         rc=0; wait "$pid" || rc=$?; pid=
+        # curl без единого байта ответа не создаёт -D файл — awk ниже сыпал
+        # «No such file or directory» в весь HELD-путь (каждая из 5 позиций).
+        [ -f "$headers" ] || : > "$headers"
         # -w: code|bytes|ver|tcp|tls|ttfb|total|speed
         IFS='|' read -r code bytes ver tcp tls ttfb total speed < "$metrics" || :
         case "$code" in
@@ -867,6 +870,54 @@ z2r_quic_print_verdict() {
     return 0
 }
 
+# Быстрая QUIC-проверка для меню 01: один круг проб ТЕКУЩЕЙ стратегии
+# профиля 5, локи не трогаем. Сабшелл — глушим supersweep-mirror и чистим
+# медиа-кеш за собой (как z2r_media_check_manual). Модуль опциональный:
+# нет h3-curl — одна подсказка; мусорный DNS — предупреждение гейта и выход.
+z2r_quic_access_check() (
+    type z2r_quic_curl_detect >/dev/null 2>&1 || return 0
+    type z2r_quic_single_round >/dev/null 2>&1 || return 0
+    type z2r_media_prepare >/dev/null 2>&1 || return 0
+    local verdict gh
+    if ! z2r_quic_curl_detect >/dev/null 2>&1; then
+        echo -e "${plain}QUIC-проверка недоступна: h3-curl не установлен (меню 5 предложит установку).${plain}"
+        return 0
+    fi
+    # Проба берёт бинарь из Z2R_QUIC_CURL: пустое значение = curl из PATH
+    # (на OpenWRT без HTTP3) — все пробы молча падают и вердикт врёт «HELD».
+    # Тот же контракт, что у _z2r_quic_trial.
+    Z2R_QUIC_CURL="$(z2r_quic_curl_detect 2>/dev/null)" || Z2R_QUIC_CURL=""
+    echo "Проверка видео по QUIC (профиль 5, текущая стратегия)"
+    # Свой медиа-кеш: после check_googlevideo_access наружу не достать
+    # (media-check живёт в сабшелле и чистит свой кеш), готовим заново —
+    # это один Innertube-запрос. Если кеш уже готов, переиспользуем.
+    if [ "${Z2R_MEDIA_READY:-0}" != 1 ] || [ -z "${Z2R_MEDIA_DIR:-}" ] || [ ! -s "${Z2R_MEDIA_DIR}/video.params" ]; then
+        Z2R_SUPERSWEEP_DIR=""
+        Z2R_MEDIA_DIR=""
+        Z2R_MEDIA_READY=0
+        _Z2R_MEDIA_FOR_QUIC=1
+        trap '[ -z "${Z2R_MEDIA_DIR:-}" ] || rm -rf "$Z2R_MEDIA_DIR"' EXIT
+        z2r_media_prepare || { echo -e "${yellow}QUIC: медиа-ссылки не получены, проверка пропущена.${plain}"; return 0; }
+    fi
+    if [ "${Z2R_MEDIA_READY:-0}" != 1 ] || [ ! -s "${Z2R_MEDIA_DIR}/video.params" ]; then
+        echo -e "${yellow}QUIC: медиа UNKNOWN, проверка пропущена.${plain}"
+        return 0
+    fi
+    gh=""
+    IFS='|' read -r _ _ gh _ < "${Z2R_MEDIA_DIR}/video.params" || gh=""
+    if type z2r_gv_dns_gate >/dev/null 2>&1 && [ -n "$gh" ]; then
+        if ! z2r_gv_dns_gate "$gh"; then
+            echo -e "${yellow}QUIC-проверка пропущена: сначала почините DNS (см. предупреждение выше).${plain}"
+            return 0
+        fi
+    fi
+    # Лок не меняем: проба идёт текущей стратегией профиля 5 (то, что юзер
+    # реально живёт с прямо сейчас). «01» — только метка в stderr-анимации.
+    verdict="$(z2r_quic_single_round "01")" || verdict=""
+    z2r_quic_print_verdict "01" "$verdict"
+    return 0
+)
+
 # --- Обёртка прогона и точка входа --------------------------------------------
 
 # Обёртка перебора: mutex прогона, единственный кеш ссылок, восстановление
@@ -877,7 +928,7 @@ _z2r_quic_trial() (
     local shared_lock="${Z2R_QUIC_LOCK_DIR:-/tmp/z2r-quic-sweep}.lock"
     local Z2R_SUPERSWEEP_DIR="" Z2R_QUIC_SWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
     local Z2R_MEDIA_VIDEO_ID="${Z2R_QUIC_MEDIA_VIDEO_ID:-}"
-    local _Z2R_QUIC_TRIAL=1 completed=0 touched=0 prior reason
+    local _Z2R_QUIC_TRIAL=1 completed=0 touched=0 prior reason gh
     prior="$(orch_locked_state_get 5 udp)"
     (umask 077; mkdir "$shared_lock") 2>/dev/null || {
         echo 'Другой прогон уже выполняется: QUIC-подбор не запущен.' >&2
@@ -926,6 +977,9 @@ _z2r_quic_trial() (
     # его и сама; отсутствует — ничего не экспортируем).
     if ca="$(z2r_quic_ca_bundle 2>/dev/null)"; then export CURL_CA_BUNDLE="$ca"; fi
     if type z2r_media_prepare >/dev/null 2>&1; then
+        # Хвост «TCP (QUIC не проверяется)» в сообщениях prepare здесь лжёт —
+        # дальше пойдёт именно QUIC-проверка (см. youtube_media.sh).
+        _Z2R_MEDIA_FOR_QUIC=1
         z2r_media_prepare || return 1
     else
         echo 'Медиамодуль недоступен: проверка видео по QUIC невозможна.' >&2
@@ -942,6 +996,17 @@ _z2r_quic_trial() (
         echo -e "${yellow}Медиа UNKNOWN (${reason}): проверка видео недоступна.${plain}" >&2
         z2r_quic_offer_blind || :
         return 0
+    fi
+    # DNS-гейт googlevideo: мусорный резолв — громкое предупреждение перед
+    # прогоном (проба и так честно отчитается DNS-ошибкой, предупреждение
+    # объясняет почему). Прогон НЕ останавливаем: пусть стратегии покажут
+    # свои результаты, а виновник виден сразу.
+    if type z2r_gv_dns_gate >/dev/null 2>&1; then
+        gh=""
+        IFS='|' read -r _ _ gh _ < "${Z2R_MEDIA_DIR}/video.params" 2>/dev/null || gh=""
+        if [ -n "$gh" ]; then
+            z2r_gv_dns_gate "$gh" >&2 || :
+        fi
     fi
     "$run" "$@" || return 1
     completed=1

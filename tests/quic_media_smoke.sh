@@ -677,4 +677,87 @@ out="$(printf 'https://youtu.be/M7lc1UVf-VE\n' | Z2R_QUIC_LOCK_DIR="$TMP_DIR/qui
 printf '%s' "$out" | grep -q "sweep-ok media_id=M7lc1UVf-VE" \
   || fail "media_run: video id не дошёл до перебора: $out"
 
+# == 11. Быстрая QUIC-проверка для меню 01 (z2r_quic_access_check) ============
+media11="$TMP_DIR/media11"
+mkdir -p "$media11"
+printf '12000000|video/mp4|rr1---sn-example.googlevideo.com|4102444800\n' > "$media11/video.params"
+printf 'url = "https://rr1---sn-example.googlevideo.com/videoplayback?expire=4102444800&sig=REDACTED"\n' > "$media11/video.curl"
+
+# проводка: check_access_list зовёт QUIC-проверку через type-guard
+grep -q 'type z2r_quic_access_check' lib/netcheck.sh \
+  || fail "11: check_access_list не зовёт z2r_quic_access_check"
+
+# нет h3-curl: одна серая подсказка, ни одной QUIC-строки, rc=0
+z2r_quic_curl_detect() { return 1; }
+rc=0; out="$(Z2R_MEDIA_DIR="$media11" Z2R_MEDIA_READY=1 z2r_quic_access_check 2>&1)" || rc=$?
+[ "$rc" = 0 ] || fail "11: отсутствие h3-curl не должно быть ошибкой (rc=$rc)"
+printf '%s' "$out" | grep -q "h3-curl не установлен" \
+  || fail "11: нет подсказки про h3-curl: $out"
+printf '%s' "$out" | grep -q "QUIC:" && fail "11: без h3-curl не должно быть QUIC-строки: $out"
+out2="$(Z2R_MEDIA_DIR="$media11" Z2R_MEDIA_READY=1 z2r_quic_access_check 2>&1)"
+[ "$(printf '%s\n' "$out" "$out2" | grep -c "h3-curl не установлен")" = 2 ] \
+  || fail "11: подсказка должна печататься на каждый вызов: $out2"
+
+# h3-curl есть, медиа готово: заголовок + вердикт через z2r_quic_print_verdict.
+# Контракт бинаря: проба обязана получать Z2R_QUIC_CURL с h3-curl — иначе
+# молча падает на PATH-curl без HTTP3 и вердикт врёт «HELD» (живой кейс на
+# OpenWRT: busybox curl без nghttp3).
+z2r_quic_curl_detect() { echo "$TMP_DIR/bin/curl-h3-mock"; return 0; }
+sr_calls="$TMP_DIR/sr_calls.11"; : > "$sr_calls"
+curl_env_file="$TMP_DIR/curl_env.11"; : > "$curl_env_file"
+z2r_quic_single_round() { echo "$1" >> "$sr_calls"; printf '%s' "${Z2R_QUIC_CURL:-UNSET}" > "$curl_env_file"; printf 'green|2500000|h3 5/5 (кусок 1): 2 МБ/с\n'; }
+rc=0; out="$(Z2R_MEDIA_DIR="$media11" Z2R_MEDIA_READY=1 z2r_quic_access_check 2>&1)" || rc=$?
+[ "$rc" = 0 ] || fail "11: green-проба не должна падать (rc=$rc): $out"
+printf '%s' "$out" | grep -q "Проверка видео по QUIC (профиль 5, текущая стратегия)" \
+  || fail "11: нет заголовка проверки: $out"
+printf '%s' "$(ansi_clean "$out")" | grep -q "QUIC: OK" || fail "11: нет строки QUIC: OK: $out"
+[ "$(cat "$sr_calls")" = "01" ] || fail "11: single_round должен зваться с меткой 01: $(cat "$sr_calls")"
+[ "$(cat "$curl_env_file")" = "$TMP_DIR/bin/curl-h3-mock" ] \
+  || fail "11: проба должна получать Z2R_QUIC_CURL с h3-curl: $(cat "$curl_env_file")"
+# проводка контекстного хвоста prepare: в QUIC-контексте «TCP (QUIC не
+# проверяется)» заменяется на «дальше QUIC-проверка»
+grep -q '_Z2R_MEDIA_FOR_QUIC' lib/youtube_media.sh \
+  || fail "11: youtube_media.sh не знает про QUIC-контекст prepare"
+grep -q '_Z2R_MEDIA_FOR_QUIC=1' lib/quic_media.sh \
+  || fail "11: quic-прогон не ставит QUIC-маркер для prepare"
+
+# гейт вернул мусор (rc=2): громкое предупреждение уже напечатано гейтом,
+# probe не запускается — экономим 75 секунд таймаутов. Аргумент гейта — в
+# файл: проверка живёт в сабшелле $(), переменные наружу не доезжают.
+: > "$sr_calls"
+gate_arg_file="$TMP_DIR/gate_arg.11"; : > "$gate_arg_file"
+z2r_gv_dns_gate() { printf '%s' "$1" > "$gate_arg_file"; return 2; }
+rc=0; out="$(Z2R_MEDIA_DIR="$media11" Z2R_MEDIA_READY=1 z2r_quic_access_check 2>&1)" || rc=$?
+[ "$rc" = 0 ] || fail "11: гейт-отказ не должен быть ошибкой функции (rc=$rc)"
+printf '%s' "$out" | grep -q "QUIC-проверка пропущена" \
+  || fail "11: нет сообщения о пропуске после мусорного DNS: $out"
+[ -s "$sr_calls" ] && fail "11: при мусорном DNS проба не должна запускаться"
+[ "$(cat "$gate_arg_file")" = "rr1---sn-example.googlevideo.com" ] \
+  || fail "11: гейт должен зваться с CDN-хостом из video.params: $(cat "$gate_arg_file")"
+
+# held проходит насквозь (красный HELD)
+z2r_gv_dns_gate() { return 0; }
+z2r_quic_single_round() { printf 'held|0|проверяется удержание TSPU\n'; }
+out="$(Z2R_MEDIA_DIR="$media11" Z2R_MEDIA_READY=1 z2r_quic_access_check 2>&1)"
+printf '%s' "$(ansi_clean "$out")" | grep -q "QUIC: HELD" \
+  || fail "11: held-вердикт не дошёл до строки: $out"
+
+# медиа-кеша нет: готовится сам, потом проба
+z2r_quic_single_round() { printf 'green|1000000|h3 5/5: 1 МБ/с\n'; }
+prep_dir="$TMP_DIR/media11b"; mkdir -p "$prep_dir"
+printf '12000000|video/mp4|rr1---sn-example.googlevideo.com|4102444800\n' > "$prep_dir/video.params"
+printf 'url = "https://rr1---sn-example.googlevideo.com/videoplayback?expire=4102444800&sig=REDACTED"\n' > "$prep_dir/video.curl"
+z2r_media_prepare() { Z2R_MEDIA_DIR="$prep_dir"; Z2R_MEDIA_READY=1; return 0; }
+out="$(Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0 z2r_quic_access_check 2>&1)"
+printf '%s' "$(ansi_clean "$out")" | grep -q "QUIC: OK" \
+  || fail "11: prepare должен готовить кеш до пробы: $out"
+# медиа UNKNOWN после prepare: пропуск без пробы
+z2r_media_prepare() { Z2R_MEDIA_DIR="$prep_dir"; Z2R_MEDIA_READY=0; return 0; }
+out="$(Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0 z2r_quic_access_check 2>&1)"
+printf '%s' "$out" | grep -q "медиа UNKNOWN, проверка пропущена" \
+  || fail "11: UNKNOWN-медиа должно пропускать проверку: $out"
+
+unset -f z2r_quic_curl_detect z2r_quic_single_round z2r_gv_dns_gate z2r_media_prepare
+source lib/quic_media.sh   # восстановить настоящие функции после unset
+
 echo 'quic media smoke ok'
