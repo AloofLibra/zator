@@ -109,6 +109,7 @@ CHECK_TARGETS = [
     ("Googlevideo", None),
     ("Blocked Sites", "https://meduza.io"),
     ("Instagram", "https://www.instagram.com/"),
+    ("Discord", "https://discord.com/"),
 ]
 
 # profile_check_json() — _lib.sh:180

@@ -1588,7 +1588,9 @@ backup_smart_apply_flags() {
   config_client_scope_apply "$old_cfg" "$new_cfg"
 
   # Keenetic-политика (POLICY_NAME/MARK/EXCLUDE) + хуки firewall.
-  if [ "$hardware" = "keenetic" ]; then
+  # ${hardware:-}: в проде z2r.sh всегда задаёт hardware до сортса либ,
+  # а тесты зовут применение флагов напрямую — unset не должен ронять.
+  if [ "${hardware:-}" = "keenetic" ]; then
     config_keenetic_policy_apply "$old_cfg" "$new_cfg"
     ensure_keenetic_policy_config "$new_cfg"
   fi

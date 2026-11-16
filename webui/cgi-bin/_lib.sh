@@ -795,6 +795,7 @@ api_check() {
   results="${results},$(check_one_target_json "Googlevideo" "https://${gv}")"
   results="${results},$(check_one_target_json "Blocked Sites" "https://meduza.io")"
   results="${results},$(check_one_target_json "Instagram" "https://www.instagram.com/")"
+  results="${results},$(check_one_target_json "Discord" "https://discord.com/")"
   send_json "200 OK" "{\"results\":[${results}]}"
 }
 

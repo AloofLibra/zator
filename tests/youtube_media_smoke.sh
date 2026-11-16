@@ -54,6 +54,53 @@ bootstrap_loop=$(awk '/^for lib in \$Z2R_LIB_FILES; do$/ {inside=1} inside {prin
 ! z2r_media_url_valid 'https://evil.example/foo.googlevideo.com/videoplayback?sig=REDACTED'
 ! z2r_media_url_valid 'https://rr1---sn-example.googlevideo.com/foo.googlevideo.com/videoplayback?sig=REDACTED'
 jq -e '.audio_itag==139 and .video_itag==160 and .cdn_hostname.audio=="rr1---sn-example.googlevideo.com"' "$tmp/cache/media.json" >/dev/null
+# Прямая подписанная googlevideo-ссылка: resolve не нужен, один поток.
+direct_url="https://rr1---sn-example.googlevideo.com/videoplayback?expire=$(($(date +%s) + 7200))&clen=8388608&mime=video%2Fmp4&itag=242&id=aqz-KE-bpKQ&sig=REDACTED"
+expired_url="https://rr1---sn-example.googlevideo.com/videoplayback?expire=$(($(date +%s) + 60))&clen=8388608&mime=video%2Fmp4&itag=242&id=aqz-KE-bpKQ&sig=REDACTED"
+test "$(printf 'bad\n%s\n' "$direct_url" | z2r_media_ask_video 2>/dev/null)" = "$direct_url"
+mkdir -p "$tmp/direct"
+z2r_media_direct_prepare "$direct_url" "$tmp/direct"
+test "$(cat "$tmp/direct/status")" = ready
+IFS='|' read -r d_length d_mime d_host d_expire < "$tmp/direct/video.params"
+test "$d_length" = 8388608
+test "$d_mime" = video/mp4
+test "$d_host" = rr1---sn-example.googlevideo.com
+test "$(cat "$tmp/direct/expires")" = "$d_expire"
+grep -qF "url = \"$direct_url\"" "$tmp/direct/video.curl"
+jq -e '.resolver_status=="direct" and .video_itag==242 and .cdn_hostname.video=="rr1---sn-example.googlevideo.com" and (has("audio_itag")|not)' "$tmp/direct/meta.json" >/dev/null
+rm -rf "$tmp/direct"; mkdir -p "$tmp/direct"
+! z2r_media_direct_prepare "$expired_url" "$tmp/direct"; test "$(cat "$tmp/direct/status")" = expired
+for bad in \
+    'https://rr1---sn-example.googlevideo.com/videoplayback?expire=999999999999&mime=video%2Fmp4&itag=242&id=aqz-KE-bpKQ&sig=REDACTED' \
+    'https://rr1---sn-example.googlevideo.com/videoplayback?expire=999999999999&clen=8388608&itag=242&id=aqz-KE-bpKQ&sig=REDACTED' \
+    'https://rr1---sn-example.googlevideo.com/videoplayback?expire=999999999999&clen=8388608&mime=video%2Fsabr&itag=242&id=aqz-KE-bpKQ&sig=REDACTED' \
+    'https://rr1---sn-example.googlevideo.com/videoplayback?expire=999999999999&clen=notanumber&mime=video%2Fmp4&itag=242&id=aqz-KE-bpKQ&sig=REDACTED' \
+    'https://rr1---sn-example.googlevideo.com/videoplayback?expire=999999999999&clen=8388608&mime=video%2Fmp4&itag=242&id=wrongid12345&sig=REDACTED' \
+    'https://rr1---sn-example.googlevideo.com/videoplayback?expire=999999999999&clen=8388608&mime=video%2Fmp4&itag=242&id=aqz-KE-bpKQ'; do
+    rm -rf "$tmp/direct"; mkdir -p "$tmp/direct"
+    ! z2r_media_direct_prepare "$bad" "$tmp/direct"
+    test "$(cat "$tmp/direct/status")" = direct_invalid
+done
+# prepare с прямой ссылкой: резолвер не вызывается, план = 2 GET одного потока.
+(
+    Z2R_MEDIA_DIR=""
+    trap '[ -z "$Z2R_MEDIA_DIR" ] || rm -rf "$Z2R_MEDIA_DIR"' EXIT
+    z2r_media_resolve() { echo 'resolver must not be called' >&2; return 1; }
+    : > "$tmp/direct-probes"
+    z2r_media_probe() { echo "$3" >> "$tmp/direct-probes"; printf 'OK|media_range|0|206|%s|0|0|0|1|1|1\n' "$3"; }
+    Z2R_MEDIA_VIDEO_ID="$direct_url"
+    z2r_media_prepare > "$tmp/direct-prepare-log" 2>&1
+    test "$Z2R_MEDIA_READY" = 1
+    test "$(cat "$Z2R_MEDIA_DIR/status")" = ready
+    grep -q 'готовая ссылка принята' "$tmp/direct-prepare-log"
+    grep -q '^Googlevideo video: rr1---sn-example.googlevideo.com$' "$tmp/direct-prepare-log"
+    row=$(Z2R_MEDIA_READY=1 z2r_media_check direct)
+    test "$row" = 'OK|media_range|0|206|2097152|0|0|0|1|1|1'
+    # Прямая ссылка = ровно 2 GET одного потока: начало и середина.
+    test "$(wc -l < "$tmp/direct-probes")" = 2
+    test "$(head -1 "$tmp/direct-probes")" = 1048576
+    test "$(tail -1 "$tmp/direct-probes")" = 2097152
+)
 printf '{' > "$tmp/broken.json"
 ! select_fixture "$tmp/broken.json"; expect_status invalid_json
 test ! -e "$tmp/cache/video.curl"

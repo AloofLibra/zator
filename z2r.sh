@@ -2464,19 +2464,30 @@ webui_submenu() {
   done
 }
 
-# Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки
-# и мимолётные сбои rawsend "Network (is) unreachable" / "Operation not
-# permitted" / "Message too large" (нет маршрута в момент переключения WAN/IPv6,
-# временный отказ raw-сокета или слишком крупный датаграмм для интерфейса —
-# MTU/fragmentation; формулировка зависит от платформы): verdict-пакеты идут
-# штатно, это не авария демона.
+# Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки,
+# мимолётные сбои rawsend (нет маршрута при переключении WAN/IPv6, MTU) и
+# "conntrack is missing but required" (соединения, начавшиеся ДО старта nfqws2:
+# демон не видел их SYN, пакеты уходят напрямую — штатно после рестартов, lua
+# дедуплицирует до строки в 10 сек; п.666 показывает счётчик отдельно).
 # На Entware также скрываем rawsend sendto EINVAL только при показе журнала.
 z2r_err_journal() {
-  local ignored='^rawsend: sendto.*(network.*unreachable|operation not permitted|message too large)'
+  local ignored='^rawsend: sendto.*(network.*unreachable|operation not permitted|message too large)|conntrack is missing but required'
   if [ "${OSystem:-}" = entware ]; then
     ignored="$ignored|(^|[[:space:]])rawsend: sendto \([0-9]+\): Invalid argument[[:space:]]*$"
   fi
   grep -v '^seccomp:' "${1:--}" 2>/dev/null | grep -viE "$ignored"
+}
+
+# Пояснение для п.666 по conntrack-пропускам. Эти строки выкинуты из красного
+# счётчика как безвредные (z2r_err_journal), но полный их игнор лишил бы
+# пользователя сигнала: сами пакеты прошли напрямую. На вход — готовый счётчик.
+z2r_err_conntrack_note() {
+  local n="$1"
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  echo -e "${plain}conntrack-пропусков: ${n} — пакеты соединений, начавшихся до старта nfqws2${plain}"
+  echo -e "${plain}(демон не видел их SYN), прошли напрямую. Штатно после рестартов и смен стратегий,${plain}"
+  echo -e "${plain}само проходит на новых соединениях. Сыпется непрерывно — проверяйте RAM и ctrack в config.${plain}"
+  return 0
 }
 
 get_menu() {
@@ -2797,11 +2808,17 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       z2r_err_journal /tmp/nfqws2_1.err
       echo ""
       echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2; seccomp-заметки и мимолётные rawsend 'Network unreachable' / 'Message too large' скрыты; на Entware также скрыт rawsend 'Invalid argument')${plain}"
+      ct_n=0
+      ct_n="$(grep -c "conntrack is missing but required" /tmp/nfqws2_1.err 2>/dev/null)" || ct_n=0
+      z2r_err_conntrack_note "$ct_n"
     elif command -v logread >/dev/null 2>&1 \
       && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | z2r_err_journal | grep -q .; then
       logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | z2r_err_journal | tail -20
       echo ""
       echo -e "${yellow}Источник: syslog (logread), последние 20 строк.${plain}"
+      ct_n=0
+      ct_n="$(logread 2>/dev/null | grep -c "conntrack is missing but required")" || ct_n=0
+      z2r_err_conntrack_note "$ct_n"
     else
       echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
       command -v logread >/dev/null 2>&1 && echo -e "${yellow}Если проблемы точно есть, а здесь пусто — обновите zapret2 ещё раз (wrt_fixes включает журнал ошибок).${plain}"
