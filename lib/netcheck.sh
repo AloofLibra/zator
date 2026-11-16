@@ -1015,6 +1015,125 @@ z2r_dns_spoof_gate_help() {
     echo "  - после исправления DNS запустить суперавтопрогон заново."
 }
 
+# --- DNS-гейт googlevideo: живой резолв - молчим, мусор - громко ------------
+
+# «Домашние» /16-префиксы Google (GGC/googlevideo): адреса ротируются, но
+# держатся внутри этих сетей. Ответ вне их — не приговор (GGC-кэш провайдера
+# легитимен), а повод сверить с DoH-эталоном. Переопределяется.
+Z2R_GV_DNS_PREFIXES="${Z2R_GV_DNS_PREFIXES:-74.125 173.194 142.250 142.251 172.217 172.253 216.239 64.233 72.14 209.85 108.177}"
+
+# Публичный IPv4 vs bogon/зарезервированные сети (куда заглушки отвечают
+# чаще всего; полный список — в коде). Печатает строку "pub|junk".
+z2r_gv_dns_split4() {
+    tr ' ' '\n' | awk '
+        function junk(a1, a2, a3) {
+            if (a1 >= 224) return 1
+            if (a1 == 0 || a1 == 10 || a1 == 127) return 1
+            if (a1 == 100 && a2 >= 64 && a2 <= 127) return 1
+            if (a1 == 169 && a2 == 254) return 1
+            if (a1 == 172 && a2 >= 16 && a2 <= 31) return 1
+            if (a1 == 192 && (a2 == 0 || a2 == 168)) return 1
+            if (a1 == 198 && (a2 == 18 || a2 == 19)) return 1
+            if (a1 == 198 && a2 == 51 && a3 == 100) return 1
+            if (a1 == 203 && a2 == 0 && a3 == 113) return 1
+            return 0
+        }
+        {
+            n = split($1, a, ".")
+            if (n != 4) { j = j " " $1; next }
+            bad = 0
+            for (k = 1; k <= 4; k++) if (a[k] !~ /^[0-9]+$/ || a[k] + 0 > 255) bad = 1
+            if (bad) { j = j " " $1; next }
+            if (junk(a[1] + 0, a[2] + 0, a[3] + 0)) j = j " " $1
+            else p = p " " $1
+        }
+        END {
+            sub(/^ /, "", p); sub(/^ /, "", j)
+            printf "%s|%s\n", p, j
+        }'
+}
+
+# Гейт резолвинга googlevideo (меню 01, перебор профиля 2, QUIC-проба):
+# системный резолвер — тот же, которым резолвят curl-пробы. Живой резолв —
+# МОЛЧА; ошибка/заглушка — громко и красным (rc=2); живые, но не-Google
+# адреса — кросс-чек с DoH-эталоном: ноль /16-пересечений — жёлтая подмена
+# (rc=1), DoH мёртв — тишина. Кеш на процесс по последнему хосту (на переборе
+# не спамим и не дёргаем nslookup на каждую стратегию); Z2R_GV_GATE_FORCE=1 —
+# игнорировать кеш.
+z2r_gv_dns_gate() {
+    local host="$1" raw srv parsed v4 splitout pub junk a pfx p16 r16 overlap
+    local refline ref ref_src
+    case "$host" in http://*|https://*) host="${host#*://}"; host="${host%%/*}" ;; esac
+    host="${host%%:*}"
+    [ -n "$host" ] || return 0
+    case "${_Z2R_GV_GATE_HOST:-}" in
+        "$host") [ "${Z2R_GV_GATE_FORCE:-0}" = 1 ] || return "${_Z2R_GV_GATE_RC:-0}" ;;
+    esac
+    _Z2R_GV_GATE_HOST="$host"
+    _Z2R_GV_GATE_RC=0
+
+    # системный резолвер — как в z2r_dns_spoof_gate: адрес сервера из шапки
+    # исключаем, чтобы он не попал в список ответов
+    raw="$(nslookup "$host" 2>/dev/null)"
+    srv="$(printf '%s\n' "$raw" | sed -n 's/^Address:[[:space:]]*\([0-9][0-9.]*\).*$/\1/p' | head -n1)"
+    parsed="$(printf '%s\n' "$raw" | z2r_dns_parse_addrs "$srv")"
+    v4="$(z2r_dns_field "$parsed" 1)"
+
+    if [ -z "$v4" ]; then
+        case "$raw" in
+            *NXDOMAIN*|*"not found"*|*"can't find"*|*"Non-existent"*|*"no answer"*) junk="NXDOMAIN" ;;
+            *"timed out"*|*"timeout"*|*"no servers"*|*"refused"*|*"unreachable"*|*"SERVFAIL"*|*"Failure"*) junk="нет ответа резолвера" ;;
+            *) junk="пустой ответ" ;;
+        esac
+        echo -e "${red:-}ВНИМАНИЕ: DNS вернул ерунду для ${host} (${junk}).${plain:-}"
+        echo -e "${red:-}Googlevideo-пробы будут врать: проверьте DNS роутера (или профиль 10, антиспуф DNS).${plain:-}"
+        _Z2R_GV_GATE_RC=2
+        return 2
+    fi
+
+    splitout="$(printf '%s\n' "$v4" | z2r_gv_dns_split4)"
+    pub="${splitout%%|*}"
+    junk="${splitout#*|}"
+    if [ -z "$pub" ]; then
+        echo -e "${red:-}ВНИМАНИЕ: DNS вернул заглушку для ${host} (${junk}).${plain:-}"
+        echo -e "${red:-}Googlevideo-пробы будут врать: проверьте DNS роутера (или профиль 10, антиспуф DNS).${plain:-}"
+        _Z2R_GV_GATE_RC=2
+        return 2
+    fi
+
+    # «домашние» диапазоны Google — резолв живой, тишина
+    for a in $pub; do
+        pfx="${a%.*}"; pfx="${pfx%.*}"
+        case " $Z2R_GV_DNS_PREFIXES " in *" $pfx "*) return 0 ;; esac
+    done
+
+    # живые, но не-Google адреса: сверяем с DoH-эталоном по /16-префиксам
+    refline="$(z2r_doh_reference "$host" 2>/dev/null)" || refline=""
+    ref_src="${refline%%|*}"
+    ref="${refline#*|}"
+    if [ -z "$ref" ]; then
+        return 0
+    fi
+    overlap=0
+    for a in $pub; do
+        p16="${a%.*}"; p16="${p16%.*}"
+        for r16 in $ref; do
+            r16="${r16%.*}"; r16="${r16%.*}"
+            if [ "$p16" = "$r16" ]; then overlap=1; break; fi
+        done
+        if [ "$overlap" = 1 ]; then break; fi
+    done
+    if [ "$overlap" = 0 ]; then
+        echo -e "${yellow:-}ВНИМАНИЕ: DNS отвечает на ${host} адресами вне эталона DoH — похоже на подмену.${plain:-}"
+        echo -e "Ответ системного DNS: ${pub}"
+        echo -e "Эталон (${ref_src}): ${ref}"
+        echo -e "${yellow:-}Googlevideo-пробы, скорее всего, пойдут не туда: проверьте DNS роутера.${plain:-}"
+        _Z2R_GV_GATE_RC=1
+        return 1
+    fi
+    return 0
+}
+
 # Большая бирюзовая подсказка после ПОЛНОГО краса YouTube (просьба автора):
 # когда ни одна стратегия не открыла youtube, дело почти всегда не в
 # стратегиях, а в залипшем канале/сессиях провайдера — перезагрузка роутера
@@ -1160,10 +1279,17 @@ check_dns() {
 }
 
 check_googlevideo_access() {
-   local rc=1
+   local rc=1 gv_host=""
    local Z2R_MEDIA_VIDEO_ID="${1:-${Z2R_MEDIA_VIDEO_ID:-}}"
    if [ "$#" = 0 ] && type z2r_media_ask_video >/dev/null 2>&1; then
       Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Медиапроверка отменена.'; return 0; }
+   fi
+   # DNS-гейт: живой резолв — тишина, мусор — громко. Хост кластера и
+   # CDN-хост медиапроверки живут в одной зоне — одного гейта достаточно;
+   # хост снимаем один раз — он же нужен TLS-фолбэку ниже.
+   gv_host="$(get_yt_cluster_domain 2>/dev/null)" || gv_host=""
+   if type z2r_gv_dns_gate >/dev/null 2>&1; then
+      z2r_gv_dns_gate "$gv_host" || true
    fi
    if type z2r_media_check_manual >/dev/null 2>&1; then
       z2r_media_check_manual && return 0
@@ -1171,7 +1297,7 @@ check_googlevideo_access() {
    fi
    case "$rc" in 129|130|143) echo 'Googlevideo: медиапроверка прервана.'; return 0 ;; esac
    echo 'Googlevideo: плюшевый TLS/CDN-тест; реальные медиаданные не проверены.'
-   check_access "https://$(get_yt_cluster_domain)"
+   check_access "https://${gv_host}"
 }
 
 check_access_list() {
@@ -1181,10 +1307,17 @@ check_access_list() {
 
    echo "Проверка доступности youtube.com (YT TCP)"
    check_access "https://www.youtube.com/"
-   check_googlevideo_access
+   check_googlevideo_access "${Z2R_MEDIA_DEFAULT_VIDEO_ID:-}"
+   # QUIC-проверка видео (профиль 5) — опциональный модуль: на старых
+   # бутстрапах quic_media.sh нет, тогда пункт просто отсутствует.
+   if type z2r_quic_access_check >/dev/null 2>&1; then
+      z2r_quic_access_check || true
+   fi
    echo "Проверка доступности meduza.io (RKN list)"
    check_access "https://meduza.io"
    echo "Проверка доступности www.instagram.com (RKN list + нужен рабочий DNS)"
    check_access "https://www.instagram.com/"
+   echo "Проверка доступности discord.com (профиль 4, TLS)"
+   check_access "https://discord.com/"
 
 }

@@ -54,15 +54,32 @@ orch_profile_try() {
     echo "Текущее состояние: ${current_state/auto/def}"
     # Общая точка входа всех меню подбора, включая Discord.
     type show_hint >/dev/null 2>&1 && show_hint "$profile"
+    # Профиль 5: при наличии QUIC-модуля в промпте есть A. h3-curl может
+    # отсутствовать — тогда спросить про установку СРАЗУ, до промпта
+    # (фидбэк: оффер после ввода стратегии и видео «слишком поздно»).
+    local quic_ok=0
+    if [ "$profile" = 5 ] && type z2r_quic_media_run >/dev/null 2>&1; then
+        quic_ok=1
+    fi
+    if [ "$quic_ok" = 1 ] && [ "${Z2R_QUIC_OFFER_DONE:-0}" != 1 ] \
+        && ! z2r_quic_curl_detect >/dev/null 2>&1 \
+        && { [ -t 0 ] || [ "${Z2R_QUIC_ASSUME_TTY:-0}" = 1 ]; }; then
+        z2r_quic_offer_install || true
+        Z2R_QUIC_OFFER_DONE=1   # один раз за сессию: не переспрашивать
+    fi
     local prompt_text="Введите номер стратегии 1-${max_strat} (0 - отключить профиль"
     if printf '%s' "$test_url" | grep -q '^https://'; then
         prompt_text="${prompt_text}, A - автопрогон"
+    elif [ "$quic_ok" = 1 ]; then
+        prompt_text="${prompt_text}, A - автопрогон с проверкой видео (QUIC)"
     fi
     read -re -p "${prompt_text}, Enter - без изменений): " start_strat
     case "$start_strat" in
         a|A|а|А)
             if printf '%s' "$test_url" | grep -q '^https://'; then
                 orch_run_auto_sweep "profile" "$profile" "$proto_list" "$test_url" 1 "$max_strat"
+            elif [ "$profile" = 5 ] && type z2r_quic_media_run >/dev/null 2>&1; then
+                z2r_quic_media_run
             fi
             return
             ;;
@@ -93,11 +110,23 @@ orch_profile_try() {
     if [ "$profile" = 2 ] && type z2r_media_ask_video >/dev/null 2>&1; then
         Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
     fi
+    # Профиль 5: для ручной QUIC-проверки видео спрашиваем так же, как у 2.
+    if [ "$profile" = 5 ] && [ "$quic_ok" = 1 ] && type z2r_media_ask_video >/dev/null 2>&1; then
+        Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
+    fi
 
     if [ "$profile" = 2 ] && type z2r_media_prepare >/dev/null 2>&1; then
         # Как supersweep_menu: Ctrl+C ребёнка не должен закрыть родительское меню.
         trap ':' INT
         orch_gv_trial _orch_profile_manual_sweep || echo 'Подбор Googlevideo прерван; прежняя стратегия восстановлена.'
+        trap - INT
+    elif [ "$profile" = 5 ] && type _z2r_quic_trial >/dev/null 2>&1; then
+        # Ручной подбор профиля 5 с QUIC-проверкой каждой стратегии.
+        # SOFT-режим обёртки: без h3-curl/медиа подбор продолжается без проверки.
+        trap ':' INT
+        Z2R_QUIC_MEDIA_VIDEO_ID="$Z2R_MEDIA_VIDEO_ID" Z2R_QUIC_TRIAL_SOFT=1 \
+            _z2r_quic_trial _orch_profile_manual_sweep \
+            || echo 'Подбор QUIC прерван; прежняя стратегия восстановлена.'
         trap - INT
     else
         _orch_profile_manual_sweep
@@ -129,6 +158,15 @@ _orch_profile_manual_sweep() {
         elif [ "$profile" = 2 ]; then
             _supersweep_settle
             check_googlevideo_access "$Z2R_MEDIA_VIDEO_ID"
+        elif [ "$profile" = 5 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ] \
+            && type z2r_quic_single_round >/dev/null 2>&1; then
+            # Ручная QUIC-проверка: тот же круг из 5 проб, что и в переборе.
+            _z2r_quic_settle
+            local quic_verdict
+            quic_verdict="$(z2r_quic_single_round "$s")" || quic_verdict=""
+            if type z2r_quic_print_verdict >/dev/null 2>&1; then
+                z2r_quic_print_verdict "$s" "$quic_verdict"
+            fi
         elif [ -n "$test_url" ]; then
             echo "Проверка доступа: $test_url"
             check_access "$test_url"
@@ -151,7 +189,9 @@ _orch_profile_manual_sweep() {
                 echo -e "${red}Не удалось сохранить стратегию $s для профиля $profile.${plain}"
             fi
             telemetry_notify
-            pause_enter
+            # Пауза косметическая: на EOF (обрыв SSH) она не должна превращать
+            # успешное сохранение в «прервано» с откатом лока обёрткой.
+            pause_enter || true
             return
         elif [ "$answer" = "0" ]; then
             break
@@ -167,7 +207,7 @@ _orch_profile_manual_sweep() {
         esac
     done
     echo "Изменения отменены."
-    pause_enter
+    pause_enter || true
 }
 
 # Запрос интервала паузы между стратегиями автопрогона: частые переключения
@@ -262,7 +302,7 @@ orch_gv_trial() (
     local Z2R_SUPERSWEEP_DIR="" Z2R_MEDIA_DIR="" Z2R_MEDIA_READY=0
     local Z2R_SUPERSWEEP_ISOLATED=0 Z2R_TLS_LOCAL_PORTS="" _Z2R_GV_TRIAL=1
     local Z2R_SUPERSWEEP_SETTLE="${Z2R_SUPERSWEEP_SETTLE:-2}"
-    local completed=0 trial_touched=0 prior
+    local completed=0 trial_touched=0 prior gh
     case "$Z2R_SUPERSWEEP_SETTLE" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
     prior="$(orch_locked_state_get 2 tls)"
     (umask 077; mkdir "$shared_lock") 2>/dev/null || {
@@ -284,6 +324,21 @@ orch_gv_trial() (
         z2r_media_prepare || return 1
     else
         echo 'Googlevideo Media UNKNOWN: нет media-модуля. Плюшевый TLS/CDN-тест, без выбора media-победителя.' >&2
+    fi
+    # DNS-гейт googlevideo: мусорный резолв — громкое предупреждение перед
+    # прогоном. Хост — CDN из media-кеша (его и резолвят media-пробы);
+    # prepare упал — гейтим хост цели из test_url. Прогон не останавливаем.
+    if type z2r_gv_dns_gate >/dev/null 2>&1; then
+        gh=""
+        if [ "${Z2R_MEDIA_READY:-0}" = 1 ] && [ -s "${Z2R_MEDIA_DIR:-}/video.params" ]; then
+            IFS='|' read -r _ _ gh _ < "${Z2R_MEDIA_DIR}/video.params" 2>/dev/null || gh=""
+        fi
+        if [ -z "$gh" ]; then
+            gh="${4:-}"; gh="${gh#*://}"; gh="${gh%%/*}"
+        fi
+        if [ -n "$gh" ]; then
+            z2r_gv_dns_gate "$gh" >&2 || :
+        fi
     fi
     "$run" "$@" || return 1
     completed=1

@@ -988,6 +988,15 @@ strategies_submenu() {
         orch_profile_try "4" "Профиль 4: TCP 443 (Discord)" "tls" "https://discord.com/"
         ;;
       "5")
+        if type z2r_quic_media_run >/dev/null 2>&1; then
+          echo -e "${cyan}Проверка видео по QUIC: A - автопрогон, проверяется и ручной выбор стратегии.${plain}"
+          if ! z2r_quic_curl_detect >/dev/null 2>&1; then
+            # Спросить про установку сразу (фидбэк: оффер в конце «слишком поздно»).
+            z2r_quic_offer_install \
+              || echo -e "${yellow}Без h3-curl проверка видео недоступна, подбор продолжится без неё.${plain}"
+            Z2R_QUIC_OFFER_DONE=1
+          fi
+        fi
         echo -e "${yellow}Проверьте работоспособность в браузере.${plain}"
         orch_profile_try "5" "Профиль 5: UDP 443 (QUIC)" "udp" ""
         ;;
@@ -2301,6 +2310,7 @@ advanced_settings_submenu() {
     local quic_block quic_value quic_color
     local keenetic_status keenetic_color
     local wd_status wd_color
+    local wssize_value wssize_color googlevideo_collect_value
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -2356,6 +2366,29 @@ advanced_settings_submenu() {
       *) wd_color="yellow" ;;
     esac
     submenu_status_item "6" "Watchdog zapret2: перезапуск при падении/OOM." "$wd_status" "$wd_color"
+    if [ "$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_ENABLE)" = 1 ]; then
+      wssize_value="включен"; wssize_color="green"
+    else
+      wssize_value="выключен"; wssize_color="red"
+    fi
+    submenu_status_item "7" "Экспериментальный wssize_ramp (список Googlevideo)." "$wssize_value" "$wssize_color"
+    submenu_item "8" "Обновить центральный список IPv4 Googlevideo. Сейчас: $(googlevideo_ips_count)"
+    if googlevideo_local_collection_supported "${OSystem:-}"; then
+      case "$(googlevideo_openwrt_dnsmasq_state)" in
+        enabled) googlevideo_collect_value="listener запущен" ;;
+        disabled) googlevideo_collect_value="listener не запущен" ;;
+        *) googlevideo_collect_value="недоступен; используется центральный список" ;;
+      esac
+      case "${OSystem:-}" in
+        WRT) googlevideo_collect_label="OpenWrt: локальный сбор через UBus." ;;
+        entware) googlevideo_collect_label="Entware: пассивный локальный сбор DNS." ;;
+        *) googlevideo_collect_label="VPS: пассивный захват DNS через AF_PACKET." ;;
+      esac
+      submenu_status_item "9" "$googlevideo_collect_label" "$googlevideo_collect_value" "cyan"
+      submenu_status_item "" "Последний захваченный DNS-ответ." "$(googlevideo_local_last_observation)" "gray"
+      submenu_status_item "" "Локально обнаружено адресов." "$(googlevideo_local_kernel_ips | wc -l | tr -d ' ')" "gray"
+      submenu_item "10" "Принудительно отправить новые локальные IP на сервер"
+    fi
     submenu_item "0" "Назад"
     echo ""
 
@@ -2388,6 +2421,21 @@ advanced_settings_submenu() {
         watchdog_toggle || true
         pause_enter
         ;;
+      "7")
+        wssize_ramp_submenu
+        ;;
+      "8")
+        if googlevideo_ips_update force; then
+          echo -e "${green}Googlevideo IP список обновлён: $(googlevideo_ips_count) адресов.${plain}"
+        else
+          echo -e "${yellow}Не удалось обновить список; сохранённый файл не затронут.${plain}"
+        fi
+        pause_enter
+        ;;
+      "10")
+        googlevideo_upload_local_manual || true
+        pause_enter
+        ;;
       "0"|"")
         return
         ;;
@@ -2395,6 +2443,83 @@ advanced_settings_submenu() {
         ui_invalid_input
         ;;
     esac
+  done
+}
+
+googlevideo_upload_local_manual() {
+  local tel_enabled=0 tel_uuid="" TELEMETRY_CFG="${Z2R_GV_TELEMETRY_CFG:-${TELEMETRY_CFG:-${ZATOR_ROOT:-/opt/zator}/z2r_lib/telemetry.config}}"
+  if [ ! -r "$TELEMETRY_CFG" ]; then
+    echo -e "${yellow}Настройки телеметрии не найдены; отправка отменена.${plain}"
+    return 1
+  fi
+  . "$TELEMETRY_CFG"
+  if [ "$tel_enabled" != 1 ]; then
+    echo -e "${yellow}Телеметрия выключена; включите её, чтобы отправлять локальные наблюдения.${plain}"
+    return 1
+  fi
+  if ! googlevideo_local_spool_has_pending; then
+    echo -e "${green}Очередь локальных наблюдений пуста.${plain}"
+    return 0
+  fi
+  if ! googlevideo_ips_update force; then
+    echo -e "${yellow}Не удалось обновить центральный список; отправка не выполнена.${plain}"
+    return 1
+  fi
+  if ! googlevideo_queue_local_observations; then
+    echo -e "${yellow}Не удалось подготовить локальные наблюдения к отправке.${plain}"
+    return 1
+  fi
+  if ! googlevideo_local_spool_has_pending; then
+    echo -e "${green}Новых адресов относительно центрального списка нет.${plain}"
+    return 0
+  fi
+  if googlevideo_upload_local_batch "$tel_uuid" force; then
+    case "$GOOGLEVIDEO_UPLOAD_LAST_STATUS" in
+      uploaded) echo -e "${green}Отправлено новых IP: ${GOOGLEVIDEO_UPLOAD_LAST_COUNT}.${plain}" ;;
+      no-new) echo -e "${green}Новых IP относительно центрального списка нет.${plain}" ;;
+      *) echo -e "${green}Новых адресов для отправки нет.${plain}" ;;
+    esac
+    return 0
+  fi
+  echo -e "${yellow}Не удалось отправить наблюдения; очередь сохранена для повтора.${plain}"
+  return 1
+}
+
+wssize_ramp_submenu() {
+  local cfg=/opt/zapret2/config enabled mode scale ans new_enabled new_mode new_scale count
+  [ -f "$cfg" ] || { echo -e "${red}Config не найден${plain}"; pause_enter; return 1; }
+  while true; do
+    enabled="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE)"; [ "$enabled" = 1 ] || enabled=0
+    mode="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE)"; [ -n "$mode" ] || mode=full
+    scale="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE)"; [ -n "$scale" ] || scale=1
+    count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
+    clear -x
+    echo -e "${cyan}--- Экспериментальный wssize_ramp ---${plain}"
+    echo "Состояние: $([ "$enabled" = 1 ] && echo включен || echo выключен); Googlevideo IP: $count; режим: $mode; scale: $scale"
+    echo "1. Включить/выключить"
+    echo "2. Режим: Full/Lite"
+    echo "3. Scale (0–14)"
+    echo "0. Назад"
+    read -r -p "Ваш выбор: " ans || return
+    new_enabled="$enabled"; new_mode="$mode"; new_scale="$scale"
+    case "$ans" in
+      1) [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
+      2) read -r -p "Режим (full/lite): " new_mode || return ;;
+      3) read -r -p "Scale (0–14): " new_scale || return ;;
+      0|"") return ;;
+      *) ui_invalid_input; continue ;;
+    esac
+    if [ "$new_enabled" = 1 ] && [ ! -s /opt/zator/lua/wssize-ramp.lua ]; then
+      echo -e "${red}Нет /opt/zator/lua/wssize-ramp.lua; обновите zator через меню 5.${plain}"; pause_enter; continue
+    fi
+    if [ "$new_enabled" = 1 ]; then googlevideo_ips_update || true; fi
+    if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_mode" "$new_scale"; then
+      z2r_service_action restart
+      echo -e "${green}Настройки wssize_ramp применены.${plain}"
+    else
+      echo -e "${red}Проверьте IPv4, режим full/lite и scale 0–14. Конфигурация не применена.${plain}"
+    fi
+    pause_enter
   done
 }
 

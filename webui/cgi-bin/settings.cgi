@@ -35,6 +35,9 @@ case "${REQUEST_METHOD:-GET}" in
       dns_desync)
         api_dns_desync_get
         ;;
+      wssize_ramp)
+        api_wssize_ramp_get
+        ;;
       ports)
         api_ports_get
         ;;
@@ -102,6 +105,9 @@ case "${REQUEST_METHOD:-GET}" in
         ;;
       dns_desync_state)
         api_dns_desync_set
+        ;;
+      wssize_ramp)
+        api_wssize_ramp_set
         ;;
       ports_add)
         api_ports_add

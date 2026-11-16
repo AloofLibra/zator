@@ -67,6 +67,7 @@ menu_action_toggle_keenetic_policy_mode() {
 # остановлен, старт/рестарт — забота вызывающего.
 config_apply_from_default() {
   local root="${ZAPRET2_ROOT:-/opt/zapret2}"
+  local preserve_ramp="${1:-}" ramp_enable ramp_mode ramp_scale ramp_wsize ramp_open
   local old_scope_cfg="/tmp/z2r_client_scope_config_$$"
   cp -f "$root/config" "$old_scope_cfg" 2>/dev/null || true
 
@@ -78,11 +79,28 @@ config_apply_from_default() {
   fi
 
   profile_apply_all "$root/config.default"
+  config_fwtype_apply_default "$root/config.default" || return 1
 
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then
     config_client_scope_apply "$old_scope_cfg" "$root/config" || true
     [ "$hardware" = "keenetic" ] && { config_keenetic_policy_apply "$old_scope_cfg" "$root/config" || true; }
+    # Routine upgrades keep the three Ramp controls; explicit config reset calls
+    # this function without the flag and continues to use shipped defaults.
+    if [ "$preserve_ramp" = preserve_wssize ]; then
+      ramp_enable="$(config_get_var "$old_scope_cfg" Z2R_WSSIZE_RAMP_ENABLE)"
+      ramp_mode="$(config_get_var "$old_scope_cfg" Z2R_WSSIZE_RAMP_MODE)"
+      ramp_scale="$(config_get_var "$old_scope_cfg" Z2R_WSSIZE_RAMP_SCALE)"
+      ramp_wsize="$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_WSIZE)"
+      ramp_open="$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_OPEN)"
+      [ -z "$ramp_enable" ] || config_set_var "$root/config" Z2R_WSSIZE_RAMP_ENABLE "$ramp_enable"
+      [ -z "$ramp_mode" ] || config_set_var "$root/config" Z2R_WSSIZE_RAMP_MODE "$ramp_mode"
+      [ -z "$ramp_scale" ] || config_set_var "$root/config" Z2R_WSSIZE_RAMP_SCALE "$ramp_scale"
+      if [ "$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_ENABLE)" = 1 ]; then
+        config_set_var "$root/config" Z2R_WSSIZE_RAMP_ARGS ":mode=$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_MODE):wsize=$ramp_wsize:scale=$(config_get_var "$root/config" Z2R_WSSIZE_RAMP_SCALE):open=$ramp_open"
+        config_set_var "$root/config" Z2R_WSSIZE_RAMP_SKIP ""
+      fi
+    fi
     rm -f "$old_scope_cfg"
   fi
   config_client_scope_ensure "$root/config" || true
@@ -1453,6 +1471,18 @@ backup_smart_set_rst_guard() {
   fi
 }
 
+backup_smart_set_wssize_ramp() {
+	local cfg="$1" enabled="$2" mode="$3" scale="$4"
+  [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || return 1
+  case "$mode" in full|lite) ;; *) return 1 ;; esac
+  case "$scale" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$scale" -le 14 ] 2>/dev/null || return 1
+  grep -q -- '--lua-desync=wssize_ramp' "$cfg" || return 2
+  config_set_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE "$enabled"
+  config_set_var "$cfg" Z2R_WSSIZE_RAMP_MODE "$mode"
+  config_set_var "$cfg" Z2R_WSSIZE_RAMP_SCALE "$scale"
+}
+
 # Пункт 19: --reasm-disable (вставка/удаление строки после NFQWS2_OPT=").
 # Повторяет логическое ядро menu_action_toggle_reasm_disable().
 backup_smart_set_reasm() {
@@ -1558,7 +1588,9 @@ backup_smart_apply_flags() {
   config_client_scope_apply "$old_cfg" "$new_cfg"
 
   # Keenetic-политика (POLICY_NAME/MARK/EXCLUDE) + хуки firewall.
-  if [ "$hardware" = "keenetic" ]; then
+  # ${hardware:-}: в проде z2r.sh всегда задаёт hardware до сортса либ,
+  # а тесты зовут применение флагов напрямую — unset не должен ронять.
+  if [ "${hardware:-}" = "keenetic" ]; then
     config_keenetic_policy_apply "$old_cfg" "$new_cfg"
     ensure_keenetic_policy_config "$new_cfg"
   fi

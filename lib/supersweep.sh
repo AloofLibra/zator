@@ -44,18 +44,18 @@ supersweep_report_tsv() {
     fi
     [ "${_Z2R_SS_REPORT_FINAL:-0}" != 1 ] || alive=0
     set --
-    for file in status media-status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv \
-        best.yt best.gv best.ds best.rkn applied.yt applied.gv applied.ds applied.rkn applied.tsv; do
+    for file in status media-status workers.tsv progress.yt.tsv progress.gv.tsv progress.ds.tsv progress.rkn.tsv progress.quic.tsv \
+        best.yt best.gv best.ds best.rkn best.quic applied.yt applied.gv applied.ds applied.rkn applied.quic applied.tsv; do
         [ ! -r "$dir/$file" ] || set -- "$@" "$dir/$file"
     done
     awk -F '\t' -v alive="$alive" '
     function clean(s) {gsub(/[[:cntrl:]]/," ",s);return s==""?"-":s}
     function num(s) {return s~/^[0-9]+$/?s+0:0}
     BEGIN {
-        OFS="\t"; names[1]="yt";names[2]="gv";names[3]="ds";names[4]="rkn"
-        labels["yt"]="YouTube";labels["gv"]="Googlevideo";labels["ds"]="Discord";labels["rkn"]="РКН"
-        profiles["yt"]=1;profiles["gv"]=2;profiles["ds"]=4;profiles["rkn"]=3
-        byprofile[1]="yt";byprofile[2]="gv";byprofile[4]="ds";byprofile[3]="rkn"
+        OFS="\t"; names[1]="yt";names[2]="gv";names[3]="quic";names[4]="ds";names[5]="rkn"
+        labels["yt"]="YouTube";labels["gv"]="Googlevideo";labels["quic"]="QUIC";labels["ds"]="Discord";labels["rkn"]="РКН"
+        profiles["yt"]=1;profiles["gv"]=2;profiles["quic"]=5;profiles["ds"]=4;profiles["rkn"]=3
+        byprofile[1]="yt";byprofile[2]="gv";byprofile[5]="quic";byprofile[4]="ds";byprofile[3]="rkn"
     }
     {
         file=FILENAME;sub(/^.*\//,"",file)
@@ -64,15 +64,15 @@ supersweep_report_tsv() {
         if(file=="workers.tsv" && NF>=6 && $1 in labels) {
             w=$1;seen[w]=1;total[w]=num($6)*(w=="rkn"?split($5,ds,","):1);url[w]=$5;next
         }
-        if(file~/^progress\.(yt|gv|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail|unknown)$/) {
+        if(file~/^progress\.(yt|gv|quic|ds|rkn)\.tsv$/ && NF>=9 && $3~/^[1-9][0-9]*$/ && $4~/^(ok|warn|fail|unknown)$/) {
             w=file;sub(/^progress\./,"",w);sub(/\.tsv$/,"",w);count[w]++;verdict[w,$4=="unknown"?"warn":$4]++;next
         }
-        if(file~/^best\.(yt|gv|ds|rkn)$/) {
+        if(file~/^best\.(yt|gv|quic|ds|rkn)$/) {
             w=file;sub(/^best\./,"",w);i=index($0,"=");key=substr($0,1,i-1);v=substr($0,i+1)
             if(key=="greens" || key=="warns") lists[w,key]=v
             next
         }
-        if(file~/^applied\.(yt|gv|ds|rkn)$/) {
+        if(file~/^applied\.(yt|gv|quic|ds|rkn)$/) {
             w=file;sub(/^applied\./,"",w);split($0,a,"[|]")
             if(a[1]~/^(profile|domain)$/ && a[4]~/^[1-9][0-9]*$/) {current[w]=a[4];target[w]=a[1]=="domain"?a[2]:url[w]}
             next
@@ -88,9 +88,9 @@ supersweep_report_tsv() {
         active=state~/^(starting|running|applying)$/ && alive
         if(state~/^(starting|running|applying)$/ && !alive)state="interrupted"
         phase=kv["alive"];sub(/,.*/,"",phase);if(!active)phase=""
-        for(i=1;i<=4;i++){w=names[i];completed+=count[w];sum+=total[w]}
+        for(i=1;i<=5;i++){w=names[i];completed+=count[w];sum+=total[w]}
         printf "R\t%s\t%d\t%.0f\t%.0f\t%s\t%s\t%d\t%d\tlive\n",state,active,num(kv["started"]),num(kv["updated"]),clean(kv["scope"]==""?"default":kv["scope"]),clean(phase),completed,sum
-        for(i=1;i<=4;i++) {
+        for(i=1;i<=5;i++) {
             w=names[i];if(!seen[w])continue
             label=labels[w];if(w=="gv" && media!="")label=label " [" (media=="ready"?"media TCP":"Media UNKNOWN: " clean(media)) "]"
             print "W",w,label,profiles[w],count[w]+0,total[w]+0,verdict[w,"ok"]+0,verdict[w,"warn"]+0,verdict[w,"fail"]+0,clean(active&&phase==w?current[w]:""),clean(target[w]),clean(lists[w,"greens"]),clean(lists[w,"warns"]),clean(winner[w])
@@ -580,6 +580,151 @@ _supersweep_worker_profile() {
     : > "${dir}/done.${name}"
 }
 
+# --- QUIC-воркер (профиль 5, UDP 443): реальные h3-пробы видео ---
+# Протокол локов как у профильных воркеров (profile|5|udp|<s>), проверка —
+# z2r_quic_strategy_verdict (Z2R_QUIC_ROUNDS повторов круга). Медиа-кеш
+# готовит родитель перед фазой gv — QUIC идёт сразу после и переиспользует
+# ссылки. Только обычный режим: в фоновой изоляции UDP через TCP-очередь не идёт.
+_supersweep_worker_quic() {
+    _supersweep_worker_priority
+    local name="$1" max="$2" pause_sec="$3"
+    local dir="$Z2R_SUPERSWEEP_DIR"
+    local s round=0 out token speed short epoch gh
+    local ok_list="" warn_list="" ok_stats="" warn_stats=""
+    local n_ok=0 n_warn=0 n_fail=0 n_unknown=0
+    local ss_interrupted=0 psleep settle_v g
+    settle_v="${Z2R_SUPERSWEEP_SETTLE:-2}"
+    case "$settle_v" in ''|*[!0-9]*) settle_v=2 ;; esac
+    trap 'ss_interrupted=1' INT TERM
+    set +e
+    # Cancel-файл прогона виден QUIC-пробам: z2r_quic_probe проверяет
+    # $Z2R_QUIC_SWEEP_DIR/cancel на каждой позиции.
+    Z2R_QUIC_SWEEP_DIR="$dir"
+    # Бинарь пробы — только наш h3-curl (контракт _z2r_quic_trial): без
+    # Z2R_QUIC_CURL проба падает на PATH-curl без HTTP3 и врёт «held».
+    Z2R_QUIC_CURL="$(z2r_quic_curl_detect 2>/dev/null)" || Z2R_QUIC_CURL=""
+    if [ "${Z2R_MEDIA_READY:-0}" != 1 ] || [ ! -s "${Z2R_MEDIA_DIR:-}/video.params" ]; then
+        echo -e "$(date '+%H:%M:%S') ${yellow}QUIC: медиа-ссылки не получены — фаза пропущена, лок не менялся.${plain}"
+        {
+            printf 'best=\n'
+            printf 'best_kind=\n'
+            printf 'best_short=медиа-ссылки не получены\n'
+            printf 'greens=\n'
+            printf 'fulls=\n'
+            printf 'warns=\n'
+            printf 'n_ok=0\n'
+            printf 'n_warn=0\n'
+            printf 'n_fail=0\n'
+            printf 'n_unknown=0\n'
+            printf 'interrupted=1\n'
+        } > "${dir}/best.${name}"
+        : > "${dir}/done.${name}"
+        return 0
+    fi
+    # DNS-гейт googlevideo: живой резолв — тишина, мусор — громко и один раз.
+    gh=""
+    IFS='|' read -r _ _ gh _ < "${Z2R_MEDIA_DIR}/video.params" 2>/dev/null || gh=""
+    if type z2r_gv_dns_gate >/dev/null 2>&1 && [ -n "$gh" ]; then
+        z2r_gv_dns_gate "$gh" >&2 || :
+    fi
+
+    for ((s=1; s<=max; s++)); do
+        if [ "$ss_interrupted" = 1 ] || _supersweep_cancelled; then break; fi
+        round=$((round + 1))
+        _supersweep_request_lock "$name" "$round" "profile|5|udp|${s}" || { ss_interrupted=1; break; }
+        _supersweep_settle
+        out="$(z2r_quic_strategy_verdict "$s")" || out=""
+        token="${out%%|*}"
+        if [ -z "$out" ] || [ "$token" = "cancelled" ]; then
+            ss_interrupted=1
+            break
+        fi
+        speed="${out#*|}"; speed="${speed%%|*}"
+        short="${out#*|}"; short="${short#*|}"
+        _supersweep_cancelled && { ss_interrupted=1; break; }
+
+        case "$token" in
+            green)
+                token="ok"; n_ok=$((n_ok + 1))
+                ok_list="${ok_list}${ok_list:+ }${s}"
+                ok_stats="${ok_stats}${s}|${speed}|0|${short}"$'\n'
+                ;;
+            warn)
+                token="warn"; n_warn=$((n_warn + 1))
+                warn_list="${warn_list}${warn_list:+ }${s}"
+                warn_stats="${warn_stats}${s}|${speed}|0|${short}"$'\n'
+                ;;
+            unknown) token="unknown"; n_unknown=$((n_unknown + 1)) ;;
+            *) token="fail"; n_fail=$((n_fail + 1)) ;;
+        esac
+
+        # Та же строка прогресса, что у профильных воркеров: TLS-колонки —
+        # прочерк (у QUIC нет версий 1.2/1.3), скорость живёт в short.
+        printf -v epoch '%(%s)T' -1 2>/dev/null || epoch="$(date +%s)"
+        printf '%s\t5\t%s\t%s\t-\t-\t-\t-\t%s\n' "$epoch" "$s" "$token" "$short" \
+            >> "${dir}/progress.${name}.tsv"
+        case "$token" in
+            ok)      printf '%s [%-3s] %3d: %b %b\n' "$(date '+%H:%M:%S')" "$name" "$s" "${green}OK  ${plain}" "${green}${short}${plain}" ;;
+            warn)    printf '%s [%-3s] %3d: %b %b\n' "$(date '+%H:%M:%S')" "$name" "$s" "${yellow}WARN${plain}" "${yellow}${short}${plain}" ;;
+            unknown) printf '%s [%-3s] %3d: %b %b\n' "$(date '+%H:%M:%S')" "$name" "$s" "${yellow}UNKNOWN${plain}" "${yellow}${short}${plain}" ;;
+            *)       printf '%s [%-3s] %3d: %b %b\n' "$(date '+%H:%M:%S')" "$name" "$s" "${red}FAIL${plain}" "${red}${short}${plain}" ;;
+        esac
+
+        if [ "$s" -lt "$max" ]; then
+            psleep="$pause_sec"
+            if [ "$psleep" -gt "$settle_v" ]; then
+                psleep=$((psleep - settle_v))
+            else
+                psleep=0
+            fi
+            if [ "$token" = ok ]; then
+                g="${Z2R_SUPERSWEEP_GREEN_PAUSE:-5}"
+                case "$g" in ''|*[!0-9]*) g=5 ;; esac
+                if [ "$g" -gt 0 ]; then psleep="$g"; fi
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$name" "$s" "$psleep" >> "${dir}/pacing.tsv"
+            [ "$psleep" -gt 0 ] && _supersweep_sleep "$psleep"
+        fi
+    done
+
+    local ss_incomplete=0
+    [ "$s" -le "$max" ] && ss_incomplete=1
+
+    # Самая быстрая зелёная по суммарной скорости проб; без зелёных — жёлтая.
+    local best="" best_short="" best_kind="" win
+    if [ -n "$ok_stats" ]; then
+        win="$(printf '%s' "$ok_stats" | awk -F'|' 'BEGIN{max=-1} {v=$2+0; if (v>max) {max=v; line=$0}} END{print line}')"
+        best="${win%%|*}"; best_kind="best"
+        best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+    fi
+    if [ -z "$best" ] && [ -n "$ok_list" ]; then
+        best="${ok_list%% *}"; best_kind="best"; best_short="h3 ответил (без скорости)"
+    fi
+    if [ -z "$best" ] && [ -n "$warn_list" ]; then
+        best="${warn_list%% *}"; best_kind="warn"
+        best_short="жёлтая (единственная без красных)"
+        if [ -n "$warn_stats" ]; then
+            win="$(printf '%s' "$warn_stats" | awk -F'|' 'BEGIN{max=-1} {v=$2+0; if (v>max) {max=v; line=$0}} END{print line}')"
+            best="${win%%|*}"; best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+        fi
+    fi
+
+    {
+        printf 'best=%s\n' "$best"
+        printf 'best_kind=%s\n' "$best_kind"
+        printf 'best_short=%s\n' "$best_short"
+        printf 'greens=%s\n' "$ok_list"
+        printf 'fulls=\n'
+        printf 'warns=%s\n' "$warn_list"
+        printf 'n_ok=%s\n' "$n_ok"
+        printf 'n_warn=%s\n' "$n_warn"
+        printf 'n_fail=%s\n' "$n_fail"
+        printf 'n_unknown=%s\n' "$n_unknown"
+        printf 'interrupted=%s\n' "$ss_incomplete"
+    } > "${dir}/best.${name}"
+    : > "${dir}/done.${name}"
+}
+
 # TSV: ok_winner, ok_cover, total, warn_winner, warn_cover.
 # Рейтинг: покрытие → сумма скоростей → меньший номер. Warn только для отчёта.
 _supersweep_rkn_winners() {
@@ -804,12 +949,13 @@ _supersweep_settle_worker() {
 _supersweep_settle_pass() {
     local cfg="$1" dir="$Z2R_SUPERSWEEP_DIR" wname
     _supersweep_cancelled && return 0
-    for wname in yt gv ds rkn; do
+    for wname in yt gv quic ds rkn; do
         [ -e "${dir}/done.${wname}" ] || continue
         [ -e "${dir}/applied.done.${wname}" ] && continue
         case "$wname" in
             yt)  _supersweep_settle_worker yt  1 "tls http" "$cfg" ;;
             gv)  _supersweep_settle_worker gv  2 "tls"       "$cfg" ;;
+            quic) _supersweep_settle_worker quic 5 "udp"     "$cfg" ;;
             ds)  _supersweep_settle_worker ds  4 "tls"       "$cfg" ;;
             rkn) _supersweep_settle_worker rkn 3 "tls"       "$cfg" ;;
         esac
@@ -1078,12 +1224,20 @@ supersweep_sanitize_domains() {
 
 # Общая оценка меню/прогона: сумма фаз (проба ≈6 с + пауза) и межфазовых пауз.
 # РКН — по доменам; settle входит в паузу. GREEN_PAUSE не учитываем (худший случай).
+# QUIC-фаза: $9 = max профиля 5 (0 = фаза выключена), $10 = повторы круга,
+# $11 = пауза QUIC; круг из 5 позиций ≈ 5*6 с на повтор (худший случай).
 _supersweep_estimate_total() {
     # $1..4: max профилей 1/2/4/3; $5: домены; $6..8: паузы yt/gv, ds, rkn. Выход: секунды.
     local m1="$1" m2="$2" m4="$3" m3="$4" nd="$5" p="$6" pd="$7" pr="$8"
+    local m5="${9:-0}" qr="${10:-0}" qp="${11:-0}"
     local phase_pause="${Z2R_SUPERSWEEP_PHASE_PAUSE:-30}"
     case "$phase_pause" in ''|*[!0-9]*) phase_pause=30 ;; esac
-    echo $(( m1 * (6 + p) + m2 * (6 + p) + m4 * (6 + pd) + nd * m3 * (6 + pr) + 3 * phase_pause ))
+    local quic_est=0 pauses=3
+    if [ "$m5" -ge 1 ] 2>/dev/null && [ "$qr" -ge 1 ] 2>/dev/null; then
+        quic_est=$(( m5 * (30 * qr + qp) ))
+        pauses=4
+    fi
+    echo $(( m1 * (6 + p) + m2 * (6 + p) + m4 * (6 + pd) + nd * m3 * (6 + pr) + quic_est + pauses * phase_pause ))
 }
 
 # supersweep_run <tls_pref> <pause> <ds_pause> <rkn_pause> <rkn_par> <domain...>
@@ -1130,7 +1284,7 @@ _supersweep_run() {
     shift 5
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
-    local cfg max1 max2 max4 max3
+    local cfg max1 max2 max4 max3 max5
     local started="$(date +%s)"
     local last_alive="" last_st=""
 
@@ -1143,6 +1297,25 @@ _supersweep_run() {
     [ "$rkn_par" -ge 1 ] 2>/dev/null || rkn_par=1
     case "$tls_pref" in 12|13|both) ;; *) tls_pref="any" ;; esac
     case "${Z2R_SUPERSWEEP_SETTLE:-2}" in ''|*[!0-9]*) Z2R_SUPERSWEEP_SETTLE=2 ;; esac
+
+    # --- QUIC-фаза (профиль 5): диалоги ставят Z2R_SUPERSWEEP_QUIC*.
+    # В фоновой изоляции фаза всегда выключена (UDP не идёт через TCP-очередь).
+    local quic_requested="${Z2R_SUPERSWEEP_QUIC:-0}"
+    local quic_on=0
+    local quic_rounds="${Z2R_SUPERSWEEP_QUIC_ROUNDS:-2}"
+    local quic_pause="${Z2R_SUPERSWEEP_QUIC_PAUSE:-5}"
+    case "$quic_rounds" in ''|*[!0-9]*) quic_rounds=2 ;; esac
+    [ "$quic_rounds" -ge 1 ] 2>/dev/null || quic_rounds=1
+    [ "$quic_rounds" -le 5 ] 2>/dev/null || quic_rounds=5
+    case "$quic_pause" in ''|*[!0-9]*) quic_pause=5 ;; esac
+    [ "$quic_pause" -ge 1 ] 2>/dev/null || quic_pause=5
+    if [ "$quic_requested" = 1 ] && [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" != 1 ] \
+        && type z2r_quic_single_round >/dev/null 2>&1 \
+        && type z2r_quic_strategy_verdict >/dev/null 2>&1 \
+        && type z2r_quic_curl_detect >/dev/null 2>&1 \
+        && z2r_quic_curl_detect >/dev/null 2>&1; then
+        quic_on=1
+    fi
 
     domains="$(supersweep_sanitize_domains "$domains")"
     local -a rkn_targets rkn_domains
@@ -1167,6 +1340,16 @@ _supersweep_run() {
             return 1
         }
     done
+    # Профиль 5 нужен только QUIC-фазе: отсутствие — мягкий пропуск, не ошибка.
+    max5=0
+    if [ "$quic_on" = 1 ]; then
+        max5="$(config_profile_max_strategy 5 "$cfg")"
+        printf '%s' "$max5" | grep -Eq '^[1-9][0-9]*$' || max5=0
+        if [ "$max5" = 0 ]; then
+            echo -e "${yellow}QUIC-фаза пропущена: в config нет стратегий профиля 5.${plain}"
+            quic_on=0
+        fi
+    fi
     [ -n "$domains" ] || {
         echo -e "${red}Список доменов РКН пуст.${plain}"
         return 1
@@ -1187,6 +1370,9 @@ _supersweep_run() {
     {
         printf 'yt\tyt\tprofile\t1\thttps://www.youtube.com/\t%s\n' "$max1"
         printf 'gv\tgv\tprofile\t2\t%s\t%s\n' "$gv_url" "$max2"
+        if [ "$quic_on" = 1 ]; then
+            printf 'quic\tQUIC\tprofile\t5\tudp443\t%s\n' "$max5"
+        fi
         printf 'ds\tds\tprofile\t4\thttps://discord.com/\t%s\n' "$max4"
         printf 'rkn\tRKN\trkn\t3\t%s\t%s\n' "$(IFS=,; echo "${rkn_domains[*]}")" "$max3"
     } > "${dir}/workers.tsv"
@@ -1196,6 +1382,9 @@ _supersweep_run() {
         printf 'profile|1|tls|%s\n' "$(orch_locked_state_get 1 tls)"
         printf 'profile|1|http|%s\n' "$(orch_locked_state_get 1 http)"
         printf 'profile|2|tls|%s\n' "$(orch_locked_state_get 2 tls)"
+        if [ "$quic_on" = 1 ]; then
+            printf 'profile|5|udp|%s\n' "$(orch_locked_state_get 5 udp)"
+        fi
         printf 'profile|4|tls|%s\n' "$(orch_locked_state_get 4 tls)"
         printf 'profile|3|tls|%s\n' "$(orch_locked_state_get 3 tls)"
         local d
@@ -1205,16 +1394,26 @@ _supersweep_run() {
     } > "${dir}/prev.tsv"
 
     local total_rkn="$(_supersweep_count_list "$domains")"
-    local est_total
-    est_total="$(_supersweep_estimate_total "$max1" "$max2" "$max4" "$max3" "$total_rkn" "$pause_sec" "$ds_pause" "$rkn_pause")"
+    local est_total est_m5=0
+    [ "$quic_on" = 1 ] && est_m5="$max5"
+    est_total="$(_supersweep_estimate_total "$max1" "$max2" "$max4" "$max3" "$total_rkn" "$pause_sec" "$ds_pause" "$rkn_pause" "$est_m5" "$quic_rounds" "$quic_pause")"
 
-    echo -e "${cyan}Суперавтопрогон по фазам: YouTube, затем Googlevideo, затем Discord, затем РКН по ${total_rkn} доменам (по одному, полный проход стратегий на каждый).${plain}"
-    echo -e "Стратегий: профиль 1 — ${max1}, профиль 2 — ${max2}, профиль 4 — ${max4}, РКН — ${max3}. Пауза между проверками: ${pause_sec} сек (Discord ${ds_pause}, РКН ${rkn_pause} сек); время самой проверки добавляется сверху."
+    local phases_txt="YouTube, затем Googlevideo, затем Discord"
+    [ "$quic_on" = 1 ] && phases_txt="YouTube, затем Googlevideo, затем QUIC (профиль 5, реальные h3-пробы видео), затем Discord"
+    echo -e "${cyan}Суперавтопрогон по фазам: ${phases_txt}, затем РКН по ${total_rkn} доменам (по одному, полный проход стратегий на каждый).${plain}"
+    local strat_line="Стратегий: профиль 1 — ${max1}, профиль 2 — ${max2}, профиль 4 — ${max4}, РКН — ${max3}"
+    [ "$quic_on" = 1 ] && strat_line="${strat_line}, профиль 5 (QUIC) — ${max5} (повторов круга ${quic_rounds})"
+    echo -e "${strat_line}. Пауза между проверками: ${pause_sec} сек (Discord ${ds_pause}, РКН ${rkn_pause} сек); время самой проверки добавляется сверху."
+    if [ "$quic_requested" = 1 ] && [ "$quic_on" != 1 ]; then
+        echo -e "${yellow}QUIC-фаза пропущена: нужен рабочий h3-curl и обычный режим прогона.${plain}"
+    fi
     echo -e "РКН: домены по одному, полный проход стратегий на каждый."
     echo -e "Ориентировочно до $(( (est_total + 59) / 60 )) мин. Прогресс: ${dir}. Ctrl+C - прервать (прежние стратегии будут возвращены)."
     echo ""
 
-    _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "yt,gv,ds,rkn" "$domains"
+    local alive_init="yt,gv,ds,rkn"
+    [ "$quic_on" = 1 ] && alive_init="yt,gv,quic,ds,rkn"
+    _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_init" "$domains"
 
     local had_e=0
     case "$-" in *e*) had_e=1 ;; esac
@@ -1226,6 +1425,10 @@ _supersweep_run() {
     local probe_gap_prev="${Z2R_TLS_PROBE_GAP:-}"
     Z2R_TLS_PROBE_GAP="${Z2R_SUPERSWEEP_PROBE_GAP:-1}"
     export Z2R_TLS_PROBE_GAP
+    # Повторы круга QUIC-проб: вердикт-функция читает переменную сама.
+    local quic_rounds_prev="${Z2R_QUIC_ROUNDS:-}"
+    Z2R_QUIC_ROUNDS="$quic_rounds"
+    export Z2R_QUIC_ROUNDS
 
     local svc_was_running=0
     if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" != 1 ]; then
@@ -1237,9 +1440,14 @@ _supersweep_run() {
 
     # Один воркер за раз, паузы между фазами против rate-эвристик ТСПУ.
     local phase cancelled=0 pid poll last_alive="" last_st=""
+    local phases="yt gv ds rkn"
+    [ "$quic_on" = 1 ] && phases="yt gv quic ds rkn"
+    local phase_no=0 phase_total=4
+    [ "$quic_on" = 1 ] && phase_total=5
     z2r_poll_sleep_init
     poll="$(_supersweep_poll_interval)"
-    for phase in yt gv ds rkn; do
+    for phase in $phases; do
+        phase_no=$((phase_no + 1))
         [ "$cancelled" = 1 ] && break
         [ "$interrupted" = 1 ] && cancelled=1 && break
         if [ "$phase" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
@@ -1256,14 +1464,16 @@ _supersweep_run() {
             fi
         fi
         case "$phase" in
-            yt) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза 1/4: YouTube (профиль 1) ===${plain}" ;;
-            gv) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза 2/4: Googlevideo (профиль 2) ===${plain}" ;;
-            ds) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза 3/4: Discord (профиль 4) ===${plain}" ;;
-            rkn) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза 4/4: РКН (профиль 3, домены по одному) ===${plain}" ;;
+            yt) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза ${phase_no}/${phase_total}: YouTube (профиль 1) ===${plain}" ;;
+            gv) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза ${phase_no}/${phase_total}: Googlevideo (профиль 2) ===${plain}" ;;
+            quic) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза ${phase_no}/${phase_total}: QUIC (профиль 5, UDP 443, повторов круга ${quic_rounds}) ===${plain}" ;;
+            ds) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза ${phase_no}/${phase_total}: Discord (профиль 4) ===${plain}" ;;
+            rkn) echo -e "$(date '+%H:%M:%S') ${cyan}=== Фаза ${phase_no}/${phase_total}: РКН (профиль 3, домены по одному) ===${plain}" ;;
         esac
         case "$phase" in
             yt) _supersweep_worker_profile yt yt 1 "tls http" "https://www.youtube.com/" "$max1" "$tls_pref" "$pause_sec" & ;;
             gv) _supersweep_worker_profile gv gv 2 "tls" "$gv_url" "$max2" "$tls_pref" "$pause_sec" & ;;
+            quic) _supersweep_worker_quic quic "$max5" "$quic_pause" & ;;
             ds) _supersweep_worker_profile ds ds 4 "tls" "https://discord.com/" "$max4" "$tls_pref" "$ds_pause" & ;;
             rkn) _supersweep_worker_rkn rkn "$max3" "$rkn_par" "$tls_pref" "$rkn_pause" "${rkn_targets[@]}" & ;;
         esac
@@ -1288,7 +1498,7 @@ _supersweep_run() {
             for f in "${dir}"/cmd.*; do
                 [ -e "$f" ] || continue
                 # cmd.<worker>.tmp.* ещё публикуется: его читать нельзя.
-                case "${f##*/}" in cmd.yt|cmd.gv|cmd.ds|cmd.rkn) ;; *) continue ;; esac
+                case "${f##*/}" in cmd.yt|cmd.gv|cmd.quic|cmd.ds|cmd.rkn) ;; *) continue ;; esac
                 if ! _supersweep_apply_cmd "$f"; then
                     echo 'Не удалось записать пробный лок; прогон остановлен.' >&2
                     : > "${dir}/cancel"
@@ -1331,6 +1541,8 @@ _supersweep_run() {
     export Z2R_TLS_WAIT_BOTH
     Z2R_TLS_PROBE_GAP="$probe_gap_prev"
     export Z2R_TLS_PROBE_GAP
+    Z2R_QUIC_ROUNDS="$quic_rounds_prev"
+    export Z2R_QUIC_ROUNDS
 
     if [ "$svc_was_running" = 1 ] && ! zapret2_running; then
         echo -e "${red}zapret2 был остановлен: процесс nfqws2 убит (похоже, Ctrl+C). Перезапускаю...${plain}"
@@ -1342,10 +1554,12 @@ _supersweep_run() {
         fi
     fi
 
-    local best_yt best_gv best_ds winner applied_any=0
+    local best_yt best_gv best_ds best_quic winner applied_any=0
     best_yt="$(_supersweep_profile_best yt)"
     best_gv="$(_supersweep_profile_best gv)"
     best_ds="$(_supersweep_profile_best ds)"
+    best_quic=""
+    [ "$quic_on" = 1 ] && best_quic="$(_supersweep_profile_best quic)"
     winner="$(_supersweep_kv_read "${dir}/best.rkn" winner)"
     # Без best.rkn восстановить отчёт из coverage.tsv (воркер мог погибнуть при записи).
     local warn_winner="" rkn_fallback_line=""
@@ -1359,8 +1573,9 @@ _supersweep_run() {
     if [ "$cancelled" = 1 ]; then
         echo ""
         echo -e "${yellow}Прервано пользователем: возвращаю прежние стратегии...${plain}"
-        # Уже применённые профили при отмене сохраняются.
-        for settle_spec in "yt:1" "gv:2" "ds:4"; do
+        # Уже применённые профили при отмене сохраняются. QUIC без файлов —
+        # no-op: prev.tsv хранит профиль 5 только когда фаза реально бежала.
+        for settle_spec in "yt:1" "gv:2" "quic:5" "ds:4"; do
             settle_wname="${settle_spec%%:*}"; settle_pkey="${settle_spec#*:}"
             settle_marker=""; [ -f "${dir}/applied.done.${settle_wname}" ] && settle_marker="$(cat "${dir}/applied.done.${settle_wname}")"
             case "$settle_marker" in
@@ -1388,7 +1603,7 @@ _supersweep_run() {
             grep -q "^domain${d_tab}${d}${d_tab}" "${dir}/applied.tsv" 2>/dev/null \
                 || _supersweep_restore_prev domain "$d"
         done
-        for settle_spec in "yt:1" "gv:2" "ds:4"; do
+        for settle_spec in "yt:1" "gv:2" "quic:5" "ds:4"; do
             settle_wname="${settle_spec%%:*}"; settle_pkey="${settle_spec#*:}"
             [ -e "${dir}/applied.done.${settle_wname}" ] || _supersweep_restore_prev profile "$settle_pkey"
         done
@@ -1441,10 +1656,15 @@ _supersweep_run() {
         printf 'profile\t2\t%s\n' "$best_gv"
         printf 'profile\t4\t%s\n' "$best_ds"
         printf 'profile\t3\t%s\n' "$winner"
+        if [ "$quic_on" = 1 ]; then
+            printf 'profile\t5\t%s\n' "$best_quic"
+        fi
     } > "${dir}/summary.tsv"
 
     local wname pkey plabel protos greens fulls warns best best_short old_udp_ports marker
-    for spec in "yt:1:YouTube:tls http" "gv:2:Googlevideo:tls" "ds:4:Discord:tls"; do
+    local -a summary_specs=("yt:1:YouTube:tls http" "gv:2:Googlevideo:tls" "ds:4:Discord:tls")
+    [ "$quic_on" = 1 ] && summary_specs+=("quic:5:QUIC:udp")
+    for spec in "${summary_specs[@]}"; do
         wname="${spec%%:*}"; rest="${spec#*:}"
         pkey="${rest%%:*}"; rest="${rest#*:}"
         plabel="${rest%%:*}"; protos="${rest#*:}"
@@ -1717,6 +1937,50 @@ supersweep_ask_rkn_pause() {
     _supersweep_ask_pause 30 60 "Пауза РКН между попытками. Минимум 30 сек, минута - максимально щадяще (Enter - 60 сек, 0 - отмена): " " РКН"
 }
 
+# --- QUIC-фаза (профиль 5): спрашивается только при рабочем h3-curl ---
+
+# stdout: 1 (гнать фазу) или 0 (пропустить); ввод 0 отменяет прогон (rc=1).
+supersweep_ask_quic_enable() {
+    echo "QUIC-фаза: реальные h3-пробы видео профиля 5 (UDP 443) после Googlevideo." >&2
+    echo "Победитель применяется как у остальных фаз; без h3-curl фаза недоступна." >&2
+    local ans
+    while :; do
+        read -re -p "Прогонять QUIC-фазу (профиль 5)? Enter - да, 2 - нет, 0 - отмена прогона: " ans || ans=""
+        case "$ans" in
+            ''|1) printf '1\n'; return 0 ;;
+            2) printf '0\n'; return 0 ;;
+            0) return 1 ;;
+            *) echo "Не удалось распознать ввод. Нажмите Enter, 2 или 0." >&2 ;;
+        esac
+    done
+}
+
+# stdout: 1-5 (повторы круга из 5 позиций); ввод 0 отменяет прогон (rc=1).
+supersweep_ask_quic_rounds() {
+    local ans
+    while :; do
+        read -re -p "Повторов круга QUIC-проб на стратегию (1-5)? Enter - 2, 0 - отмена: " ans || ans=""
+        [ "$ans" = "0" ] && return 1
+        [ -n "$ans" ] || { printf '2\n'; return 0; }
+        case "$ans" in
+            *[!0-9]*)
+                echo -e "${yellow}Неверный ввод: нужно число от 1 до 5.${plain}" >&2
+                ;;
+            *)
+                if [ "$ans" -ge 1 ] && [ "$ans" -le 5 ]; then
+                    printf '%s\n' "$ans"
+                    return 0
+                fi
+                echo -e "${yellow}Повторов должно быть от 1 до 5 (введено ${ans}).${plain}" >&2
+                ;;
+        esac
+    done
+}
+
+supersweep_ask_quic_pause() {
+    _supersweep_ask_pause 5 5 "Пауза QUIC между стратегиями. Минимум 5 сек (Enter - 5 сек, 0 - отмена): " " QUIC"
+}
+
 supersweep_menu() {
     local cfg domains tls_pref pause ds_pause rkn_pause answer ss_run_rc=0
     local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
@@ -1745,7 +2009,8 @@ supersweep_menu() {
     clear -x
     echo -e "${cyan}--- Суперавтопрогон ---${plain}"
     echo "Одним запуском: подбор стратегий по фазам — YouTube (профиль 1),"
-    echo "затем Googlevideo (профиль 2), затем Discord (профиль 4), затем РКН"
+    echo "затем Googlevideo (профиль 2), затем QUIC (профиль 5, если есть"
+    echo "h3-curl; обычный режим), затем Discord (профиль 4), затем РКН"
     echo "(профиль 3) по одному домену за раз. Между фазами и доменами —"
     echo "паузы: частые параллельные переключения триггерят ТСПУ."
     echo "Лучшие стратегии применяются автоматически сразу по завершении"
@@ -1786,6 +2051,27 @@ supersweep_menu() {
         return 0
     fi
 
+    # QUIC-фаза (профиль 5): только при рабочем h3-curl и QUIC-модуле.
+    # В фоновом режиме (B) фаза не выполняется — UDP-пробы не изолируются.
+    local quic_on=0 quic_rounds=2 quic_pause=5 quic_m5=0 quic_avail=0 max5
+    if type z2r_quic_single_round >/dev/null 2>&1 \
+        && type z2r_quic_strategy_verdict >/dev/null 2>&1 \
+        && type z2r_quic_curl_detect >/dev/null 2>&1 \
+        && z2r_quic_curl_detect >/dev/null 2>&1; then
+        quic_avail=1
+    fi
+    if [ "$quic_avail" = 1 ]; then
+        quic_on="$(supersweep_ask_quic_enable)" || { echo "Отмена."; return 0; }
+        if [ "$quic_on" = 1 ]; then
+            quic_rounds="$(supersweep_ask_quic_rounds)" || { echo "Отмена."; return 0; }
+            quic_pause="$(supersweep_ask_quic_pause)"
+            if [ -z "$quic_pause" ]; then
+                echo "Отмена."
+                return 0
+            fi
+        fi
+    fi
+
     local ndom="$(_supersweep_count_list "$domains")"
     local max1 max2 max4 max3 est_total
     max1="$(config_profile_max_strategy 1 "$cfg")"
@@ -1796,12 +2082,23 @@ supersweep_menu() {
     printf '%s' "$max4" | grep -Eq '^[1-9][0-9]*$' || max4=43
     max3="$(config_profile_max_strategy 3 "$cfg")"
     printf '%s' "$max3" | grep -Eq '^[1-9][0-9]*$' || max3=43
-    est_total="$(_supersweep_estimate_total "$max1" "$max2" "$max4" "$max3" "$ndom" "$pause" "$ds_pause" "$rkn_pause")"
+    if [ "$quic_on" = 1 ]; then
+        max5="$(config_profile_max_strategy 5 "$cfg")"
+        printf '%s' "$max5" | grep -Eq '^[1-9][0-9]*$' || max5=0
+        if [ "$max5" = 0 ]; then
+            echo -e "${yellow}QUIC-фаза недоступна: в config нет стратегий профиля 5.${plain}"
+            quic_on=0
+        else
+            quic_m5="$max5"
+        fi
+    fi
+    est_total="$(_supersweep_estimate_total "$max1" "$max2" "$max4" "$max3" "$ndom" "$pause" "$ds_pause" "$rkn_pause" "$quic_m5" "$quic_rounds" "$quic_pause")"
 
     echo ""
     echo -e "Домены РКН в прогоне (${ndom}):"
     printf '%b%s%b\n' "$green" "$domains" "$plain"
     echo -e "РКН: ${ndom} домен(ов) по одному, полный проход стратегий на каждый, пауза РКН ${rkn_pause} сек."
+    [ "$quic_on" = 1 ] && echo -e "QUIC: профиль 5, повторов круга ${quic_rounds}, пауза ${quic_pause} сек (фаза после Googlevideo)."
     echo ""
     echo -e "Прогон займёт ориентировочно до $(( (est_total + 59) / 60 )) мин. Во время прогона"
     echo -e "Обычный прогон переключает рабочие стратегии. Фоновый использует отдельный nfqws2;"
@@ -1830,11 +2127,18 @@ supersweep_menu() {
     # Обработать rc=1 отмены, чтобы глобальный set -e не закрыл меню.
     case "$answer" in
         B)
+            # QUIC-параметры в фон не передаём: изолированный прогон их
+            # всё равно выключит (UDP-пробы не идут через тестовый TCP-очередь).
+            [ "$quic_on" != 1 ] || echo -e "${yellow}QUIC-фаза в фоновом режиме не выполняется (UDP-пробы не изолируются).${plain}"
+            Z2R_SUPERSWEEP_QUIC=0
             supersweep_background_start "$cfg" "$tls_pref" "$pause" "$ds_pause" "$rkn_pause" 1 "${rkn_targets[@]}" || true
             pause_enter || true
             return 0
             ;;
     esac
+    Z2R_SUPERSWEEP_QUIC="$quic_on"
+    Z2R_SUPERSWEEP_QUIC_ROUNDS="$quic_rounds"
+    Z2R_SUPERSWEEP_QUIC_PAUSE="$quic_pause"
     ss_run_rc=0
     # Прогон живёт в subshell с собственным INT trap; родительское меню
     # тоже получает Ctrl+C от терминала и не должно завершаться вместе с ним.

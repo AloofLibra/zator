@@ -745,4 +745,116 @@ unset MOCK_DELAY MOCK_OK_P1
   test "$(lock_state 2 tls)" = 1
   grep -q 'Media OK' "$TMP_DIR/video14.log"
 ) || fail 'сценарий 14: выбранное видео потеряно в обычном SuperSweep'
+
+# == 15. QUIC-фаза (профиль 5): воркер, локи, best/apply, пропуск, отмена ==
+(
+  # Контракт диалогов QUIC: stdout несёт только ответ, текст — в stderr.
+  a="$(printf '\n' | supersweep_ask_quic_enable 2>/dev/null)"
+  [ "$a" = "1" ] || fail "сценарий 15: Enter в ask_quic_enable должен давать 1: $a"
+  a="$(printf '2\n' | supersweep_ask_quic_enable 2>/dev/null)"
+  [ "$a" = "0" ] || fail "сценарий 15: 2 в ask_quic_enable должен давать 0 (пропуск): $a"
+  rc=0; a="$(printf '0\n' | supersweep_ask_quic_enable 2>/dev/null)" || rc=$?
+  [ "$rc" = 1 ] && [ -z "$a" ] || fail "сценарий 15: 0 в ask_quic_enable должен отменять (rc=1): rc=$rc a=$a"
+  a="$(printf '\n' | supersweep_ask_quic_rounds 2>/dev/null)"
+  [ "$a" = "2" ] || fail "сценарий 15: Enter в ask_quic_rounds должен давать 2: $a"
+  a="$(printf '3\n' | supersweep_ask_quic_rounds 2>/dev/null)"
+  [ "$a" = "3" ] || fail "сценарий 15: 3 в ask_quic_rounds должен давать 3: $a"
+  rc=0; a="$(printf '7\n2\n' | supersweep_ask_quic_rounds 2>/dev/null)" || rc=$?
+  [ "$a" = "2" ] || fail "сценарий 15: 7 в ask_quic_rounds должен переспросить и дать 2: $a"
+
+  # Полный прогон с QUIC-фазой: стратегии 1-5, зелёные 2 и 4 (лучшая 4).
+  # QUIC-модуль опциональный: в smoke он не сотсорсирован глобально — тащим
+  # вручную (он сам подтянет youtube_media), как это делает z2r.sh.
+  source "$REPO_DIR/lib/quic_media.sh"
+  orch_locked_clear 5 udp
+  orch_locked_set 5 udp 3
+  Z2R_SUPERSWEEP_MEDIA=1 Z2R_MEDIA_VIDEO_ID=M7lc1UVf-VE
+  Z2R_SUPERSWEEP_ISOLATED=0 Z2R_SUPERSWEEP_SETTLE=0
+  export MOCK_OK_P1=1 MOCK_OK_P2=1 MOCK_OK_P4=1 MOCK_OK_meduza_io=1
+  z2r_media_prepare() {
+    Z2R_MEDIA_DIR="$TMP_DIR/media15"
+    mkdir -p "$Z2R_MEDIA_DIR"
+    printf '12000000|video/mp4|rr1---sn-example.googlevideo.com|4102444800\n' > "$Z2R_MEDIA_DIR/video.params"
+    printf 'url = "https://rr1---sn-example.googlevideo.com/videoplayback?expire=4102444800&sig=REDACTED"\n' > "$Z2R_MEDIA_DIR/video.curl"
+    Z2R_MEDIA_READY=1
+  }
+  z2r_media_target() {
+    printf '0|200|HTTP/2|0.1|1.1.1.1\n0|200|HTTP/2|0.1|1.1.1.1\n0|206|2097152|0.5\nok|media 2097152 байт\n'
+  }
+  z2r_quic_curl_detect() { echo "$TMP_DIR/curl-h3-mock15"; return 0; }
+  z2r_gv_dns_gate() { return 0; }
+  z2r_quic_strategy_verdict() {
+    case "$1" in
+      2) printf 'green|2000000|h3 5/5 (все позиции): 2 МБ/с\n' ;;
+      4) printf 'green|4000000|h3 5/5 (все позиции): 4 МБ/с\n' ;;
+      *) printf 'held|0|все попытки без ответа — возможно окно холда\n' ;;
+    esac
+    return 0
+  }
+  out="$(Z2R_SUPERSWEEP_QUIC=1 Z2R_SUPERSWEEP_QUIC_ROUNDS=2 \
+    supersweep_run both 0 0 0 2 meduza.io 2>&1)" || {
+    printf '%s\n' "$out" >&2
+    fail "сценарий 15: supersweep_run с QUIC вернул ошибку"
+  }
+  dir="$TMP_DIR/supersweep"
+  # workers.tsv: пять фаз, QUIC после Googlevideo
+  [ "$(wc -l < "$dir/workers.tsv")" = "5" ] || fail "сценарий 15: workers.tsv должен быть 5-строчным: $(cat "$dir/workers.tsv")"
+  grep -Fq 'quic	QUIC	profile	5	udp443	5' "$dir/workers.tsv" \
+    || fail "сценарий 15: нет QUIC-строки в workers.tsv"
+  grep -Fq 'profile|5|udp|3' "$dir/prev.tsv" || fail "сценарий 15: нет прежнего лока профиля 5 в prev.tsv"
+  grep -q 'Фаза 3/5: QUIC (профиль 5, UDP 443, повторов круга 2)' <<<"$out" \
+    || fail "сценарий 15: нет баннера QUIC-фазы 3/5"
+  # прогресс: 5 строк, ok только у 2 и 4
+  [ "$(wc -l < "$dir/progress.quic.tsv")" = "5" ] || fail "сценарий 15: progress.quic.tsv должен быть 5-строчным"
+  [ "$(awk -F'\t' '$4 == "ok"' "$dir/progress.quic.tsv" | wc -l)" = "2" ] \
+    || fail "сценарий 15: в progress.quic.tsv должно быть 2 ok-строки"
+  # best: самая быстрая зелёная = 4 (скорость больше), лок применён сразу
+  [ "$(_supersweep_kv_read "$dir/best.quic" best)" = "4" ] || fail "сценарий 15: лучшей должна быть стратегия 4"
+  [ "$(_supersweep_kv_read "$dir/best.quic" greens)" = "2 4" ] || fail "сценарий 15: зелёные 2 и 4"
+  [ "$(_supersweep_kv_read "$dir/best.quic" interrupted)" = "0" ] || fail "сценарий 15: полный проход не должен быть interrupted"
+  [ "$(cat "$dir/applied.done.quic")" = "4" ] || fail "сценарий 15: applied.done.quic должен быть 4"
+  [ "$(lock_state 5 udp)" = "4" ] || fail "сценарий 15: лок профиля 5 должен стать 4"
+  grep -Fq 'Профиль 5: воркер завершён — применена лучшая стратегия 4' <<<"$out" \
+    || fail "сценарий 15: нет сообщения о применении QUIC-победителя"
+  # cmd-файл поглощён, ACK-файл на месте, summary содержит профиль 5
+  [ -e "$dir/cmd.quic" ] && fail "сценарий 15: cmd.quic не должен оставаться"
+  grep -Fq 'r|5' "$dir/applied.quic" || fail "сценарий 15: нет ACK последнего раунда"
+  grep -Fq 'profile	5	4' "$dir/summary.tsv" || fail "сценарий 15: нет профиля 5 в summary.tsv"
+  [ "$(awk -F'\t' '$1 == "quic"' "$dir/pacing.tsv" | wc -l)" = "4" ] \
+    || fail "сценарий 15: pacing.quic должен иметь 4 записи (все, кроме последней)"
+  grep -q 'профиль 5 (QUIC) — 5 (повторов круга 2)' <<<"$out" \
+    || fail "сценарий 15: шапка не упоминает профиль 5 и повторы"
+  # применяется и в сводке (сразу по завершении воркера)
+  grep -q 'QUIC): зелёных' <<<"$out" || fail "сценарий 15: в сводке нет QUIC-секции"
+
+  # 15b: h3-curl не найден — фаза пропущена, реестр остаётся 4-фазным
+  orch_locked_clear 5 udp
+  z2r_quic_curl_detect() { return 1; }
+  out="$(Z2R_SUPERSWEEP_QUIC=1 supersweep_run both 0 0 0 2 meduza.io 2>&1)" || {
+    printf '%s\n' "$out" >&2
+    fail "сценарий 15b: supersweep_run без h3-curl вернул ошибку"
+  }
+  [ "$(wc -l < "$dir/workers.tsv")" = "4" ] || fail "сценарий 15b: без h3-curl workers.tsv должен быть 4-строчным"
+  grep -q 'QUIC-фаза пропущена: нужен рабочий h3-curl' <<<"$out" \
+    || fail "сценарий 15b: нет пометки о пропуске QUIC-фазы"
+  [ -e "$dir/best.quic" ] && fail "сценарий 15b: best.quic не должен создаваться"
+  [ -e "$dir/applied.done.quic" ] && fail "сценарий 15b: applied.done.quic не должен создаваться"
+
+  # 15c: QUIC-проба отменена посреди вердикта — interrupted, лок восстановлен
+  orch_locked_set 5 udp 3
+  z2r_quic_curl_detect() { echo "$TMP_DIR/curl-h3-mock15"; return 0; }
+  z2r_quic_strategy_verdict() { printf 'cancelled|0|\n'; return 0; }
+  out="$(Z2R_SUPERSWEEP_QUIC=1 supersweep_run both 0 0 0 2 meduza.io 2>&1)" || true
+  [ "$(cat "$dir/applied.done.quic")" = "none" ] || fail "сценарий 15c: applied.done.quic должен быть none"
+  [ "$(_supersweep_kv_read "$dir/best.quic" interrupted)" = "1" ] || fail "сценарий 15c: best.quic должен быть interrupted"
+  [ "$(lock_state 5 udp)" = "3" ] || fail "сценарий 15c: прежний лок профиля 5 (3) должен быть возвращён"
+  grep -Fq 'profile	5	' "$dir/summary.tsv" \
+    || fail "сценарий 15c: в summary.tsv должна быть пустая QUIC-строка профиля 5"
+
+  unset -f z2r_media_prepare z2r_media_target z2r_quic_curl_detect z2r_quic_strategy_verdict z2r_gv_dns_gate
+  unset Z2R_SUPERSWEEP_QUIC Z2R_SUPERSWEEP_QUIC_ROUNDS Z2R_SUPERSWEEP_QUIC_PAUSE \
+        Z2R_SUPERSWEEP_MEDIA Z2R_MEDIA_VIDEO_ID Z2R_QUIC_ROUNDS
+  orch_locked_clear 5 udp
+  source "$REPO_DIR/lib/supersweep.sh"   # восстановить настоящие функции после unset
+)
 echo "supersweep smoke ok"

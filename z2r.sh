@@ -58,7 +58,14 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh youtube_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+
+# Release assets are separate from the deploy tar so each router stores only
+# its own static binary. This is optional: the central Googlevideo feed works
+# when the platform or asset is unavailable.
+z2r_install_googlevideo_sniffer() {
+  googlevideo_sniffer_install
+}
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
@@ -330,7 +337,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua strategy-validator.sh; do
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua wssize-ramp.lua strategy-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -363,6 +370,7 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
       -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
       -e 's#/opt/zapret2/lua/fake-adapt.lua#/opt/zator/lua/fake-adapt.lua#g' \
+      -e 's#/opt/zapret2/lua/wssize-ramp.lua#/opt/zator/lua/wssize-ramp.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
       -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
       -e 's#/opt/zapret2/extra_strats#/opt/zator/extra_strats#g' \
@@ -385,8 +393,8 @@ else
 fi
 for lib in $Z2R_LIB_FILES; do
   if [ ! -f "$LIB_DIR/$lib" ]; then
-    # Старый bootstrap не знает необязательный media-модуль: CLI должен открыть fallback.
-    [ "$lib" != youtube_media.sh ] || continue
+    # Старый bootstrap не знает необязательные media-модули: CLI должен открыть fallback.
+    case "$lib" in youtube_media.sh|quic_media.sh) continue ;; esac
     missing_libs=1
     break
   fi
@@ -421,6 +429,7 @@ source "$LIB_DIR/orchestra_state.sh"
 # База подсказок по стратегиям (скачивание + вывод подсказки по провайдеру)
 # Функции: update_recommendations, show_hint
 source "$LIB_DIR/recommendations.sh"
+source "$LIB_DIR/googlevideo_ips.sh"
 
 # Проверка доступности ресурсов/сети (TLS 1.2/1.3) + получение домена кластера youtube (googlevideo)
 # Функции: get_yt_cluster_domain, check_access, check_access_list
@@ -439,6 +448,13 @@ source "$LIB_DIR/strategies.sh"
 # Функции: supersweep_run, supersweep_menu, supersweep_cancel_running
 source "$LIB_DIR/supersweep.sh"
 source "$LIB_DIR/supersweep_probe.sh"
+
+# QUIC-медиапроверка профиля 5: детект/установка h3-curl, перебор UDP-стратегий
+# с проверкой видео по HTTP/3. Не обязательный модуль (как youtube_media.sh):
+# старый bootstrap может его не доставить, пункт A подбора профиля 5 деградирует.
+if [ -f "$LIB_DIR/quic_media.sh" ]; then
+  source "$LIB_DIR/quic_media.sh"
+fi
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
@@ -609,6 +625,7 @@ CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
 DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
 FAKE_ADAPT_LUA="$ZATOR_ROOT/lua/fake-adapt.lua"
+WSSIZE_RAMP_LUA="$ZATOR_ROOT/lua/wssize-ramp.lua"
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
@@ -647,6 +664,20 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
   z2r_download_project_file "$FAKE_ADAPT_LUA" "lua/fake-adapt.lua" || return 1
+  z2r_download_project_file "$WSSIZE_RAMP_LUA" "lua/wssize-ramp.lua" || return 1
+  if [ -n "$WSSIZE_RAMP_FIREWALL" ] && [ -d "$(dirname "$WSSIZE_RAMP_FIREWALL")/.." ]; then
+    mkdir -p "$(dirname "$WSSIZE_RAMP_FIREWALL")"
+    z2r_download_project_file "$WSSIZE_RAMP_FIREWALL" "tools/wssize-ramp-firewall.sh" || return 1
+    chmod +x "$WSSIZE_RAMP_FIREWALL"
+  fi
+  if googlevideo_local_collection_supported "$OSystem"; then
+    if mkdir -p "$ZATOR_ROOT/tools" \
+      && z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh"; then
+      chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" || echo -e "${yellow}Не удалось выставить права на Googlevideo listener.${plain}" >&2
+    else
+      echo -e "${yellow}Не удалось обновить Googlevideo listener; будет использоваться центральный список.${plain}" >&2
+    fi
+  fi
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
@@ -1013,6 +1044,13 @@ z2r_install_runtime_libs_from_archive() {
   for lib in $Z2R_LIB_FILES; do
     z2r_download_project_file "$ZATOR_ROOT/z2r_lib/$lib" "lib/$lib" || return 1
   done
+  if mkdir -p "$ZATOR_ROOT/tools" \
+    && z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh"; then
+    chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" || echo -e "${yellow}Не удалось выставить права на Googlevideo listener.${plain}" >&2
+  else
+    echo -e "${yellow}Не удалось установить Googlevideo listener; будет использоваться центральный список.${plain}" >&2
+  fi
+  z2r_install_googlevideo_sniffer || echo -e "${yellow}Не удалось установить Googlevideo sniffer; локальный сбор будет недоступен.${plain}" >&2
 }
 
 # Обёртка загрузки для get_repo: при повторной установке zapret2 (меню 2/5->6,
@@ -1087,6 +1125,26 @@ get_repo() {
     :
   else
     circular_runtime_update_from_repo || return 1
+  fi
+  if googlevideo_local_collection_supported "$OSystem"; then
+    if [ ! -x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" ]; then
+      if mkdir -p "$ZATOR_ROOT/tools" \
+        && z2r_download_project_file "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" "tools/googlevideo-dns-listener.sh"; then
+        chmod +x "$ZATOR_ROOT/tools/googlevideo-dns-listener.sh" || echo -e "${yellow}Не удалось выставить права на Googlevideo listener.${plain}" >&2
+      else
+        echo -e "${yellow}Не удалось установить Googlevideo listener; будет использоваться центральный список.${plain}" >&2
+      fi
+    fi
+    z2r_install_googlevideo_sniffer || echo -e "${yellow}Не удалось обновить Googlevideo sniffer; локальный сбор останется недоступен до следующей попытки.${plain}" >&2
+    # Reinstall-skip above bypasses circular_runtime_update_from_repo(), where
+    # the SysV/OpenWrt callback is normally deployed. Without this hook the
+    # collector assets exist, but nothing starts the listener with zapret2.
+    if [ -n "$WSSIZE_RAMP_FIREWALL" ] && [ -d "$(dirname "$WSSIZE_RAMP_FIREWALL")/.." ] \
+      && [ ! -x "$WSSIZE_RAMP_FIREWALL" ]; then
+      mkdir -p "$(dirname "$WSSIZE_RAMP_FIREWALL")"
+      z2r_download_project_file "$WSSIZE_RAMP_FIREWALL" "tools/wssize-ramp-firewall.sh" || return 1
+      chmod +x "$WSSIZE_RAMP_FIREWALL"
+    fi
   fi
   if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
     :
@@ -1171,9 +1229,7 @@ get_repo() {
     z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
     chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
   fi
-  if fwtype_nft_available; then
-    sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$ZAPRET2_ROOT/config.default"
-  fi
+  config_fwtype_apply_default "$ZAPRET2_ROOT/config.default" || return 1
 # cache
 mkdir -p "$ZATOR_ROOT/extra_strats/cache"
 
@@ -1648,6 +1704,12 @@ unpatch_installer_zapret() {
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh" || echo -e "${red}install_easy.sh завершился с ошибкой (rc=$?). Продолжаю.${plain}"
  cleanup_zapret2_init_dirs
+ # install_easy may refresh platform init files; restore the Googlevideo
+ # listener assets after that step so the service restart below sees them.
+ if googlevideo_local_collection_supported "$OSystem"; then
+  z2r_install_googlevideo_sniffer || echo -e "${yellow}Не удалось обновить Googlevideo sniffer; listener останется недоступен до следующей попытки.${plain}" >&2
+  googlevideo_listener_hook_install || echo -e "${yellow}Не удалось восстановить hook запуска Googlevideo listener.${plain}" >&2
+ fi
  client_scope_firewall_apply_active_config
  z2r_service_action restart || echo -e "${yellow}Рестарт zapret2 не удался — запустите вручную (п.2).${plain}"
  if pidof nfqws2 >/dev/null; then
@@ -2404,19 +2466,30 @@ webui_submenu() {
   done
 }
 
-# Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки
-# и мимолётные сбои rawsend "Network (is) unreachable" / "Operation not
-# permitted" / "Message too large" (нет маршрута в момент переключения WAN/IPv6,
-# временный отказ raw-сокета или слишком крупный датаграмм для интерфейса —
-# MTU/fragmentation; формулировка зависит от платформы): verdict-пакеты идут
-# штатно, это не авария демона.
+# Фильтр журнала ошибок nfqws2: выкидываем безвредные строки — seccomp-заметки,
+# мимолётные сбои rawsend (нет маршрута при переключении WAN/IPv6, MTU) и
+# "conntrack is missing but required" (соединения, начавшиеся ДО старта nfqws2:
+# демон не видел их SYN, пакеты уходят напрямую — штатно после рестартов, lua
+# дедуплицирует до строки в 10 сек; п.666 показывает счётчик отдельно).
 # На Entware также скрываем rawsend sendto EINVAL только при показе журнала.
 z2r_err_journal() {
-  local ignored='^rawsend: sendto.*(network.*unreachable|operation not permitted|message too large)'
+  local ignored='^rawsend: sendto.*(network.*unreachable|operation not permitted|message too large)|conntrack is missing but required'
   if [ "${OSystem:-}" = entware ]; then
     ignored="$ignored|(^|[[:space:]])rawsend: sendto \([0-9]+\): Invalid argument[[:space:]]*$"
   fi
   grep -v '^seccomp:' "${1:--}" 2>/dev/null | grep -viE "$ignored"
+}
+
+# Пояснение для п.666 по conntrack-пропускам. Эти строки выкинуты из красного
+# счётчика как безвредные (z2r_err_journal), но полный их игнор лишил бы
+# пользователя сигнала: сами пакеты прошли напрямую. На вход — готовый счётчик.
+z2r_err_conntrack_note() {
+  local n="$1"
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  echo -e "${plain}conntrack-пропусков: ${n} — пакеты соединений, начавшихся до старта nfqws2${plain}"
+  echo -e "${plain}(демон не видел их SYN), прошли напрямую. Штатно после рестартов и смен стратегий,${plain}"
+  echo -e "${plain}само проходит на новых соединениях. Сыпется непрерывно — проверяйте RAM и ctrack в config.${plain}"
+  return 0
 }
 
 get_menu() {
@@ -2737,11 +2810,17 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       z2r_err_journal /tmp/nfqws2_1.err
       echo ""
       echo -e "${yellow}Файл целиком: /tmp/nfqws2_1.err (очищается при каждом перезапуске zapret2; seccomp-заметки и мимолётные rawsend 'Network unreachable' / 'Message too large' скрыты; на Entware также скрыт rawsend 'Invalid argument')${plain}"
+      ct_n=0
+      ct_n="$(grep -c "conntrack is missing but required" /tmp/nfqws2_1.err 2>/dev/null)" || ct_n=0
+      z2r_err_conntrack_note "$ct_n"
     elif command -v logread >/dev/null 2>&1 \
       && logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | z2r_err_journal | grep -q .; then
       logread 2>/dev/null | grep -i 'nfqws2' | grep -v 'seccomp:' | grep -viE 'rawsend: sendto.*(network.*unreachable|message too large)' | z2r_err_journal | tail -20
       echo ""
       echo -e "${yellow}Источник: syslog (logread), последние 20 строк.${plain}"
+      ct_n=0
+      ct_n="$(logread 2>/dev/null | grep -c "conntrack is missing but required")" || ct_n=0
+      z2r_err_conntrack_note "$ct_n"
     else
       echo -e "${green}Ошибок нет: конфиг обработан без замечаний.${plain}"
       command -v logread >/dev/null 2>&1 && echo -e "${yellow}Если проблемы точно есть, а здесь пусто — обновите zapret2 ещё раз (wrt_fixes включает журнал ошибок).${plain}"
@@ -2782,6 +2861,26 @@ esac
 
 detect_os
 set_zapret2_init
+case "$OSystem" in
+  WRT) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
+  entware|VPS) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ;;
+  *) WSSIZE_RAMP_FIREWALL="" ;;
+esac
+# Tar updates may not restart zapret2 when its config is unchanged. The
+# launcher runs this freshly deployed z2r.sh immediately after extraction, so
+# start the enabled collector here without restarting nfqws2.
+if googlevideo_local_collection_supported "$OSystem"; then
+  googlevideo_listener="${ZATOR_ROOT}/tools/googlevideo-dns-listener.sh"
+  if googlevideo_sniffer_ensure_installed; then
+    sniffer_ready=1
+  else
+    sniffer_ready=0
+    echo -e "${yellow}Googlevideo sniffer отсутствует или не подходит архитектуре; listener не запущен. Подробности: /tmp/z2r-googlevideo/collector.log${plain}" >&2
+  fi
+  if [ "$sniffer_ready" = 1 ] && [ -x "$googlevideo_listener" ]; then
+    "$googlevideo_listener" start || echo -e "${yellow}Не удалось запустить Googlevideo DNS listener.${plain}" >&2
+  fi
+fi
 z2r_archive_preflight
 
 #Инфа о времени обновления скрпта

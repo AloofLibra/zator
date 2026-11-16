@@ -99,6 +99,14 @@ export interface UdpGamesSettings {
   ports?: string
 }
 
+export interface WssizeRampSettings {
+  enabled: boolean
+  mode: 'full' | 'lite'
+  scale: number
+  googlevideo_ips: number
+  googlevideo_local_collection: 'enabled' | 'disabled' | 'unsupported'
+}
+
 export interface ModeSettingData {
   enabled?: boolean
   auto?: boolean
@@ -246,6 +254,7 @@ export interface StatePayload {
   wg_state: WgStateSettings
   fallback: FallbackSettings
   udp_games: UdpGamesSettings
+  wssize_ramp: WssizeRampSettings
   auto_mode: ModeSettingData
   hostlist: ModeSettingData
   rst_guard: ModeSettingData

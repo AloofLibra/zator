@@ -109,6 +109,7 @@ CHECK_TARGETS = [
     ("Googlevideo", None),
     ("Blocked Sites", "https://meduza.io"),
     ("Instagram", "https://www.instagram.com/"),
+    ("Discord", "https://discord.com/"),
 ]
 
 # profile_check_json() — _lib.sh:180
@@ -2231,6 +2232,35 @@ class FakeRouterState:
             return {"state": s, "enabled": s == "Включен"}
         raise ValueError("Неизвестная настройка")
 
+    def build_wssize_ramp_settings(self):
+        try:
+            scale = int(config_get_var(self.cfg_text, "Z2R_WSSIZE_RAMP_SCALE") or "1")
+        except ValueError:
+            scale = 1
+        return {
+            "enabled": config_get_var(self.cfg_text, "Z2R_WSSIZE_RAMP_ENABLE") == "1",
+            "mode": config_get_var(self.cfg_text, "Z2R_WSSIZE_RAMP_MODE") or "full",
+            "scale": scale if 0 <= scale <= 14 else 1,
+            "googlevideo_ips": 0,
+            "googlevideo_local_collection": "unsupported",
+        }
+
+    def apply_wssize_ramp(self, enabled, mode, scale):
+        if enabled not in ("0", "1"):
+            raise ValueError("Некорректный флаг включения")
+        if mode not in ("full", "lite"):
+            raise ValueError("Режим должен быть full или lite")
+        if not re.match(r"^[0-9]+$", scale) or int(scale) > 14:
+            raise ValueError("Scale должен быть целым числом от 0 до 14")
+        if enabled == "1" and "--lua-desync=wssize_ramp" not in self.cfg_text:
+            raise ValueError("Профиль wssize_ramp отсутствует в config")
+        for name, value in (("Z2R_WSSIZE_RAMP_ENABLE", enabled),
+                            ("Z2R_WSSIZE_RAMP_MODE", mode),
+                            ("Z2R_WSSIZE_RAMP_SCALE", scale)):
+            self.cfg_text = config_set_var(self.cfg_text, name, value)
+        self._save_config()
+        return {"ok": True, "restarted": self._apply_restart(), **self.build_wssize_ramp_settings()}
+
     def apply_client_scope(self, params):
         """Apply client scope values; invalid masks are a safe disabled no-op."""
         for name in ("CLIENT_SCOPE_ENABLE", "CLIENT_SCOPE_MARK_MASK",
@@ -2868,6 +2898,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     "wg_state": self.state.build_wg_state_settings(),
                     "fallback": self.state.build_fallback_settings(),
                     "udp_games": self.state.build_udp_games_settings(),
+                    "wssize_ramp": self.state.build_wssize_ramp_settings(),
                     "auto_mode": self.state.build_mode_settings("auto_mode"),
                     "hostlist": self.state.build_mode_settings("hostlist"),
                     "rst_guard": self.state.build_mode_settings("rst_guard"),
@@ -3096,6 +3127,9 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 elif setting == "udp-games":
                     self._log("GET {0} | udp-games settings".format(parsed.path))
                     self._send_json(self.state.build_udp_games_settings())
+                elif setting == "wssize_ramp":
+                    self._log("GET {0} | wssize_ramp settings".format(parsed.path))
+                    self._send_json(self.state.build_wssize_ramp_settings())
                 elif setting in ("client_scope", "auto_mode", "hostlist", "rst_guard",
                                  "reasm", "quic443", "dns_desync"):
                     self._log("GET {0} | mode settings {1}".format(parsed.path, setting))
@@ -3122,6 +3156,18 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
 
         if self.command == "POST":
+            if setting == "wssize_ramp":
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_wssize_ramp(
+                            params.get("value", ""), params.get("mode", ""), params.get("scale", ""))
+                        self._log("POST {0} | wssize_ramp enabled={1} mode={2} scale={3}".format(
+                            parsed.path, params.get("value"),
+                            params.get("mode"), params.get("scale")))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
             if setting == "tls_blob":
                 blob = params.get("value", "")
                 try:

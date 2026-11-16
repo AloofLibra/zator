@@ -148,11 +148,13 @@ grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fa
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"
 grep -q '^_root/z2r.sh|/opt/z2r.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без _root/z2r.sh"
 grep -q '^_payload/config.default|/opt/zator/.deploy-payload/config.default|payload|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без payload"
+grep -q '^tools/wssize-ramp-firewall.sh|/opt/zator/tools/wssize-ramp-firewall.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без startup hook для Ramp"
+if grep -q '^tools/bin/googlevideo-dns-sniffer-' "$STAGE/extra_strats/cache/deploy/manifest.tsv"; then fail "архив содержит архитектурные DNS-сборщики"; fi
 grep -q '^lists/netrogat.txt|.*|keep-if-exists|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без keep-if-exists у netrogat"
 check_symlink "$STAGE/webui/www/cgi-bin" || fail "нет symlink webui/www/cgi-bin"
 grep -q $'\r' "$STAGE/lists/netrogat.txt" 2>/dev/null && fail "CRLF в netrogat.txt"
 expected_ver="$(sed -n 's/^ZATOR_VERSION="\(.*\)"$/\1/p' "$STAGE/extra_strats/cache/deploy/version.env")"
-ok "архив: version.env, manifest.tsv, symlink, LF"
+ok "архив: version.env, manifest.tsv без лишних архитектурных бинарников, symlink, LF"
 
 # --- 3-4. deploy_from_tar, режим A, защиты ---
 
@@ -168,6 +170,10 @@ printf 'lock-runtime\n' > "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.tsv"
 printf 'pid\n' > "$ZATOR_ROOT/webui/run/webui.pid"
 
 source "$REPO_DIR/lib/deploy.sh"
+source "$REPO_DIR/lib/googlevideo_ips.sh"
+export SNIF_INSTALL_MARK="$WORK/sniffer-install.mark"
+export Z2R_GV_SNIFFER_RELEASE_BASE=https://assets.invalid/release
+curl() { echo installed >> "$SNIF_INSTALL_MARK"; return 1; }
 
 # изоляция zapret2-корня для deploy_apply_config_default (эталон config.default)
 export ZAPRET2_ROOT="$WORK/zapret2"
@@ -355,6 +361,7 @@ grep -q '/etc/cron.d/pwn' "$BAD_MAN_DIR/out.txt" || fail "манифест с /e
 ok "харденинг: tar с ../ и манифест с чужим dest отклоняются"
 
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
+[ "$(wc -l < "$SNIF_INSTALL_MARK" | tr -d ' ')" = 1 ] || fail "full/core deploy не обновил отдельный VPS sniffer asset"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$ZATOR_ROOT/lua/locked.lua" ] || fail "runtime lua/locked.lua не установлен"
 tr -d '\r' < "$REPO_DIR/orchestra/locked.lua" > "$WORK/expected-locked.lua"
@@ -371,6 +378,49 @@ cmp -s "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.defaul
 [ -x "$ZATOR_ROOT/webui/run-webui.sh" ] || fail "run-webui.sh не исполняемый"
 check_symlink "$ZATOR_ROOT/webui/www/cgi-bin" || fail "symlink cgi-bin не создан"
 ok "deploy_from_tar A: файлы, payload, z2r.sh, symlink"
+
+# Standalone z2r --version path executes deploy.sh without loading z2r.sh
+# functions. The deployed archive must still install its matching arch asset.
+mkdir -p "$WORK/sniffer-bin"
+cat > "$WORK/sniffer-bin/curl" <<'EOF'
+#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac
+done
+[ -n "$out" ] || exit 2
+printf 'standalone sniffer fixture\n' | gzip -c > "$out"
+EOF
+chmod +x "$WORK/sniffer-bin/curl"
+SNIF_STANDALONE_ROOT="$WORK/standalone-zator"
+mkdir -p "$WORK/standalone-zapret2/init.d/sysv"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/standalone-zapret2/init.d/sysv/zapret2"
+chmod +x "$WORK/standalone-zapret2/init.d/sysv/zapret2"
+mkdir -p "$WORK/standalone-zapret2/init.d/openwrt"
+PATH="$WORK/sniffer-bin:$PATH" ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="$WORK/standalone-zapret2" \
+  Z2R_GV_SNIFFER_RELEASE_BASE=https://assets.invalid/release \
+  bash "$REPO_DIR/lib/deploy.sh" from-tar "$DIST/zator-full.tar.gz" full googlevideo-fix-beta.smoke \
+  >/dev/null 2>&1 || fail "standalone deploy failed"
+[ -x "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" ] || fail "standalone deploy did not install platform sniffer"
+[ "$(cat "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer")" = 'standalone sniffer fixture' ] || fail "standalone sniffer asset content mismatch"
+[ -x "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ] || fail "standalone deploy did not restore SysV collector hook"
+ok "standalone tar deploy installs sniffer and SysV hook despite both init trees"
+
+# Simulate a self-update process that already loaded stale helper functions.
+# deploy_post_apply must source the just-deployed helper and restore the hook.
+(
+  export ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="$WORK/standalone-zapret2" Z2R_OFFLINE=1 OSystem=VPS
+  mkdir -p "$SNIF_STANDALONE_ROOT/extra_strats/cache/deploy"
+  printf '# path|dest|class|sha256|size|exec\n' > "$SNIF_STANDALONE_ROOT/extra_strats/cache/deploy/manifest.tsv"
+  printf 'ZATOR_VERSION="stale-helper-smoke"\n' > "$SNIF_STANDALONE_ROOT/extra_strats/cache/deploy/version.env"
+  . "$REPO_DIR/lib/deploy.sh"
+  googlevideo_listener_hook_install() { return 0; }
+  googlevideo_sniffer_install() { return 0; }
+  rm -f "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh"
+  deploy_post_apply "$SNIF_STANDALONE_ROOT" stale-helper-smoke 0 0
+  [ -x "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ]
+) || fail "self-update did not reload the deployed helper before restoring hook"
+ok "self-update reloads fresh Googlevideo helper"
 
 # Обычные режимы A/B используют тот же SHA256-пропуск, что и экономный D.
 for mode in A B; do
@@ -421,7 +471,9 @@ z2r_service_action() { echo "$1" >> "$RESTART_W_MARK"; }
 backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
 printf 'LIVE-CONFIG-WEBUI\n' > "$ZAPRET2_ROOT/config"
 cfgdef_sum_before="$(cksum "$ZAPRET2_ROOT/config.default" 2>/dev/null)"
+sniffer_calls_before="$(wc -l < "$SNIF_INSTALL_MARK" | tr -d ' ')"
 deploy_from_tar "$DIST/zator-webui.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (webui) упал"
+[ "$(wc -l < "$SNIF_INSTALL_MARK" | tr -d ' ')" = "$sniffer_calls_before" ] || fail "webui-only deploy обновлял platform sniffer asset"
 [ -s "$APPLY_W_MARK" ] && fail "webui-деплой вызвал config_apply_from_default"
 [ -s "$RESTART_W_MARK" ] && fail "webui-деплой дёрнул zapret2 (stop/restart)"
 grep -q '^LIVE-CONFIG-WEBUI$' "$ZAPRET2_ROOT/config" || fail "webui-деплой изменил живой config"

@@ -1037,7 +1037,13 @@ function circular_locked(ctx, desync)
   end
   local allow_nohost_enabled = desync_allow_nohost(desync)
   if not desync.track and not allow_nohost_enabled then
-    DLOG_ERR("circular_locked: conntrack is missing but required")
+    -- Соединение началось до старта nfqws2 (SYN не попадал в очередь):
+    -- пакет уходит без обработки, штатно после рестарта. Лог не чаще
+    -- раза в 10 сек, иначе всплеск засоряет журнал.
+    if os.time() - (_Z2R_CONNTRACK_NOTE_TS or 0) >= 10 then
+      _Z2R_CONNTRACK_NOTE_TS = os.time()
+      DLOG_ERR("circular_locked: conntrack is missing but required (connection started before nfqws2 start, packet passed undesynced - normal after daemon restart)")
+    end
     return circular_locked_passthrough(ctx, desync)
   end
 

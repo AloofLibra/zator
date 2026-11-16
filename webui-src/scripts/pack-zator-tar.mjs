@@ -162,6 +162,7 @@ const EXTRA_STRATS = walkRepo('extra_strats').map((p) => [p, extraStratFlat(p)])
 const KEEP_IF_EXISTS = new Set([
   'lists/netrogat.txt',
   'lists/netrogat_substrings.txt',
+  'lists/googlevideo-ipv4.txt', // runtime feed, retain the router's current list
   'extra_strats/TCP_Custom.txt',
   'extra_strats/TCP_RKN_domains_by_substring.txt',
   'files/fake/custom_tls.bin',
@@ -206,6 +207,8 @@ for (const name of readdirSync(join(repoRoot, 'fake')).sort()) {
 }
 
 add('_root/z2r.sh', 'z2r.sh', { executable: true })
+add('tools/googlevideo-dns-listener.sh', 'tools/googlevideo-dns-listener.sh', { executable: true })
+add('tools/wssize-ramp-firewall.sh', 'tools/wssize-ramp-firewall.sh', { executable: true })
 add('_payload/config.default', 'config.default', { cls: 'payload' })
 add('_payload/fake_files.tar.gz', 'fake_files.tar.gz', { cls: 'payload' })
 add('_payload/Entware/keenetic-policy.sh', 'Entware/keenetic-policy.sh', { cls: 'payload', executable: true })

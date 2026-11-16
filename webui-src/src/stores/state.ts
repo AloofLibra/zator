@@ -1,7 +1,7 @@
 import { fetchState } from '../api/endpoints'
 import { backups } from './backups'
 import {
-  fallbackSettings, modeSettings, ports, provider, settingsLoaded,
+  fallbackSettings, modeSettings, ports, provider, settingsLoaded, wssizeRampSettings,
   tlsBlobSettings, udpGamesSettings, wgBlobSettings, wgStateSettings,
 } from './settings'
 import { locks, scope, scopes, status, statusLoaded, versionInfo } from './status'
@@ -19,6 +19,7 @@ export async function fetchAndApplyState() {
   wgStateSettings.value = payload.wg_state
   fallbackSettings.value = payload.fallback
   udpGamesSettings.value = payload.udp_games
+  wssizeRampSettings.value = payload.wssize_ramp
   modeSettings.auto_mode = payload.auto_mode
   modeSettings.hostlist = payload.hostlist
   modeSettings.rst_guard = payload.rst_guard

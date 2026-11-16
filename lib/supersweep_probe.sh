@@ -4,7 +4,28 @@
 
 supersweep_probe_config() {
     local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" f
+    local ramp_enable ramp_mode ramp_wsize ramp_scale ramp_open ramp_args=
     case "$profile" in 1|2|3|4) ;; *) return 1 ;; esac
+    # config.default is shell-expanded by the production launcher, but this
+    # probe builder reads its text directly. Resolve this one known argument
+    # macro from config values so the isolated argv stays valid nfqws2 syntax.
+    ramp_enable=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null || echo 0)
+    if [ "$ramp_enable" = 1 ]; then
+        ramp_mode=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE 2>/dev/null) || return 1
+        ramp_wsize=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_WSIZE 2>/dev/null) || return 1
+        ramp_scale=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE 2>/dev/null) || return 1
+        ramp_open=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_OPEN 2>/dev/null) || return 1
+        case "$ramp_mode" in full|lite) ;; *) return 1 ;; esac
+        case "$ramp_wsize:$ramp_scale:$ramp_open" in *[!0-9:]*|:*|*:) return 1 ;; esac
+        [ "$ramp_wsize" -le 65535 ] && [ "$ramp_scale" -le 14 ] && [ "$ramp_open" -ge 1 ] || return 1
+        ramp_args=":mode=$ramp_mode:wsize=$ramp_wsize:scale=$ramp_scale:open=$ramp_open"
+    else
+        ramp_enable=0
+    fi
+    # The isolated sweep queue is selected by transport marks, not the live
+    # Googlevideo kernel set. Keep its strategy measurements independent of Ramp.
+    ramp_enable=0
+    ramp_args=
     # Пути попадут в Lua-строку и @config: не интерпретируем shell/Lua-код.
     case "$dir" in /*) ;; *) return 1 ;; esac
     case "$dir" in *[!a-zA-Z0-9_./-]*) return 1 ;; esac
@@ -45,7 +66,7 @@ supersweep_probe_config() {
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
             "--lua-init=@$dir/locked.lua" \
             "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
-        awk '
+        awk -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" '
             /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
             opts && /^"[[:space:]]*$/ { opts=0 }
             !opts { next }
@@ -53,10 +74,17 @@ supersweep_probe_config() {
             /^--template=z2r_tcp_tls_common$/ { common=1; found=1; print; next }
             common && /^--new/ { common=0; new_seen=1; print; next }
             common && /^--/ {
-                if (/^--lua-desync=/) {
-                    n = split($0, piece, / --lua-desync=/)
-                    for (i = 1; i <= n; i++) print (i > 1 ? "--lua-desync=" : "") piece[i]
-                } else print
+                # Config lines can group unrelated options as well as Lua
+                # instances. The probe passes argv directly, so split every
+                # option boundary before substituting this known config macro.
+                n = split($0, piece, / --/)
+                for (i = 1; i <= n; i++) {
+                    arg = piece[i]
+                    if (i > 1) arg = "--" arg
+                    if (arg ~ /^--lua-desync=wssize_ramp\$\{Z2R_WSSIZE_RAMP_ARGS\}$/) {
+                        if (ramp_enable == 1) print "--lua-desync=wssize_ramp" ramp_args
+                    } else print arg
+                }
             }
             END { if (!found || !new_seen) exit 1 }
         ' "$cfg" || return 1
@@ -64,7 +92,7 @@ supersweep_probe_config() {
     # Только НУМЕРОВАННЫЕ стратегии нужного стандартного профиля. Исключения/
     # hostlists и детекторы не нужны: весь трафик очереди — явно выбранная проба.
     # Дописываем план после --new шаблона; каждый аргумент — отдельной строкой.
-    awk -v p="$profile" '
+    awk -v p="$profile" -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" '
         /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
         opts && /^"[[:space:]]*$/ { opts=0 }
         !opts { next }
@@ -77,9 +105,11 @@ supersweep_probe_config() {
                 print "--filter-tcp=443\n--filter-l7=tls"
                 print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
                 print "--out-range=-s34228"
+                if (ramp_enable == 1 && p == 2) print "--lua-desync=wssize_ramp" ramp_args
                 print "--in-range=-s32768"
                 print "--lua-desync=circular_locked:key=" p
             }
+            if (p == 2 && ramp_enable == 1 && /--filter-tcp=443/) print "--ipset=/opt/zator/lists/googlevideo-ipv4.txt"
             if (/^--import=/) { print; plan=1 }
             if (/^--lua-desync=/ && /:strategy=[0-9]+/) {
                 n = split($0, piece, / --lua-desync=/)

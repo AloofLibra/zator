@@ -1,4 +1,4 @@
-# Last modified: 2026-11-02 07:16:43 UTC
+# Last modified: 2026-11-16 17:06:49 UTC
 # this file is included from init scripts
 # change values here
 
@@ -76,6 +76,20 @@ NFQWS2_PORTS_UDP=443,2408,2053,2083,2087,2096,8443,51820,50000-50099,1400,3478-3
 # PKT_IN means connbytes dir reply
 NFQWS2_TCP_PKT_OUT=20
 NFQWS2_TCP_PKT_IN=10
+# Experimental Googlevideo-list wssize_ramp settings; disabled by default.
+Z2R_WSSIZE_RAMP_ENABLE=0
+Z2R_WSSIZE_MARK=0x04000000
+Z2R_WSSIZE_RAMP_IPSET=/opt/zator/lists/googlevideo-ipv4.txt
+Z2R_WSSIZE_RAMP_MODE=full
+Z2R_WSSIZE_RAMP_WSIZE=1
+Z2R_WSSIZE_RAMP_SCALE=1
+Z2R_WSSIZE_RAMP_OPEN=1
+Z2R_WSSIZE_RAMP_ARGS=
+Z2R_WSSIZE_RAMP_SKIP=--skip
+if [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ]; then
+  Z2R_WSSIZE_RAMP_ARGS=":mode=$Z2R_WSSIZE_RAMP_MODE:wsize=$Z2R_WSSIZE_RAMP_WSIZE:scale=$Z2R_WSSIZE_RAMP_SCALE:open=$Z2R_WSSIZE_RAMP_OPEN"
+  Z2R_WSSIZE_RAMP_SKIP=
+fi
 NFQWS2_UDP_PKT_OUT=5
 NFQWS2_UDP_PKT_IN=3
 # redirect outgoing traffic without connbytes limiter and incoming with connbytes limiter
@@ -97,6 +111,7 @@ NFQWS2_OPT="
 --lua-init=@/opt/zator/lua/silent-drop-detector.lua
 --lua-init=@/opt/zator/lua/dns-clone.lua
 --lua-init=@/opt/zator/lua/fake-adapt.lua
+--lua-init=@/opt/zator/lua/wssize-ramp.lua
 --blob=maxru:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
 # per-profile TLS blob slots: Lua (blob_override.tsv) подставляет z2r_prof_N вместо blob=maxru|fake_default_tls
 --blob=z2r_prof_1:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
@@ -170,6 +185,18 @@ NFQWS2_OPT="
 --new
 
 #Z2R_AUTO_STANDARD_BEGIN
+# Googlevideo-list profile must precede hostlist profiles, which otherwise win first.
+${Z2R_WSSIZE_RAMP_SKIP} --filter-l3=ipv4 --filter-tcp=443 --filter-mark=${Z2R_WSSIZE_MARK}/${Z2R_WSSIZE_MARK}
+--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello
+--out-range=-s34228
+--out-range=a
+--in-range=a
+--payload=all,empty
+--lua-desync=wssize_ramp${Z2R_WSSIZE_RAMP_ARGS}
+--in-range=-s32768 --lua-desync=rst_guard_locked:key=2:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt:payload=tls_client_hello
+--import=z2r_tcp_tls_common
+
+--new
 #Z2R_AUTO_STANDARD_3_BEGIN
   #Стратегии для RKN
 --filter-tcp=443,2053,2083,2087,2096,8443 --filter-l7=tls
@@ -537,6 +564,7 @@ NFQWS2_OPT="
 --lua-desync=fake:blob=stun_fake:tcp_ts=-1000:repeats=2:strategy=8 --lua-desync=multisplit:pos=sld+1:seqovl=1:strategy=8
 #Z2R_AUTO_9_END
 #Z2R_AUTO_END
+
 "
 
 

@@ -206,5 +206,8 @@ send_stats() {
         -d "os=$router_os" \
         -d "webui=$webui" \
         "$STATS_ENDPOINT" > /dev/null 2>&1 &
+    if type googlevideo_upload_local_batch >/dev/null 2>&1; then
+        googlevideo_upload_local_batch "$tel_uuid" >/dev/null 2>&1 &
+    fi
 }
 # ---- /Telemetry module integration ----

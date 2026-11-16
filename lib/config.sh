@@ -83,6 +83,17 @@ config_set_var() {
   fi
 }
 
+config_ipv4_valid() {
+  local ip="$1" octet oldifs="$IFS"
+  case "$ip" in ''|*[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+  IFS=.; set -- $ip; IFS="$oldifs"
+  [ "$#" -eq 4 ] || return 1
+  for octet in "$@"; do
+    case "$octet" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$octet" -le 255 ] 2>/dev/null || return 1
+  done
+}
+
 # Parse a non-negative decimal or hexadecimal config number without eval.
 config_client_scope_num() {
   local value="$1" digits
@@ -307,6 +318,13 @@ fwtype_nft_available() {
   fi
   command -v nft >/dev/null 2>&1 || return 1
   nft list tables >/dev/null 2>&1
+}
+
+# Единый выбор для установки и применения обновлённого config.default.
+config_fwtype_apply_default() {
+  if fwtype_nft_available; then
+    sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$1"
+  fi
 }
 
 fwtype_iptables_available() {
