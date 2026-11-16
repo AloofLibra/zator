@@ -571,25 +571,36 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
 
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   orch_locked_set example.org tls 7
-  printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 200 0 >"$TMP_DIR/sweep_int.log" 2>&1 &
-  swpid=$!
-  sleep 2
-  # На Windows/MSYS эмуляция SIGINT иногда теряется: шлём повторно, пока
-  # прогон не прервётся (на Linux срабатывает первый же сигнал).
-  int_i=0
-  while kill -0 "$swpid" 2>/dev/null && [ "$int_i" -lt 10 ]; do
-    kill -INT "$swpid" 2>/dev/null || true
-    sleep 1
-    int_i=$((int_i + 1))
-    grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" 2>/dev/null && break
-  done
-  swrc=0
-  wait "$swpid" 2>/dev/null || swrc=$?
-  [ "$swrc" = "0" ] || fail "сценарий 14c: Ctrl+C не должен ронять автопрогон (rc=$swrc)"
-  [ "$(orch_locked_get example.org tls)" = "7" ] \
-    || fail "сценарий 14c: после Ctrl+C лок не восстановлен"
-  grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" \
-    || fail "сценарий 14c: нет сообщения о прерывании"
+  case "$(uname -s)" in
+    *MINGW*|*MSYS*)
+      # На Windows/MSYS kill -INT фоновому subshell не доставляется вовсе:
+      # trap INT в фоне не срабатывает (минимальный репро — sleep-цикл с
+      # trap печатает NOINT). Блок эмуляции Ctrl+C осмыслен только на
+      # Linux/CI; логика прерывания покрывается 14d через мок sleep.
+      echo "(14c: kill -INT на MSYS не доставляется, блок прерывания пропущен)"
+      ;;
+    *)
+      printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 200 0 >"$TMP_DIR/sweep_int.log" 2>&1 &
+      swpid=$!
+      sleep 2
+      # На Windows/MSYS эмуляция SIGINT иногда теряется: шлём повторно, пока
+      # прогон не прервётся (на Linux срабатывает первый же сигнал).
+      int_i=0
+      while kill -0 "$swpid" 2>/dev/null && [ "$int_i" -lt 10 ]; do
+        kill -INT "$swpid" 2>/dev/null || true
+        sleep 1
+        int_i=$((int_i + 1))
+        grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" 2>/dev/null && break
+      done
+      swrc=0
+      wait "$swpid" 2>/dev/null || swrc=$?
+      [ "$swrc" = "0" ] || fail "сценарий 14c: Ctrl+C не должен ронять автопрогон (rc=$swrc)"
+      [ "$(orch_locked_get example.org tls)" = "7" ] \
+        || fail "сценарий 14c: после Ctrl+C лок не восстановлен"
+      grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" \
+        || fail "сценарий 14c: нет сообщения о прерывании"
+      ;;
+  esac
 )
 
 # == 14d. Ctrl+C убил nfqws2 посреди прогона -> предупреждение + рестарт;
@@ -923,7 +934,9 @@ grep -q '2>/dev/null </dev/null &' lib/netcheck.sh   || fail "сценарий 1
 SRC_DIR="$REPO_DIR/webui-src/src"
 grep -rq "profileCheck(props.profile.profile" "$SRC_DIR"   || fail "сценарий 16: стратегия не проверяется после set-lock"
 [ "$(grep -c "check.cgi" "$SRC_DIR/api/endpoints.ts")" -ge 2 ]   || fail "сценарий 16: check.cgi должен вызываться и из кнопки, и после set-lock"
-[ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "2" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
+# 3 упоминания: базовый промпт перебора + QUIC-вариант промпта (профиль 5)
+# + ручной вход (регрессия апстрима: с QUIC-вариантом счётчик стал 3)
+[ "$(grep -c 'A - автопрогон' "$REPO_DIR/lib/strategies.sh")" = "3" ]   || fail "сценарий 16: опция A должна быть в обоих входах перебора"
 grep -q '^    check)' "$lib_sh" || fail "сценарий 16: нет действия check в domains"
 grep -rq 'verdictClass' "$SRC_DIR" || fail "сценарий 16: WebUI не рендерит verdict"
 grep -rq 'domainChecks' "$SRC_DIR/components/domains" || fail "сценарий 16: WebUI без inline-проверки домена"
@@ -1177,5 +1190,240 @@ grep -q 'gate_rc' "$REPO_DIR/lib/supersweep.sh" \
   || fail "сценарий 19: гейт не различает коды возврата"
 grep -q 'check_dns' "$REPO_DIR/lib/netcheck.sh" \
   || fail "сценарий 19: пропала check_dns (пункт 01)"
+
+# --- Сценарий 20: DNS-гейт googlevideo (z2r_gv_dns_gate) — ок молчит,
+# мусор громит, кеш на процесс по последнему хосту ---------------------------
+(
+  mkdir -p "$TMP_DIR/bin20"
+  cat > "$TMP_DIR/bin20/curl" <<'MOCKC'
+#!/bin/sh
+url=""
+for a in "$@"; do
+  case "$a" in https://*) url="$a" ;; esac
+done
+case "$url" in
+  https://dns.google/*|https://8.8.8.8/*)
+    [ -n "${MOCK20_DOH_JSON:-}" ] && printf '%s' "$MOCK20_DOH_JSON"
+    exit 0 ;;
+  https://dns.quad9.net/*) exit 1 ;;
+esac
+exec "$MOCK20_MAIN_CURL" "$@"
+MOCKC
+  chmod +x "$TMP_DIR/bin20/curl"
+
+  cat > "$TMP_DIR/bin20/nslookup" <<'MOCKN'
+#!/bin/sh
+if [ "${MOCK20_COUNT:-0}" = 1 ]; then
+  n=1
+  [ -f "${MOCK20_CNT:-/nonexistent}" ] && n=$(( $(cat "$MOCK20_CNT") + 1 ))
+  echo "$n" > "$MOCK20_CNT"
+fi
+case "${MOCK20_SYS:-gvok}" in
+  gvok|gvmixed)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rr2---sn-4g5ednly.googlevideo.com"
+    echo "Address: 74.125.131.5"
+    if [ "${MOCK20_SYS:-gvok}" = "gvmixed" ]; then
+      echo "Name:   rr2---sn-4g5ednly.googlevideo.com"
+      echo "Address: 192.168.1.50"
+    fi
+    ;;
+  gvggc)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rr2---sn-4g5ednly.googlevideo.com"
+    echo "Address: 93.184.216.34"
+    ;;
+  gvstub)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rr2---sn-4g5ednly.googlevideo.com"
+    echo "Address: 0.0.0.0"
+    ;;
+  gvjunk)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "Non-authoritative answer:"
+    echo "Name:   rr2---sn-4g5ednly.googlevideo.com"
+    echo "Address: 127.0.0.1"
+    echo "Name:   rr2---sn-4g5ednly.googlevideo.com"
+    echo "Address: 10.0.0.5"
+    ;;
+  gvnx)
+    echo "Server:         192.168.1.1"
+    echo "Address:        192.168.1.1#53"
+    echo ""
+    echo "** server can't find rr2---sn-4g5ednly.googlevideo.com: NXDOMAIN"
+    ;;
+  gvsilent) : ;;
+esac
+exit 0
+MOCKN
+  chmod +x "$TMP_DIR/bin20/nslookup"
+
+  export PATH="$TMP_DIR/bin20:$PATH"
+  export TMPDIR="$TMP_DIR" MOCK20_MAIN_CURL="$TMP_DIR/bin/curl"
+
+  # гейт зовётся ПРЯМО (не в $()): кеш живёт в текущем шелле — ровно как
+  # его зовут check_googlevideo_access и обёртки прогонов
+  gate() {
+    unset _Z2R_GV_GATE_HOST _Z2R_GV_GATE_RC
+    rc=0
+    z2r_gv_dns_gate rr2---sn-4g5ednly.googlevideo.com >"$TMP_DIR/gate20.out" 2>&1 || rc=$?
+    out="$(cat "$TMP_DIR/gate20.out")"
+  }
+
+  # живой google-адрес: полная тишина, rc=0
+  unset MOCK20_DOH_JSON
+  export MOCK20_SYS=gvok
+  gate
+  [ "$rc" = 0 ] || fail "сценарий 20: google-адрес должен давать rc=0 ($rc)"
+  [ -z "$out" ] || fail "сценарий 20: живой резолв должен молчать: $out"
+
+  # смешанный ответ (мусор + google) — тихо: одного google-адреса достаточно
+  export MOCK20_SYS=gvmixed
+  gate
+  [ "$rc" = 0 ] || fail "сценарий 20: мусор+google должен давать rc=0 ($rc)"
+  [ -z "$out" ] || fail "сценарий 20: смешанный ответ должен молчать: $out"
+
+  # NXDOMAIN — громкое красное, rc=2
+  export MOCK20_SYS=gvnx
+  gate
+  [ "$rc" = 2 ] || fail "сценарий 20: NXDOMAIN должен давать rc=2 ($rc)"
+  grep -q 'DNS вернул ерунду для rr2---sn-4g5ednly.googlevideo.com (NXDOMAIN)' <<<"$out" \
+    || fail "сценарий 20: нет красного предупреждения NXDOMAIN: $out"
+  grep -q 'Googlevideo-пробы будут врать' <<<"$out" || fail "сценарий 20: нет пояснения последствий: $out"
+
+  # молчащий резолвер — тоже ерунда, rc=2
+  export MOCK20_SYS=gvsilent
+  gate
+  [ "$rc" = 2 ] || fail "сценарий 20: молчащий резолвер должен давать rc=2 ($rc)"
+  grep -q '(пустой ответ)' <<<"$out" || fail "сценарий 20: нет пояснения пустого ответа: $out"
+
+  # 0.0.0.0 — заглушка, rc=2
+  export MOCK20_SYS=gvstub
+  gate
+  [ "$rc" = 2 ] || fail "сценарий 20: 0.0.0.0 должен давать rc=2 ($rc)"
+  grep -q 'вернул заглушку' <<<"$out" || fail "сценарий 20: нет пояснения заглушки: $out"
+  grep -q '0.0.0.0' <<<"$out" || fail "сценарий 20: заглушка не показана адресом: $out"
+
+  # только bogon-адреса (127.x, 10.x) — та же заглушка, rc=2
+  export MOCK20_SYS=gvjunk
+  gate
+  [ "$rc" = 2 ] || fail "сценарий 20: bogon-адреса должны давать rc=2 ($rc)"
+  grep -q '127.0.0.1 10.0.0.5' <<<"$out" || fail "сценарий 20: bogon-адреса не показаны: $out"
+
+  # живой, но не-Google адрес + DoH мёртв: GGC провайдера легитимен — тихо
+  export MOCK20_SYS=gvggc
+  gate
+  [ "$rc" = 0 ] || fail "сценарий 20: не-Google адрес без эталона не должен ругаться ($rc)"
+  [ -z "$out" ] || fail "сценарий 20: GGC без эталона должен молчать: $out"
+
+  # не-Google адрес + DoH эталон в той же /16 — тихо (GGC подтверждён)
+  export MOCK20_DOH_JSON='{"Status":0,"Answer":[{"type":1,"data":"93.184.10.9"}]}'
+  gate
+  [ "$rc" = 0 ] || fail "сценарий 20: /16-пересечение с эталоном должно давать rc=0 ($rc)"
+  [ -z "$out" ] || fail "сценарий 20: /16-пересечение должно молчать: $out"
+
+  # не-Google адрес + эталон без пересечений — жёлтое подозрение, rc=1
+  export MOCK20_DOH_JSON='{"Status":0,"Answer":[{"type":1,"data":"142.250.1.1"}]}'
+  gate
+  [ "$rc" = 1 ] || fail "сценарий 20: ноль /16-пересечений должен давать rc=1 ($rc)"
+  grep -q 'похоже на подмену' <<<"$out" || fail "сценарий 20: нет подозрения на подмену: $out"
+  grep -q 'Ответ системного DNS: 93.184.216.34' <<<"$out" \
+    || fail "сценарий 20: не показаны системные ответы: $out"
+  grep -q 'Эталон' <<<"$out" || fail "сценарий 20: не показан эталон: $out"
+
+  # кеш на процесс: повтор с тем же хостом без nslookup и без повторного грохота
+  export MOCK20_SYS=gvnx
+  unset MOCK20_DOH_JSON
+  export MOCK20_COUNT=1 MOCK20_CNT="$TMP_DIR/cnt20"
+  rm -f "$MOCK20_CNT"
+  gate
+  [ "$rc" = 2 ] || fail "сценарий 20: первый гейт должен дать rc=2 ($rc)"
+  [ "$(cat "$MOCK20_CNT")" = 1 ] || fail "сценарий 20: первый гейт = 1 nslookup: $(cat "$MOCK20_CNT")"
+  out=""
+  z2r_gv_dns_gate rr2---sn-4g5ednly.googlevideo.com >"$TMP_DIR/gate20.out" 2>&1 || :
+  out="$(cat "$TMP_DIR/gate20.out")"
+  [ -z "$out" ] || fail "сценарий 20: кеш должен молчать на повторе: $out"
+  [ "$(cat "$MOCK20_CNT")" = 1 ] || fail "сценарий 20: повтор должен брать кеш, а не nslookup"
+  Z2R_GV_GATE_FORCE=1 z2r_gv_dns_gate rr2---sn-4g5ednly.googlevideo.com >"$TMP_DIR/gate20.out" 2>&1 || :
+  [ "$(cat "$MOCK20_CNT")" = 2 ] || fail "сценарий 20: FORCE должен обновить гейт"
+  unset MOCK20_COUNT MOCK20_CNT Z2R_GV_GATE_FORCE MOCK20_SYS
+)
+
+# --- Сценарий 21: гейт в check_googlevideo_access (молчаливый на ок,
+# громкий на мусоре) + проводка QUIC-строки в check_access_list ---------------
+(
+  mkdir -p "$TMP_DIR/bin21"
+  # тот же мок nslookup, что в сценарии 20 (режимы MOCK20_SYS)
+  cp "$TMP_DIR/bin20/nslookup" "$TMP_DIR/bin21/nslookup"
+  chmod +x "$TMP_DIR/bin21/nslookup"
+  # curl — основной мок (redirector молчит -> фолбэк rr2---sn-4g5ednly),
+  # nslookup — из bin21: media-модуля тут нет -> плюшевый TLS-фолбэк
+  export PATH="$TMP_DIR/bin21:$TMP_DIR/bin:$PATH"
+  export TMPDIR="$TMP_DIR"
+
+  # живой DNS (google-адрес): ни одной строки предупреждения, проверка идёт
+  rc=0; out="$(MOCK20_SYS=gvok check_googlevideo_access 2>&1)" || rc=$?
+  if grep -q 'ВНИМАНИЕ' <<<"$out"; then
+    fail "сценарий 21: живой DNS не должен предупреждать: $out"
+  fi
+  grep -q 'плюшевый TLS/CDN-тест' <<<"$out" || fail "сценарий 21: нет плюшевого фолбэка: $out"
+
+  # мусорный DNS: ровно одно громкое предупреждение, проверка продолжается
+  rc=0; out="$(MOCK20_SYS=gvnx check_googlevideo_access 2>&1)" || rc=$?
+  grep -q 'DNS вернул ерунду для rr2---sn-4g5ednly.googlevideo.com (NXDOMAIN)' <<<"$out" \
+    || fail "сценарий 21: нет предупреждения о мусорном DNS: $out"
+  [ "$(grep -c 'ВНИМАНИЕ' <<<"$out")" = 1 ] || fail "сценарий 21: предупреждение должно быть одно"
+
+  # повтор с тем же хостом В ТОМ ЖЕ шелле (как в переборе стратегий,
+  # где check_googlevideo_access зовётся на каждой стратегии) — кеш гейта:
+  # предупреждение не повторяется. Два отдельных $() — разные сабшеллы,
+  # кеш на процесс между ними и не должен жить.
+  rc=0
+  out="$(MOCK20_SYS=gvnx check_googlevideo_access 2>&1
+         MOCK20_SYS=gvnx check_googlevideo_access 2>&1)" || rc=$?
+  [ "$(grep -c 'ВНИМАНИЕ' <<<"$out")" = 1 ] \
+    || fail "сценарий 21: кеш гейта не сработал (второй вызов в том же шелле предупреждает)"
+
+  unset MOCK20_SYS
+)
+
+# статика: гейт googlevideo в check_googlevideo_access и в обёртках прогонов
+grep -q 'z2r_gv_dns_gate "$gv_host"' "$REPO_DIR/lib/netcheck.sh" \
+  || fail "сценарий 21: check_googlevideo_access не зовёт DNS-гейт"
+grep -q 'type z2r_quic_access_check' "$REPO_DIR/lib/netcheck.sh" \
+  || fail "сценарий 21: check_access_list без QUIC-проверки"
+# Discord (профиль 4) в 01: TLS-проверка сайта после instagram; тот же URL,
+# что у перебора профиля 4 и веб-зеркала api_check
+grep -q 'check_access "https://discord.com/"' "$REPO_DIR/lib/netcheck.sh" \
+  || fail "сценарий 21: check_access_list без проверки Discord"
+grep -q 'check_one_target_json "Discord" "https://discord.com/"' "$REPO_DIR/webui/cgi-bin/_lib.sh" \
+  || fail "сценарий 21: api_check (WebUI) без проверки Discord"
+# conntrack-пропуски (соединения, начавшиеся до старта демона): дедупликация
+# в обеих lua-точках, фильтр в журнале ошибок и пояснение в п.666
+grep -q '_Z2R_CONNTRACK_NOTE_TS' "$REPO_DIR/orchestra/locked.lua" \
+  || fail "сценарий 21: locked.lua без дедупликации conntrack-сообщения"
+grep -q '_Z2R_CONNTRACK_NOTE_TS' "$REPO_DIR/lua/combined-detector.lua" \
+  || fail "сценарий 21: combined-detector.lua без дедупликации conntrack-сообщения"
+grep -q 'conntrack is missing but required' "$REPO_DIR/z2r.sh" \
+  || fail "сценарий 21: z2r_err_journal не фильтрует conntrack-строку"
+grep -q 'z2r_err_conntrack_note' "$REPO_DIR/z2r.sh" \
+  || fail "сценарий 21: нет пояснения conntrack-пропусков в п.666"
+grep -q 'z2r_quic_access_check()' "$REPO_DIR/lib/quic_media.sh" \
+  || fail "сценарий 21: нет z2r_quic_access_check"
+grep -q 'z2r_gv_dns_gate "$gh" >&2' "$REPO_DIR/lib/quic_media.sh" \
+  || fail "сценарий 21: _z2r_quic_trial без DNS-гейта"
+grep -q 'z2r_gv_dns_gate "$gh" >&2' "$REPO_DIR/lib/strategies.sh" \
+  || fail "сценарий 21: orch_gv_trial без DNS-гейта"
 
 echo "tls check smoke ok"
