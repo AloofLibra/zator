@@ -1417,8 +1417,10 @@ grep -q '_Z2R_CONNTRACK_NOTE_TS' "$REPO_DIR/lua/combined-detector.lua" \
   || fail "сценарий 21: combined-detector.lua без дедупликации conntrack-сообщения"
 grep -q 'conntrack is missing but required' "$REPO_DIR/z2r.sh" \
   || fail "сценарий 21: z2r_err_journal не фильтрует conntrack-строку"
-grep -q 'z2r_err_conntrack_note' "$REPO_DIR/z2r.sh" \
-  || fail "сценарий 21: нет пояснения conntrack-пропусков в п.666"
+# безвредные строки скрываются полностью — никаких служебных подсказок в п.666
+if grep -q 'z2r_err_conntrack_note' "$REPO_DIR/z2r.sh"; then
+  fail "сценарий 21: conntrack-подсказки должны быть убраны (скрыто — значит скрыто)"
+fi
 grep -q 'z2r_quic_access_check()' "$REPO_DIR/lib/quic_media.sh" \
   || fail "сценарий 21: нет z2r_quic_access_check"
 grep -q 'z2r_gv_dns_gate "$gh" >&2' "$REPO_DIR/lib/quic_media.sh" \
