@@ -1029,6 +1029,6 @@ z2r_quic_media_run() {
     fi
     [ -n "$video" ] || video="${Z2R_MEDIA_DEFAULT_VIDEO_ID:-BPk1uJ4txPc}"
     rounds="$(_z2r_quic_ask_rounds)" || { echo 'Отмена.'; return 0; }
-    Z2R_QUIC_MEDIA_VIDEO_ID="$video" Z2R_QUIC_ROUNDS="$rounds" _z2r_quic_trial z2r_quic_sweep_run
+    Z2R_QUIC_MEDIA_VIDEO_ID="$video" Z2R_QUIC_ROUNDS="$rounds" _z2r_quic_trial z2r_quic_sweep_run || true
     return 0
 }

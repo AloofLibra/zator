@@ -1007,7 +1007,7 @@ $i. ${tar_file##*/}"
     return 1
   fi
   echo -e "${yellow}Архивы zapret2:${plain}$found"
-  read -re -p "Номер архива (0 - отмена): " pick
+  read -re -p "Номер архива (0 - отмена): " pick || pick=""
   if [ "$pick" = "0" ] || ! ui_is_number_in_range "$pick" 1 $((i - 1)); then
     echo -e "${yellow}Отменено.${plain}"
     return 0
@@ -1155,7 +1155,7 @@ deploy_reset_user_files() {
     exit 0
   fi
   echo -e "${yellow}Введите номера через пробел (например: 1 3), all — все, 0 — отмена:${plain}"
-  read -re -p "" answer
+  read -re -p "" answer || answer=""
   [ "$answer" = "0" ] && { echo "Отменено."; exit 0; }
   pick=""
   for n in $answer; do
@@ -1274,7 +1274,7 @@ deploy_update_menu() {
     submenu_item 10 "Источник обновлений (зеркало или стандартный GitHub)"
     submenu_item 0 "Назад в главное меню"
     echo ""
-    read -re -p "" answer
+    read -re -p "" answer || answer=""
     case "$answer" in
       1)
         deploy_check_latest || true
@@ -1289,7 +1289,7 @@ deploy_update_menu() {
         if [ "$DEPLOY_UPDATE_ZATOR" = "1" ]; then
           if [ "$(deploy_version_field TRACKING)" != "latest" ]; then
             echo -e "${yellow}Закреплена версия $(deploy_version_field TRACKING); обновление до latest снимет закрепление.${plain}"
-            read -re -p "1 - продолжить, 0 - отмена: " pin_answer
+            read -re -p "1 - продолжить, 0 - отмена: " pin_answer || pin_answer=""
             if [ "$pin_answer" != "1" ]; then
               echo -e "${yellow}Отменено.${plain}"
               pause_enter
@@ -1320,7 +1320,7 @@ deploy_update_menu() {
           pause_enter
           continue
         fi
-        read -re -p "Номер релиза (0 - отмена): " rel_num
+        read -re -p "Номер релиза (0 - отмена): " rel_num || rel_num=""
         if [ "$rel_num" = "0" ] || ! ui_is_number_in_range "$rel_num" 1 99; then
           echo -e "${yellow}Отменено.${plain}"
           pause_enter
@@ -1354,13 +1354,17 @@ $i. $tar_file"
           continue
         fi
         echo -e "${yellow}Файлы:${plain}$found"
-        read -re -p "Номер файла (0 - отмена): " file_num
+        read -re -p "Номер файла (0 - отмена): " file_num || file_num=""
         if [ "$file_num" != "0" ] && ui_is_number_in_range "$file_num" 1 $((i - 1)); then
           eval "tar_file=\"\$DEPLOY_LOCAL_TAR_$file_num\""
           if deploy_from_tar "$tar_file"; then
-            read -re -p $'\033[33mЗакрепить установленную версию (выключить автообновление лаунчера)? 1 - Да, Enter - нет (следить за latest)\033[0m\n' pin_answer
+            read -re -p $'\033[33mЗакрепить установленную версию (выключить автообновление лаунчера)? 1 - Да, Enter - нет (следить за latest)\033[0m\n' pin_answer || pin_answer=""
             if [ "$pin_answer" = "1" ]; then
-              ver="$(deploy_version_field ZATOR_VERSION)"
+              ver="$(deploy_version_field ZATOR_VERSION)" || ver=""
+              if [ ! -f "$DEPLOY_VERSION_FILE" ]; then
+                mkdir -p "$DEPLOY_CACHE_DIR"
+                : > "$DEPLOY_VERSION_FILE"
+              fi
               sed -i "s/^TRACKING=.*/TRACKING=\"${ver:-local}\"/" "$DEPLOY_VERSION_FILE"
               echo -e "${yellow}Версия закреплена: автообновление лаунчера выключено.${plain}"
             fi
@@ -1373,12 +1377,12 @@ $i. $tar_file"
         echo -e "  ${Fcyan}1${plain} — скачать с GitHub (выбор версии)"
         echo -e "  ${Fcyan}2${plain} — локальный архив из /tmp"
         echo -e "  ${Fyellow}0${plain} — отмена"
-        read -re -p "" ans
+        read -re -p "" ans || ans=""
         case "$ans" in
           1)
             echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
             echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
-            read -re -p "" ans
+            read -re -p "" ans || ans=""
             if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
               DEPLOY_WANT_REINSTALL=1
               return 0
@@ -1433,10 +1437,10 @@ deploy_sources_menu() {
     submenu_item 2 "Сбросить на стандартный (GitHub)"
     submenu_item 0 "Назад"
     echo ""
-    read -re -p "" answer
+    read -re -p "" answer || answer=""
     case "$answer" in
       1)
-        read -re -p "Базовый URL зеркала (0 - отмена): " url
+        read -re -p "Базовый URL зеркала (0 - отмена): " url || url=""
         case "$url" in
           0|"") ;;
           http://*|https://*)
@@ -1484,7 +1488,7 @@ deploy_transition_menu() {
     submenu_item 3 "Полный сброс листов и config до эталона (прежнее поведение п.5)"
     submenu_item 0 "Назад"
     echo ""
-    read -re -p "" answer
+    read -re -p "" answer || answer=""
     case "$answer" in
       1)
         deploy_apply_installed_config || true

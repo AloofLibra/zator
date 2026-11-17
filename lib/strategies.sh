@@ -9,7 +9,7 @@ orch_max_strategy_for_profile() {
 
 profile_strategy_restart_notice() {
     if [ -n "${ZAPRET2_INIT:-}" ] && [ -x "$ZAPRET2_INIT" ]; then
-        z2r_service_action restart
+        z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
         echo -e "${green}zapret2 перезапущен для применения изменений config.${plain}"
     else
         echo -e "${yellow}Перезапустите zapret2, чтобы изменения config вступили в силу.${plain}"
@@ -74,7 +74,7 @@ orch_profile_try() {
     elif [ "$quic_ok" = 1 ]; then
         prompt_text="${prompt_text}, A - автопрогон с проверкой видео (QUIC)"
     fi
-    read -re -p "${prompt_text}, Enter - без изменений): " start_strat
+    read -re -p "${prompt_text}, Enter - без изменений): " start_strat || start_strat=""
     case "$start_strat" in
         a|A|а|А)
             if printf '%s' "$test_url" | grep -q '^https://'; then
@@ -90,8 +90,11 @@ orch_profile_try() {
         return
     fi
     if [ "$start_strat" = "0" ]; then
-        cfg="$(get_config_file)"
-        old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+        if ! cfg="$(get_config_file)"; then
+            echo -e "${red}Не найден config/config.default — сначала установите zapret2 (п.5).${plain}"
+            return 0
+        fi
+        old_udp_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" || old_udp_ports=""
         if profile_state_set_and_apply "$profile" "$proto_list" "0" "$cfg"; then
             echo "Профиль $profile выключен и сохранён как 0."
             profile_strategy_restart_if_needed "$profile" "$cfg" "$old_udp_ports"
@@ -144,7 +147,7 @@ _orch_profile_manual_sweep() {
     for ((s=start_strat; s<=max_strat; s++)); do
         [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || trial_touched=1
         for p in $proto_list; do
-            orch_locked_set "$profile" "$p" "$s"
+            orch_locked_set "$profile" "$p" "$s" || true
         done
         echo "Стратегия $s применена."
         if [ "$profile" = "10" ]; then
@@ -245,7 +248,7 @@ orch_ask_sweep_pause() {
 orch_ask_sweep_tls_pref() {
     local pref
     echo "TLS 1.2 важен для ТВ и старых устройств, TLS 1.3 — для современных браузеров." >&2
-    read -re -p "Какой TLS должен работать: 1 - TLS 1.2, 2 - TLS 1.3, 3 - обе (Enter - 3, 0 - отмена): " pref
+    read -re -p "Какой TLS должен работать: 1 - TLS 1.2, 2 - TLS 1.3, 3 - обе (Enter - 3, 0 - отмена): " pref || pref=""
     case "$pref" in
         0) ;;
         1) echo "12" ;;
@@ -268,7 +271,7 @@ orch_run_auto_sweep() {
     if [ "$kind" = profile ] && [ "$key" = 2 ] && type z2r_media_ask_video >/dev/null 2>&1; then
         Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
     fi
-    read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 2, 0 - отмена): " mode
+    read -re -p "Режим: 1 - до первого успеха, 2 - полный прогон (Enter - 2, 0 - отмена): " mode || mode=""
     if [ "$mode" = "0" ]; then
         echo "Отмена."
         pause_enter
@@ -418,11 +421,11 @@ orch_auto_sweep() {
 
     for ((s=start; s<=max; s++)); do
         if [ "$kind" = "domain" ]; then
-            orch_locked_set "$key" "tls" "$s"
+            orch_locked_set "$key" "tls" "$s" || true
         else
             [ "${_Z2R_GV_TRIAL:-0}" != 1 ] || trial_touched=1
             for p in $proto_list; do
-                orch_locked_set "$key" "$p" "$s"
+                orch_locked_set "$key" "$p" "$s" || true
             done
         fi
 
@@ -630,11 +633,11 @@ orch_auto_sweep() {
     if [ "$kind" = "domain" ]; then
         if [ -n "$answer" ] && [ "$answer" != "0" ] && printf '%s' "$answer" | grep -Eq '^[0-9]+$' \
             && [ "$answer" -ge 1 ] && [ "$answer" -le "$max" ]; then
-            orch_locked_set "$key" "tls" "$answer"
+            orch_locked_set "$key" "tls" "$answer" || true
             echo "Стратегия ${answer} сохранена для домена ${key}."
             telemetry_notify
         elif [ -z "$answer" ] && [ -n "$best" ]; then
-            orch_locked_set "$key" "tls" "$best"
+            orch_locked_set "$key" "tls" "$best" || true
             echo "Стратегия ${best} сохранена для домена ${key}."
             telemetry_notify
         else
@@ -927,7 +930,7 @@ domain_list_manage() {
         done
         echo ""
         echo -e "Введите номер ${item_genitive} для удаления, ${Fyellow}0${plain} - назад."
-        read -re -p "Ваш выбор: " choice
+        read -re -p "Ваш выбор: " choice || choice=""
 
         case "$choice" in
             "0"|"")
@@ -948,13 +951,13 @@ domain_list_manage() {
                 echo -e "${yellow}Удалить ${item_accusative} $target?${plain}"
                 echo "1 - да, удалить"
                 echo "0 - отмена"
-                read -re -p "Ваш выбор: " confirm
+                read -re -p "Ваш выбор: " confirm || confirm=""
                 if [ "$confirm" = "1" ]; then
                     domain_list_remove "$file" "$target"
                     [ "$with_strategy" = "1" ] && {
                         orch_locked_clear "$target" "tls"
-                        orch_locked_clear "$target" "http"
-                        orch_locked_clear "$target" "udp"
+                        orch_locked_clear "$target" "http" || true
+                        orch_locked_clear "$target" "udp" || true
                     }
                     echo -e "${green}$remove_message${plain}"
                     pause_enter
@@ -1037,7 +1040,7 @@ manage_custom_rkn_domain() {
 
     user_domain="${1:-}"
     if [ -z "$user_domain" ]; then
-        read -re -p "Введите домен для добавления в TCP_Custom (RKN-обработка, например example.com): " user_domain
+        read -re -p "Введите домен для добавления в TCP_Custom (RKN-обработка, например example.com): " user_domain || user_domain=""
     fi
     if [ -z "$user_domain" ]; then
         echo "Ввод пустой, ничего не добавлено."
@@ -1064,7 +1067,7 @@ manage_custom_rkn_domain() {
             echo "1 - подобрать новую стратегию"
             echo "2 - удалить домен и заново добавить (без подбора стратегии)"
             echo "0 - отменить и оставить всё как есть"
-            read -re -p "Ваш выбор: " mode
+            read -re -p "Ваш выбор: " mode || mode=""
             case "$mode" in
                 "1")
                     echo -e "${green}Домен $user_domain оставлен в TCP_Custom, запускаю подбор новой стратегии.${plain}"
@@ -1093,7 +1096,7 @@ manage_custom_rkn_domain() {
         echo "1 - только добавить домен в список TCP_Custom"
         echo "2 - добавить и подобрать стратегию для этого домена"
         echo "0 - отмена"
-        read -re -p "Ваш выбор: " mode
+        read -re -p "Ваш выбор: " mode || mode=""
 
         case "$mode" in
             "1")
@@ -1160,7 +1163,7 @@ manage_custom_rkn_domain() {
         prev_strat=""
     fi
 
-    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
+    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num || strategy_num=""
     case "$strategy_num" in
         a|A|а|А)
             orch_run_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat"
@@ -1176,7 +1179,7 @@ manage_custom_rkn_domain() {
     fi
 
     for ((s=strategy_num; s<=max_strat; s++)); do
-        orch_locked_set "$user_domain" "tls" "$s"
+        orch_locked_set "$user_domain" "tls" "$s" || true
 
         echo -e "Стратегия $s применена для домена ${cyan}${user_domain}${plain}"
         echo -e "${yellow}Запускается проверка, пожалуйста подождите:${plain}"
@@ -1224,7 +1227,7 @@ netrogat_add_domain() {
     net_file="$(netrogat_file)"
     domain_list_prepare "$net_file"
 
-    read -re -p "Введите домен, который добавить в исключения (например, mydomain.com): " user_domain
+    read -re -p "Введите домен, который добавить в исключения (например, mydomain.com): " user_domain || user_domain=""
     if [ -z "$user_domain" ]; then
         echo "Ввод пустой, ничего не добавлено"
         pause_enter
@@ -1272,7 +1275,7 @@ netrogat_substring_add_line() {
     echo "Например, если добавить bank, исключены будут: sber-bank.ru, banki.ru"
     echo "и другие домены, в названии которых есть bank."
     echo ""
-    read -re -p "Введите подстроку для исключения: " line
+    read -re -p "Введите подстроку для исключения: " line || line=""
     if [ -z "$line" ]; then
         echo "Отменено."
         pause_enter
@@ -1315,7 +1318,7 @@ rkn_substring_add_line() {
     echo "Примеры некорректного ввода: rkn.ru, youtube.com и т.д., где содержатся домены"
     echo ""
 
-    read -re -p "Введите подстроку для добавления: " line
+    read -re -p "Введите подстроку для добавления: " line || line=""
 
     if [ -z "$line" ]; then
         echo "Отменено."

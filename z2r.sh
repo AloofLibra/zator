@@ -837,7 +837,7 @@ change_user() {
 }
 
 ensure_nfqws2_stopped() {
-  z2r_service_action stop
+  z2r_service_action stop || echo -e "${red}Команда остановки zapret2 вернула ошибку — проверьте состояние (п.2).${plain}"
   sleep 1
   local pid
   for pid in $(pidof nfqws2 2>/dev/null); do
@@ -967,7 +967,7 @@ blockcheck2_run_summary() {
   fi
 
   if [ "$was_running" -eq 1 ]; then
-    z2r_service_action restart
+    z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
     echo -e "${green}zapret2 восстановлен (restart)${plain}"
   fi
 
@@ -2494,14 +2494,14 @@ get_menu() {
     # Подсказки загружаются лениво при подборе стратегии, не тормозят главное меню.
   while true; do
   	local strategies_status
-    strategies_status=$(get_orchestra_locks_info)
+    strategies_status=$(get_orchestra_locks_info) || strategies_status=""
     local _cfg_file
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
     if type platform_summary_text >/dev/null 2>&1; then
-      MENU_PLATFORM="$(platform_summary_text)"
-      MENU_UPTIME="$(platform_uptime_text)"
-      MENU_RAM="$(platform_ram_text)"
+      MENU_PLATFORM="$(platform_summary_text)" || MENU_PLATFORM="неизвестно"
+      MENU_UPTIME="$(platform_uptime_text)" || MENU_UPTIME="неизвестно"
+      MENU_RAM="$(platform_ram_text)" || MENU_RAM="неизвестно"
     else
       MENU_PLATFORM="неизвестно"
       MENU_UPTIME="неизвестно"
@@ -2697,7 +2697,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       mkdir -p "$ORCH_DIR"
       chmod 777 "$ORCH_DIR" 2>/dev/null || true
       menu_action_update_config_reset || true
-      backup_update_offer_restore
+      backup_update_offer_restore || true
       pause_enter
     fi
     # «Обновить/переустановить zapret2» из подменю: тот же путь, что Enter.
@@ -2724,7 +2724,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "8")
-    menu_action_toggle_dns_desync
+    menu_action_toggle_dns_desync || true
     pause_enter
     ;;
 
@@ -2733,7 +2733,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "10")
-    menu_action_toggle_udp_range
+    menu_action_toggle_udp_range || true
     pause_enter
     ;;
 
@@ -2744,7 +2744,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "12")
     toggle_hostlist_mode
     if pidof nfqws2 >/dev/null; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2753,7 +2753,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "13")
     toggle_fallback_mode
     if pidof nfqws2 >/dev/null; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2777,7 +2777,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "18")
     if toggle_rst_guard_mode && pidof nfqws2 >/dev/null; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}zapret2 перезапущен для применения RST-защиты${plain}"
     fi
     echo -e "${green}RST-защита: $(config_mode_text rst_guard).${plain}"

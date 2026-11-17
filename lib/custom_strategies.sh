@@ -766,23 +766,31 @@ custom_strategies_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       "0"|"") return ;;
       "1") _custom_add_flow ;;
       "2") _custom_edit_flow ;;
       "3")
-        read -re -p "ID записи (0 - отмена): " id
+        read -re -p "ID записи (0 - отмена): " id || id=""
         case "$id" in ""|0|*[!0-9]*) ui_invalid_input; continue ;; esac
         if [ "$(awk -F '\t' -v i="$id" '$1==i {print $4; exit}' < <(custom_strategies_list))" = "1" ]; then
-          custom_strategies_set_enabled "$id" 0 && echo -e "${green}Запись $id выключена.${plain}"
+          if custom_strategies_set_enabled "$id" 0; then
+            echo -e "${green}Запись $id выключена.${plain}"
+          else
+            echo -e "${red}Не найдена запись $id.${plain}"
+          fi
         else
-          custom_strategies_set_enabled "$id" 1 && echo -e "${green}Запись $id включена.${plain}"
+          if custom_strategies_set_enabled "$id" 1; then
+            echo -e "${green}Запись $id включена.${plain}"
+          else
+            echo -e "${red}Не найдена запись $id.${plain}"
+          fi
         fi
         pause_enter
         ;;
       "4")
-        read -re -p "ID записи (0 - отмена): " id
+        read -re -p "ID записи (0 - отмена): " id || id=""
         case "$id" in ""|0|*[!0-9]*) ui_invalid_input; continue ;; esac
         custom_strategies_delete "$id" && echo -e "${green}Удалено (ID уплотнены).${plain}"
         pause_enter
@@ -791,8 +799,10 @@ custom_strategies_submenu() {
       "6")
         if custom_strategies_apply_live; then
           echo -e "${green}Кастомные стратегии применены к $cfg.${plain}"
-          read -re -p "Перезапустить zapret2 сейчас? 1 - да, Enter - нет: " ans
-          [ "$ans" = "1" ] && z2r_service_action restart
+          read -re -p "Перезапустить zapret2 сейчас? 1 - да, Enter - нет: " ans || ans=""
+          if [ "$ans" = "1" ]; then
+            z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
+          fi
         fi
         pause_enter
         ;;
@@ -810,7 +820,7 @@ _custom_pick_block() {
   done < <(custom_strategies_blocks)
   submenu_item "0" "Отмена"
   echo ""
-  read -re -p "Ваш выбор: " choice
+  read -re -p "Ваш выбор: " choice || choice=""
   [ -z "$choice" ] && return 1
   local n=0
   while IFS="$(printf '\t')" read -r b _rest; do
@@ -856,7 +866,7 @@ _custom_add_flow() {
 
 _custom_edit_flow() {
   local id row block spec comment enabled
-  read -re -p "ID записи (0 - отмена): " id
+  read -re -p "ID записи (0 - отмена): " id || id=""
   case "$id" in ""|0|*[!0-9]*) ui_invalid_input; return ;; esac
   row="$(custom_strategies_row "$id")"
   [ -n "$row" ] || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }

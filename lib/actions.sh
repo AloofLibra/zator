@@ -39,7 +39,7 @@ get_keenetic_policy_status() {
 menu_action_set_keenetic_policy_name() {
   local name mark=""
   ensure_keenetic_policy_config || return 1
-  read -re -p "Введите имя Keenetic-политики. Enter очистит настройку, 0 - отмена: " name
+  read -re -p "Введите имя Keenetic-политики. Enter очистит настройку, 0 - отмена: " name || name=""
   [ "$name" = "0" ] && { echo "Изменение отменено."; return; }
   case "$name" in *$'\n'*|*'|'*) echo -e "${red}Недопустимое имя политики.${plain}"; return 1;; esac
   if [ -n "$name" ]; then
@@ -48,7 +48,7 @@ menu_action_set_keenetic_policy_name() {
   fi
   config_set_var /opt/zapret2/config POLICY_NAME "$name"
   config_set_var /opt/zapret2/config POLICY_MARK "$mark"
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   [ -n "$name" ] && echo -e "${green}Установлена Keenetic-политика:${plain} $name" || echo -e "${yellow}Ограничение по Keenetic-политике отключено.${plain}"
 }
 
@@ -58,7 +58,7 @@ menu_action_toggle_keenetic_policy_mode() {
   value="$(sed -n 's/^POLICY_EXCLUDE=//p' /opt/zapret2/config | tail -n1)"
   [ "$value" = "1" ] && { next=0; value="Только устройства из политики"; } || { next=1; value="Все, кроме устройств из политики"; }
   sed -i "s/^POLICY_EXCLUDE=.*/POLICY_EXCLUDE=$next/" /opt/zapret2/config
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Режим Keenetic-политики изменён:${plain} $value"
 }
 
@@ -159,10 +159,14 @@ menu_action_update_config_reset() {
     fi
   fi
 
-  config_apply_from_default
+  if ! config_apply_from_default; then
+    echo -e "${red}Не удалось применить config.default к живому конфигу — восстанавливаю сервис.${plain}"
+    z2r_service_action start >/dev/null 2>&1 || true
+    return 1
+  fi
 
   if [ "$BACKUP_HELPER_CREATED" != "1" ] || [ ! -f "$BACKUP_LAST_ARCHIVE" ]; then
-    z2r_service_action start
+    z2r_service_action start >/dev/null 2>&1 || true
   fi
 
   echo -e "${green}Config файл обновлён. Листы подбора стратегий и исключений сброшены в дефолт, если не просили сохранить. Фейк файлы обновлены.${plain}"
@@ -191,15 +195,18 @@ fwtype_apply() {
 
   config_set_var "$cfg" FWTYPE "$target"
   /opt/zapret2/install_prereq.sh
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Zapret mode: $target.${plain}"
   return 0
 }
 
 menu_action_toggle_udp_range() {
   local cfg current_ports new_ports state
-  cfg="$(get_config_file)"
-  current_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+  if ! cfg="$(get_config_file)"; then
+    echo -e "${red}Не найден config/config.default — сначала установите/обновите zapret2 (п.5).${plain}"
+    return 0
+  fi
+  current_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" || current_ports=""
   state="$(config_mode_text udp_games "$cfg")"
 
   if [ "$state" = "Включен" ]; then
@@ -220,7 +227,7 @@ menu_action_toggle_udp_range() {
     return 0
   fi
 
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Выполнение переключений завершено.${plain}"
   return 0
 }
@@ -257,7 +264,7 @@ menu_action_toggle_dns_desync() {
       ;;
   esac
 
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Выполнение переключений завершено.${plain}"
   return 0
 }
@@ -352,7 +359,7 @@ menu_action_set_tls_blob() {
     echo "$i. $b"
   done
   echo "0. Отмена"
-  read -re -p "Ваш выбор: " choice
+  read -re -p "Ваш выбор: " choice || choice=""
 
   if [ "$choice" = "0" ] || [ -z "$choice" ]; then
     echo "Отменено."
@@ -563,7 +570,7 @@ menu_action_set_wg_blob() {
     echo "$i. $b"
   done
   echo "0. Отмена"
-  read -re -p "Ваш выбор: " choice
+  read -re -p "Ваш выбор: " choice || choice=""
 
   if [ "$choice" = "0" ] || [ -z "$choice" ]; then
     echo "Отменено."
@@ -920,6 +927,10 @@ ports_set_rkn_filter() {
 # Добавление пользовательских портов (tcp|udp).
 # Порты добавляются в начало строки (до якоря 80/443) и читаются прямо из config.
 ports_add() {
+  if [ ! -f /opt/zapret2/config ]; then
+    echo -e "${red}Не найден /opt/zapret2/config — сначала установите zapret2 (п.5).${plain}"
+    return 0
+  fi
   local proto="$1"
   local var label input
   var="$(ports_var "$proto")" || return 1
@@ -936,7 +947,7 @@ ports_add() {
   echo "Формат: один порт (8080) или диапазон (9000-9100)."
   echo "Несколько значений — через запятую без пробелов: 8080,9090,9000-9100"
   echo ""
-  read -re -p "Введите порты: " input
+  read -re -p "Введите порты: " input || input=""
 
   if ! ports_apply_add "$proto" "$input"; then
     echo -e "${yellow}Ничего не добавлено.${plain}"
@@ -956,6 +967,10 @@ ports_add() {
 # Просмотр и удаление пользовательских портов (tcp|udp).
 # Показываются только порты слева от якоря (80/443) — их и можно удалить.
 ports_manage() {
+  if [ ! -f /opt/zapret2/config ]; then
+    echo -e "${red}Не найден /opt/zapret2/config — сначала установите zapret2 (п.5).${plain}"
+    return 0
+  fi
   local proto="$1" cfg="/opt/zapret2/config"
   local var anchor label line choice confirm i target
   local ports=()
@@ -991,7 +1006,7 @@ ports_manage() {
     done
     echo ""
     echo -e "Введите номер порта для удаления, ${Fyellow}0${plain} - назад."
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
 
     case "$choice" in
       "0"|"")
@@ -1009,7 +1024,7 @@ ports_manage() {
         [ "$proto" = "tcp" ] && echo "(также убирается из стратегии RKN)"
         echo "1 - да, удалить"
         echo "0 - отмена"
-        read -re -p "Ваш выбор: " confirm
+        read -re -p "Ваш выбор: " confirm || confirm=""
         case "$confirm" in
           "1")
             if ports_apply_remove "$proto" "$target"; then
@@ -1101,7 +1116,7 @@ backup_pick_archive() {
   done < "$list_file"
   echo -e "  ${Fyellow}0.${plain} ${Fyellow}Отмена${plain}"
   echo ""
-  read -re -p "$prompt" choice
+  read -re -p "$prompt" choice || choice=""
 
   if [ "$choice" = "0" ] || [ -z "$choice" ]; then
     rm -f "$list_file"
@@ -1276,7 +1291,7 @@ backup_update_offer_restore() {
     echo -e "${yellow}(Доступны только безопасные режимы: умный перенос / списки. Полное восстановление заблокировано, чтобы не затереть обновлённый config.)${plain}"
     echo -e "  ${Fcyan}1${plain} — да, восстановить из свежего бэкапа"
     echo -e "  ${Fyellow}0${plain} — нет, оставить обновлённый config как есть"
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       1|5|y|Y|д|Д)
         # block_full=1: режим «Полное» (a) недоступен — только списки (2) и умный перенос (3).
@@ -1301,7 +1316,7 @@ backup_update_offer_restore() {
     echo -e "${yellow}(Полное восстановление будет заблокировано в контексте обновления.)${plain}"
     echo -e "  ${Fcyan}1${plain} — да, перейти в меню бэкапов"
     echo -e "  ${Fyellow}0${plain} — нет, продолжить без восстановления из бэкапов"
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       1|5|y|Y|д|Д)
         # block_full=1 пробрасывается в подменю: полное восстановление скрыто.
@@ -1775,7 +1790,7 @@ menu_action_backup_restore() {
       echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
       echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
     fi
-    read -re -p "Ваш выбор: " mode
+    read -re -p "Ваш выбор: " mode || mode=""
     case "$mode" in
       2|3) break ;;
       1)
@@ -1914,7 +1929,7 @@ menu_action_backup_delete() {
   echo -e "${yellow}Удалить архив ${green}$(basename "$archive")${yellow} безвозвратно?${plain}"
   echo -e "  ${Fcyan}1${plain} — да, удалить"
   echo -e "  ${Fyellow}0${plain} — отмена"
-  read -re -p "Ваш выбор: " confirm
+  read -re -p "Ваш выбор: " confirm || confirm=""
 
   if [ "$confirm" = "1" ]; then
     rm -f "$archive"

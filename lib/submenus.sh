@@ -794,7 +794,7 @@ client_scopes_submenu() {
     submenu_item "3" "Удалить клиента" ""
     submenu_item "4" "Включить/выключить режим" ""
     submenu_item "0" "Назад" ""
-    read -re -p "Ваш выбор: " ans || return
+    read -re -p "Ваш выбор: " ans || return || return=""
     case "$ans" in
       1) client_scopes_wizard_add || true; pause_enter ;;
       2) client_scopes_wizard_lock || true; pause_enter ;;
@@ -962,7 +962,7 @@ strategies_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     if [ "$auto_enabled" = "1" ]; then
       case "$ans" in
@@ -1045,7 +1045,7 @@ strategies_submenu() {
         fi
         ;;
       "11")
-        toggle_auto_mode
+        toggle_auto_mode || true
         pause_enter
         ;;
       "12")
@@ -1103,7 +1103,7 @@ domains_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
@@ -1119,10 +1119,10 @@ domains_submenu() {
         manage_custom_rkn_list
         ;;
       "5")
-        rkn_substring_add_line
+        rkn_substring_add_line || true
         ;;
       "6")
-        rkn_substring_manage_lines
+        rkn_substring_manage_lines || true
         ;;
       "7")
         netrogat_substring_add_line
@@ -1162,7 +1162,7 @@ ports_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
@@ -1201,7 +1201,7 @@ flowoffload_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1"|"2"|"3"|"4")
@@ -1265,7 +1265,7 @@ fwtype_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
@@ -1295,7 +1295,7 @@ tcp443_submenu() {
   selected_count="$(config_tcp443_current_strategy "$cfg")"
   echo -e "${yellow}Безразборный режим по стратегии: ${plain}$selected_count"
   echo -e "\033[33mС каким номером применить стратегию? (1-19, 0 - отключение безразборного режима, Enter - выход):${plain}"
-  read -re -p " " answer_bezr
+  read -re -p " " answer_bezr || answer_bezr=""
   
   case "$answer_bezr" in
     "" )
@@ -1344,7 +1344,7 @@ provider_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
@@ -1414,7 +1414,7 @@ wireguard_submenu() {
       echo ""
       submenu_item "0" "Назад"
       echo ""
-      read -re -p "Ваш выбор: " ans
+      read -re -p "Ваш выбор: " ans || ans=""
       case "$ans" in
         "0"|"")
           return
@@ -1438,7 +1438,7 @@ wireguard_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       "1")
         menu_action_wg_repeats || true
@@ -1535,7 +1535,7 @@ tls_blob_profile_pick() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     if [ "$choice" = "0" ] || [ -z "$choice" ]; then
       return
     elif [ "$choice" = "1" ]; then
@@ -1618,13 +1618,13 @@ tls_blob_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       "0"|"")
         return
         ;;
       "1")
-        menu_action_set_tls_blob
+        menu_action_set_tls_blob || true
         ;;
       "$sni_item")
         sni_submenu
@@ -1683,7 +1683,7 @@ sni_profile_pick() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     if [ "$choice" = "0" ] || [ -z "$choice" ]; then
       return
     elif [ "$choice" = "$reset_idx" ]; then
@@ -1706,7 +1706,7 @@ sni_profile_pick() {
       fi
       pause_enter
     elif [ "$choice" = "$custom_idx" ]; then
-      read -re -p "Домен или ссылка (например, www.example.com или https://site.ru/x), 0 - отмена: " domain
+      read -re -p "Домен или ссылка (например, www.example.com или https://site.ru/x), 0 - отмена: " domain || domain=""
       if [ "$domain" = "0" ]; then
         :
       elif [ -n "$domain" ]; then
@@ -1757,7 +1757,7 @@ sni_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     if [ "$ans" = "0" ] || [ -z "$ans" ]; then
       return
     elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
@@ -1801,7 +1801,7 @@ fake_mode_profile_pick() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     case "$choice" in
       "0"|"")
         return
@@ -1867,7 +1867,7 @@ fake_mode_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     if [ "$ans" = "0" ] || [ -z "$ans" ]; then
       return
     elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
@@ -1966,7 +1966,7 @@ clone_size_profile_pick() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     if [ "$choice" = "0" ] || [ -z "$choice" ]; then
       return
     elif [ "$choice" = "1" ]; then
@@ -1992,7 +1992,7 @@ clone_size_profile_pick() {
       fi
       pause_enter
     elif [ "$choice" = "$custom_idx" ]; then
-      read -re -p "Размер в байтах (64..1200), 0 - отмена: " size
+      read -re -p "Размер в байтах (64..1200), 0 - отмена: " size || size=""
       if [ "$size" = "0" ]; then
         :
       elif [ -n "$size" ] && clone_size_valid "$size"; then
@@ -2046,7 +2046,7 @@ clone_size_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     if [ "$ans" = "0" ] || [ -z "$ans" ]; then
       return
     elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
@@ -2434,7 +2434,7 @@ advanced_settings_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       "1")
         if menu_action_toggle_reasm_disable; then
@@ -2575,10 +2575,10 @@ keenetic_policy_submenu() {
     submenu_item "2" "$( [ "$(get_keenetic_policy_mode_label)" = "Все, кроме устройств из политики" ] && echo 'Переключить режим на "Только устройства из политики"' || echo 'Переключить режим на "Все, кроме устройств из политики"' )"
     submenu_item "0" "Назад"
     echo ""
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
-      "1") menu_action_set_keenetic_policy_name; pause_enter ;;
-      "2") menu_action_toggle_keenetic_policy_mode; pause_enter ;;
+      "1") menu_action_set_keenetic_policy_name || true; pause_enter ;;
+      "2") menu_action_toggle_keenetic_policy_mode || true; pause_enter ;;
       "0"|"") return ;;
       *) ui_invalid_input ;;
     esac
@@ -2606,7 +2606,7 @@ backup_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
