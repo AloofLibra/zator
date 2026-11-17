@@ -207,6 +207,7 @@ for (const name of readdirSync(join(repoRoot, 'fake')).sort()) {
 }
 
 add('_root/z2r.sh', 'z2r.sh', { executable: true })
+add('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')
 add('tools/googlevideo-dns-listener.sh', 'tools/googlevideo-dns-listener.sh', { executable: true })
 add('tools/wssize-ramp-firewall.sh', 'tools/wssize-ramp-firewall.sh', { executable: true })
 add('_payload/config.default', 'config.default', { cls: 'payload' })

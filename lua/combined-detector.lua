@@ -1,4 +1,4 @@
--- This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
+-- Contains code based on avatarDD/zapret-gui; see ../THIRD_PARTY_NOTICES.md.
 -- Combined failure detector - extends standard detector with default page detection
 -- Uses standard_failure_detector for RST/retransmission/redirect detection
 -- Adds: HTTP status validation (any syntactically valid status proves transport success)

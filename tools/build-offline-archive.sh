@@ -127,7 +127,8 @@ project_tree_is_valid() {
     [ -d "$root/$dir" ] || return 1
   done
   for file in z2r.sh config.default fake_files.tar.gz recommendations.txt \
-    3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md; do
+    3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md \
+    THIRD_PARTY_NOTICES.md; do
     [ -f "$root/$file" ] || return 1
   done
 }
@@ -335,7 +336,8 @@ else
     cp -R "$REPO_DIR/$dir" "$payload_dir/$dir"
   done
   for file in z2r.sh config.default fake_files.tar.gz recommendations.txt \
-    3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md; do
+    3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md \
+    THIRD_PARTY_NOTICES.md; do
     cp -f "$REPO_DIR/$file" "$payload_dir/$file"
   done
 fi

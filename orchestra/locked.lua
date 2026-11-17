@@ -1,3 +1,4 @@
+-- fakemultisplit/fakemultidisorder are based on avatarDD/zapret-gui; see ../THIRD_PARTY_NOTICES.md.
 local LOCKED_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.tsv"
 local LOCKED_MANUAL_PATH = "/opt/zator/extra_strats/cache/orchestra/locked.manual.tsv"
 -- Per-mark lock-файлы: <orchestra>/scopes/mark_N.tsv (3 колонки, без колонки scope).
