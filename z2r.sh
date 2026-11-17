@@ -3021,6 +3021,10 @@ while true; do
   custom_strategies_apply_file "$ZAPRET2_ROOT/config.default" \
     || echo -e "${yellow}Кастомные стратегии не применились — продолжаю без них.${plain}"
  fi
+ # Выбор блобов (maxru + слоты z2r_prof_N) из blob_files.tsv — тоже переживает.
+ if type blob_files_apply >/dev/null 2>&1; then
+  blob_files_apply "$ZAPRET2_ROOT/config.default" || true
+ fi
 
  #Для x-wrt
  if [[ "$release" == "x-wrt" ]]; then

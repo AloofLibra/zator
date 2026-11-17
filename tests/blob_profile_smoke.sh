@@ -67,6 +67,7 @@ LOCKED_LUa_SRC="$(tr -d '\r' < "$REPO_DIR/orchestra/locked.lua")"
 DETECTOR_SRC="$(tr -d '\r' < "$REPO_DIR/lua/combined-detector.lua")"
 CONFIG_SRC="$(tr -d '\r' < "$REPO_DIR/config.default")"
 SUBMENUS_SRC="$(tr -d '\r' < "$REPO_DIR/lib/submenus.sh")"
+ACTIONS_SRC="$(tr -d '\r' < "$REPO_DIR/lib/actions.sh")"
 Z2R_SRC="$(tr -d '\r' < "$REPO_DIR/z2r.sh")"
 LIB_SH_SRC="$(tr -d '\r' < "$REPO_DIR/webui/cgi-bin/_lib.sh")"
 SETTINGS_CGI_SRC="$(tr -d '\r' < "$REPO_DIR/webui/cgi-bin/settings.cgi")"
@@ -119,8 +120,15 @@ assert_contains "$FAKE_SRV_SRC" '"profile_blobs"' "fake_router_server не от�
 assert_contains "$TUTORIAL_SRC" 'Блоб на профиль' "TUTORIAL §8 без раздела про профиль"
 assert_contains "$AGENTS_SRC" 'blob_override\.tsv' "AGENTS.md не упоминает blob_override.tsv"
 
+assert_contains "$ACTIONS_SRC" 'blob_files_apply "\$root/config\.default"' \
+  "config_apply_from_default не ре-применяет blob_files.tsv"
+assert_contains "$Z2R_SRC" 'blob_files_apply "\$ZAPRET2_ROOT/config\.default"' \
+  "установочный поток z2r.sh не ре-применяет blob_files.tsv"
+
 z2r_backup_state_files | grep -q 'extra_strats/cache/orchestra/blob_override.tsv' \
   || fail "z2r_backup_state_files не бэкапит blob_override.tsv"
+z2r_backup_state_files | grep -q 'extra_strats/cache/orchestra/blob_files.tsv' \
+  || fail "z2r_backup_state_files не бэкапит blob_files.tsv"
 
 # --- 2. Хелперы blob_override_* --------------------------------------------
 
@@ -197,5 +205,71 @@ grep -v 'z2r_prof_3' "$CFG" > "$CFG_NO_SLOT"
 if tls_blob_profile_apply_file "$CFG_NO_SLOT" 3 tls_clienthello_test_a.bin; then
   fail "apply_file должен отказывать без декларации слота"
 fi
+
+# --- 4. Персист выбора блобов (blob_files.tsv) --------------------------------
+# Регрессия: выбор блоба жил только в живом конфиге и терялся при 5 -> 7
+# (локи из locked.tsv переживали, блобы — нет). Теперь blob_files.tsv —
+# источник истины, ре-применяемый во все пути регенерации конфига.
+
+blob_files_set z2r_prof_1 custom_tls.bin || fail "blob_files_set не пишет строку"
+[ "$(blob_files_get z2r_prof_1)" = "custom_tls.bin" ] || fail "blob_files_get не читает"
+blob_files_set z2r_prof_1 tls_clienthello_test_a.bin || fail "upsert не перезаписал"
+[ "$(awk 'END {print NR}' "$ORCH_BLOB_FILES_TSV")" = "1" ] || fail "upsert оставил дубль"
+blob_files_clear z2r_prof_1 || fail "blob_files_clear"
+[ -z "$(blob_files_get z2r_prof_1)" ] || fail "clear не удалил"
+if blob_files_set "bad name" x.bin 2>/dev/null; then fail "set принял имя с пробелом"; fi
+if blob_files_set maxru "../etc/passwd" 2>/dev/null; then fail "set принял путь"; fi
+
+# tls_blob_profile_apply_file персистит выбор слота (CLI и WebUI共用)
+tls_blob_profile_apply_file "$CFG" 2 custom_tls.bin || fail "apply_file профиль 2"
+[ "$(blob_files_get z2r_prof_2)" = "custom_tls.bin" ] \
+  || fail "apply_file не записал выбор в blob_files.tsv"
+
+# apply на СВЕЖЕМ config.default (симуляция 5 -> 7): гугловский блоб возвращается
+CFG_FRESH="$TMP_DIR/config.fresh"
+tr -d '\r' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g" > "$CFG_FRESH"
+blob_files_set maxru custom_tls.bin
+blob_files_set z2r_prof_2 tls_clienthello_test_a.bin
+blob_files_set z2r_prof_5 quic_initial_test.bin
+blob_files_apply "$CFG_FRESH" 2>"$TMP_DIR/blobfiles.err" || fail "blob_files_apply rc!=0"
+grep -q -- '--blob=maxru:@/opt/zator/files/fake/custom_tls.bin' "$CFG_FRESH" \
+  || fail "apply: глобальный maxru не восстановлен"
+grep -q -- '--blob=z2r_prof_2:@/opt/zator/files/fake/tls_clienthello_test_a.bin' "$CFG_FRESH" \
+  || fail "apply: слот z2r_prof_2 не восстановлен"
+grep -q -- '--blob=z2r_prof_5:@/opt/zator/files/fake/quic_initial_test.bin' "$CFG_FRESH" \
+  || fail "apply: слот z2r_prof_5 не восстановлен"
+
+# режим fake_default_tls: ссылки -> fake_default_tls (штатный вид эталона),
+# декларация --blob=maxru не трогается (обратное переключение)
+blob_files_clear maxru
+blob_files_set maxru fake_default_tls
+blob_files_apply "$CFG_FRESH" || fail "apply (режим fake_default_tls)"
+grep -q -- '--lua-desync=fake:blob=fake_default_tls:tcp_seq=-3000:tcp_ack=-66000:repeats=2:strategy=20' "$CFG_FRESH" \
+  || fail "apply: режим fake_default_tls не переключил ссылки"
+grep -q -- '--blob=maxru:@/opt/zator/files/fake/custom_tls.bin' "$CFG_FRESH" \
+  || fail "apply: декларация maxru не должна меняться в режиме fake_default_tls"
+
+# обратное переключение на файл возвращает режим maxru
+blob_files_set maxru custom_tls.bin
+blob_files_apply "$CFG_FRESH" || fail "apply (обратно на файл)"
+grep -q -- '--lua-desync=fake:blob=maxru:tcp_seq=-3000:tcp_ack=-66000:repeats=2:strategy=20' "$CFG_FRESH" \
+  || fail "apply: режим maxru не вернулся"
+
+# отсутствующий файл — пропуск с warning, конфиг не сломан, rc=0
+blob_files_set z2r_prof_3 nofile.bin
+grep -q -- '--blob=z2r_prof_3:@/opt/zator/files/fake/tls_clienthello_max_ru.bin' "$CFG_FRESH"
+before_md5="$(md5sum "$CFG_FRESH" | cut -d' ' -f1)"
+blob_files_apply "$CFG_FRESH" 2>"$TMP_DIR/blobfiles2.err" || fail "apply с битым файлом rc!=0"
+grep -q 'отсутствует' "$TMP_DIR/blobfiles2.err" || fail "apply: нет warning о битом файле"
+after_md5="$(md5sum "$CFG_FRESH" | cut -d' ' -f1)"
+[ "$before_md5" = "$after_md5" ] || fail "apply с битым файлом изменил конфиг"
+blob_files_clear z2r_prof_3
+
+# имя, которого нет в старом конфиге, молча пропускается
+grep -v 'z2r_prof_8' "$CFG_FRESH" > "$TMP_DIR/no8" && mv -f "$TMP_DIR/no8" "$CFG_FRESH"
+blob_files_set z2r_prof_8 custom_tls.bin
+blob_files_apply "$CFG_FRESH" 2>>"$TMP_DIR/blobfiles2.err" || fail "apply без декларации rc!=0"
+
+ls "$ORCH_DIR" | grep -q '\.tmp\.' && fail "остались .tmp файлы после blob_files"
 
 echo "blob profile smoke ok"

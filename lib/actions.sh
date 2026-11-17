@@ -87,6 +87,11 @@ config_apply_from_default() {
   if type custom_strategies_apply_file >/dev/null 2>&1; then
     custom_strategies_apply_file "$root/config.default" || true
   fi
+  # Выбор блобов (глобальный maxru + слоты z2r_prof_N) персистится в
+  # blob_files.tsv и переживает регенерацию конфига — как локи в locked.tsv.
+  if type blob_files_apply >/dev/null 2>&1; then
+    blob_files_apply "$root/config.default" || true
+  fi
 
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then
@@ -366,6 +371,8 @@ menu_action_set_tls_blob() {
     else
       sed -i -r '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)maxru#\1fake_default_tls#g; }' "$cfg"
     fi
+    # Персистим выбор: переживёт применение config.default (5 -> 7) и деплои.
+    type blob_files_set >/dev/null 2>&1 && blob_files_set maxru fake_default_tls
     echo -e "${green}В TLS-стратегиях выбран встроенный blob: fake_default_tls${plain}"
     echo -e "${yellow}Строка --blob=maxru:@... сохранена без изменений для обратного переключения.${plain}"
     telemetry_notify
@@ -388,6 +395,8 @@ menu_action_set_tls_blob() {
     sed -i -r '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
     sed -i -r "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${selected_blob}#g" "$cfg"
   fi
+  # Персистим выбор: переживёт применение config.default (5 -> 7) и деплои.
+  type blob_files_set >/dev/null 2>&1 && blob_files_set maxru "$selected_blob"
   echo -e "${green}Обновлено: --blob=maxru -> ${selected_blob}${plain}"
   echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы применить изменения.${plain}"
   telemetry_notify
@@ -396,7 +405,8 @@ menu_action_set_tls_blob() {
 }
 
 # Прописывает файл в декларацию слота z2r_prof_N конфига $1 (зеркало sed'а maxru
-# из menu_action_set_tls_blob, path-agnostic zapret2|zator). Возвращает 1, если
+# из menu_action_set_tls_blob, path-agnostic zapret2|zator) и персистит выбор в
+# blob_files.tsv (переживает применение config.default). Возвращает 1, если
 # декларации нет в конфиге (нужно применить новый config.default: п.5 -> п.7).
 tls_blob_profile_apply_file() {
   local cfg="$1" profile="$2" file="$3" slot ereg
@@ -404,6 +414,7 @@ tls_blob_profile_apply_file() {
   ereg="$(config_sed_ereg)"
   grep -qE -- "--blob=${slot}:@/opt/(zapret2|zator)/files/fake/" "$cfg" || return 1
   sed -i $ereg "s#--blob=${slot}:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#--blob=${slot}:@/opt/zator/files/fake/${file}#g" "$cfg"
+  type blob_files_set >/dev/null 2>&1 && blob_files_set "$slot" "$file"
   return 0
 }
 
@@ -1032,6 +1043,7 @@ extra_strats/cache/orchestra/locked.tsv
 extra_strats/cache/orchestra/locked.manual.tsv
 extra_strats/cache/orchestra/auto_locked.tsv
 extra_strats/cache/orchestra/blob_override.tsv
+extra_strats/cache/orchestra/blob_files.tsv
 extra_strats/cache/orchestra/sni_override.tsv
 extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv
@@ -1871,6 +1883,12 @@ menu_action_backup_restore() {
     else
       echo -e "${yellow}Кастомные стратегии не переинжектились — примените вручную (п.1 -> 14 -> 6).${plain}"
     fi
+  fi
+
+  # Выбор блобов восстановлен из blob_files.tsv — возвращаем его в живой config.
+  if type blob_files_apply >/dev/null 2>&1; then
+    blob_files_apply /opt/zapret2/config && \
+      echo -e "${green}Выбор блобов восстановлен в конфиг (рестарт применит).${plain}"
   fi
 
   rm -rf "$restore_dir"
