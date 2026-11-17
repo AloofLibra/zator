@@ -41,6 +41,9 @@ tr -d '\r' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g" > "$CF
 printf 'FAKE1' > "$ROOT/files/fake/tls_clienthello_test_a.bin"
 printf 'FAKE2' > "$ROOT/files/fake/custom_tls.bin"
 printf 'QUIC' > "$ROOT/files/fake/quic_initial_test.bin"
+printf 'QUICWG' > "$ROOT/files/fake/wg_initial_fake_2.bin"
+printf 'DUDP' > "$ROOT/files/fake/discord_udp_1.bin"
+printf 'STUN' > "$ROOT/files/fake/stun.bin"
 
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/config.sh"
@@ -76,14 +79,19 @@ assert_contains "$LOCKED_LUa_SRC" 'blob_override\.tsv' "locked.lua не чита
 assert_contains "$LOCKED_LUa_SRC" 'function blob_override_execute' "locked.lua нет blob_override_execute"
 assert_contains "$LOCKED_LUa_SRC" 'blob_override_execute\(desync, verdict, instance, base_profile\)' \
   "circular_locked не передаёт base_profile в хук"
-assert_contains "$LOCKED_LUa_SRC" 'saved_blob == "maxru" or saved_blob == "fake_default_tls"' \
-  "хук подменяет только maxru|fake_default_tls"
+assert_contains "$LOCKED_LUa_SRC" 'z2r_blob_override_swap\(profile_key, saved_blob\)' \
+  "хук подменяет источники через z2r_blob_override_swap (blob=)"
+assert_contains "$LOCKED_LUa_SRC" 'z2r_blob_override_swap\(profile_key, saved_fake_blob\)' \
+  "хук подменяет источники через z2r_blob_override_swap (fake_blob=)"
+assert_contains "$LOCKED_LUa_SRC" 'Z2R_BLOB_SWAP_TLS = \{ maxru = true, fake_default_tls = true \}' \
+  "TLS-источники подмены: maxru|fake_default_tls"
+assert_contains "$LOCKED_LUa_SRC" 'Z2R_BLOB_SWAP_QUIC' "нет таблицы QUIC-источников подмены"
 assert_contains "$LOCKED_LUa_SRC" 'instance\.arg\.blob = saved_blob' "хук не восстанавливает instance.arg"
 assert_contains "$LOCKED_LUa_SRC" 'blob_exist\(desync, name\)' "хук не проверяет объявлено ли имя"
 assert_contains "$DETECTOR_SRC" 'blob_override_execute\(desync, verdict, instance, desync\.arg\.key\)' \
   "circular_quality не использует хук"
 
-for p in 1 2 3 4 8; do
+for p in 1 2 3 4 5 8; do
   assert_contains "$CONFIG_SRC" "^--blob=z2r_prof_${p}:@/opt/zator/files/fake/" \
     "config.default не объявляет слот z2r_prof_${p}"
 done
@@ -116,8 +124,8 @@ z2r_backup_state_files | grep -q 'extra_strats/cache/orchestra/blob_override.tsv
 
 # --- 2. Хелперы blob_override_* --------------------------------------------
 
-[ "$(blob_override_supported_profiles | tr '\n' ' ')" = "1 2 3 4 8 " ] \
-  || fail "blob_override_supported_profiles != '1 2 3 4 8'"
+[ "$(blob_override_supported_profiles | tr '\n' ' ')" = "1 2 3 4 5 8 " ] \
+  || fail "blob_override_supported_profiles != '1 2 3 4 5 8'"
 
 blob_override_set 2 fake_default_tls || fail "blob_override_set не пишет строку"
 [ "$(blob_override_name 2)" = "fake_default_tls" ] || fail "blob_override_name не читает строку"
@@ -150,10 +158,29 @@ fi
 blob_override_file_valid tls_clienthello_test_a.bin || fail "file_valid: tls_*.bin должен проходить"
 blob_override_file_valid custom_tls.bin || fail "file_valid: custom_tls.bin должен проходить"
 if blob_override_file_valid quic_initial_test.bin; then
-  fail "file_valid: quic-файл не должен проходить"
+  fail "file_valid: quic-файл не должен проходить без профиля (TLS-режим по умолчанию)"
 fi
 if blob_override_file_valid tls_missing.bin; then
   fail "file_valid: несуществующий файл не должен проходить"
+fi
+
+# --- 2a. QUIC-профиль 5: слот, источники, файлы-кандидаты ---------------------
+
+blob_override_set 5 "$(blob_override_slot 5)" || fail "set профиль 5 (QUIC)"
+[ "$(blob_override_name 5)" = "z2r_prof_5" ] || fail "профиль 5 не записался"
+[ "$(blob_override_get 5 "$CFG")" = "quic_initial_www_google_com.bin" ] \
+  || fail "слот z2r_prof_5 должен раскрываться в quic_initial_www_google_com.bin"
+blob_override_clear 5
+
+blob_override_file_valid quic_initial_test.bin 5 || fail "file_valid(5): quic_*.bin должен проходить"
+blob_override_file_valid wg_initial_fake_2.bin 5 || fail "file_valid(5): wg_initial_fake_*.bin должен проходить"
+blob_override_file_valid discord_udp_1.bin 5 || fail "file_valid(5): discord_udp_*.bin должен проходить"
+blob_override_file_valid stun.bin 5 || fail "file_valid(5): stun*.bin должен проходить"
+if blob_override_file_valid tls_clienthello_test_a.bin 5; then
+  fail "file_valid(5): tls-файл не должен проходить для QUIC-профиля"
+fi
+if blob_override_file_valid quic_missing.bin 5; then
+  fail "file_valid(5): несуществующий файл не должен проходить"
 fi
 
 ls "$ORCH_DIR" | grep -q '\.tmp\.' && fail "остались .tmp файлы после upsert"

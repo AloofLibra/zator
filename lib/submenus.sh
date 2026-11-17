@@ -1447,50 +1447,82 @@ wireguard_submenu() {
   done
 }
 
-# --- TLS blob: глобальный выбор + переопределения по профилям (пункт 16) ---
-# Переопределение подменяет только blob=/fake_blob= со значением maxru|fake_default_tls
-# (зеркало глобального sed'а п.16). Вкл/выкл/сброс — без рестарта (TTL-кэш locked.lua),
-# смена файла слота z2r_prof_N — с рестартом, как у глобального выбора.
+# --- Blob профилей: глобальный TLS выбор + переопределения по профилям (пункт 16) ---
+# Переопределение подменяет blob=/fake_blob= у стратегий профиля: TLS-профили —
+# значения maxru|fake_default_tls (зеркало глобального sed'а п.16), профиль 5 —
+# именованные QUIC/UDP-блобы стратегий. Вкл/выкл/сброс — без рестарта (TTL-кэш
+# locked.lua), смена файла слота z2r_prof_N — с рестартом, как у глобального выбора.
 
 _tls_blob_list_files() {
-  # TLS-кандидаты: тот же фильтр, что у WebUI (tls_*.bin + custom_tls.bin).
-  local f
-  if sort -z </dev/null >/dev/null 2>&1; then
-    while IFS= read -r -d '' f; do basename "$f"; done \
-      < <(find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( -name 'tls_*.bin' -o -name 'custom_tls.bin' \) -print0 | sort -z)
+  # Кандидаты по профилю: TLS — тот же фильтр, что у WebUI (tls_*.bin +
+  # custom_tls.bin); QUIC (профиль 5) — UDP-полезные нагрузки из каталога фейков
+  # (фильтр зеркалит blob_override_file_valid).
+  local profile="${1:-}" f
+  local names_quic=(-name 'quic_*.bin' -o -name 'QUIC_*.bin' -o -name 'fake_quic_*.bin' -o -name 'discord_udp_*.bin' -o -name 'wg_initial_fake_*.bin' -o -name 'stun*.bin')
+  local names_tls=(-name 'tls_*.bin' -o -name 'custom_tls.bin')
+  if [ "$profile" = "5" ]; then
+    if sort -z </dev/null >/dev/null 2>&1; then
+      while IFS= read -r -d '' f; do basename "$f"; done \
+        < <(find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_quic[@]}" \) -print0 | sort -z)
+    else
+      find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_quic[@]}" \) | sort \
+        | while IFS= read -r f; do basename "$f"; done
+    fi
   else
-    find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( -name 'tls_*.bin' -o -name 'custom_tls.bin' \) | sort \
-      | while IFS= read -r f; do basename "$f"; done
+    if sort -z </dev/null >/dev/null 2>&1; then
+      while IFS= read -r -d '' f; do basename "$f"; done \
+        < <(find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_tls[@]}" \) -print0 | sort -z)
+    else
+      find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_tls[@]}" \) | sort \
+        | while IFS= read -r f; do basename "$f"; done
+    fi
   fi
 }
 
 tls_blob_profile_pick() {
   local profile="$1" title="$2" cfg="$3"
-  local slot cur cur_display choice i f file
+  local slot cur cur_display choice i f file first_file last_file
   local files=()
+  local is_quic=0 builtin_idx=0
+  [ "$profile" = "5" ] && is_quic=1
   slot="$(blob_override_slot "$profile")"
-  while IFS= read -r f; do files+=("$f"); done < <(_tls_blob_list_files)
+  while IFS= read -r f; do files+=("$f"); done < <(_tls_blob_list_files "$profile")
 
   while true; do
     clear -x
     cur="$(blob_override_get "$profile" "$cfg")"
-    echo -e "${cyan}--- Профиль $profile ($title): TLS blob ---${plain}"
+    if [ "$is_quic" = "1" ]; then
+      echo -e "${cyan}--- Профиль $profile ($title): QUIC Initial blob ---${plain}"
+    else
+      echo -e "${cyan}--- Профиль $profile ($title): TLS blob ---${plain}"
+    fi
     echo ""
     if [ -z "$cur" ]; then
-      cur_display="глобальный ($(config_tls_blob_menu_value "$cfg"))"
+      if [ "$is_quic" = "1" ]; then
+        cur_display="из стратегий конфига (quic/stun/discord-блобы)"
+      else
+        cur_display="глобальный ($(config_tls_blob_menu_value "$cfg"))"
+      fi
     else
       cur_display="$cur"
     fi
     echo -e "${yellow}Сейчас: ${green}${cur_display}${plain}"
-    echo -e "${yellow}Глобальный блоб: ${plain}${green}$(config_tls_blob_menu_value "$cfg")${plain}"
     echo ""
-    submenu_item "1" "Как глобальный (сброс переопределения)"
-    submenu_item "2" "fake_default_tls (встроенный)"
-    i=3
+    submenu_item "1" "Как в стратегиях конфига (сброс переопределения)"
+    first_file=2
+    if [ "$is_quic" = "0" ]; then
+      submenu_item "2" "fake_default_tls (встроенный)"
+      builtin_idx=2
+      first_file=3
+    else
+      builtin_idx=0
+    fi
+    i="$first_file"
     for f in "${files[@]}"; do
       submenu_item "$i" "$f"
       i=$((i+1))
     done
+    last_file=$(( first_file + ${#files[@]} - 1 ))
     submenu_item "0" "Назад"
     echo ""
 
@@ -1499,14 +1531,14 @@ tls_blob_profile_pick() {
       return
     elif [ "$choice" = "1" ]; then
       if blob_override_clear "$profile"; then
-        echo -e "${green}Сброшено: профиль $profile вернулся к глобальному блобу.${plain}"
+        echo -e "${green}Сброшено: профиль $profile вернулся к блобам из стратегий конфига.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
         telemetry_notify
       else
         echo -e "${red}Не удалось сбросить переопределение.${plain}"
       fi
       pause_enter
-    elif [ "$choice" = "2" ]; then
+    elif [ "$builtin_idx" != "0" ] && [ "$choice" = "$builtin_idx" ]; then
       if blob_override_set "$profile" fake_default_tls; then
         echo -e "${green}Профиль $profile будет использовать встроенный fake_default_tls.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
@@ -1515,8 +1547,8 @@ tls_blob_profile_pick() {
         echo -e "${red}Не удалось сохранить переопределение.${plain}"
       fi
       pause_enter
-    elif ui_is_number_in_range "$choice" 3 "$(( ${#files[@]} + 2 ))"; then
-      file="${files[$((choice-3))]}"
+    elif ui_is_number_in_range "$choice" "$first_file" "$last_file"; then
+      file="${files[$((choice - first_file))]}"
       if ! grep -qE -- "--blob=${slot}:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
         echo -e "${red}В конфиге нет декларации --blob=${slot} (старый конфиг).${plain}"
         echo -e "${yellow}Примените новый config.default: п.5 -> п.7, затем повторите.${plain}"
@@ -1550,11 +1582,11 @@ tls_blob_submenu() {
 
   while true; do
     clear -x
-    echo -e "${cyan}--- TLS blob (фейковые ClientHello) ---${plain}"
+    echo -e "${cyan}--- Blob профилей: TLS ClientHello / QUIC Initial ---${plain}"
     echo ""
-    submenu_status_item "1" "Глобальный блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
+    submenu_status_item "1" "Глобальный TLS блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
     echo ""
-    echo -e "${yellow}Переопределения по профилям (только стратегии с blob=maxru|fake_default_tls):${plain}"
+    echo -e "${yellow}Переопределения по профилям (TLS: blob=maxru|fake_default_tls; профиль 5 QUIC: quic/stun/discord-блобы):${plain}"
     i=2
     for idx in "${!profiles[@]}"; do
       p="$(blob_override_get "${profiles[$idx]}" "$cfg")"

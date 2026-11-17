@@ -561,12 +561,14 @@ EOF
   return 0
 }
 
-# --- per-profile TLS blob override (blob_override.tsv) ---
+# --- per-profile TLS/QUIC blob override (blob_override.tsv) ---
 # Единый источник «профиль -> имя блоба» для CLI (подменю п.16) и WebUI.
 # Формат: profile<TAB>имя, нет строки = глобальный блоб. Файл читает locked.lua
 # (TTL-кэш 2с) — вкл/выкл переопределения применяется без рестарта nfqws2.
+# Профили 1-4/8 — TLS (слоты z2r_prof_N, источники maxru|fake_default_tls),
+# профиль 5 — QUIC/UDP 443 (слот z2r_prof_5, источники — именованные QUIC-блобы).
 ORCH_BLOB_FILE="${ORCH_BLOB_FILE:-$ORCH_DIR/blob_override.tsv}"
-Z2R_BLOB_PROFILES="${Z2R_BLOB_PROFILES:-1 2 3 4 8}"
+Z2R_BLOB_PROFILES="${Z2R_BLOB_PROFILES:-1 2 3 4 5 8}"
 Z2R_BLOB_SLOT_PREFIX="${Z2R_BLOB_SLOT_PREFIX:-z2r_prof_}"
 Z2R_BLOB_FAKE_DIR="${Z2R_BLOB_FAKE_DIR:-${ZATOR_ROOT:-/opt/zator}/files/fake}"
 
@@ -600,12 +602,24 @@ blob_override_get() {
   esac
 }
 
-# Валидация файла-кандидата: tls_*.bin / custom_tls.bin из каталога фейков.
+# Валидация файла-кандидата: TLS-профили — tls_*.bin / custom_tls.bin, QUIC
+# (профиль 5) — UDP-полезные нагрузки из каталога фейков. Без второго
+# аргумента — прежний TLS-фильтр (совместимость WebUI/старых вызовов).
 blob_override_file_valid() {
-  local file="$1"
-  case "$file" in
-    tls_*.bin|custom_tls.bin) ;;
-    *) return 1 ;;
+  local file="$1" profile="${2:-}"
+  case "$profile" in
+    5)
+      case "$file" in
+        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin) ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *)
+      case "$file" in
+        tls_*.bin|custom_tls.bin) ;;
+        *) return 1 ;;
+      esac
+      ;;
   esac
   [ -f "$Z2R_BLOB_FAKE_DIR/$file" ]
 }
