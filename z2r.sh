@@ -49,10 +49,13 @@ z2r_github_commit_date() {
 
 Z2R_BRANCH="${Z2R_BRANCH:-zator}"
 Z2R_PROJECT_RAW_BASE="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/${Z2R_BRANCH}}"
-Z2R_PROJECT_MIRROR_BASE="${Z2R_PROJECT_MIRROR_BASE:-https://git.px.rkn.quest/AloofLibra/plain}"
+# Зеркала — ТОЛЬКО явным заданием env (по умолчанию выключены): прежнее
+# дефолтное зеркало умерло, попытки фолбэка на него лишь добавляли ~36
+# секунд таймаутов на каждый файл при лежащем GitHub (3 попытки x 10с).
+Z2R_PROJECT_MIRROR_BASE="${Z2R_PROJECT_MIRROR_BASE:-}"
 Z2R_INSTALLER_URL="${Z2R_INSTALLER_URL:-${Z2R_PROJECT_RAW_BASE}/z2r.sh}"
 ZAPRET2_UPSTREAM_RAW_BASE="${ZAPRET2_UPSTREAM_RAW_BASE:-https://raw.githubusercontent.com/bol-van/zapret2/master}"
-ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-https://git.px.rkn.quest/zapret2/plain}"
+ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-}"
 ZAPRET2_RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2/releases/download}"
 ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/MarkinAlexander/zapret2/releases/download}"
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
@@ -143,7 +146,6 @@ z2r_download_project_file() {
     return 0
   fi
 
-  mirror="$(z2r_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
   rm -f "$tmp"
   if z2r_fetch_url_to_file "$tmp" "$primary"; then
@@ -151,9 +153,9 @@ z2r_download_project_file() {
     return 0
   fi
   if [ -n "${Z2R_PROJECT_MIRROR_BASE:-}" ]; then
-    echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало.${plain}" >&2
+    echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало ${Z2R_PROJECT_MIRROR_BASE}.${plain}" >&2
     rm -f "$tmp"
-    if z2r_fetch_url_to_file "$tmp" "$mirror"; then
+    if z2r_fetch_url_to_file "$tmp" "$(z2r_mirror_url "$rel")"; then
       mv -f "$tmp" "$dest"
       return 0
     fi
@@ -171,25 +173,25 @@ z2r_download_upstream_file() {
   local rel="$2"
   local tmp="${dest}.tmp.$$"
   local primary="${ZAPRET2_UPSTREAM_RAW_BASE}/${rel}"
-  local mirror
 
   if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
     echo -e "${red}В установленном zapret2 отсутствует upstream-файл: $rel${plain}" >&2
     return 1
   fi
 
-  mirror="$(z2r_upstream_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
   rm -f "$tmp"
   if z2r_fetch_url_to_file "$tmp" "$primary"; then
     mv -f "$tmp" "$dest"
     return 0
   fi
-  echo -e "${yellow}GitHub недоступен для zapret2/$rel. Пробую зеркало.${plain}" >&2
-  rm -f "$tmp"
-  if z2r_fetch_url_to_file "$tmp" "$mirror"; then
-    mv -f "$tmp" "$dest"
-    return 0
+  if [ -n "${ZAPRET2_UPSTREAM_MIRROR_BASE:-}" ]; then
+    echo -e "${yellow}GitHub недоступен для zapret2/$rel. Пробую зеркало ${ZAPRET2_UPSTREAM_MIRROR_BASE}.${plain}" >&2
+    rm -f "$tmp"
+    if z2r_fetch_url_to_file "$tmp" "$(z2r_upstream_mirror_url "$rel")"; then
+      mv -f "$tmp" "$dest"
+      return 0
+    fi
   fi
   rm -f "$tmp"
   return 1
@@ -276,7 +278,6 @@ z2r_download_zapret2_release() {
 }
 
 z2r_exec_external_installer() {
-  local mirror
   local tmp="/tmp/z2r_installer_$$"
 
   if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
@@ -284,8 +285,10 @@ z2r_exec_external_installer() {
     exit 1
   fi
 
-  mirror="$(z2r_mirror_url "z2r")"
-  if z2r_fetch_url_to_file "$tmp" "$Z2R_INSTALLER_URL" || z2r_fetch_url_to_file "$tmp" "$mirror"; then
+  if z2r_fetch_url_to_file "$tmp" "$Z2R_INSTALLER_URL"; then
+    exec sh "$tmp" "$@"
+  fi
+  if [ -n "${Z2R_PROJECT_MIRROR_BASE:-}" ]      && z2r_fetch_url_to_file "$tmp" "$(z2r_mirror_url "z2r")"; then
     exec sh "$tmp" "$@"
   fi
   rm -f "$tmp"
