@@ -1046,7 +1046,7 @@ ports_manage() {
   done
 }
 
-Z2R_BACKUP_DIR="/opt/zator_backup"
+Z2R_BACKUP_DIR="${Z2R_BACKUP_DIR:-/opt/zator_backup}"
 
 z2r_backup_state_files() {
   cat <<'EOF'
@@ -1068,8 +1068,14 @@ EOF
   # locked.tsv (только последний — историю ротация хранит в cache/supersweep)
   local ss_dir ss_newest
   ss_dir="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/orchestra/supersweep"
-  ss_newest="$(ls -1t "$ss_dir"/supersweep-*.tar 2>/dev/null | head -n1)"
-  [ -n "$ss_newest" ] && printf 'extra_strats/cache/orchestra/supersweep/%s\n' "$(basename "$ss_newest")"
+  # || true внутри подстановки: ls на пустом каталоге даёт rc=2, под pipefail
+  # (смоуки/WebUI) убивал бы присваивание
+  ss_newest="$( { ls -1t "$ss_dir"/supersweep-*.tar 2>/dev/null || true; } | head -n1)"
+  # if вместо «&& ...»: на свежей установке без супер-свип-архивов андр-лист
+  # короткозамыкался rc=1 и под set -e убивал меню при создании бэкапа (п.21)
+  if [ -n "$ss_newest" ]; then
+    printf 'extra_strats/cache/orchestra/supersweep/%s\n' "$(basename "$ss_newest")"
+  fi
   return 0
 }
 
@@ -1161,14 +1167,14 @@ backup_create_core() {
   rm -rf "$stage"
   mkdir -p "$stage" || return 1
 
-  if [ -f /opt/zapret2/config ]; then
-    cp -f /opt/zapret2/config "$stage/config" || { rm -rf "$stage" "$tmp_list"; return 1; }
+  if [ -f "${ZAPRET2_ROOT:-/opt/zapret2}/config" ]; then
+    cp -f "${ZAPRET2_ROOT:-/opt/zapret2}/config" "$stage/config" || { rm -rf "$stage" "$tmp_list"; return 1; }
   fi
 
   z2r_backup_state_files > "$tmp_list"
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
-    src="/opt/zator/$rel"
+    src="${ZATOR_ROOT:-/opt/zator}/$rel"
     [ -f "$src" ] || continue
     mkdir -p "$stage/$(dirname "$rel")"
     cp -f "$src" "$stage/$rel" || { rm -rf "$stage" "$tmp_list"; return 1; }
@@ -1878,7 +1884,7 @@ menu_action_backup_restore() {
     [ -n "$rel" ] || continue
     src="$restore_dir/$rel"
     [ -f "$src" ] || continue
-    dst="/opt/zator/$rel"
+    dst="${ZATOR_ROOT:-/opt/zator}/$rel"
     mkdir -p "$(dirname "$dst")"
     if ! cp -f "$src" "$dst"; then
       rm -rf "$restore_dir" "$tmp_list"
@@ -1893,7 +1899,7 @@ menu_action_backup_restore() {
   # (номера могли сместиться между бэкапом и текущим конфигом; локи ремапятся).
   if [ -f "/opt/zator/extra_strats/cache/orchestra/custom_strategies.tsv" ] \
      && type custom_strategies_apply_file >/dev/null 2>&1; then
-    if custom_strategies_apply_file /opt/zapret2/config; then
+    if custom_strategies_apply_file "${ZAPRET2_ROOT:-/opt/zapret2}/config"; then
       echo -e "${green}Кастомные стратегии восстановлены в конфиг (рестарт применит).${plain}"
     else
       echo -e "${yellow}Кастомные стратегии не переинжектились — примените вручную (п.1 -> 14 -> 6).${plain}"
@@ -1902,7 +1908,7 @@ menu_action_backup_restore() {
 
   # Выбор блобов восстановлен из blob_files.tsv — возвращаем его в живой config.
   if type blob_files_apply >/dev/null 2>&1; then
-    blob_files_apply /opt/zapret2/config && \
+    blob_files_apply "${ZAPRET2_ROOT:-/opt/zapret2}/config" && \
       echo -e "${green}Выбор блобов восстановлен в конфиг (рестарт применит).${plain}"
   fi
 

@@ -285,6 +285,43 @@ custom_strategies_apply_file "$CFG" 2>/dev/null || fail "apply без TSV: rc!=0
 [ "$(grep -c '^#Z2R_CUSTOM_' "$CFG")" = "10" ] || fail "apply без TSV: маркеры должны остаться пустыми"
 [ ! -f "$CUSTOM_STRATS_FILE" ] || fail "apply без TSV не должен создавать TSV"
 
+# --- 9a. Бэкап-раунд: TSV едут в архив и возвращаются в конфиг ----------------
+# Живая регрессия проды: кастомные стратегии и выбор блобов обязаны переживать
+# «бэкап -> катастрофа -> восстановление состояния -> ре-инжект в конфиг».
+export Z2R_BACKUP_DIR="$TMP_DIR/backups"
+mkdir -p "$Z2R_BACKUP_DIR"
+rm -f "$CUSTOM_STRATS_FILE"
+custom_strategies_add p5 'fake:blob=quic_google:repeats=9:out_range=-d2' 'бекап-тест' >/dev/null   || fail "add для бэкап-раунда"
+blob_files_set maxru wg_initial_fake_2.bin || fail "blob_files_set для раунда"
+custom_strategies_apply_file "$CFG" 2>/dev/null || fail "apply перед бэкапом"
+grep -qE 'fake:blob=quic_google:repeats=9:out_range=-d2:strategy=33' "$CFG"   || fail "кастом в конфиге перед бэкапом"
+backup_create_core >/dev/null || fail "backup_create_core"
+ARCHIVE="$(ls -1t "$Z2R_BACKUP_DIR"/z2r_backup_*.tar 2>/dev/null | head -n1)"
+[ -n "$ARCHIVE" ] || fail "архив бэкапа не создан"
+TAR_BIN="$(z2r_pick_tar)"
+"$TAR_BIN" -tf "$ARCHIVE" | grep -q 'custom_strategies.tsv' || fail "custom_strategies.tsv не в архиве"
+"$TAR_BIN" -tf "$ARCHIVE" | grep -q 'blob_files.tsv' || fail "blob_files.tsv не в архиве"
+"$TAR_BIN" -tf "$ARCHIVE" | grep -qE '\./config$' || fail "config не в архиве"
+# катастрофа: TSV снесены, конфиг снова эталонный
+rm -f "$CUSTOM_STRATS_FILE" "$ORCH_BLOB_FILES_TSV"
+grep -vE 'quic_google:repeats=9' "$CFG" > "$TMP_DIR/cfg.nocustom" && cp -f "$TMP_DIR/cfg.nocustom" "$CFG"
+# восстановление состояния циклом из menu_action_backup_restore + ре-инжект хуками
+RD="$TMP_DIR/rd"; mkdir -p "$RD"
+"$TAR_BIN" -xf "$ARCHIVE" -C "$RD" || fail "распаковка архива"
+z2r_backup_state_files > "$TMP_DIR/state.list"
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  [ -f "$RD/$rel" ] || continue
+  mkdir -p "$ZATOR_ROOT/$(dirname "$rel")"
+  cp -f "$RD/$rel" "$ZATOR_ROOT/$rel" || fail "восстановление $rel"
+done < "$TMP_DIR/state.list"
+[ -f "$CUSTOM_STRATS_FILE" ] || fail "custom_strategies.tsv не восстановлен"
+custom_strategies_apply_file "$CFG" 2>/dev/null || fail "ре-инжект после восстановления"
+blob_files_apply "$CFG" || fail "blob_files_apply после восстановления"
+grep -qE 'fake:blob=quic_google:repeats=9:out_range=-d2:strategy=33' "$CFG"   || fail "кастом не вернулся в конфиг после восстановления"
+[ "$(blob_files_get maxru)" = "wg_initial_fake_2.bin" ]   || fail "выбор блоба не восстановился: $(blob_files_get maxru)"
+grep -q -- '--blob=maxru:@/opt/zator/files/fake/wg_initial_fake_2.bin' "$CFG"   || fail "блоб не вернулся в декларацию конфига"
+
 # --- 10. Контракт диалогов: stdout — только ответ (меню ловит $(...)) -------
 
 clear() { :; }  # диалоги зовут clear -x; в песочнице — заглушка
