@@ -1211,9 +1211,9 @@ flowoffload_submenu() {
           3) val="none" ;;
           4) val="donttouch" ;;
         esac
-        config_set_var /opt/zapret2/config FLOWOFFLOAD "$val"
-        /opt/zapret2/install_prereq.sh
-        z2r_service_action restart
+        config_set_var /opt/zapret2/config FLOWOFFLOAD "$val" || echo -e "${red}Не удалось записать FLOWOFFLOAD в config.${plain}"
+        /opt/zapret2/install_prereq.sh || echo -e "${yellow}install_prereq.sh вернул ошибку (сеть/пакетчик) — продолжаю.${plain}"
+        z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
         echo -e "${green}FLOWOFFLOAD=$val применён.${plain}"
         pause_enter
         ;;
@@ -1229,7 +1229,10 @@ flowoffload_submenu() {
 
 fwtype_submenu() {
   local cfg cur target nft_state ipt_state
-  cfg="$(get_config_file)"
+  if ! cfg="$(get_config_file)"; then
+    echo -e "${red}Не найден config/config.default — сначала установите zapret2 (п.5).${plain}"
+    return 0
+  fi
 
   while true; do
     clear -x
@@ -1270,7 +1273,7 @@ fwtype_submenu() {
     case "$ans" in
       "1")
         if [ -n "$target" ]; then
-          fwtype_apply "$target"
+          fwtype_apply "$target" || true
           pause_enter
         else
           ui_invalid_input
@@ -1310,12 +1313,12 @@ tcp443_submenu() {
             pause_enter
             continue
           fi
-          z2r_service_action restart
+          z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
           echo -e "${green}Выполнена команда перезапуска zapret. ${yellow}Безразборный режим активирован на $answer_bezr стратегии для TCP-443. Проверка доступа к meduza.io${plain}"
           check_access_list
         else
-          config_tcp443_set_strategy 0 "$cfg"
-          z2r_service_action restart
+          config_tcp443_set_strategy 0 "$cfg" || true
+          z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
           echo -e "${green}Выполнена команда перезапуска zapret${plain}"
           echo "Безразборный режим отключен"
         fi
@@ -2363,7 +2366,7 @@ advanced_settings_submenu() {
       current_value="недоступно"; current_color="yellow"
     fi
 
-    wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' /opt/zapret2/config 2>/dev/null)"
+    wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' /opt/zapret2/config 2>/dev/null)" || wg_block=""
     if printf "%s\n" "$wg_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
       wg_value="выключено"; wg_color="red"
     elif printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard'; then
@@ -2372,7 +2375,7 @@ advanced_settings_submenu() {
       wg_value="недоступно"; wg_color="yellow"
     fi
 
-    quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' /opt/zapret2/config 2>/dev/null)"
+    quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' /opt/zapret2/config 2>/dev/null)" || quic_block=""
     if printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
       quic_value="включено"; quic_color="green"
     elif printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$'; then
@@ -2439,7 +2442,7 @@ advanced_settings_submenu() {
       "1")
         if menu_action_toggle_reasm_disable; then
           if pidof nfqws2 >/dev/null; then
-            z2r_service_action restart
+            z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
             echo -e "${green}zapret2 перезапущен для применения изменений.${plain}"
           fi
         fi
@@ -2528,40 +2531,111 @@ googlevideo_upload_local_manual() {
 }
 
 wssize_ramp_submenu() {
-  local cfg=/opt/zapret2/config enabled mode scale ans new_enabled new_mode new_scale count
+  local cfg=/opt/zapret2/config enabled mode scale count ans
+  local new_enabled new_mode new_scale
   [ -f "$cfg" ] || { echo -e "${red}Config не найден${plain}"; pause_enter; return 1; }
   while true; do
-    enabled="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE)"; [ "$enabled" = 1 ] || enabled=0
-    mode="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE)"; [ -n "$mode" ] || mode=full
-    scale="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE)"; [ -n "$scale" ] || scale=1
+    enabled="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE)" || enabled=""
+    [ "$enabled" = 1 ] || enabled=0
+    mode="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE)" || mode=""
+    [ -n "$mode" ] || mode=full
+    scale="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE)" || scale=""
+    [ -n "$scale" ] || scale=1
     count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
     clear -x
-    echo -e "${cyan}--- Экспериментальный wssize_ramp ---${plain}"
-    echo "Состояние: $([ "$enabled" = 1 ] && echo включен || echo выключен); Googlevideo IP: $count; режим: $mode; scale: $scale"
-    echo "1. Включить/выключить"
-    echo "2. Режим: Full/Lite"
-    echo "3. Scale (0–14)"
-    echo "0. Назад"
-    read -r -p "Ваш выбор: " ans || return
+    echo -e "${cyan}--- Экспериментальный wssize_ramp (Googlevideo) ---${plain}"
+    echo ""
+    echo -e "${yellow}Зажимает приёмное окно TCP на рукопожатиях к googlevideo: сервер${plain}"
+    echo -e "${yellow}первые секунды шлёт мелкие TLS-записи, которые DPI не может собрать${plain}"
+    echo -e "${yellow}в узнаваемый поток. Работает по списку IP (сейчас: ${plain}${green}${count}${yellow}).${plain}"
+    echo ""
+    if [ "$enabled" = 1 ]; then
+      submenu_status_item "1" "Включить/выключить" "включен" green
+    else
+      submenu_status_item "1" "Включить/выключить" "выключен" red
+    fi
+    submenu_status_item "2" "Режим после расхождения соединения" "$mode" green
+    submenu_status_item "3" "Scale — насколько зажимать окно (0-14)" "$scale" green
+    echo ""
+    submenu_item "0" "Назад"
+    echo ""
+    read -re -p "Ваш выбор: " ans || ans=""
     new_enabled="$enabled"; new_mode="$mode"; new_scale="$scale"
     case "$ans" in
-      1) [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
-      2) read -r -p "Режим (full/lite): " new_mode || return ;;
-      3) read -r -p "Scale (0–14): " new_scale || return ;;
-      0|"") return ;;
+      "1") [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
+      "2") new_mode="$(_wssize_ramp_ask_mode "$mode")" ;;
+      "3") new_scale="$(_wssize_ramp_ask_scale "$scale")" ;;
+      "0"|"") return ;;
       *) ui_invalid_input; continue ;;
     esac
+    [ -n "$new_mode" ] || { new_mode="$mode"; continue; }
+    [ -n "$new_scale" ] || { new_scale="$scale"; continue; }
     if [ "$new_enabled" = 1 ] && [ ! -s /opt/zator/lua/wssize-ramp.lua ]; then
       echo -e "${red}Нет /opt/zator/lua/wssize-ramp.lua; обновите zator через меню 5.${plain}"; pause_enter; continue
     fi
     if [ "$new_enabled" = 1 ]; then googlevideo_ips_update || true; fi
     if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_mode" "$new_scale"; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}Настройки wssize_ramp применены.${plain}"
     else
-      echo -e "${red}Проверьте IPv4, режим full/lite и scale 0–14. Конфигурация не применена.${plain}"
+      echo -e "${red}Проверьте режим full/lite и scale 0-14. Конфигурация не применена.${plain}"
     fi
     pause_enter
+  done
+}
+
+# Выбор режима: 1 = Full, 2 = Lite, 0 = отмена. stdout — new mode или "" (отмена).
+_wssize_ramp_ask_mode() {
+  local cur="$1" choice
+  while true; do
+    clear -x >&2
+    echo -e "${cyan}--- wssize_ramp: режим работы ---${plain}" >&2
+    echo "" >&2
+    submenu_status_item "" "Текущий режим" "$cur" green >&2
+    echo "" >&2
+    submenu_item "1" "Full — после расхождения окно TCP возвращается к норме" >&2
+    submenu_item "2" "Lite — после расхождения поток вообще не трогается" >&2
+    submenu_item "0" "Отмена" >&2
+    echo "" >&2
+    echo -e "${yellow}Full: скорость полностью восстанавливается — зажим действует только${plain}" >&2
+    echo -e "${yellow}в начале соединения (до получения open байт от сервера). Рекомендуется.${plain}" >&2
+    echo -e "${yellow}Lite: окно остаётся зажатым до конца соединения — вмешательство${plain}" >&2
+    echo -e "${yellow}минимально, но скорость загрузки видео остаётся заниженной.${plain}" >&2
+    echo "" >&2
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in
+      "1") echo full; return 0 ;;
+      "2") echo lite; return 0 ;;
+      "0"|"") return 1 ;;
+      *) ui_invalid_input ;;
+    esac
+  done
+}
+
+# Ввод scale 0-14 с валидацией. stdout — новое значение или "" (отмена).
+_wssize_ramp_ask_scale() {
+  local cur="$1" val
+  while true; do
+    clear -x >&2
+    echo -e "${cyan}--- wssize_ramp: scale ---${plain}" >&2
+    echo "" >&2
+    submenu_status_item "" "Текущий scale" "$cur" green >&2
+    echo "" >&2
+    echo -e "${yellow}Scale задаёт, до какого значения подменяется window scale в SYN:${plain}" >&2
+    echo -e "${yellow}эффективное окно делится на 2^(штатный scale клиента - выбранный).${plain}" >&2
+    echo -e "${yellow}Меньше значение — сильнее зажим: записи сервера мельче, DPI труднее${plain}" >&2
+    echo -e "${yellow}собрать поток, но соединение дольше разгоняется. Больше — мягче.${plain}" >&2
+    echo -e "${yellow}Эффект не выше заявленного самим клиентом scale (обычно 7).${plain}" >&2
+    echo "" >&2
+    read -re -p "Новый scale 0-14 (Enter - отмена): " val || val=""
+    case "$val" in
+      "") return 1 ;;
+    esac
+    if ui_is_number_in_range "$val" 0 14; then
+      echo "$val"
+      return 0
+    fi
+    ui_invalid_input >&2
   done
 }
 
