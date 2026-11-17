@@ -958,6 +958,7 @@ strategies_submenu() {
     submenu_item "11" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "12" "Суперавтопрогон: запуск / остановка"
     submenu_item "13" "Суперавтопрогон: прогресс и последний результат"
+    submenu_item "14" "Кастомные стратегии пользователя"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1057,6 +1058,14 @@ strategies_submenu() {
         ;;
       "13")
         supersweep_status_menu
+        ;;
+      "14")
+        if type custom_strategies_submenu >/dev/null 2>&1; then
+          custom_strategies_submenu
+        else
+          echo -e "${yellow}Модуль кастомных стратегий недоступен (обновите zator: п.5).${plain}"
+          pause_enter
+        fi
         ;;
       "0"|"")
         ORCH_ACTIVE_SCOPE="default"

@@ -82,6 +82,12 @@ config_apply_from_default() {
   profile_apply_all "$root/config.default"
   config_fwtype_apply_default "$root/config.default" || return 1
 
+  # Кастомные пользовательские стратегии: заново инжектим в свежий эталон,
+  # чтобы они пережили применение config.default (локи ремапятся сами).
+  if type custom_strategies_apply_file >/dev/null 2>&1; then
+    custom_strategies_apply_file "$root/config.default" || true
+  fi
+
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then
     config_client_scope_apply "$old_scope_cfg" "$root/config" || true
@@ -1029,6 +1035,7 @@ extra_strats/cache/orchestra/blob_override.tsv
 extra_strats/cache/orchestra/sni_override.tsv
 extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv
+extra_strats/cache/orchestra/custom_strategies.tsv
 EOF
   # самый свежий архив результатов суперавтопрогона едет в бэкапе вместе с
   # locked.tsv (только последний — историю ротация хранит в cache/supersweep)
@@ -1854,6 +1861,17 @@ menu_action_backup_restore() {
   done < "$tmp_list"
   rm -f "$tmp_list"
   echo -e "${green}Списки доменов и номера стратегий восстановлены.${plain}"
+
+  # Кастомные стратегии восстановлены из TSV — переинжектим их в живой config
+  # (номера могли сместиться между бэкапом и текущим конфигом; локи ремапятся).
+  if [ -f "/opt/zator/extra_strats/cache/orchestra/custom_strategies.tsv" ] \
+     && type custom_strategies_apply_file >/dev/null 2>&1; then
+    if custom_strategies_apply_file /opt/zapret2/config; then
+      echo -e "${green}Кастомные стратегии восстановлены в конфиг (рестарт применит).${plain}"
+    else
+      echo -e "${yellow}Кастомные стратегии не переинжектились — примените вручную (п.1 -> 14 -> 6).${plain}"
+    fi
+  fi
 
   rm -rf "$restore_dir"
 

@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh"
 
 # Release assets are separate from the deploy tar so each router stores only
 # its own static binary. This is optional: the central Googlevideo feed works
@@ -3010,6 +3010,13 @@ while true; do
  fi
  
  profile_apply_all "$ZAPRET2_ROOT/config.default" || echo -e "${yellow}Не удалось применить сохранённые локи профилей — продолжаю.${plain}"
+
+ # Кастомные пользовательские стратегии переживают установку/обновление:
+ # свежий config.default не несёт их, инжектим из TSV до создания живого config.
+ if type custom_strategies_apply_file >/dev/null 2>&1; then
+  custom_strategies_apply_file "$ZAPRET2_ROOT/config.default" \
+    || echo -e "${yellow}Кастомные стратегии не применились — продолжаю без них.${plain}"
+ fi
 
  #Для x-wrt
  if [[ "$release" == "x-wrt" ]]; then
