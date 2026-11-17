@@ -426,6 +426,10 @@ source "$LIB_DIR/config.sh"
 # Общий API ручных локов стратегий
 source "$LIB_DIR/orchestra_state.sh"
 
+# Кастомные пользовательские стратегии (п.1 -> 14): после orchestra_state —
+# нужен ORCH_DIR/ORCH_LOCK_FILE; сама либа опциональна для подменю (guard по type).
+source "$LIB_DIR/custom_strategies.sh"
+
 # База подсказок по стратегиям (скачивание + вывод подсказки по провайдеру)
 # Функции: update_recommendations, show_hint
 source "$LIB_DIR/recommendations.sh"

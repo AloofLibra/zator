@@ -65,6 +65,10 @@ LOCKED_LUA_SRC="$(tr -d '\r' < "$REPO_DIR/orchestra/locked.lua")"
 
 assert_contains "$Z2R_SRC" 'Z2R_LIB_FILES=.*custom_strategies\.sh' \
   "z2r.sh не source-ит custom_strategies.sh"
+# Z2R_LIB_FILES проверяет только наличие файлов: сами либы сорсятся явными
+# source-строками — без неё пункт 14 падает в «модуль недоступен» (живой кейс ВМ).
+assert_contains "$Z2R_SRC" '^source "\$LIB_DIR/custom_strategies\.sh"' \
+  "z2r.sh нет явного source custom_strategies.sh (п.14 будет «модуль недоступен»)"
 for blk in TPL P4 P5 P6 P7; do
   assert_contains "$CONFIG_SRC" "^#Z2R_CUSTOM_${blk}_BEGIN" "config.default нет маркера BEGIN $blk"
   assert_contains "$CONFIG_SRC" "^#Z2R_CUSTOM_${blk}_END" "config.default нет маркера END $blk"
