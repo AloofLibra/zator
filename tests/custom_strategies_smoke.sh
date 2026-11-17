@@ -285,4 +285,42 @@ custom_strategies_apply_file "$CFG" 2>/dev/null || fail "apply без TSV: rc!=0
 [ "$(grep -c '^#Z2R_CUSTOM_' "$CFG")" = "10" ] || fail "apply без TSV: маркеры должны остаться пустыми"
 [ ! -f "$CUSTOM_STRATS_FILE" ] || fail "apply без TSV не должен создавать TSV"
 
+# --- 10. Контракт диалогов: stdout — только ответ (меню ловит $(...)) -------
+
+clear() { :; }  # диалоги зовут clear -x; в песочнице — заглушка
+# цвета определены в z2r.sh (не в ui.sh) — в песочнице это пустые заглушки
+cyan=""; plain=""; green=""; red=""; yellow=""; Fcyan=""; Fyellow=""; Fgreen=""; Fpink=""
+
+out="$(printf '1
+' | _custom_pick_block 2>/dev/null)" || out=""
+[ "$out" = "tpl" ] || fail "pick_block: stdout должен быть только 'tpl' (получено: $out)"
+out="$(printf '0
+' | _custom_pick_block 2>/dev/null)" || out=""
+[ -z "$out" ] || fail "pick_block: отмена должна давать пустой stdout (получено: $out)"
+out="$(printf '3
+' | _custom_pick_block 2>/dev/null)" || out=""
+[ "$out" = "p5" ] || fail "pick_block: выбор 3 должен давать 'p5' (получено: $out)"
+
+_CUSTOM_BLOCK=p5
+out="$(printf '%s
+' 'fake:blob=quic_google:repeats=7:out_range=-d10' | _custom_ask_spec 2>/dev/null)" || out=""
+[ "$out" = "fake:blob=quic_google:repeats=7:out_range=-d10" ]   || fail "ask_spec: stdout должен быть только spec (получено: $out)"
+
+_CUSTOM_BLOCK=tpl
+_combo_in='--lua-desync=multisplit:blob=maxru:tcp_md5:pos=2:nodrop:strategy=10 --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3:strategy=10'
+_combo_want='multisplit:blob=maxru:tcp_md5:pos=2:nodrop --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3'
+out="$(printf '%s
+' "$_combo_in" | _custom_ask_spec 2>/dev/null)" || out=""
+[ "$out" = "$_combo_want" ]   || fail "ask_spec: комбо-строка из конфига должна срезать :strategy=N (получено: $out)"
+
+out="$(printf '
+' | _custom_ask_spec 2>/dev/null)" || out=""
+[ -z "$out" ] || fail "ask_spec: отмена должна давать пустой stdout"
+out="$(printf '%s
+%s
+' 'badprim:x=1' '' | _custom_ask_spec 2>/dev/null)" || out=""
+[ -z "$out" ] || fail "ask_spec: кривая строка + отмена должны давать пустой stdout"
+
+unset -f clear
+
 echo "custom strategies smoke ok"

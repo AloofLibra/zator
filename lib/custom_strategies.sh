@@ -811,49 +811,89 @@ custom_strategies_submenu() {
   done
 }
 
+# Выбор блока: stdout — ТОЛЬКО имя блока (меню ловит $(...)), весь рендер —
+# в stderr. Отмена (0/Enter/EOF) — return 0 с пустым stdout (дом-стиль orch_ask_*).
 _custom_pick_block() {
-  local choice i=1 b label
-  echo -e "${yellow}Куда дописать:${plain}"
-  while IFS="$(printf '\t')" read -r b label _rest; do
-    submenu_item "$i" "$b — $label"
-    i=$((i + 1))
-  done < <(custom_strategies_blocks)
-  submenu_item "0" "Отмена"
-  echo ""
-  read -re -p "Ваш выбор: " choice || choice=""
-  [ -z "$choice" ] && return 1
-  local n=0
-  while IFS="$(printf '\t')" read -r b _rest; do
-    n=$((n + 1))
-    [ "$n" = "$choice" ] && { echo "$b"; return 0; }
-  done < <(custom_strategies_blocks)
-  return 1
+  local choice i b label
+  while true; do
+    i=1
+    clear -x >&2
+    echo -e "${cyan}--- Куда дописать стратегию ---${plain}" >&2
+    echo "" >&2
+    while IFS="$(printf '\t')" read -r b label _rest; do
+      submenu_item "$i" "$b — $label" >&2
+      i=$((i + 1))
+    done < <(custom_strategies_blocks)
+    submenu_item "0" "Отмена" >&2
+    echo "" >&2
+    read -re -p "Ваш выбор: " choice || choice=""
+    [ -z "$choice" ] && return 0
+    local n=0
+    while IFS="$(printf '\t')" read -r b _rest; do
+      n=$((n + 1))
+      if [ "$n" = "$choice" ]; then echo "$b"; return 0; fi
+    done < <(custom_strategies_blocks)
+    ui_invalid_input >&2
+  done
 }
 
+# Ввод spec с экраном-подсказкой и циклом валидации. stdout — ТОЛЬКО
+# канонический spec (рендер в stderr), отмена — return 0 с пустым stdout.
+# Понимает: одиночную группу; комбо из нескольких групп, разделённых
+# « --lua-desync=» (всем группам присвоится один номер); готовую строку из
+# конфига — префиксы «--lua-desync=» и хвостовые «:strategy=N» срезаются.
 _custom_ask_spec() {
-  # stdout — канонический spec; цикл валидации, пустой ввод/0 — отмена
-  local def="${1:-}" input spec
+  local def="${1:-}" input spec transport example combo
+  transport="$(custom_strategies_block_transport "$_CUSTOM_BLOCK")"
+  if [ "$transport" = "udp" ]; then
+    example='fake:blob=quic_google:ipfrag:ipfrag_pos_udp=8:ipfrag_disorder:repeats=6:out_range=-d10'
+    combo='send:repeats=2:ip_autottl=1,3-20 --lua-desync=fake:blob=0x00:repeats=4:out_range=-d10'
+  else
+    example='fake:blob=maxru:tcp_md5:pos=2:repeats=2'
+    combo='multisplit:blob=maxru:tcp_md5:pos=2:nodrop --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3'
+  fi
   while true; do
-    echo -e "${yellow}Стратегия без номера (или полная строка --lua-desync=...:strategy=N):${plain}"
-    [ -n "$def" ] && echo -e "${cyan}$def${plain}"
-    read -re -p "> " input || return 1
-    [ -z "$input" ] && return 1
+    clear -x >&2
+    echo -e "${cyan}--- Стратегия для блока ${_CUSTOM_BLOCK} ---${plain}" >&2
+    echo "" >&2
+    if [ -n "$def" ]; then
+      echo -e "${yellow}Текущая: ${plain}${cyan}${def}${plain}" >&2
+      echo "" >&2
+    fi
+    echo -e "${yellow}Как вводить:${plain}" >&2
+    echo -e "${yellow}  • одна группа desync (см. пример ниже);${plain}" >&2
+    echo -e "${yellow}  • комбо — несколько групп через « --lua-desync=», всем им${plain}" >&2
+    echo -e "${yellow}    присвоится ОДИН номер стратегии (как строкам 20/21 конфига);${plain}" >&2
+    echo -e "${yellow}  • можно вставить готовую строку из конфига целиком —${plain}" >&2
+    echo -e "${yellow}    «--lua-desync=» и «:strategy=N» срежутся автоматически.${plain}" >&2
+    echo "" >&2
+    echo -e "${yellow}Пример (${transport}):${plain}" >&2
+    echo -e "${cyan}${example}${plain}" >&2
+    echo -e "${yellow}Пример комбо:${plain}" >&2
+    echo -e "${cyan}${combo}${plain}" >&2
+    echo "" >&2
+    read -re -p "Стратегия (Enter - отмена): " input || input=""
+    [ -z "$input" ] && return 0
     spec="$(custom_strategies_normalize "$input")" || {
-      echo -e "${red}Не удалось разобрать строку (проверьте :strategy=).${plain}"; continue; }
+      echo -e "${red}Не удалось разобрать строку: «strategy=» допустим только в конце групп.${plain}" >&2
+      continue
+    }
     if custom_strategies_validate "$_CUSTOM_BLOCK" "$spec"; then
       echo "$spec"
       return 0
-    else
-      echo -e "${red}Стратегия не прошла валидацию — см. ошибки выше.${plain}"
     fi
+    echo -e "${red}Стратегия не прошла валидацию — исправьте по сообщениям выше.${plain}" >&2
+    read -re -p "Enter — вернуться к вводу: " _retry || _retry=""
   done
 }
 
 _custom_add_flow() {
   local block spec comment id
-  block="$(_custom_pick_block)" || { echo "Отменено."; pause_enter; return; }
+  block="$(_custom_pick_block)" || block=""
+  [ -n "$block" ] || { echo "Отменено."; pause_enter; return; }
   _CUSTOM_BLOCK="$block"
-  spec="$(_custom_ask_spec)" || { echo "Отменено."; pause_enter; return; }
+  spec="$(_custom_ask_spec)" || spec=""
+  [ -n "$spec" ] || { echo "Отменено."; pause_enter; return; }
   read -re -p "Комментарий (Enter - пусто): " comment || comment=""
   if id="$(custom_strategies_add "$block" "$spec" "$comment")"; then
     echo -e "${green}Добавлено: ID $id, блок $block.${plain}"
@@ -872,9 +912,11 @@ _custom_edit_flow() {
   [ -n "$row" ] || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }
   IFS="$(printf '\t')" read -r _id block spec enabled comment _assigned <<<"$row"
   echo -e "${yellow}Текущий блок: ${plain}${green}$block${plain}"
-  local nb; nb="$(_custom_pick_block)" || nb="$block"
+  local nb; nb="$(_custom_pick_block)" || nb=""
+  [ -n "$nb" ] || nb="$block"
   _CUSTOM_BLOCK="$nb"
-  local ns; ns="$(_custom_ask_spec "$spec")" || ns="$spec"
+  local ns; ns="$(_custom_ask_spec "$spec")" || ns=""
+  [ -n "$ns" ] || ns="$spec"
   read -re -p "Комментарий (Enter - прежний): " comment || comment="$comment"
   [ -z "$comment" ] && comment="$(printf '%s' "$row" | awk -F '\t' '{print $5}')"
   if custom_strategies_replace "$id" "$nb" "$ns" "$enabled" "$comment"; then
@@ -887,9 +929,12 @@ _custom_edit_flow() {
 
 _custom_import_flow() {
   local block line spec ok=0 fail=0 tmpf="/tmp/z2r-custom-import.$$"
-  block="$(_custom_pick_block)" || { echo "Отменено."; pause_enter; return; }
+  block="$(_custom_pick_block)" || block=""
+  [ -n "$block" ] || { echo "Отменено."; pause_enter; return; }
   _CUSTOM_BLOCK="$block"
-  echo -e "${yellow}Вставьте строки (--lua-desync=...), по одной на запись. Пустая строка — конец.${plain}"
+  echo -e "${yellow}Вставьте строки --lua-desync=..., по одной на запись; номера :strategy=N${plain}"
+  echo -e "${yellow}срезутся сами. Комбо из нескольких групп в одной строке (разделитель${plain}"
+  echo -e "${yellow}« --lua-desync=») станет одной записью с одним номером. Пустая строка — конец.${plain}"
   : > "$tmpf"
   while IFS= read -re line; do
     [ -z "$line" ] && break
