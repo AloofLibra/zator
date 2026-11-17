@@ -2563,8 +2563,8 @@ wssize_ramp_submenu() {
     new_enabled="$enabled"; new_mode="$mode"; new_scale="$scale"
     case "$ans" in
       "1") [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
-      "2") new_mode="$(_wssize_ramp_ask_mode "$mode")" ;;
-      "3") new_scale="$(_wssize_ramp_ask_scale "$scale")" ;;
+      "2") new_mode="$(_wssize_ramp_ask_mode "$mode")" || new_mode="" ;;
+      "3") new_scale="$(_wssize_ramp_ask_scale "$scale")" || new_scale="" ;;
       "0"|"") return ;;
       *) ui_invalid_input; continue ;;
     esac
@@ -2606,7 +2606,7 @@ _wssize_ramp_ask_mode() {
     case "$choice" in
       "1") echo full; return 0 ;;
       "2") echo lite; return 0 ;;
-      "0"|"") return 1 ;;
+      "0"|"") return 0 ;;
       *) ui_invalid_input ;;
     esac
   done
@@ -2629,7 +2629,7 @@ _wssize_ramp_ask_scale() {
     echo "" >&2
     read -re -p "Новый scale 0-14 (Enter - отмена): " val || val=""
     case "$val" in
-      "") return 1 ;;
+      "") return 0 ;;
     esac
     if ui_is_number_in_range "$val" 0 14; then
       echo "$val"
