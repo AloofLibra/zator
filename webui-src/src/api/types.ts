@@ -251,6 +251,8 @@ export interface ApplyResult {
   provider?: string
   duplicate?: boolean
   check?: CheckPayload
+  // custom.cgi action=add: ID созданной записи
+  id?: number
 }
 
 export interface UpdateCheckResult {

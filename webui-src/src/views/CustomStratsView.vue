@@ -146,10 +146,13 @@ async function saveForm() {
   const targetId = editId.value
   try {
     await withBusy(wasEdit ? `custom-edit-${targetId}` : 'custom-add', async () => {
+      let newId: number | null = null
       if (wasEdit) {
         await customStrats.edit(String(targetId), formBlock.value, spec, formComment.value.trim())
       } else {
-        await customStrats.add(formBlock.value, spec, formComment.value.trim())
+        const payload = await customStrats.add(formBlock.value, spec, formComment.value.trim())
+        // Подсвечиваем именно созданную запись (она в конце списка), не первую.
+        newId = typeof payload?.id === 'number' ? payload.id : null
       }
       formOpen.value = false
       showToast(wasEdit
@@ -158,7 +161,8 @@ async function saveForm() {
       // Новая запись может не попасть под активный фильтр блока — сбрасываем.
       if (!wasEdit && filter.value && filter.value !== formBlock.value) filter.value = ''
       await load()
-      highlightRow(wasEdit ? (targetId as number) : (strategies.value[0]?.id ?? 0))
+      if (wasEdit) highlightRow(targetId as number)
+      else if (newId !== null) highlightRow(newId)
     })
   } catch (error) {
     formError.value = (error as Error).message
