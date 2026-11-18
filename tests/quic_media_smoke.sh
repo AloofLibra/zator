@@ -53,8 +53,8 @@ grep -q 'z2r_quic_probe_ua' lib/quic_media.sh \
   || fail "проводка: в quic_media.sh нет z2r_quic_probe_ua"
 ! grep -q 'z2r_media_ua' lib/quic_media.sh \
   || fail "проводка: h3-проба не должна использовать visionOS UA из youtube_media.sh"
-grep -q 'меню 5 предложит установку' lib/quic_media.sh \
-  || fail "проводка: подсказка меню 01 должна ссылаться на меню 5"
+grep -q 'Установка: п.5 -> п.11, либо п.1 -> Профиль 5' lib/quic_media.sh \
+  || fail "проводка: подсказка меню 01 должна называть оба пути установки (п.5 -> п.11 и п.1 -> Профиль 5)"
 
 # == 1. архитектура артефакта =========*
 printf '\177ELF\001\001' > "$TMP_DIR/elf-little"   # EI_DATA=1

@@ -903,7 +903,7 @@ z2r_quic_access_check() (
     type z2r_media_prepare >/dev/null 2>&1 || return 0
     local verdict gh
     if ! z2r_quic_curl_detect >/dev/null 2>&1; then
-        echo -e "${plain}QUIC-проверка недоступна: h3-curl не установлен (меню 5 предложит установку).${plain}"
+        echo -e "${plain}QUIC-проверка недоступна: h3-curl не установлен. Установка: п.5 -> п.11, либо п.1 -> Профиль 5 (автопрогон предложит скачать).${plain}"
         return 0
     fi
     # Проба берёт бинарь из Z2R_QUIC_CURL: пустое значение = curl из PATH
