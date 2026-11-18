@@ -314,7 +314,8 @@ async function applyToConfig() {
               <span class="chip">ID {{ item.id }}</span>
               <span class="chip">{{ item.block }}<template v-if="blockInfo(item.block)"> · {{ blockInfo(item.block)?.profiles }}</template></span>
               <span class="chip" :class="{ 'is-ok': item.enabled }">{{ item.enabled ? 'вкл' : 'выкл' }}</span>
-              <span class="chip custom-strat-num" :title="item.assigned ? 'номер последнего применения' : 'ещё не применялась'">
+              <span class="chip custom-strat-num" :class="{ 'is-pending': !item.assigned }"
+                :title="item.assigned ? 'номер последнего применения' : 'ещё не применялась — нажмите «Применить к конфигу»'">
                 № {{ item.assigned || '—' }}
               </span>
               <span v-if="item.comment" class="custom-strat-comment">{{ item.comment }}</span>
@@ -380,6 +381,12 @@ async function applyToConfig() {
 .custom-strat-head { display: flex; flex-wrap: wrap; gap: .35rem .4rem; align-items: baseline; }
 .custom-strat-comment { color: var(--muted); font-size: .82rem; }
 .custom-strat-num { font-variant-numeric: tabular-nums; }
+/* Не применённая запись: красный чип — «нажмите Применить к конфигу» */
+.custom-strat-num.is-pending {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
 .custom-strat-spec { display: block; margin: .45rem 0 .55rem; padding: .5rem .55rem; overflow-wrap: anywhere;
   white-space: pre-wrap; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); }
 .custom-strat-modal .modal-card { width: min(560px, 100%); }
