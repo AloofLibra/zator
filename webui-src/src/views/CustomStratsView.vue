@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { customStrats, fetchCustomStrats } from '../api/endpoints'
 import type { CustomBlockInfo, CustomStrategy } from '../api/types'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
@@ -8,7 +8,7 @@ import { showToast } from '../stores/toast'
 
 // Кастомные стратегии пользователя (CLI п.1 -> 14): CRUD + импорт + применение.
 // Валидация и нормализация живут на бэкенде (lib/custom_strategies.sh) —
-// панель только показывает текст ошибки валидатора под формой.
+// панель только показывает текст ошибки валидатора в модалке.
 const blocks = ref<CustomBlockInfo[]>([])
 const strategies = ref<CustomStrategy[]>([])
 const loaded = ref(false)
@@ -52,34 +52,86 @@ async function refresh() {
 
 onMounted(() => { refresh() })
 
-// --- форма добавления/редактирования -----------------------------------------
+// После сохранения: скролл к строке + рамка is-target (как у панелей меню),
+// чтобы пользователь видел, какая запись изменилась.
+function highlightRow(id: number) {
+  nextTick(() => {
+    const element = document.getElementById(`custom-strat-row-${id}`)
+    if (!element) return
+    element.scrollIntoView({ block: 'start' })
+    element.classList.add('is-target')
+    window.setTimeout(() => element.classList.remove('is-target'), 6100)
+  })
+}
+
+// --- модалка добавления/редактирования ----------------------------------------
 const formOpen = ref(false)
+const modalVisible = ref(false)
 const editId = ref<number | null>(null)
 const formBlock = ref('p5')
 const formSpec = ref('')
 const formComment = ref('')
 const formError = ref('')
+const specField = ref<HTMLTextAreaElement | null>(null)
+// Снимок строки на момент открытия: «Сохранить» активна только при отличиях.
+const original = ref({ block: '', spec: '', comment: '' })
+
+const formDirty = computed(() => {
+  const spec = formSpec.value.trim()
+  if (editId.value === null) return spec.length > 0
+  return formBlock.value !== original.value.block
+    || spec !== original.value.spec
+    || formComment.value.trim() !== original.value.comment
+})
+const saveDisabled = computed(() => busyActive.value || !formDirty.value)
 
 function openAdd() {
-  formOpen.value = true
   editId.value = null
   formBlock.value = filter.value || blocks.value[0]?.block || 'p5'
   formSpec.value = ''
   formComment.value = ''
   formError.value = ''
+  original.value = { block: formBlock.value, spec: '', comment: '' }
+  formOpen.value = true
 }
 
 function openEdit(item: CustomStrategy) {
-  formOpen.value = true
   editId.value = item.id
   formBlock.value = item.block
   formSpec.value = item.spec
   formComment.value = item.comment
   formError.value = ''
+  original.value = { block: item.block, spec: item.spec, comment: item.comment }
+  formOpen.value = true
 }
 
 function cancelForm() {
   formOpen.value = false
+  formError.value = ''
+}
+
+// Анимация появления (как ConfirmDialog) + фокус в поле стратегии.
+watch(formOpen, (value) => {
+  if (!value) return
+  modalVisible.value = false
+  requestAnimationFrame(() => {
+    modalVisible.value = true
+    nextTick(() => specField.value?.focus())
+  })
+})
+
+function onKeydown(event: KeyboardEvent) {
+  if (!formOpen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    cancelForm()
+  }
+}
+onMounted(() => document.addEventListener('keydown', onKeydown, true))
+onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true))
+
+function insertExample() {
+  formSpec.value = formExamples.value.single
   formError.value = ''
 }
 
@@ -90,18 +142,23 @@ async function saveForm() {
     return
   }
   formError.value = ''
+  const wasEdit = editId.value !== null
+  const targetId = editId.value
   try {
-    await withBusy(editId.value === null ? 'custom-add' : `custom-edit-${editId.value}`, async () => {
-      if (editId.value === null) {
-        await customStrats.add(formBlock.value, spec, formComment.value)
+    await withBusy(wasEdit ? `custom-edit-${targetId}` : 'custom-add', async () => {
+      if (wasEdit) {
+        await customStrats.edit(String(targetId), formBlock.value, spec, formComment.value.trim())
       } else {
-        await customStrats.edit(String(editId.value), formBlock.value, spec, formComment.value)
+        await customStrats.add(formBlock.value, spec, formComment.value.trim())
       }
       formOpen.value = false
-      showToast(editId.value === null
-        ? 'Добавлено. Примените к конфигу, чтобы стратегия получила номер.'
-        : 'Изменено. Номера будут переназначены при применении.')
+      showToast(wasEdit
+        ? `Запись ${targetId} изменена. Примените к конфигу для переназначения номеров.`
+        : 'Добавлено. Примените к конфигу, чтобы стратегия получила номер.')
+      // Новая запись может не попасть под активный фильтр блока — сбрасываем.
+      if (!wasEdit && filter.value && filter.value !== formBlock.value) filter.value = ''
       await load()
+      highlightRow(wasEdit ? (targetId as number) : (strategies.value[0]?.id ?? 0))
     })
   } catch (error) {
     formError.value = (error as Error).message
@@ -224,37 +281,6 @@ async function applyToConfig() {
             @click="openAdd">Добавить стратегию</button>
         </div>
 
-        <form id="custom-strat-form" v-if="formOpen" class="settings-form" @submit.prevent="saveForm">
-          <h3>{{ editId === null ? 'Новая стратегия' : `Изменение записи ${editId}` }}</h3>
-          <label>
-            <span>Блок (куда дописать)</span>
-            <select id="custom-strat-block" v-model="formBlock" :disabled="busyActive">
-              <option v-for="b in blocks" :key="b.block" :value="b.block">{{ b.block }} — {{ b.label }}</option>
-            </select>
-          </label>
-          <label>
-            <span>Стратегия (одна группа или комбо через « --lua-desync=»)</span>
-            <textarea id="custom-strat-spec" v-model="formSpec" rows="4" :disabled="busyActive"
-              placeholder="можно вставить готовую строку из конфига — --lua-desync= и :strategy=N срежутся"></textarea>
-          </label>
-          <div class="form-hint">
-            Пример: <code>{{ formExamples.single }}</code><br>
-            Пример комбо: <code>{{ formExamples.combo }}</code>
-          </div>
-          <label>
-            <span>Комментарий (необязательно)</span>
-            <input type="text" id="custom-strat-comment" v-model="formComment" :disabled="busyActive" maxlength="64">
-          </label>
-          <div v-if="formError" class="settings-alert" id="custom-strat-error">{{ formError }}</div>
-          <div class="card-actions">
-            <button type="submit" id="custom-strat-save" class="primary"
-              :class="{ 'is-busy': busyButton === (editId === null ? 'custom-add' : `custom-edit-${editId}`) }"
-              :disabled="busyActive">{{ editId === null ? 'Добавить' : 'Сохранить' }}</button>
-            <button type="button" id="custom-strat-cancel" class="ghost" :disabled="busyActive"
-              @click="cancelForm">Отмена</button>
-          </div>
-        </form>
-
         <details class="import-block" id="custom-import-block-details">
           <summary>Импорт готовых строк (по одной на запись)</summary>
           <label>
@@ -278,8 +304,8 @@ async function applyToConfig() {
           {{ strategies.length ? 'В выбранном блоке записей нет.' : 'Записей нет. Добавьте первую стратегию или импортируйте готовые строки.' }}
         </div>
         <ul class="domain-list" id="custom-strat-list">
-          <li v-for="item in filtered" :key="item.id" class="domain-row custom-strat-row"
-            :class="{ 'is-off': !item.enabled }">
+          <li v-for="item in filtered" :id="`custom-strat-row-${item.id}`" :key="item.id"
+            class="domain-row custom-strat-row" :class="{ 'is-off': !item.enabled }">
             <div class="custom-strat-head">
               <span class="chip">ID {{ item.id }}</span>
               <span class="chip">{{ item.block }}<template v-if="blockInfo(item.block)"> · {{ blockInfo(item.block)?.profiles }}</template></span>
@@ -301,16 +327,57 @@ async function applyToConfig() {
         </ul>
       </section>
     </template>
+
+    <!-- Модалка добавления/редактирования (как ConfirmDialog: Esc и клик по фону — отмена) -->
+    <div v-if="formOpen" :class="['modal-overlay', { 'is-visible': modalVisible }, 'custom-strat-modal']"
+      role="dialog" aria-modal="true" @click.self="cancelForm">
+      <form id="custom-strat-form" class="modal-card settings-form" @submit.prevent="saveForm">
+        <h3 class="modal-title">{{ editId === null ? 'Новая стратегия' : `Запись ${editId} — изменение` }}</h3>
+        <label>
+          <span>Блок (куда дописать)</span>
+          <select id="custom-strat-block" v-model="formBlock" :disabled="busyActive">
+            <option v-for="b in blocks" :key="b.block" :value="b.block">{{ b.block }} — {{ b.label }}</option>
+          </select>
+        </label>
+        <label>
+          <span>Стратегия (одна группа или комбо через « --lua-desync=»)</span>
+          <textarea id="custom-strat-spec" ref="specField" v-model="formSpec" rows="4" :disabled="busyActive"
+            placeholder="можно вставить готовую строку из конфига — --lua-desync= и :strategy=N срежутся"></textarea>
+        </label>
+        <div class="form-hint">
+          Пример: <code>{{ formExamples.single }}</code>
+          <button type="button" class="ghost custom-strat-example" :disabled="busyActive"
+            @click="insertExample">Вставить пример</button><br>
+          Пример комбо: <code>{{ formExamples.combo }}</code>
+        </div>
+        <label>
+          <span>Комментарий (необязательно)</span>
+          <input type="text" id="custom-strat-comment" v-model="formComment" :disabled="busyActive" maxlength="64">
+        </label>
+        <div v-if="formError" class="settings-alert" id="custom-strat-error">{{ formError }}</div>
+        <div class="modal-actions">
+          <button type="button" id="custom-strat-cancel" class="ghost modal-cancel" :disabled="busyActive"
+            @click="cancelForm">Отмена</button>
+          <button type="submit" id="custom-strat-save" class="primary"
+            :class="{ 'is-busy': busyButton === (editId === null ? 'custom-add' : `custom-edit-${editId}`) }"
+            :disabled="saveDisabled" :title="saveDisabled
+              ? (editId === null ? 'Введите стратегию' : 'Изменений нет') : ''">
+            {{ editId === null ? 'Добавить' : 'Сохранить' }}
+          </button>
+        </div>
+      </form>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.custom-strat-row { display: block; }
+.custom-strat-row { display: block; scroll-margin-top: 18px; }
 .custom-strat-row.is-off { opacity: .62; }
 .custom-strat-head { display: flex; flex-wrap: wrap; gap: .35rem .4rem; align-items: baseline; }
 .custom-strat-comment { color: var(--muted); font-size: .82rem; }
 .custom-strat-num { font-variant-numeric: tabular-nums; }
 .custom-strat-spec { display: block; margin: .45rem 0 .55rem; padding: .5rem .55rem; overflow-wrap: anywhere;
   white-space: pre-wrap; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); }
-#custom-import-errors { margin: .5rem 0 0; padding-left: 1.2rem; font-size: .8rem; }
+.custom-strat-modal .modal-card { width: min(560px, 100%); }
+.custom-strat-example { flex: 0 0 auto; padding: .15rem .5rem; font-size: .75rem; margin-left: .4rem; }
 </style>

@@ -213,7 +213,8 @@ a.stat-card.is-link:focus-visible {
 }
 
 .panel.is-target,
-.profile-card.is-target {
+.profile-card.is-target,
+.custom-strat-row.is-target {
   animation: z2r-panel-target 6s ease-out forwards;
 }
 
