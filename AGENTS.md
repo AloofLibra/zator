@@ -582,3 +582,4 @@ supersweep smoke ok
 
 - The repository content is largely Russian UTF-8 text. On Windows PowerShell it may display as mojibake if the console encoding is not UTF-8.
 - This workspace is the source repository, not the deployed `/opt/zapret2` tree. Edit source files here unless you are intentionally debugging a live deployment copy.
+- Manual device deploys (scp/pscp/rsync of webui files) bypass `webui_fix_interpreters` from `z2r.sh`'s webui install: freshly added `.cgi` files land without the exec bit (uhttpd answers 403) and with the `#!/usr/bin/env bash` shebang, which fails ENOENT on Entware boxes where `/usr/bin/env` does not exist (Keenetic). After a manual deploy run the installer's equivalent on the device: `chmod 755 /opt/zator/webui/cgi-bin/*.cgi` and `sed -i '1s|^#!.*bash$|#!/opt/bin/bash|'` on the copied cgi/sh files. Overwriting an EXISTING cgi keeps its old mode/shebang, so only NEW files hit this.
