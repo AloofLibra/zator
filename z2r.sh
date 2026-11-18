@@ -1984,6 +1984,7 @@ webui_install_files() {
   webui_repo_fetch "cgi-bin/domains.cgi" "$WEBUI_CGI/domains.cgi" || return 1
   webui_repo_fetch "cgi-bin/settings.cgi" "$WEBUI_CGI/settings.cgi" || return 1
   webui_repo_fetch "cgi-bin/backups.cgi" "$WEBUI_CGI/backups.cgi" || return 1
+  webui_repo_fetch "cgi-bin/custom.cgi" "$WEBUI_CGI/custom.cgi" || return 1
 
   chmod +x "$WEBUI_RUNNER" "$WEBUI_CGI"/*.sh "$WEBUI_CGI"/*.cgi
   webui_fix_interpreters
