@@ -49,6 +49,10 @@ grep -q 'submenu_item 11 "h3-curl для QUIC-проверок' lib/deploy.sh \
   || fail "проводка: в меню обновлений нет пункта 11 h3-curl"
 grep -q '^        deploy_h3curl_menu$' lib/deploy.sh \
   || fail "проводка: пункт 11 меню обновлений не вызывает deploy_h3curl_menu"
+grep -q 'z2r_quic_probe_ua' lib/quic_media.sh \
+  || fail "проводка: в quic_media.sh нет z2r_quic_probe_ua"
+! grep -q 'z2r_media_ua' lib/quic_media.sh \
+  || fail "проводка: h3-проба не должна использовать visionOS UA из youtube_media.sh"
 grep -q 'меню 5 предложит установку' lib/quic_media.sh \
   || fail "проводка: подсказка меню 01 должна ссылаться на меню 5"
 
@@ -214,6 +218,11 @@ test ! -e "$TMP_DIR/rm2/tools/bin/curl-h3-mipssf" || fail "удаление: а�
 # Нет каталога — rc=0 (идемпотентно), нет UA-хелпера — дефолт и override.
 MOCK_UNAME=i686 ZATOR_ROOT="$TMP_DIR/no-such-root" z2r_quic_curl_remove >/dev/null \
   || fail "удаление: отсутствие каталога не должно быть ошибкой"
+ua_default='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
+test "$(Z2R_CURL_UA= z2r_quic_probe_ua)" = "$ua_default" \
+  || fail "UA: дефолт z2r_quic_probe_ua должен совпадать с Z2R_CURL_UA из netcheck.sh"
+test "$(Z2R_CURL_UA=TestUA/1.0 z2r_quic_probe_ua)" = "TestUA/1.0" \
+  || fail "UA: Z2R_CURL_UA не пробросился в z2r_quic_probe_ua"
 
 # == 4c. меню h3-curl в deploy.sh: живой прогон ===============================
 if source lib/deploy.sh; then
@@ -275,17 +284,19 @@ for a in "$@"; do
             exit 0 ;;
     esac
 done
-headers=""; config=""; range=""
+headers=""; config=""; range=""; ua=""
 prev=""
 for a in "$@"; do
     case "$prev" in
         -D) headers="$a" ;;
         --config) config="$a" ;;
         --range) range="$a" ;;
+        -A) ua="$a" ;;
     esac
     case "$a" in *videoplayback*) [ -z "${MOCK_LEAK_CHECK:-}" ] || touch "$MOCK_LEAK_CHECK" ;; esac
     prev="$a"
 done
+[ -z "${MOCK_UA_FILE:-}" ] || printf '%s' "$ua" > "$MOCK_UA_FILE"
 [ -n "$config" ] || { echo 'mock: no --config' >&2; exit 90; }
 case "$*" in *--http3-only*) ;; *) echo 'mock: no --http3-only' >&2; exit 91 ;; esac
 [ -n "${CURL_CA_BUNDLE:-}" ] || { echo 'mock: no CURL_CA_BUNDLE' >&2; exit 92; }
@@ -326,8 +337,14 @@ mkdir -p "$Z2R_QUIC_SWEEP_DIR"
 export MOCK_LEAK_CHECK="$TMP_DIR/url-leak"
 
 probe_row() { MOCK="${1:-ok}" z2r_quic_probe "$media" video 1048576 6000000; }
-row="$(probe_row ok)"
+row="$(MOCK_UA_FILE="$TMP_DIR/probe-ua" Z2R_CURL_UA=BrowserUA/42 probe_row ok)"
 [[ "$row" == OK\|media_h3\|0\|3\|206\|1048576\|* ]] || fail "проба ok: $row"
+test "$(Z2R_CURL_UA=BrowserUA/42 z2r_quic_probe_ua)" = "BrowserUA/42" \
+  || fail "UA: хелпер не отдал override"
+! grep -qi 'visionos' "$TMP_DIR/probe-ua" \
+  || fail "UA: h3-проба отправила visionOS-агент youtube_media"
+test "$(cat "$TMP_DIR/probe-ua")" = "BrowserUA/42" \
+  || fail "UA: h3-проба отправила не браузерный Z2R_CURL_UA ($(cat "$TMP_DIR/probe-ua"))"
 test ! -e "$TMP_DIR/url-leak" || fail "проба: URL попал в argv"
 row="$(probe_row ver2)"
 [[ "$row" == UNKNOWN\|not_h3\|* ]] || fail "проба ver=2 должен быть not_h3: $row"

@@ -114,6 +114,13 @@ z2r_quic_ca_bundle() {
     return 1
 }
 
+# UA h3-проб: тот же браузерный, что у TLS-проверок (netcheck.sh задаёт
+# Z2R_CURL_UA; в QUIC он виден только CDN, DPI — не виден). Дефолт дублирован
+# на случай, когда quic_media.sh достался старым bootstrap'ом без netcheck.sh.
+z2r_quic_probe_ua() {
+    printf '%s' "${Z2R_CURL_UA:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36}"
+}
+
 # Установка бинарника по образцу googlevideo_sniffer_install: релизы zator
 # (TRACKING → latest, base-override Z2R_CURL_H3_RELEASE_BASE), gzip -t,
 # потолок размера. Не удалось — rc=1 (вызывающий предлагает режим без проверки).
@@ -266,7 +273,7 @@ z2r_quic_probe() (
         fi
         # Один curl = новое QUIC-соединение. stderr не должен раскрывать URL.
         "$curl_bin" -q -4 --noproxy '*' --http3-only -s \
-            --config "$config" -A "$(z2r_media_ua)" \
+            --config "$config" -A "$(z2r_quic_probe_ua)" \
             --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
             --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 10 \
             -D "$headers" -o /dev/null \
