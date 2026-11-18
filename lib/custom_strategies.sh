@@ -183,8 +183,9 @@ custom_strategies_blob_names() {
 _custom_blob_known() {
   local name="$1" cfg="$2" known
   case "$name" in
-    0x*[!0-9A-Fa-f]*|0x) return 0 ;; # литеральный hex: валиден по форме, не объявлен
-    0x*) return 0 ;;
+    0x*)
+      printf '%s\n' "$name" | grep -Eq '^0x[0-9A-Fa-f]+$' && return 0
+      return 1 ;;
   esac
   while IFS= read -r known; do
     [ "$known" = "$name" ] && return 0
