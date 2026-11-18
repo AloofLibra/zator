@@ -1137,9 +1137,22 @@ button.port-remove:not(:disabled):hover {
 
   .actions > button,
   .actions > .service-control,
+  .actions > .scope-picker,
   .panel-header button {
     width: 100%;
     flex: 1 1 100%;
+  }
+
+  /* Подпись и список — друг под другом, иначе селект сжимается на телефоне */
+  .actions > .scope-picker {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .actions > .scope-picker select {
+    width: 100%;
+    min-width: 0;
   }
 
   .service-control.is-running {

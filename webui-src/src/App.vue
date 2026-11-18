@@ -17,7 +17,7 @@ const tabs = [
   { view: 'status', label: 'Статус' },
   { view: 'strategies', label: 'Стратегии' },
   { view: 'domains', label: 'Домены' },
-  { view: 'custom-strats', label: 'Кастомные' },
+  { view: 'custom-strats', label: 'Свои стратегии' },
   { view: 'settings', label: 'Настройки' },
 ]
 
