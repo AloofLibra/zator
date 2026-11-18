@@ -1820,6 +1820,19 @@ fake_mode_profile_pick() {
         pause_enter
         ;;
       "2")
+        # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца): Discord — только с явного
+        # согласия; отказ = no-op для профиля (см. массовый гейт ниже).
+        if [ "$profile" = 4 ] && [ "$(mode_override_get 4)" != "clone" ]; then
+          echo ""
+          echo -e "${yellow}Внимание: клоны не корректно работают с Discord.${plain}"
+          dsc=""
+          read -re -p "Включить клоны для Discord? 1 - да, Enter - нет: " dsc || dsc=""
+          if [ "$dsc" != "1" ]; then
+            echo -e "${yellow}Отменено: профиль 4 остаётся на классике.${plain}"
+            pause_enter
+            continue
+          fi
+        fi
         if mode_override_set "$profile" clone; then
           echo -e "${green}Профиль $profile: клоны ClientHello пользователя с невинным SNI.${plain}"
           echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
