@@ -94,6 +94,19 @@ grep -q 'Status: 500 Internal Server Error' <<< "$report" || fail 'report failur
 printf ':\n' > "$TMP_DIR/runtime/z2r_lib/supersweep.sh"
 report="$(REQUEST_METHOD=GET QUERY_STRING=setting=supersweep bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -q 'Status: 503 Service Unavailable' <<< "$report" || fail 'old core status changed'
+# Статус h3-curl: тот же лёгкий fast-path (quic_media.sh сам тянет youtube_media.sh).
+cat > "$TMP_DIR/runtime/z2r_lib/quic_media.sh" <<'H3CURL'
+z2r_quic_curl_arch() { printf 'i686\n'; }
+z2r_quic_curl_detect() { printf '/opt/zator/tools/bin/curl-h3-i686\n'; }
+H3CURL
+report="$(REQUEST_METHOD=GET QUERY_STRING=setting=h3_curl bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -q 'Status: 200 OK' <<< "$report" || fail 'h3_curl fast path failed'
+grep -q 'Cache-Control: no-store' <<< "$report" || fail 'h3_curl may be cached'
+grep -Fq '"found":true' <<< "$report" || fail 'h3_curl body changed'
+grep -Fq '"arch":"i686"' <<< "$report" || fail 'h3_curl arch missing'
+printf ':\n' > "$TMP_DIR/runtime/z2r_lib/quic_media.sh"
+report="$(REQUEST_METHOD=GET QUERY_STRING=setting=h3_curl bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -q 'Status: 503 Service Unavailable' <<< "$report" || fail 'h3_curl old core status changed'
 normal_rc=0
 REQUEST_METHOD=GET QUERY_STRING=setting=ports bash "$TMP_DIR/panel/cgi-bin/settings.cgi" || normal_rc=$?
 [ "$normal_rc" = 97 ] || fail 'ordinary settings skipped the runtime loader'
@@ -116,6 +129,28 @@ for fn in api_tls_blob_profile_set api_tls_blob_profile_blobs_json; do
 done
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'blob_override_file_valid' "api_tls_blob_profile_set без валидации файла"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '"profile_blobs"' "GET/state не отдаёт profile_blobs"
+# Профиль 5 (QUIC): валидация профиль-aware (иначе UDP-блобы отсеются TLS-фильтром),
+# fake_default_tls для QUIC запрещён, кандидаты — свой список quic_blobs.
+_lib_raw_check="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
+fake_py_check="$(cat "$REPO_DIR/webui/dev/fake_router_server.py")"
+app_js_check="$(find "$REPO_DIR/webui-src/src" -type f \( -name '*.vue' -o -name '*.ts' \) -exec cat {} +)"
+assert_contains "$_lib_raw_check" 'blob_override_file_valid "\$value" "\$profile"' "api_tls_blob_profile_set: валидация не профиль-aware"
+assert_contains "$_lib_raw_check" 'fake_default_tls неприменим к QUIC-профилю' "api_tls_blob_profile_set: профиль 5 принимает fake_default_tls"
+assert_contains "$_lib_raw_check" 'api_quic_blobs_json' "_lib.sh: нет списка QUIC-кандидатов"
+assert_contains "$_lib_raw_check" '"quic_blobs"' "GET/state не отдаёт quic_blobs"
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" 'h3_curl' "settings.cgi GET не знает h3_curl"
+assert_contains "$_lib_raw_check" 'api_h3_curl_get' "_lib.sh: нет api_h3_curl_get"
+assert_contains "$_lib_raw_check" 'z2r_quic_curl_detect' "api_h3_curl_get не использует детект quic_media"
+for id in quic-blob-form 'tls-blob-quic-5' fetchH3Curl H3CurlStatus; do
+  grep -rq "$id" "$REPO_DIR/webui-src/src" || fail "webui-src не содержит $id"
+done
+assert_contains "$app_js_check" "tls_blob_profile\('5'" "webui-src: QUIC-блоб не шлёт профиль 5"
+assert_contains "$app_js_check" 'fetchH3Curl' "webui-src не загружает статус h3-curl"
+assert_contains "$fake_py_check" '_scan_quic_blobs' "fake_router_server.py не отдаёт quic_blobs"
+assert_contains "$fake_py_check" 'h3_curl' "fake_router_server.py без статуса h3-curl"
+assert_contains "$fake_py_check" 'BLOB_OVERRIDE_PROFILE_IDS' "fake_router_server.py: профиль 5 не в переопределениях блобов"
+assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'h3_curl' "API_CONTRACT.md без h3_curl"
+assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'quic_blobs' "API_CONTRACT.md без quic_blobs"
 
 [ -f "$REPO_DIR/webui/cgi-bin/backups.cgi" ] || fail "backups.cgi отсутствует"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/backups.cgi")" '405 Method Not Allowed' "backups.cgi не отдаёт 405"

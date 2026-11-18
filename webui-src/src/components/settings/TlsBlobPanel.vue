@@ -105,6 +105,43 @@ async function submitProfile(id: string) {
   }
 }
 
+// --- Профиль 5 (QUIC): свой UDP-блоб Initial/Discord/STUN (blob_override 5) ---
+// fake_default_tls для QUIC не существует; "" = как в стратегиях конфига
+// (кандидаты — quic_blobs с бэкенда, тот же фильтр, что у CLI п.16).
+const quicSelected = ref('')
+const savedQuic = computed(() => settings.value?.profile_blobs?.['5'] ?? '')
+
+watch(settings, () => {
+  quicSelected.value = savedQuic.value
+}, { immediate: true })
+
+const quicOptions = computed(() => {
+  const cur = savedQuic.value
+  const list = Array.isArray(settings.value?.quic_blobs) ? settings.value?.quic_blobs || [] : []
+  if (cur && !list.includes(cur)) return [cur, ...list]
+  return list
+})
+
+const quicSubmitDisabled = computed(() =>
+  busyActive.value || quicSelected.value === savedQuic.value)
+
+async function submitQuic() {
+  try {
+    await withBusy('tls-blob-quic-5', async () => {
+      const payload = await applySetting.tls_blob_profile('5', quicSelected.value)
+      if (payload.restart_required) {
+        announceRestart()
+        showToast('QUIC-блоб профиля 5 применён.' + restartSuffix(payload))
+      } else {
+        showToast('Сброшено: профиль 5 вернулся к блобам из стратегий конфига (до 2 секунд).')
+      }
+      await refreshTlsBlobSettings()
+    })
+  } catch (error) {
+    showToast((error as Error).message, 'error')
+  }
+}
+
 // --- Режим фейков по профилям (mode_override.tsv): классика / клоны ---
 const modeSelected = reactive<Record<string, string>>({})
 
@@ -243,6 +280,28 @@ async function submitSize(id: string) {
             @click="submitProfile(p.id)">Применить</button>
         </div>
       </template>
+    </form>
+
+    <form id="quic-blob-form" class="settings-form" @submit.prevent>
+      <h3>Профиль 5 — QUIC Initial</h3>
+      <p class="panel-desc">
+        Свой UDP-блоб для QUIC-стратегий профиля 5 (quic/stun/discord-полезные
+        нагрузки из каталога фейков). «Как в стратегиях конфига» применяется
+        без рестарта (до 2 секунд), смена файла — с перезапуском zapret2.
+      </p>
+      <label>
+        <span>Профиль 5 — UDP 443 (QUIC)</span>
+        <select id="tls-blob-quic-5" v-model="quicSelected" :disabled="busyActive">
+          <option value="">Как в стратегиях конфига</option>
+          <option v-for="blob in quicOptions" :key="blob" :value="blob">{{ blob }}</option>
+        </select>
+      </label>
+      <div class="card-actions">
+        <button type="button" class="primary"
+          :class="{ 'is-busy': busyButton === 'tls-blob-quic-5' }"
+          :disabled="quicSubmitDisabled"
+          @click="submitQuic">Применить</button>
+      </div>
     </form>
 
     <form id="fake-mode-form" class="settings-form" @submit.prevent>

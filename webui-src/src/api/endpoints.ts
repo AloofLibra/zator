@@ -1,9 +1,10 @@
 import { api, formBody } from './client'
 import type {
   ApplyResult, BackupsPayload, CheckPayload, DomainsImportResult, DomainsListPayload,
-  FallbackSettings, ModeSettingData, PortInfo, PortsSettings, ProfileInfo, ProviderSettings,
-  ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult,
-  WgBlobSettings, WgStateSettings, Recommendations, SupersweepPayload, WssizeRampSettings,
+  FallbackSettings, H3CurlStatus, ModeSettingData, PortInfo, PortsSettings, ProfileInfo,
+  ProviderSettings, ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings,
+  UdpGamesSettings, UpdateCheckResult, WgBlobSettings, WgStateSettings, Recommendations,
+  SupersweepPayload, WssizeRampSettings,
 } from './types'
 
 export const fetchStatus = (scope: string) =>
@@ -17,6 +18,9 @@ export const fetchRecommendations = (signal?: AbortSignal) =>
 
 export const fetchSupersweep = (signal?: AbortSignal) =>
   api<SupersweepPayload>('/cgi-bin/settings.cgi?setting=supersweep', { signal })
+
+export const fetchH3Curl = (signal?: AbortSignal) =>
+  api<H3CurlStatus>('/cgi-bin/settings.cgi?setting=h3_curl', { signal })
 
 export const fetchScopes = () => api<ScopesPayload>('/cgi-bin/scopes.cgi')
 

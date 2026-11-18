@@ -66,10 +66,20 @@ export interface CheckPayload {
   message?: string
 }
 
+// Статус тестового curl с HTTP/3 (settings.cgi?setting=h3_curl).
+// found=false — QUIC-проверки видео недоступны (установка: CLI п.5 -> п.11).
+export interface H3CurlStatus {
+  found?: boolean
+  path?: string
+  arch?: string
+}
+
 export interface TlsBlobSettings {
   current_mode?: string
   current_blob?: string
   available_blobs?: string[]
+  // Кандидаты QUIC-блобов (профиль 5): UDP-полезные нагрузки из каталога фейков
+  quic_blobs?: string[]
   // «профиль -> значение»: "" = как глобальный, fake_default_tls | файл слота
   profile_blobs?: Record<string, string>
   // «профиль -> режим фейков»: classic | clone (нет строки = classic)

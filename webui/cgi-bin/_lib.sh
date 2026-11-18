@@ -48,6 +48,25 @@ api_supersweep_get() {
   send_json '200 OK' "$body"
 }
 
+# --- h3-curl: статус тестового curl с HTTP/3 (карточка профиля 5 QUIC) -------
+# Только чтение (детект из quic_media.sh). Установка/удаление остаются в CLI
+# (п.5 -> п.11): сетевые инсталляции из CGI не выполняются по дизайну.
+api_h3_curl_get() {
+  if ! type z2r_quic_curl_detect >/dev/null 2>&1 \
+      || ! type z2r_quic_curl_arch >/dev/null 2>&1; then
+    send_error '503 Service Unavailable' 'Для статуса h3-curl обновите Core zator.'
+  fi
+  local arch path=""
+  arch="$(z2r_quic_curl_arch 2>/dev/null)" || arch=""
+  if path="$(z2r_quic_curl_detect 2>/dev/null)"; then
+    printf 'Cache-Control: no-store\r\n'
+    send_json '200 OK' "{\"found\":true,\"path\":\"$(json_escape "$path")\",\"arch\":\"$(json_escape "$arch")\"}"
+  else
+    printf 'Cache-Control: no-store\r\n'
+    send_json '200 OK' "{\"found\":false,\"path\":\"\",\"arch\":\"$(json_escape "$arch")\"}"
+  fi
+}
+
 find_runtime_libs() {
   local here dir file
   here="$(cd -- "$(dirname -- "$0")" && pwd)"
@@ -71,6 +90,19 @@ if [ "${0##*/}" = settings.cgi ] && [ "${REQUEST_METHOD:-GET}" = GET ] && [ "${Q
   find_runtime_libs supersweep.sh || send_error '503 Service Unavailable' 'missing z2r runtime libs'
   . "$LIB_DIR/supersweep.sh"
   api_supersweep_get
+  exit 0
+fi
+
+# Статус h3-curl тоже лёгкий: quic_media.sh сам тянет youtube_media.sh при
+# наличии; модуль необязательный (старый bootstrap мог не доставить) — тогда
+# честный 503 с просьбой обновить Core.
+if [ "${0##*/}" = settings.cgi ] && [ "${REQUEST_METHOD:-GET}" = GET ] && [ "${QUERY_STRING:-}" = setting=h3_curl ]; then
+  if find_runtime_libs quic_media.sh; then
+    . "$LIB_DIR/quic_media.sh"
+    api_h3_curl_get
+  else
+    send_error '503 Service Unavailable' 'Для статуса h3-curl обновите Core zator.'
+  fi
   exit 0
 fi
 
@@ -714,7 +746,7 @@ api_state() {
     version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_release\":\"\",\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
   fi
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"quic_blobs":[$(api_quic_blobs_json)],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -850,6 +882,34 @@ api_update_check() {
   send_json "200 OK" "{\"update_available\":$update,\"release\":\"$j_rel\",\"latest_zator_date\":\"$j_lz\",\"latest_webui_date\":\"$j_lw\",\"checked_at\":\"$j_ck\",\"error\":\"$j_err\"}"
 }
 
+# Кандидаты QUIC-блобов (профиль 5): UDP-полезные нагрузки из каталога фейков.
+# Фильтр зеркалит blob_override_file_valid 5 / _tls_blob_list_files 5 CLI —
+# держать синхронно при изменении любого из трёх.
+api_quic_blobs_json() {
+  local fake_dir="${Z2R_BLOB_FAKE_DIR:-/opt/zator/files/fake}" f out=""
+  [ -d "$fake_dir" ] || { printf ''; return 0; }
+  if sort -z </dev/null >/dev/null 2>&1; then
+    while IFS= read -r -d '' f; do
+      f="$(basename "$f")"
+      case "$f" in
+        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
+          out="${out}${out:+,}\"$(json_escape "$f")\""
+          ;;
+      esac
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
+  else
+    while IFS= read -r f; do
+      f="$(basename "$f")"
+      case "$f" in
+        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
+          out="${out}${out:+,}\"$(json_escape "$f")\""
+          ;;
+      esac
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' | sort)
+  fi
+  printf '%s' "$out"
+}
+
 api_tls_blob_get() {
   local cfg="/opt/zapret2/config"
   local fake_dir="/opt/zator/files/fake"
@@ -887,6 +947,7 @@ api_tls_blob_get() {
     \"current_mode\":\"$(json_escape "$current_mode")\",
     \"current_blob\":\"$(json_escape "$current_blob")\",
     \"available_blobs\":[$available_blobs],
+    \"quic_blobs\":[$(api_quic_blobs_json)],
     \"profile_blobs\":{$(api_tls_blob_profile_blobs_json)},
     \"profile_modes\":{$(api_fake_mode_modes_json)},
     \"profile_snis\":{$(api_fake_mode_snis_json)},
@@ -944,6 +1005,9 @@ api_tls_blob_set() {
 # Per-profile TLS блоб: value = "" (сброс к глобальному) | fake_default_tls | файл слота.
 # Сброс и встроенный блоб применяются без рестарта (TTL-кэш locked.lua ~2с);
 # смена файла слота рестартит автоматически, как глобальная смена.
+# Профиль 5 (QUIC): сброс — то же «как в стратегиях конфига»; fake_default_tls —
+# TLS-концепт, для QUIC запрещён; кандидаты — UDP-блобы (blob_override_file_valid
+# профиль-aware, второй аргумент обязателен, иначе QUIC-файлы отсеются TLS-фильтром).
 api_tls_blob_profile_set() {
   local profile="${PARAM_PROFILE:-}" value="${PARAM_VALUE:-}"
   local cfg="/opt/zapret2/config" slot supported=0 p
@@ -960,13 +1024,16 @@ api_tls_blob_profile_set() {
   fi
 
   if [ "$value" = "fake_default_tls" ]; then
+    if [ "$profile" = "5" ]; then
+      send_error "400 Bad Request" "fake_default_tls неприменим к QUIC-профилю (только TLS-профили)"
+    fi
     blob_override_set "$profile" fake_default_tls || send_error "500 Internal Server Error" "Не удалось сохранить переопределение"
     telemetry_notify
     send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
     return
   fi
 
-  blob_override_file_valid "$value" || send_error "400 Bad Request" "Некорректное значение блоба: $value"
+  blob_override_file_valid "$value" "$profile" || send_error "400 Bad Request" "Некорректное значение блоба: $value"
 
   slot="$(blob_override_slot "$profile")"
   tls_blob_profile_apply_file "$cfg" "$profile" "$value" \

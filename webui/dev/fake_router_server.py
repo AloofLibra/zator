@@ -966,13 +966,33 @@ def _scan_fake_blobs(fake_dir):
     return blobs
 
 
+def _scan_quic_blobs(fake_dir):
+    """Кандидаты QUIC-блобов профиля 5 (api_quic_blobs_json, _lib.sh).
+
+    Фильтр зеркалит blob_override_file_valid 5 / _tls_blob_list_files 5 CLI.
+    """
+    blobs = []
+    if not os.path.isdir(fake_dir):
+        return blobs
+    for fname in sorted(os.listdir(fake_dir)):
+        if not fname.endswith(".bin"):
+            continue
+        if fname.startswith(("quic_", "QUIC_", "fake_quic_", "discord_udp_",
+                             "wg_initial_fake_", "stun")):
+            blobs.append(fname)
+    return blobs
+
+
 def config_tls_blob_current(cfg_text):
     """Возвращает текущий blob-файл из --blob=maxru declaration (zapret2|zator)."""
     m = re.search(r"--blob=maxru:@/opt/(?:zapret2|zator)/files/fake/(\S+)", cfg_text)
     return m.group(1) if m else ""
 
 
+# Режимы/SNI/размеры клонов — только TLS-профили (Z2R_MODE_PROFILES и др.).
 BLOB_PROFILE_IDS = ("1", "2", "3", "4", "8")
+# Переопределения блобов — включая профиль 5 QUIC (Z2R_BLOB_PROFILES).
+BLOB_OVERRIDE_PROFILE_IDS = ("1", "2", "3", "4", "5", "8")
 
 
 def config_tls_blob_slot_file(cfg_text, profile):
@@ -1636,6 +1656,8 @@ class FakeRouterState:
         self.simulate_error = set(simulate_error or [])
         self.provider = provider
         self.recommendations_status = "ready"
+        # api_h3_curl_get (settings.cgi?setting=h3_curl): только чтение, установка в CLI.
+        self.h3_curl = {"found": True, "path": "/opt/zator/tools/bin/curl-h3-i686", "arch": "i686"}
         self.supersweep_report = {
             "available": False, "state": "idle", "active": False, "source": "none",
             "started": 0, "updated": 0, "scope": "default", "phase": "",
@@ -1959,6 +1981,7 @@ class FakeRouterState:
             "current_mode": current_mode,
             "current_blob": current_blob,
             "available_blobs": available_blobs,
+            "quic_blobs": _scan_quic_blobs(self.fake_dir),
             "profile_blobs": self.build_tls_blob_profile_blobs(),
             "profile_modes": self.build_fake_mode_modes(),
             "profile_snis": self.build_fake_mode_snis(),
@@ -1968,7 +1991,7 @@ class FakeRouterState:
     def build_tls_blob_profile_blobs(self):
         """blob_override_get() — profile_blobs для GET-ответов ("" = глобальный)."""
         out = {}
-        for p in BLOB_PROFILE_IDS:
+        for p in BLOB_OVERRIDE_PROFILE_IDS:
             name = self.blob_overrides.get(p, "")
             if name.startswith("z2r_prof_"):
                 out[p] = config_tls_blob_slot_file(self.cfg_text, p) or name
@@ -2013,16 +2036,23 @@ class FakeRouterState:
         raise ValueError("Некорректное значение режима: {0}".format(value))
 
     def apply_tls_blob_profile(self, profile, value):
-        """api_tls_blob_profile_set() — _lib.sh."""
-        if profile not in BLOB_PROFILE_IDS:
+        """api_tls_blob_profile_set() — _lib.sh. Профиль 5 — QUIC: UDP-блобы."""
+        if profile not in BLOB_OVERRIDE_PROFILE_IDS:
             raise ValueError("Некорректный профиль: {0}".format(profile))
         if value in ("", "global"):
             self.blob_overrides.pop(profile, None)
             return {"ok": True, "restarted": False, "restart_required": False}
         if value == "fake_default_tls":
+            if profile == "5":
+                raise ValueError("fake_default_tls неприменим к QUIC-профилю (только TLS-профили)")
             self.blob_overrides[profile] = value
             return {"ok": True, "restarted": False, "restart_required": False}
-        if not (value.startswith("tls_") and value.endswith(".bin")) and value != "custom_tls.bin":
+        if profile == "5":
+            # Кандидаты QUIC: тот же фильтр, что blob_override_file_valid 5.
+            if not (value.endswith(".bin") and value.startswith(
+                    ("quic_", "QUIC_", "fake_quic_", "discord_udp_", "wg_initial_fake_", "stun"))):
+                raise ValueError("Некорректное значение блоба: {0}".format(value))
+        elif not (value.startswith("tls_") and value.endswith(".bin")) and value != "custom_tls.bin":
             raise ValueError("Некорректное значение блоба: {0}".format(value))
         if not os.path.isfile(os.path.join(self.fake_dir, value)):
             raise ValueError("Файл блоба не существует: {0}".format(value))
@@ -3115,6 +3145,8 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     self._send_json(self.state.build_recommendations())
                 elif setting == "supersweep":
                     self._send_json(self.state.supersweep_report)
+                elif setting == "h3_curl":
+                    self._send_json(dict(self.state.h3_curl))
                 elif setting == "wg_blob":
                     self._log("GET {0} | wg_blob settings".format(parsed.path))
                     self._send_json(self.state.build_wg_blob_settings())
