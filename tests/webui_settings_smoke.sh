@@ -237,6 +237,10 @@ assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'quic_blobs' "API
 [ -f "$REPO_DIR/webui/cgi-bin/custom.cgi" ] || fail "custom.cgi отсутствует"
 grep -q 'api_custom_list' "$REPO_DIR/webui/cgi-bin/custom.cgi" || fail "custom.cgi GET без api_custom_list"
 grep -q 'api_custom_action' "$REPO_DIR/webui/cgi-bin/custom.cgi" || fail "custom.cgi POST без api_custom_action"
+# raw-установки качают cgi пофайлово (webui_install_files) — новый файл обязан
+# быть в списке, иначе pack-zator-tar.mjs падает на кросс-проверке
+grep -q 'cgi-bin/custom.cgi' "$REPO_DIR/z2r.sh" \
+  || fail "webui_install_files: custom.cgi не качается при raw-установке"
 assert_contains "$_lib_raw_check" 'custom_strategies_validate' "_lib.sh: кастомные стратегии без валидатора lib"
 assert_contains "$_lib_raw_check" 'custom_strategies_apply_file' "_lib.sh: apply не использует инжектор lib"
 assert_contains "$_lib_raw_check" 'custom_strategies.sh' "_lib.sh не source-ит lib/custom_strategies.sh"
