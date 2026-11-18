@@ -794,7 +794,7 @@ client_scopes_submenu() {
     submenu_item "3" "Удалить клиента" ""
     submenu_item "4" "Включить/выключить режим" ""
     submenu_item "0" "Назад" ""
-    read -re -p "Ваш выбор: " ans || return
+    read -re -p "Ваш выбор: " ans || return || return=""
     case "$ans" in
       1) client_scopes_wizard_add || true; pause_enter ;;
       2) client_scopes_wizard_lock || true; pause_enter ;;
@@ -958,10 +958,11 @@ strategies_submenu() {
     submenu_item "11" "Авторотация TCP/HTTP [${auto_state}]"
     submenu_item "12" "Суперавтопрогон: запуск / остановка"
     submenu_item "13" "Суперавтопрогон: прогресс и последний результат"
+    submenu_item "14" "Кастомные стратегии пользователя"
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     if [ "$auto_enabled" = "1" ]; then
       case "$ans" in
@@ -1044,7 +1045,7 @@ strategies_submenu() {
         fi
         ;;
       "11")
-        toggle_auto_mode
+        toggle_auto_mode || true
         pause_enter
         ;;
       "12")
@@ -1057,6 +1058,14 @@ strategies_submenu() {
         ;;
       "13")
         supersweep_status_menu
+        ;;
+      "14")
+        if type custom_strategies_submenu >/dev/null 2>&1; then
+          custom_strategies_submenu
+        else
+          echo -e "${yellow}Модуль кастомных стратегий недоступен (обновите zator: п.5).${plain}"
+          pause_enter
+        fi
         ;;
       "0"|"")
         ORCH_ACTIVE_SCOPE="default"
@@ -1094,7 +1103,7 @@ domains_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
@@ -1110,10 +1119,10 @@ domains_submenu() {
         manage_custom_rkn_list
         ;;
       "5")
-        rkn_substring_add_line
+        rkn_substring_add_line || true
         ;;
       "6")
-        rkn_substring_manage_lines
+        rkn_substring_manage_lines || true
         ;;
       "7")
         netrogat_substring_add_line
@@ -1153,7 +1162,7 @@ ports_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
@@ -1192,7 +1201,7 @@ flowoffload_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1"|"2"|"3"|"4")
@@ -1202,9 +1211,9 @@ flowoffload_submenu() {
           3) val="none" ;;
           4) val="donttouch" ;;
         esac
-        config_set_var /opt/zapret2/config FLOWOFFLOAD "$val"
-        /opt/zapret2/install_prereq.sh
-        z2r_service_action restart
+        config_set_var /opt/zapret2/config FLOWOFFLOAD "$val" || echo -e "${red}Не удалось записать FLOWOFFLOAD в config.${plain}"
+        /opt/zapret2/install_prereq.sh || echo -e "${yellow}install_prereq.sh вернул ошибку (сеть/пакетчик) — продолжаю.${plain}"
+        z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
         echo -e "${green}FLOWOFFLOAD=$val применён.${plain}"
         pause_enter
         ;;
@@ -1220,7 +1229,10 @@ flowoffload_submenu() {
 
 fwtype_submenu() {
   local cfg cur target nft_state ipt_state
-  cfg="$(get_config_file)"
+  if ! cfg="$(get_config_file)"; then
+    echo -e "${red}Не найден config/config.default — сначала установите zapret2 (п.5).${plain}"
+    return 0
+  fi
 
   while true; do
     clear -x
@@ -1256,12 +1268,12 @@ fwtype_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
         if [ -n "$target" ]; then
-          fwtype_apply "$target"
+          fwtype_apply "$target" || true
           pause_enter
         else
           ui_invalid_input
@@ -1286,7 +1298,7 @@ tcp443_submenu() {
   selected_count="$(config_tcp443_current_strategy "$cfg")"
   echo -e "${yellow}Безразборный режим по стратегии: ${plain}$selected_count"
   echo -e "\033[33mС каким номером применить стратегию? (1-19, 0 - отключение безразборного режима, Enter - выход):${plain}"
-  read -re -p " " answer_bezr
+  read -re -p " " answer_bezr || answer_bezr=""
   
   case "$answer_bezr" in
     "" )
@@ -1301,12 +1313,12 @@ tcp443_submenu() {
             pause_enter
             continue
           fi
-          z2r_service_action restart
+          z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
           echo -e "${green}Выполнена команда перезапуска zapret. ${yellow}Безразборный режим активирован на $answer_bezr стратегии для TCP-443. Проверка доступа к meduza.io${plain}"
           check_access_list
         else
-          config_tcp443_set_strategy 0 "$cfg"
-          z2r_service_action restart
+          config_tcp443_set_strategy 0 "$cfg" || true
+          z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
           echo -e "${green}Выполнена команда перезапуска zapret${plain}"
           echo "Безразборный режим отключен"
         fi
@@ -1335,7 +1347,7 @@ provider_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")
@@ -1405,7 +1417,7 @@ wireguard_submenu() {
       echo ""
       submenu_item "0" "Назад"
       echo ""
-      read -re -p "Ваш выбор: " ans
+      read -re -p "Ваш выбор: " ans || ans=""
       case "$ans" in
         "0"|"")
           return
@@ -1429,7 +1441,7 @@ wireguard_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       "1")
         menu_action_wg_repeats || true
@@ -1447,66 +1459,98 @@ wireguard_submenu() {
   done
 }
 
-# --- TLS blob: глобальный выбор + переопределения по профилям (пункт 16) ---
-# Переопределение подменяет только blob=/fake_blob= со значением maxru|fake_default_tls
-# (зеркало глобального sed'а п.16). Вкл/выкл/сброс — без рестарта (TTL-кэш locked.lua),
-# смена файла слота z2r_prof_N — с рестартом, как у глобального выбора.
+# --- Blob профилей: глобальный TLS выбор + переопределения по профилям (пункт 16) ---
+# Переопределение подменяет blob=/fake_blob= у стратегий профиля: TLS-профили —
+# значения maxru|fake_default_tls (зеркало глобального sed'а п.16), профиль 5 —
+# именованные QUIC/UDP-блобы стратегий. Вкл/выкл/сброс — без рестарта (TTL-кэш
+# locked.lua), смена файла слота z2r_prof_N — с рестартом, как у глобального выбора.
 
 _tls_blob_list_files() {
-  # TLS-кандидаты: тот же фильтр, что у WebUI (tls_*.bin + custom_tls.bin).
-  local f
-  if sort -z </dev/null >/dev/null 2>&1; then
-    while IFS= read -r -d '' f; do basename "$f"; done \
-      < <(find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( -name 'tls_*.bin' -o -name 'custom_tls.bin' \) -print0 | sort -z)
+  # Кандидаты по профилю: TLS — тот же фильтр, что у WebUI (tls_*.bin +
+  # custom_tls.bin); QUIC (профиль 5) — UDP-полезные нагрузки из каталога фейков
+  # (фильтр зеркалит blob_override_file_valid).
+  local profile="${1:-}" f
+  local names_quic=(-name 'quic_*.bin' -o -name 'QUIC_*.bin' -o -name 'fake_quic_*.bin' -o -name 'discord_udp_*.bin' -o -name 'wg_initial_fake_*.bin' -o -name 'stun*.bin')
+  local names_tls=(-name 'tls_*.bin' -o -name 'custom_tls.bin')
+  if [ "$profile" = "5" ]; then
+    if sort -z </dev/null >/dev/null 2>&1; then
+      while IFS= read -r -d '' f; do basename "$f"; done \
+        < <(find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_quic[@]}" \) -print0 | sort -z)
+    else
+      find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_quic[@]}" \) | sort \
+        | while IFS= read -r f; do basename "$f"; done
+    fi
   else
-    find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( -name 'tls_*.bin' -o -name 'custom_tls.bin' \) | sort \
-      | while IFS= read -r f; do basename "$f"; done
+    if sort -z </dev/null >/dev/null 2>&1; then
+      while IFS= read -r -d '' f; do basename "$f"; done \
+        < <(find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_tls[@]}" \) -print0 | sort -z)
+    else
+      find "$Z2R_BLOB_FAKE_DIR" -maxdepth 1 -type f \( "${names_tls[@]}" \) | sort \
+        | while IFS= read -r f; do basename "$f"; done
+    fi
   fi
 }
 
 tls_blob_profile_pick() {
   local profile="$1" title="$2" cfg="$3"
-  local slot cur cur_display choice i f file
+  local slot cur cur_display choice i f file first_file last_file
   local files=()
+  local is_quic=0 builtin_idx=0
+  [ "$profile" = "5" ] && is_quic=1
   slot="$(blob_override_slot "$profile")"
-  while IFS= read -r f; do files+=("$f"); done < <(_tls_blob_list_files)
+  while IFS= read -r f; do files+=("$f"); done < <(_tls_blob_list_files "$profile")
 
   while true; do
     clear -x
     cur="$(blob_override_get "$profile" "$cfg")"
-    echo -e "${cyan}--- Профиль $profile ($title): TLS blob ---${plain}"
+    if [ "$is_quic" = "1" ]; then
+      echo -e "${cyan}--- Профиль $profile ($title): QUIC Initial blob ---${plain}"
+    else
+      echo -e "${cyan}--- Профиль $profile ($title): TLS blob ---${plain}"
+    fi
     echo ""
     if [ -z "$cur" ]; then
-      cur_display="глобальный ($(config_tls_blob_menu_value "$cfg"))"
+      if [ "$is_quic" = "1" ]; then
+        cur_display="из стратегий конфига (quic/stun/discord-блобы)"
+      else
+        cur_display="глобальный ($(config_tls_blob_menu_value "$cfg"))"
+      fi
     else
       cur_display="$cur"
     fi
     echo -e "${yellow}Сейчас: ${green}${cur_display}${plain}"
-    echo -e "${yellow}Глобальный блоб: ${plain}${green}$(config_tls_blob_menu_value "$cfg")${plain}"
     echo ""
-    submenu_item "1" "Как глобальный (сброс переопределения)"
-    submenu_item "2" "fake_default_tls (встроенный)"
-    i=3
+    submenu_item "1" "Как в стратегиях конфига (сброс переопределения)"
+    first_file=2
+    if [ "$is_quic" = "0" ]; then
+      submenu_item "2" "fake_default_tls (встроенный)"
+      builtin_idx=2
+      first_file=3
+    else
+      builtin_idx=0
+    fi
+    i="$first_file"
     for f in "${files[@]}"; do
       submenu_item "$i" "$f"
       i=$((i+1))
     done
+    last_file=$(( first_file + ${#files[@]} - 1 ))
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     if [ "$choice" = "0" ] || [ -z "$choice" ]; then
       return
     elif [ "$choice" = "1" ]; then
       if blob_override_clear "$profile"; then
-        echo -e "${green}Сброшено: профиль $profile вернулся к глобальному блобу.${plain}"
+        echo -e "${green}Сброшено: профиль $profile вернулся к блобам из стратегий конфига.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
         telemetry_notify
       else
         echo -e "${red}Не удалось сбросить переопределение.${plain}"
       fi
       pause_enter
-    elif [ "$choice" = "2" ]; then
+    elif [ "$builtin_idx" != "0" ] && [ "$choice" = "$builtin_idx" ]; then
       if blob_override_set "$profile" fake_default_tls; then
         echo -e "${green}Профиль $profile будет использовать встроенный fake_default_tls.${plain}"
         echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
@@ -1515,8 +1559,8 @@ tls_blob_profile_pick() {
         echo -e "${red}Не удалось сохранить переопределение.${plain}"
       fi
       pause_enter
-    elif ui_is_number_in_range "$choice" 3 "$(( ${#files[@]} + 2 ))"; then
-      file="${files[$((choice-3))]}"
+    elif ui_is_number_in_range "$choice" "$first_file" "$last_file"; then
+      file="${files[$((choice - first_file))]}"
       if ! grep -qE -- "--blob=${slot}:@/opt/(zapret2|zator)/files/fake/" "$cfg"; then
         echo -e "${red}В конфиге нет декларации --blob=${slot} (старый конфиг).${plain}"
         echo -e "${yellow}Примените новый config.default: п.5 -> п.7, затем повторите.${plain}"
@@ -1550,11 +1594,11 @@ tls_blob_submenu() {
 
   while true; do
     clear -x
-    echo -e "${cyan}--- TLS blob (фейковые ClientHello) ---${plain}"
+    echo -e "${cyan}--- Blob профилей: TLS ClientHello / QUIC Initial ---${plain}"
     echo ""
-    submenu_status_item "1" "Глобальный блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
+    submenu_status_item "1" "Глобальный TLS блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
     echo ""
-    echo -e "${yellow}Переопределения по профилям (только стратегии с blob=maxru|fake_default_tls):${plain}"
+    echo -e "${yellow}Переопределения по профилям (TLS: blob=maxru|fake_default_tls; профиль 5 QUIC: quic/stun/discord-блобы):${plain}"
     i=2
     for idx in "${!profiles[@]}"; do
       p="$(blob_override_get "${profiles[$idx]}" "$cfg")"
@@ -1577,13 +1621,13 @@ tls_blob_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       "0"|"")
         return
         ;;
       "1")
-        menu_action_set_tls_blob
+        menu_action_set_tls_blob || true
         ;;
       "$sni_item")
         sni_submenu
@@ -1642,7 +1686,7 @@ sni_profile_pick() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     if [ "$choice" = "0" ] || [ -z "$choice" ]; then
       return
     elif [ "$choice" = "$reset_idx" ]; then
@@ -1665,7 +1709,7 @@ sni_profile_pick() {
       fi
       pause_enter
     elif [ "$choice" = "$custom_idx" ]; then
-      read -re -p "Домен или ссылка (например, www.example.com или https://site.ru/x), 0 - отмена: " domain
+      read -re -p "Домен или ссылка (например, www.example.com или https://site.ru/x), 0 - отмена: " domain || domain=""
       if [ "$domain" = "0" ]; then
         :
       elif [ -n "$domain" ]; then
@@ -1716,7 +1760,7 @@ sni_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     if [ "$ans" = "0" ] || [ -z "$ans" ]; then
       return
     elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
@@ -1760,7 +1804,7 @@ fake_mode_profile_pick() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     case "$choice" in
       "0"|"")
         return
@@ -1776,6 +1820,19 @@ fake_mode_profile_pick() {
         pause_enter
         ;;
       "2")
+        # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца): Discord — только с явного
+        # согласия; отказ = no-op для профиля (см. массовый гейт ниже).
+        if [ "$profile" = 4 ] && [ "$(mode_override_get 4)" != "clone" ]; then
+          echo ""
+          echo -e "${yellow}Внимание: клоны не корректно работают с Discord.${plain}"
+          dsc=""
+          read -re -p "Включить клоны для Discord? 1 - да, Enter - нет: " dsc || dsc=""
+          if [ "$dsc" != "1" ]; then
+            echo -e "${yellow}Отменено: профиль 4 остаётся на классике.${plain}"
+            pause_enter
+            continue
+          fi
+        fi
         if mode_override_set "$profile" clone; then
           echo -e "${green}Профиль $profile: клоны ClientHello пользователя с невинным SNI.${plain}"
           echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
@@ -1826,7 +1883,7 @@ fake_mode_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     if [ "$ans" = "0" ] || [ -z "$ans" ]; then
       return
     elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
@@ -1925,7 +1982,7 @@ clone_size_profile_pick() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
     if [ "$choice" = "0" ] || [ -z "$choice" ]; then
       return
     elif [ "$choice" = "1" ]; then
@@ -1951,7 +2008,7 @@ clone_size_profile_pick() {
       fi
       pause_enter
     elif [ "$choice" = "$custom_idx" ]; then
-      read -re -p "Размер в байтах (64..1200), 0 - отмена: " size
+      read -re -p "Размер в байтах (64..1200), 0 - отмена: " size || size=""
       if [ "$size" = "0" ]; then
         :
       elif [ -n "$size" ] && clone_size_valid "$size"; then
@@ -2005,7 +2062,7 @@ clone_size_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     if [ "$ans" = "0" ] || [ -z "$ans" ]; then
       return
     elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
@@ -2322,7 +2379,7 @@ advanced_settings_submenu() {
       current_value="недоступно"; current_color="yellow"
     fi
 
-    wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' /opt/zapret2/config 2>/dev/null)"
+    wg_block="$(sed -n '/#Z2R_WG_BEGIN/,/#Z2R_WG_END/p' /opt/zapret2/config 2>/dev/null)" || wg_block=""
     if printf "%s\n" "$wg_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-l7=wireguard[[:space:]]*$'; then
       wg_value="выключено"; wg_color="red"
     elif printf "%s\n" "$wg_block" | grep -q -- '--filter-l7=wireguard'; then
@@ -2331,7 +2388,7 @@ advanced_settings_submenu() {
       wg_value="недоступно"; wg_color="yellow"
     fi
 
-    quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' /opt/zapret2/config 2>/dev/null)"
+    quic_block="$(sed -n '/#Z2R_QUIC443_BEGIN/,/#Z2R_QUIC443_END/p' /opt/zapret2/config 2>/dev/null)" || quic_block=""
     if printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--filter-udp=443[[:space:]]*$'; then
       quic_value="включено"; quic_color="green"
     elif printf "%s\n" "$quic_block" | grep -Eq '^[[:space:]]*--skip[[:space:]]+--filter-udp=443[[:space:]]*$'; then
@@ -2393,12 +2450,12 @@ advanced_settings_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       "1")
         if menu_action_toggle_reasm_disable; then
           if pidof nfqws2 >/dev/null; then
-            z2r_service_action restart
+            z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
             echo -e "${green}zapret2 перезапущен для применения изменений.${plain}"
           fi
         fi
@@ -2487,40 +2544,111 @@ googlevideo_upload_local_manual() {
 }
 
 wssize_ramp_submenu() {
-  local cfg=/opt/zapret2/config enabled mode scale ans new_enabled new_mode new_scale count
+  local cfg=/opt/zapret2/config enabled mode scale count ans
+  local new_enabled new_mode new_scale
   [ -f "$cfg" ] || { echo -e "${red}Config не найден${plain}"; pause_enter; return 1; }
   while true; do
-    enabled="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE)"; [ "$enabled" = 1 ] || enabled=0
-    mode="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE)"; [ -n "$mode" ] || mode=full
-    scale="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE)"; [ -n "$scale" ] || scale=1
+    enabled="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE)" || enabled=""
+    [ "$enabled" = 1 ] || enabled=0
+    mode="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE)" || mode=""
+    [ -n "$mode" ] || mode=full
+    scale="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE)" || scale=""
+    [ -n "$scale" ] || scale=1
     count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
     clear -x
-    echo -e "${cyan}--- Экспериментальный wssize_ramp ---${plain}"
-    echo "Состояние: $([ "$enabled" = 1 ] && echo включен || echo выключен); Googlevideo IP: $count; режим: $mode; scale: $scale"
-    echo "1. Включить/выключить"
-    echo "2. Режим: Full/Lite"
-    echo "3. Scale (0–14)"
-    echo "0. Назад"
-    read -r -p "Ваш выбор: " ans || return
+    echo -e "${cyan}--- Экспериментальный wssize_ramp (Googlevideo) ---${plain}"
+    echo ""
+    echo -e "${yellow}Зажимает приёмное окно TCP на рукопожатиях к googlevideo: сервер${plain}"
+    echo -e "${yellow}первые секунды шлёт мелкие TLS-записи, которые DPI не может собрать${plain}"
+    echo -e "${yellow}в узнаваемый поток. Работает по списку IP (сейчас: ${plain}${green}${count}${yellow}).${plain}"
+    echo ""
+    if [ "$enabled" = 1 ]; then
+      submenu_status_item "1" "Включить/выключить" "включен" green
+    else
+      submenu_status_item "1" "Включить/выключить" "выключен" red
+    fi
+    submenu_status_item "2" "Режим после расхождения соединения" "$mode" green
+    submenu_status_item "3" "Scale — насколько зажимать окно (0-14)" "$scale" green
+    echo ""
+    submenu_item "0" "Назад"
+    echo ""
+    read -re -p "Ваш выбор: " ans || ans=""
     new_enabled="$enabled"; new_mode="$mode"; new_scale="$scale"
     case "$ans" in
-      1) [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
-      2) read -r -p "Режим (full/lite): " new_mode || return ;;
-      3) read -r -p "Scale (0–14): " new_scale || return ;;
-      0|"") return ;;
+      "1") [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
+      "2") new_mode="$(_wssize_ramp_ask_mode "$mode")" || new_mode="" ;;
+      "3") new_scale="$(_wssize_ramp_ask_scale "$scale")" || new_scale="" ;;
+      "0"|"") return ;;
       *) ui_invalid_input; continue ;;
     esac
+    [ -n "$new_mode" ] || { new_mode="$mode"; continue; }
+    [ -n "$new_scale" ] || { new_scale="$scale"; continue; }
     if [ "$new_enabled" = 1 ] && [ ! -s /opt/zator/lua/wssize-ramp.lua ]; then
       echo -e "${red}Нет /opt/zator/lua/wssize-ramp.lua; обновите zator через меню 5.${plain}"; pause_enter; continue
     fi
     if [ "$new_enabled" = 1 ]; then googlevideo_ips_update || true; fi
     if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_mode" "$new_scale"; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}Настройки wssize_ramp применены.${plain}"
     else
-      echo -e "${red}Проверьте IPv4, режим full/lite и scale 0–14. Конфигурация не применена.${plain}"
+      echo -e "${red}Проверьте режим full/lite и scale 0-14. Конфигурация не применена.${plain}"
     fi
     pause_enter
+  done
+}
+
+# Выбор режима: 1 = Full, 2 = Lite, 0 = отмена. stdout — new mode или "" (отмена).
+_wssize_ramp_ask_mode() {
+  local cur="$1" choice
+  while true; do
+    clear -x >&2
+    echo -e "${cyan}--- wssize_ramp: режим работы ---${plain}" >&2
+    echo "" >&2
+    submenu_status_item "" "Текущий режим" "$cur" green >&2
+    echo "" >&2
+    submenu_item "1" "Full — после расхождения окно TCP возвращается к норме" >&2
+    submenu_item "2" "Lite — после расхождения поток вообще не трогается" >&2
+    submenu_item "0" "Отмена" >&2
+    echo "" >&2
+    echo -e "${yellow}Full: скорость полностью восстанавливается — зажим действует только${plain}" >&2
+    echo -e "${yellow}в начале соединения (до получения open байт от сервера). Рекомендуется.${plain}" >&2
+    echo -e "${yellow}Lite: окно остаётся зажатым до конца соединения — вмешательство${plain}" >&2
+    echo -e "${yellow}минимально, но скорость загрузки видео остаётся заниженной.${plain}" >&2
+    echo "" >&2
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in
+      "1") echo full; return 0 ;;
+      "2") echo lite; return 0 ;;
+      "0"|"") return 0 ;;
+      *) ui_invalid_input ;;
+    esac
+  done
+}
+
+# Ввод scale 0-14 с валидацией. stdout — новое значение или "" (отмена).
+_wssize_ramp_ask_scale() {
+  local cur="$1" val
+  while true; do
+    clear -x >&2
+    echo -e "${cyan}--- wssize_ramp: scale ---${plain}" >&2
+    echo "" >&2
+    submenu_status_item "" "Текущий scale" "$cur" green >&2
+    echo "" >&2
+    echo -e "${yellow}Scale задаёт, до какого значения подменяется window scale в SYN:${plain}" >&2
+    echo -e "${yellow}эффективное окно делится на 2^(штатный scale клиента - выбранный).${plain}" >&2
+    echo -e "${yellow}Меньше значение — сильнее зажим: записи сервера мельче, DPI труднее${plain}" >&2
+    echo -e "${yellow}собрать поток, но соединение дольше разгоняется. Больше — мягче.${plain}" >&2
+    echo -e "${yellow}Эффект не выше заявленного самим клиентом scale (обычно 7).${plain}" >&2
+    echo "" >&2
+    read -re -p "Новый scale 0-14 (Enter - отмена): " val || val=""
+    case "$val" in
+      "") return 0 ;;
+    esac
+    if ui_is_number_in_range "$val" 0 14; then
+      echo "$val"
+      return 0
+    fi
+    ui_invalid_input >&2
   done
 }
 
@@ -2534,10 +2662,10 @@ keenetic_policy_submenu() {
     submenu_item "2" "$( [ "$(get_keenetic_policy_mode_label)" = "Все, кроме устройств из политики" ] && echo 'Переключить режим на "Только устройства из политики"' || echo 'Переключить режим на "Все, кроме устройств из политики"' )"
     submenu_item "0" "Назад"
     echo ""
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
-      "1") menu_action_set_keenetic_policy_name; pause_enter ;;
-      "2") menu_action_toggle_keenetic_policy_mode; pause_enter ;;
+      "1") menu_action_set_keenetic_policy_name || true; pause_enter ;;
+      "2") menu_action_toggle_keenetic_policy_mode || true; pause_enter ;;
       "0"|"") return ;;
       *) ui_invalid_input ;;
     esac
@@ -2565,7 +2693,7 @@ backup_submenu() {
     submenu_item "0" "Назад"
     echo ""
 
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
 
     case "$ans" in
       "1")

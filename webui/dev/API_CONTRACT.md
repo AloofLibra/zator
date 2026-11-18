@@ -372,6 +372,7 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
 | `wg_state` | `api_wg_state_get` | состояние WG (вкл/выкл) |
 | `fallback` | `api_fallback_get` | состояние fallback ([§7](#7-fallback-безразборный-режим)) |
 | `udp-games` | `api_udp_games_get` | состояние игрового UDP (профиль 7) |
+| `h3_curl` | `api_h3_curl_get` | статус h3-curl (read-only, установка в CLI) |
 | `wssize_ramp` | `api_wssize_ramp_get` | состояние, размер центрального списка Googlevideo, локальный DNS-сбор (`enabled`, `disabled`, `unsupported`), Full/Lite и scale |
 | `auto_mode` | `api_auto_mode_get` | авторотация TCP/HTTP |
 | `hostlist` | `api_hostlist_get` | режим фильтрации по спискам |
@@ -393,10 +394,12 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
   "current_mode": "maxru",            // maxru | fake_default_tls | mixed | "не определён"
   "current_blob": "tls_clienthello_1.bin",
   "available_blobs": ["tls_clienthello_1.bin", "..."],
-  "profile_blobs": {                  // per-profile переопределения (blob_override.tsv)
+  "quic_blobs": ["quic_google.bin", "discord_udp_1.bin", "..."],  // кандидаты профиля 5 (UDP)
+  "profile_blobs": {                  // per-profile переопределения (blob_override.tsv, 1-5+8)
     "1": "",                          // "" = как глобальный
     "2": "tls_clienthello_5.bin",     // файл слота z2r_prof_2
     "3": "",
+    "5": "quic_google.bin",           // QUIC (UDP-блобы; fake_default_tls запрещён)
     "8": "fake_default_tls"           // встроенный блоб
   },
   "profile_modes": {                  // per-profile режим фейков (mode_override.tsv)
@@ -585,6 +588,66 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 `FakeRouterState.supersweep_report` доступен для тестовых сценариев без запуска
 настоящего nfqws2 или изменения файлов `/opt`.
 
+### Статус h3-curl — отдельный read-only GET
+
+`GET /cgi-bin/settings.cgi?setting=h3_curl` → `api_h3_curl_get`.
+Ответ `200 OK`, `Cache-Control: no-store`. Только чтение: детект тестового
+curl с HTTP/3 из `lib/quic_media.sh` (env `Z2R_QUIC_CURL` → `/opt/bin/curl` →
+наш `tools/bin/curl-h3-<arch>` → PATH). Установка/удаление выполняются в CLI
+(п.5 -> п.11), сетевые инсталляции из CGI не делаются по дизайну. Фронтенд
+показывает статус строкой в карточке профиля 5 (страница стратегий).
+
+```jsonc
+{ "found": true,  "path": "/opt/zator/tools/bin/curl-h3-i686", "arch": "i686" }
+{ "found": false, "path": "", "arch": "i686" }
+```
+
+- Быстрый путь CGI: источаются только `quic_media.sh` (+`youtube_media.sh`);
+  модуль необязательный — без него `503` («обновите Core zator»), панель
+  молча скрывает строку.
+
+**Dev:** fake-router возвращает `FakeRouterState.h3_curl`
+(по умолчанию `found: true`, `curl-h3-i686`).
+
+### Кастомные стратегии пользователя — `custom.cgi`
+
+Эквивалент CLI (п.1 -> 14): просмотр/добавление/редактирование/включение/
+удаление/импорт собственных `--lua-desync=` стратегий и применение к конфигу.
+Валидация и нормализация — строго на бэкенде (`lib/custom_strategies.sh`):
+whitelist символов/примитивов/ключей по транспорту, блобы — только объявленные
+в конфиге; `--lua-desync=` и хвостовые `:strategy=N` срезаются (номера назначает
+инжектор). Хранение: `extra_strats/cache/orchestra/custom_strategies.tsv`.
+
+`GET /cgi-bin/custom.cgi[?block=p5]` → `api_custom_list`:
+
+```jsonc
+{
+  "blocks": [ { "block": "tpl", "label": "TCP TLS (профили 1/2/3/8 — общий набор)",
+                "profiles": "1 2 3 8", "transport": "tcp" }, "..." ],
+  "strategies": [ { "id": 1, "block": "p5", "spec": "fake:blob=fakewgblob:...",
+                    "enabled": true, "comment": "авторский QUIC",
+                    "assigned": "" } ]  // assigned: "" = ещё не применялась
+}
+```
+
+`POST /cgi-bin/custom.cgi` (`action=…`):
+
+| `action` | параметры | Что делает |
+| --- | --- | --- |
+| `add` | `block=<tpl\|p4\|p5\|p6\|p7>&value=<spec>&comment=` | добавить (валидация строгая; ошибки — `400` с текстом валидатора) |
+| `edit` | `id=<N>&block=&value=&comment=` | заменить spec/блок/комментарий; `assigned` сбрасывается |
+| `enable` | `id=<N>&value=0\|1` | вкл/выкл запись (выключенные не инжектятся, нумерация сжимается) |
+| `delete` | `id=<N>` | удалить (ID уплотняются) |
+| `import` | `block=&text=<многострочно>` | по строке на запись, ≤64; `added/skipped/errors[{line,reason}]` |
+| `apply` | — | инжект в config (номера после максимума блока) + ремап локов + авто-рестарт |
+
+Успех: `{ "ok": true, "apply_required": true }` (apply: `+ "restarted": true|false,
+"restart_required": true`). Изменения живут в TSV сразу, в конфиг попадают только
+по `apply` — фронтенд показывает счётчик неприменённых записей.
+
+**Dev:** fake-router держит `FakeRouterState.custom_strategies` (одна демо-запись
+QUIC), `apply` назначает номера 101+ и вызывает штатный `_apply_restart`.
+
 ### POST — применение настроек
 
 Тело: `setting=<...>&value=<...>` (для портов/провайдера — свои ключи, см. ниже).
@@ -592,7 +655,7 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 | `setting` | параметры | Что делает |
 | --- | --- | --- |
 | `tls_blob` | `fake_default_tls` \| `tls_*.bin` \| `custom_tls.bin` | смена TLS-блоба: `fake_default_tls` — вернуться на встроенный (декларация `--blob=maxru:@...` сохраняется для обратного переключения); файл — активировать внешний (`fake_default_tls`→`maxru` в ссылках стратегий + замена пути, path-agnostic `zapret2\|zator`) |
-| `tls_blob_profile` | `profile=1\|2\|3\|4\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена) |
+| `tls_blob_profile` | `profile=1\|2\|3\|4\|5\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена). Профиль 5 (QUIC): кандидаты — только UDP-блобы (`quic_*.bin\|discord_udp_*.bin\|wg_initial_fake_*.bin\|stun*.bin`), `fake_default_tls` — 400 |
 | `fake_mode` | `profile=1\|2\|3\|4\|8&value=classic\|clone` | режим фейков профиля (mode_override.tsv): `classic` — сброс строки (штатные блобы конфига), `clone` — блоб `maxru\|fake_default_tls` строится в рантайме из ClientHello пользователя с невинным SNI (sni_override.tsv или www.google.com). Без рестарта, TTL-кэш locked.lua ~2с |
 | `clone_size` | `profile=1\|2\|3\|4\|8&value=""\|global\|<64..1200>` | лимит клон-пакетов профиля (clonesize.tsv): `""`/`global` — сброс (без ограничения, границу ТСПУ 1200 Б держит locked.lua), число — клоны режутся до «не больше N Б» согласованными группами расширений; резать не смогли — штатный блоб конфига. Без рестарта, TTL-кэш locked.lua ~2с |
 | `wg_blob` | `value=<wg_initial_fake_*>` | замена `--blob=fakewgblob:@.../<файл>` |

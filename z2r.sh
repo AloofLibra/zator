@@ -49,16 +49,19 @@ z2r_github_commit_date() {
 
 Z2R_BRANCH="${Z2R_BRANCH:-zator}"
 Z2R_PROJECT_RAW_BASE="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/${Z2R_BRANCH}}"
-Z2R_PROJECT_MIRROR_BASE="${Z2R_PROJECT_MIRROR_BASE:-https://git.px.rkn.quest/AloofLibra/plain}"
+# Зеркала — ТОЛЬКО явным заданием env (по умолчанию выключены): прежнее
+# дефолтное зеркало умерло, попытки фолбэка на него лишь добавляли ~36
+# секунд таймаутов на каждый файл при лежащем GitHub (3 попытки x 10с).
+Z2R_PROJECT_MIRROR_BASE="${Z2R_PROJECT_MIRROR_BASE:-}"
 Z2R_INSTALLER_URL="${Z2R_INSTALLER_URL:-${Z2R_PROJECT_RAW_BASE}/z2r.sh}"
 ZAPRET2_UPSTREAM_RAW_BASE="${ZAPRET2_UPSTREAM_RAW_BASE:-https://raw.githubusercontent.com/bol-van/zapret2/master}"
-ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-https://git.px.rkn.quest/zapret2/plain}"
+ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-}"
 ZAPRET2_RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2/releases/download}"
 ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/MarkinAlexander/zapret2/releases/download}"
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh"
 
 # Release assets are separate from the deploy tar so each router stores only
 # its own static binary. This is optional: the central Googlevideo feed works
@@ -143,7 +146,6 @@ z2r_download_project_file() {
     return 0
   fi
 
-  mirror="$(z2r_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
   rm -f "$tmp"
   if z2r_fetch_url_to_file "$tmp" "$primary"; then
@@ -151,9 +153,9 @@ z2r_download_project_file() {
     return 0
   fi
   if [ -n "${Z2R_PROJECT_MIRROR_BASE:-}" ]; then
-    echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало.${plain}" >&2
+    echo -e "${yellow}GitHub недоступен для $rel. Пробую зеркало ${Z2R_PROJECT_MIRROR_BASE}.${plain}" >&2
     rm -f "$tmp"
-    if z2r_fetch_url_to_file "$tmp" "$mirror"; then
+    if z2r_fetch_url_to_file "$tmp" "$(z2r_mirror_url "$rel")"; then
       mv -f "$tmp" "$dest"
       return 0
     fi
@@ -171,25 +173,25 @@ z2r_download_upstream_file() {
   local rel="$2"
   local tmp="${dest}.tmp.$$"
   local primary="${ZAPRET2_UPSTREAM_RAW_BASE}/${rel}"
-  local mirror
 
   if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
     echo -e "${red}В установленном zapret2 отсутствует upstream-файл: $rel${plain}" >&2
     return 1
   fi
 
-  mirror="$(z2r_upstream_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
   rm -f "$tmp"
   if z2r_fetch_url_to_file "$tmp" "$primary"; then
     mv -f "$tmp" "$dest"
     return 0
   fi
-  echo -e "${yellow}GitHub недоступен для zapret2/$rel. Пробую зеркало.${plain}" >&2
-  rm -f "$tmp"
-  if z2r_fetch_url_to_file "$tmp" "$mirror"; then
-    mv -f "$tmp" "$dest"
-    return 0
+  if [ -n "${ZAPRET2_UPSTREAM_MIRROR_BASE:-}" ]; then
+    echo -e "${yellow}GitHub недоступен для zapret2/$rel. Пробую зеркало ${ZAPRET2_UPSTREAM_MIRROR_BASE}.${plain}" >&2
+    rm -f "$tmp"
+    if z2r_fetch_url_to_file "$tmp" "$(z2r_upstream_mirror_url "$rel")"; then
+      mv -f "$tmp" "$dest"
+      return 0
+    fi
   fi
   rm -f "$tmp"
   return 1
@@ -276,7 +278,6 @@ z2r_download_zapret2_release() {
 }
 
 z2r_exec_external_installer() {
-  local mirror
   local tmp="/tmp/z2r_installer_$$"
 
   if [ "${Z2R_OFFLINE:-0}" = "1" ]; then
@@ -284,8 +285,10 @@ z2r_exec_external_installer() {
     exit 1
   fi
 
-  mirror="$(z2r_mirror_url "z2r")"
-  if z2r_fetch_url_to_file "$tmp" "$Z2R_INSTALLER_URL" || z2r_fetch_url_to_file "$tmp" "$mirror"; then
+  if z2r_fetch_url_to_file "$tmp" "$Z2R_INSTALLER_URL"; then
+    exec sh "$tmp" "$@"
+  fi
+  if [ -n "${Z2R_PROJECT_MIRROR_BASE:-}" ]      && z2r_fetch_url_to_file "$tmp" "$(z2r_mirror_url "z2r")"; then
     exec sh "$tmp" "$@"
   fi
   rm -f "$tmp"
@@ -425,6 +428,10 @@ source "$LIB_DIR/config.sh"
 
 # Общий API ручных локов стратегий
 source "$LIB_DIR/orchestra_state.sh"
+
+# Кастомные пользовательские стратегии (п.1 -> 14): после orchestra_state —
+# нужен ORCH_DIR/ORCH_LOCK_FILE; сама либа опциональна для подменю (guard по type).
+source "$LIB_DIR/custom_strategies.sh"
 
 # База подсказок по стратегиям (скачивание + вывод подсказки по провайдеру)
 # Функции: update_recommendations, show_hint
@@ -833,7 +840,7 @@ change_user() {
 }
 
 ensure_nfqws2_stopped() {
-  z2r_service_action stop
+  z2r_service_action stop || echo -e "${red}Команда остановки zapret2 вернула ошибку — проверьте состояние (п.2).${plain}"
   sleep 1
   local pid
   for pid in $(pidof nfqws2 2>/dev/null); do
@@ -963,7 +970,7 @@ blockcheck2_run_summary() {
   fi
 
   if [ "$was_running" -eq 1 ]; then
-    z2r_service_action restart
+    z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
     echo -e "${green}zapret2 восстановлен (restart)${plain}"
   fi
 
@@ -2490,14 +2497,14 @@ get_menu() {
     # Подсказки загружаются лениво при подборе стратегии, не тормозят главное меню.
   while true; do
   	local strategies_status
-    strategies_status=$(get_orchestra_locks_info)
+    strategies_status=$(get_orchestra_locks_info) || strategies_status=""
     local _cfg_file
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
     if type platform_summary_text >/dev/null 2>&1; then
-      MENU_PLATFORM="$(platform_summary_text)"
-      MENU_UPTIME="$(platform_uptime_text)"
-      MENU_RAM="$(platform_ram_text)"
+      MENU_PLATFORM="$(platform_summary_text)" || MENU_PLATFORM="неизвестно"
+      MENU_UPTIME="$(platform_uptime_text)" || MENU_UPTIME="неизвестно"
+      MENU_RAM="$(platform_ram_text)" || MENU_RAM="неизвестно"
     else
       MENU_PLATFORM="неизвестно"
       MENU_UPTIME="неизвестно"
@@ -2693,7 +2700,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       mkdir -p "$ORCH_DIR"
       chmod 777 "$ORCH_DIR" 2>/dev/null || true
       menu_action_update_config_reset || true
-      backup_update_offer_restore
+      backup_update_offer_restore || true
       pause_enter
     fi
     # «Обновить/переустановить zapret2» из подменю: тот же путь, что Enter.
@@ -2720,7 +2727,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "8")
-    menu_action_toggle_dns_desync
+    menu_action_toggle_dns_desync || true
     pause_enter
     ;;
 
@@ -2729,7 +2736,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "10")
-    menu_action_toggle_udp_range
+    menu_action_toggle_udp_range || true
     pause_enter
     ;;
 
@@ -2740,7 +2747,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "12")
     toggle_hostlist_mode
     if pidof nfqws2 >/dev/null; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2749,7 +2756,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
   "13")
     toggle_fallback_mode
     if pidof nfqws2 >/dev/null; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}zapret2 перезапущен для применения режима${plain}"
     fi
     pause_enter
@@ -2773,7 +2780,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 
   "18")
     if toggle_rst_guard_mode && pidof nfqws2 >/dev/null; then
-      z2r_service_action restart
+      z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}zapret2 перезапущен для применения RST-защиты${plain}"
     fi
     echo -e "${green}RST-защита: $(config_mode_text rst_guard).${plain}"
@@ -3010,6 +3017,17 @@ while true; do
  fi
  
  profile_apply_all "$ZAPRET2_ROOT/config.default" || echo -e "${yellow}Не удалось применить сохранённые локи профилей — продолжаю.${plain}"
+
+ # Кастомные пользовательские стратегии переживают установку/обновление:
+ # свежий config.default не несёт их, инжектим из TSV до создания живого config.
+ if type custom_strategies_apply_file >/dev/null 2>&1; then
+  custom_strategies_apply_file "$ZAPRET2_ROOT/config.default" \
+    || echo -e "${yellow}Кастомные стратегии не применились — продолжаю без них.${plain}"
+ fi
+ # Выбор блобов (maxru + слоты z2r_prof_N) из blob_files.tsv — тоже переживает.
+ if type blob_files_apply >/dev/null 2>&1; then
+  blob_files_apply "$ZAPRET2_ROOT/config.default" || true
+ fi
 
  #Для x-wrt
  if [[ "$release" == "x-wrt" ]]; then

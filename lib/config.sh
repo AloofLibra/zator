@@ -566,7 +566,7 @@ platform_summary_text() {
       printf 'Netcraze (%s)' "${arch:-неизвестно}"
       return 0
     fi
-    verout="$(ndmc -c 'show version' 2>/dev/null)"
+    verout="$(ndmc -c 'show version' 2>/dev/null)" || verout=""
     model="$(printf '%s\n' "$verout" | sed -n 's/^[[:space:]]*description:[[:space:]]*//p' | head -n1)"
     fw="$(printf '%s\n' "$verout" | sed -n 's/^[[:space:]]*title:[[:space:]]*//p' | head -n1)"
     if [ -n "$model" ]; then
@@ -578,7 +578,7 @@ platform_summary_text() {
     return 0
   fi
   if [ -d /jffs ] && command -v nvram >/dev/null 2>&1; then
-    model="$(nvram get productid 2>/dev/null)"
+    model="$(nvram get productid 2>/dev/null)" || model=""
     if [ -n "$model" ]; then
       printf 'Asus Merlin %s (%s)' "$model" "$arch"
     else
@@ -897,7 +897,7 @@ menu_config_snapshot() {
         print "_profile_max_" pid "=" value
       }
     }
-  ' "$cfg" > "$_tmp"
+  ' "$cfg" > "$_tmp" || { rm -f "$_tmp" 2>/dev/null; return 0; }
 
   while IFS='=' read -r _k _v; do
     case "$_k" in

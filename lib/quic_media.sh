@@ -129,6 +129,13 @@ z2r_quic_ca_bundle() {
     return 1
 }
 
+# UA h3-проб: тот же браузерный, что у TLS-проверок (netcheck.sh задаёт
+# Z2R_CURL_UA; в QUIC он виден только CDN, DPI — не виден). Дефолт дублирован
+# на случай, когда quic_media.sh достался старым bootstrap'ом без netcheck.sh.
+z2r_quic_probe_ua() {
+    printf '%s' "${Z2R_CURL_UA:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36}"
+}
+
 # Установка бинарника по образцу googlevideo_sniffer_install: релизы zator
 # (TRACKING → latest, base-override Z2R_CURL_H3_RELEASE_BASE), gzip -t,
 # потолок размера. Не удалось — rc=1 (вызывающий предлагает режим без проверки).
@@ -191,6 +198,21 @@ z2r_quic_curl_install() {
     echo "h3-curl: бинарник не установлен ($reason)." >&2
     rm -f "$tmp" "$compressed"
     return 1
+}
+
+# Удаление установленных бинарников h3-curl (текущей и прочих архитектур —
+# артефакты старой arch тоже мусор). Идемпотентно: нет ничего — rc=0.
+z2r_quic_curl_remove() {
+    local dir="${ZATOR_ROOT:-/opt/zator}/tools/bin" f removed=0
+    [ -d "$dir" ] || { echo "h3-curl: наш бинарник не установлен." >&2; return 0; }
+    for f in "$dir"/curl-h3-*; do
+        [ -e "$f" ] || continue
+        rm -f "$f" || { echo "h3-curl: не удалось удалить $f." >&2; return 1; }
+        echo "h3-curl: удалён $f." >&2
+        removed=$((removed + 1))
+    done
+    [ "$removed" -gt 0 ] || echo "h3-curl: наш бинарник не установлен." >&2
+    return 0
 }
 
 # Детект + предложение установки (диалог). rc=0 — h3-curl есть.
@@ -266,7 +288,7 @@ z2r_quic_probe() (
         fi
         # Один curl = новое QUIC-соединение. stderr не должен раскрывать URL.
         "$curl_bin" -q -4 --noproxy '*' --http3-only -s \
-            --config "$config" -A "$(z2r_media_ua)" \
+            --config "$config" -A "$(z2r_quic_probe_ua)" \
             --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
             --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 10 \
             -D "$headers" -o /dev/null \
@@ -896,7 +918,7 @@ z2r_quic_access_check() (
     type z2r_media_prepare >/dev/null 2>&1 || return 0
     local verdict gh
     if ! z2r_quic_curl_detect >/dev/null 2>&1; then
-        echo -e "${plain}QUIC-проверка недоступна: h3-curl не установлен (меню 5 предложит установку).${plain}"
+        echo -e "${plain}QUIC-проверка недоступна: h3-curl не установлен. Установка: п.5 -> п.11, либо п.1 -> Профиль 5 (автопрогон предложит скачать).${plain}"
         return 0
     fi
     # Проба берёт бинарь из Z2R_QUIC_CURL: пустое значение = curl из PATH
@@ -1044,6 +1066,6 @@ z2r_quic_media_run() {
     fi
     [ -n "$video" ] || video="${Z2R_MEDIA_DEFAULT_VIDEO_ID:-BPk1uJ4txPc}"
     rounds="$(_z2r_quic_ask_rounds)" || { echo 'Отмена.'; return 0; }
-    Z2R_QUIC_MEDIA_VIDEO_ID="$video" Z2R_QUIC_ROUNDS="$rounds" _z2r_quic_trial z2r_quic_sweep_run
+    Z2R_QUIC_MEDIA_VIDEO_ID="$video" Z2R_QUIC_ROUNDS="$rounds" _z2r_quic_trial z2r_quic_sweep_run || true
     return 0
 }

@@ -173,6 +173,13 @@ Z2R_OFFLINE=1 ZATOR_ROOT="$ZATOR_ROOT" bash -c '
 r="$?"
 [ "$r" = 0 ] && ok "prompt: offline пропускает" || bad "prompt: offline rc=$r"
 
+# мёртвое зеркало git.px.rkn.quest не должно возвращаться в код/доки
+if grep -rn "git.px.rkn.quest" "$ROOT"/z2r.sh "$ROOT"/lib/*.sh     "$ROOT"/webui-src/src "$ROOT"/tools 2>/dev/null; then
+  bad "мёртвое зеркало git.px.rkn.quest снова в коде"
+else
+  ok "мёртвого зеркала git.px.rkn.quest нет"
+fi
+
 echo "==============================="
 echo "pass=$pass fail=$fail"
 [ "$fail" = 0 ] && echo "flavor smoke ok"

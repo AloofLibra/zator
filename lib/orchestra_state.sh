@@ -561,12 +561,14 @@ EOF
   return 0
 }
 
-# --- per-profile TLS blob override (blob_override.tsv) ---
+# --- per-profile TLS/QUIC blob override (blob_override.tsv) ---
 # Единый источник «профиль -> имя блоба» для CLI (подменю п.16) и WebUI.
 # Формат: profile<TAB>имя, нет строки = глобальный блоб. Файл читает locked.lua
 # (TTL-кэш 2с) — вкл/выкл переопределения применяется без рестарта nfqws2.
+# Профили 1-4/8 — TLS (слоты z2r_prof_N, источники maxru|fake_default_tls),
+# профиль 5 — QUIC/UDP 443 (слот z2r_prof_5, источники — именованные QUIC-блобы).
 ORCH_BLOB_FILE="${ORCH_BLOB_FILE:-$ORCH_DIR/blob_override.tsv}"
-Z2R_BLOB_PROFILES="${Z2R_BLOB_PROFILES:-1 2 3 4 8}"
+Z2R_BLOB_PROFILES="${Z2R_BLOB_PROFILES:-1 2 3 4 5 8}"
 Z2R_BLOB_SLOT_PREFIX="${Z2R_BLOB_SLOT_PREFIX:-z2r_prof_}"
 Z2R_BLOB_FAKE_DIR="${Z2R_BLOB_FAKE_DIR:-${ZATOR_ROOT:-/opt/zator}/files/fake}"
 
@@ -600,12 +602,24 @@ blob_override_get() {
   esac
 }
 
-# Валидация файла-кандидата: tls_*.bin / custom_tls.bin из каталога фейков.
+# Валидация файла-кандидата: TLS-профили — tls_*.bin / custom_tls.bin, QUIC
+# (профиль 5) — UDP-полезные нагрузки из каталога фейков. Без второго
+# аргумента — прежний TLS-фильтр (совместимость WebUI/старых вызовов).
 blob_override_file_valid() {
-  local file="$1"
-  case "$file" in
-    tls_*.bin|custom_tls.bin) ;;
-    *) return 1 ;;
+  local file="$1" profile="${2:-}"
+  case "$profile" in
+    5)
+      case "$file" in
+        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin) ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *)
+      case "$file" in
+        tls_*.bin|custom_tls.bin) ;;
+        *) return 1 ;;
+      esac
+      ;;
   esac
   [ -f "$Z2R_BLOB_FAKE_DIR/$file" ]
 }
@@ -634,6 +648,80 @@ blob_override_clear() {
   tmp="${ORCH_BLOB_FILE}.tmp.$$"
   awk -F '\t' -v pr="$profile" '{if ($1==pr) next; print}' "$ORCH_BLOB_FILE" > "$tmp" \
     && mv -f "$tmp" "$ORCH_BLOB_FILE" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# --- Персист выбора файлов блобов (blob_files.tsv) ---
+# Выбор блоба (глобальный maxru / файлы слотов z2r_prof_N) раньше жил ТОЛЬКО в
+# строках живого конфига и терялся при каждой регенерации из config.default
+# (меню 5 -> 7, деплой, сброс) — локи переживали, блобы нет. Теперь пары
+# «имя блоба -> файл» фиксируются в TSV (как локи в locked.tsv) и ре-применяются
+# во все пути пересборки конфига. Формат: NAME<TAB>file.bin; спец-значение для
+# глобального режима: maxru<TAB>fake_default_tls (встроенный блоб, режим п.16).
+ORCH_BLOB_FILES_TSV="${ORCH_BLOB_FILES_TSV:-$ORCH_DIR/blob_files.tsv}"
+
+blob_files_set() {
+  local name="$1" file="$2" tmp
+  printf '%s' "$name" | grep -Eq '^[A-Za-z0-9_]+$' || return 2
+  printf '%s' "$file" | grep -Eq '^[A-Za-z0-9_.-]+$' || return 2
+  mkdir -p "$ORCH_DIR" || return 1
+  [ -f "$ORCH_BLOB_FILES_TSV" ] || : > "$ORCH_BLOB_FILES_TSV"
+  tmp="${ORCH_BLOB_FILES_TSV}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v nm="$name" -v fl="$file" '
+    {if ($1==nm) {if (!seen) {print nm, fl; seen=1}; next} print}
+    END {if (!seen) print nm, fl}
+  ' "$ORCH_BLOB_FILES_TSV" > "$tmp" && mv -f "$tmp" "$ORCH_BLOB_FILES_TSV" || {
+    rm -f "$tmp"
+    echo "Unable to update blob files tsv" >&2
+    return 1
+  }
+  return 0
+}
+
+blob_files_get() {
+  local name="$1"
+  [ -f "$ORCH_BLOB_FILES_TSV" ] || return 0
+  awk -F '\t' -v nm="$name" '$1==nm {print $2; exit}' "$ORCH_BLOB_FILES_TSV"
+}
+
+blob_files_clear() {
+  local name="$1" tmp
+  [ -f "$ORCH_BLOB_FILES_TSV" ] || return 0
+  tmp="${ORCH_BLOB_FILES_TSV}.tmp.$$"
+  awk -F '\t' -v nm="$name" '{if ($1==nm) next; print}' "$ORCH_BLOB_FILES_TSV" > "$tmp" \
+    && mv -f "$tmp" "$ORCH_BLOB_FILES_TSV" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# Ре-применяет записанный выбор к конфигу $1: декларации --blob=NAME:@... (по
+# совпадению имён, path-agnostic) + глобальный режим maxru|fake_default_tls
+# (sed-зеркало menu_action_set_tls_blob, strategy=26 не трогаем). Отсутствующий
+# на устройстве файл — пропуск с warning (не ломаем конфиг). Идемпотентна;
+# имена, которых нет в конфиге (старый конфиг), молча пропускаются.
+blob_files_apply() {
+  local cfg="$1" name file ereg
+  [ -f "$cfg" ] || return 0
+  [ -f "$ORCH_BLOB_FILES_TSV" ] || return 0
+  ereg="$(config_sed_ereg 2>/dev/null || echo -E)"
+  while IFS="$(printf '\t')" read -r name file; do
+    case "$name" in ''|\#*) continue ;; esac
+    [ -n "$file" ] || continue
+    if [ "$name" = "maxru" ] && [ "$file" = "fake_default_tls" ]; then
+      # режим встроенного блоба: ссылки maxru -> fake_default_tls
+      sed -i $ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)maxru#\1fake_default_tls#g; }' "$cfg"
+      continue
+    fi
+    [ -f "$Z2R_BLOB_FAKE_DIR/$file" ] || {
+      echo "blob_files: файл $file для $name отсутствует — пропущен" >&2
+      continue
+    }
+    grep -qE -- "--blob=${name}:@/opt/(zapret2|zator)/files/fake/" "$cfg" || continue
+    if [ "$name" = "maxru" ]; then
+      # файл выбран: гарантируем режим maxru (зеркало обратного переключения)
+      sed -i $ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
+    fi
+    sed -i $ereg "s#(--blob=${name}:@/opt/(zapret2|zator)/files/fake/)[^[:space:]]+#\\1${file}#g" "$cfg"
+  done < "$ORCH_BLOB_FILES_TSV"
   return 0
 }
 

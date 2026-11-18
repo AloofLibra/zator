@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { clearLock, profileCheck, setLock } from '../../api/endpoints'
-import type { CheckPayload, ProfileInfo, Recommendations } from '../../api/types'
+import type { CheckPayload, H3CurlStatus, ProfileInfo, Recommendations } from '../../api/types'
 import { FALLBACK_CHECK_HINT, UDP_GAMES_CHECK_HINT, currentLockText, gatedPanel, gatedReason, isProfileGated } from '../../gating'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
 import { refreshAll, scope, strategyChecks } from '../../stores/status'
@@ -10,7 +10,12 @@ import { showToast } from '../../stores/toast'
 import CheckResults from '../ui/CheckResults.vue'
 import NumberStepper from '../ui/NumberStepper.vue'
 
-const props = defineProps<{ profile: ProfileInfo; recommendations?: Recommendations | null }>()
+const props = defineProps<{ profile: ProfileInfo; recommendations?: Recommendations | null; h3Curl?: H3CurlStatus | null }>()
+
+// Профиль 5 (QUIC): в карточке виден статус h3-curl — без него проверка
+// видео по HTTP/3 недоступна (установка только в CLI: п.5 -> п.11).
+const isQuicProfile = computed(() => String(props.profile.profile) === '5')
+const h3CurlText = computed(() => (props.h3Curl?.found ? 'установлен' : 'не установлен'))
 const recommendation = computed(() => {
   const data = props.recommendations
   if (!['1', '2', '3', '4'].includes(String(props.profile.profile)) ||
@@ -140,6 +145,13 @@ async function clearLockAction() {
         <span>Макс. стратегия&nbsp;</span>
         <strong class="max-lock">{{ maxStrategy }}</strong>
       </div>
+      <div v-if="isQuicProfile && h3Curl" class="meta-line">
+        <span>h3-curl (проверка видео)&nbsp;</span>
+        <strong :class="['current-lock', { bad: !h3Curl.found }]" :title="h3Curl.path || ''">{{ h3CurlText }}</strong>
+      </div>
+      <small v-if="isQuicProfile && h3Curl && !h3Curl.found" class="hint-footnote">
+        Установка: CLI, п.5 -&gt; п.11, либо автопрогон профиля 5 предложит скачать.
+      </small>
     </div>
     <div v-if="recommendation && (topStrategies.length || recommendClone)" class="provider-hint">
       <div class="hint-heading">По опыту провайдера <span>{{ recommendation.samples }} установок</span></div>

@@ -919,13 +919,31 @@ local function z2r_fake_blob_arg(func)
   return nil
 end
 
+-- Какие значения blob=/fake_blob= подлежат подмене per-profile override'ом
+-- (blob_override.tsv). TLS-профили 1/2/3/4/8 — maxru|fake_default_tls (зеркало
+-- глобальных sed'ов п.16). QUIC-профиль 5 — именованные UDP-блобы, на которых
+-- построены стратегии блока key=5 (литеральный 0x00 — не имя, остаётся как есть).
+local Z2R_BLOB_SWAP_TLS = { maxru = true, fake_default_tls = true }
+local Z2R_BLOB_SWAP_QUIC = {
+  quic_google = true, quic5 = true, discord_fake = true,
+  stun_fake = true, discord_udp_1 = true, discord_udp_2 = true,
+}
+local function z2r_blob_override_swap(profile_key, value)
+  if value == nil then return false end
+  if tostring(profile_key) == "5" then
+    return Z2R_BLOB_SWAP_QUIC[value] == true
+  end
+  return Z2R_BLOB_SWAP_TLS[value] == true
+end
+
 -- Подмена per-profile TLS блоба на исполнении стратегии (blob_override.tsv),
 -- режим фейков профиля (mode_override.tsv) и per-profile SNI клон-стратегий
 -- (sni_override.tsv). Порядок: режим (clone строит клон CH юзера) -> блоб-
 -- override -> sni_first. Меняются только args blob/fake_blob со значением
--- maxru|fake_default_tls и arg sni_first; исходные значения восстанавливаются —
--- план может быть переисполнен (replay/desync_copy). Имя блоба должно быть
--- объявлено в конфиге (--blob=ИМЯ:@...) или быть встроенным, иначе подмены нет.
+-- maxru|fake_default_tls (QUIC-профиль 5 — именованные UDP-блобы) и arg
+-- sni_first; исходные значения восстанавливаются — план может быть переисполнен
+-- (replay/desync_copy). Имя блоба должно быть объявлено в конфиге
+-- (--blob=ИМЯ:@...) или быть встроенным, иначе подмены нет.
 function blob_override_execute(desync, verdict, instance, profile_key)
   local mode = profile_key and MODE_OVERRIDES[tostring(profile_key)]
   local name = profile_key and BLOB_OVERRIDES[tostring(profile_key)]
@@ -954,11 +972,11 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   local saved_blob = instance.arg.blob
   local saved_fake_blob = instance.arg.fake_blob
   local swapped = false
-  if target and (saved_blob == "maxru" or saved_blob == "fake_default_tls") then
+  if target and z2r_blob_override_swap(profile_key, saved_blob) then
     instance.arg.blob = target
     swapped = true
   end
-  if target and (saved_fake_blob == "maxru" or saved_fake_blob == "fake_default_tls") then
+  if target and z2r_blob_override_swap(profile_key, saved_fake_blob) then
     instance.arg.fake_blob = target
     swapped = true
   end

@@ -1007,7 +1007,7 @@ $i. ${tar_file##*/}"
     return 1
   fi
   echo -e "${yellow}Архивы zapret2:${plain}$found"
-  read -re -p "Номер архива (0 - отмена): " pick
+  read -re -p "Номер архива (0 - отмена): " pick || pick=""
   if [ "$pick" = "0" ] || ! ui_is_number_in_range "$pick" 1 $((i - 1)); then
     echo -e "${yellow}Отменено.${plain}"
     return 0
@@ -1155,7 +1155,7 @@ deploy_reset_user_files() {
     exit 0
   fi
   echo -e "${yellow}Введите номера через пробел (например: 1 3), all — все, 0 — отмена:${plain}"
-  read -re -p "" answer
+  read -re -p "" answer || answer=""
   [ "$answer" = "0" ] && { echo "Отменено."; exit 0; }
   pick=""
   for n in $answer; do
@@ -1252,6 +1252,88 @@ deploy_menu_header() {
   return 0
 }
 
+# П.11 подменю обновлений: h3-curl (curl с HTTP/3) для QUIC-проверок видео.
+# Функции z2r_quic_curl_* живут в необязательном quic_media.sh — старый
+# bootstrap мог его не доставить, тогда пункт честно отправляет обновлять zator.
+deploy_h3curl_menu() {
+  local answer arch dest used
+  while true; do
+    clear -x
+    echo -e "${Fcyan}===== h3-curl: curl с HTTP/3 для QUIC-проверок =====${plain}"
+    if ! type z2r_quic_curl_detect >/dev/null 2>&1 \
+        || ! type z2r_quic_curl_install >/dev/null 2>&1 \
+        || ! type z2r_quic_curl_remove >/dev/null 2>&1; then
+      echo -e "${yellow}Модуль quic_media.sh не установлен (старая версия zator).${plain}"
+      echo -e "${yellow}Обновите zator: п.5 -> п.2, затем вернитесь сюда.${plain}"
+      pause_enter
+      return 0
+    fi
+    arch="$(z2r_quic_curl_arch 2>/dev/null)" || arch=""
+    dest="${ZATOR_ROOT:-/opt/zator}/tools/bin/curl-h3-$arch"
+    if [ -n "$arch" ] && [ -x "$dest" ]; then
+      echo -e "Наш бинарник: ${green}установлен${plain} ($dest)"
+    elif [ -n "$arch" ]; then
+      echo -e "Наш бинарник: ${yellow}не установлен${plain} (curl-h3-$arch)"
+    else
+      echo -e "Наш бинарник: ${red}архитектура не определена ($(uname -m 2>/dev/null))${plain}"
+    fi
+    if used="$(z2r_quic_curl_detect 2>/dev/null)"; then
+      echo -e "Для QUIC-проверок будет использован: ${green}$used${plain}"
+    else
+      echo -e "Для QUIC-проверок будет использован: ${red}нет curl с HTTP/3 — проверки видео недоступны${plain}"
+    fi
+    echo ""
+    submenu_item 1 "Установить/обновить (скачать с z2r-curl-h3)"
+    submenu_item 2 "Удалить наш бинарник (QUIC-проверки отключатся, если нет другого curl с HTTP/3)"
+    submenu_item 0 "Назад"
+    echo ""
+    read -re -p "" answer || answer=""
+    case "$answer" in
+      1)
+        if [ -n "$arch" ] && [ -x "$dest" ]; then
+          echo -e "${yellow}Бинарник уже установлен.${plain}"
+          read -re -p "Перекачать заново (обновить)? 1 - да, Enter - нет: " answer || answer=""
+          if [ "$answer" = "1" ]; then
+            rm -f "$dest" || true
+          else
+            echo -e "${yellow}Отменено.${plain}"
+            pause_enter
+            continue
+          fi
+        fi
+        if [ "${Z2R_OFFLINE:-0}" = 1 ]; then
+          echo -e "${yellow}Офлайн-режим: установка из сети недоступна.${plain}"
+        elif [ -z "$arch" ]; then
+          echo -e "${red}Не удалось определить архитектуру платформы ($(uname -m 2>/dev/null)).${plain}"
+        elif z2r_quic_curl_install; then
+          echo -e "${green}Готово: QUIC-проверки видео (профиль 5, меню 01) теперь доступны.${plain}"
+        else
+          echo -e "${red}Установить h3-curl не удалось (причина выше).${plain}"
+        fi
+        pause_enter
+        ;;
+      2)
+        if [ -n "$arch" ] && [ -x "$dest" ]; then
+          read -re -p "Удалить $dest? 1 - да, Enter - нет: " answer || answer=""
+          [ "$answer" = "1" ] || { echo -e "${yellow}Отменено.${plain}"; pause_enter; continue; }
+        fi
+        if z2r_quic_curl_remove; then
+          echo -e "${green}Удаление завершено.${plain}"
+        else
+          echo -e "${red}Удалить h3-curl не удалось (причина выше).${plain}"
+        fi
+        pause_enter
+        ;;
+      0|"")
+        return 0
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
 deploy_update_menu() {
   DEPLOY_WANT_REINSTALL=0
   unset ZAPRET2_ARCHIVE_DIR ZAPRET2_VERSION
@@ -1272,9 +1354,18 @@ deploy_update_menu() {
     submenu_item 8 "Сбросить пользовательские файлы к эталону (netrogat и др.)"
     submenu_item 9 "Проверить целостность установки"
     submenu_item 10 "Источник обновлений (зеркало или стандартный GitHub)"
+    if type z2r_quic_curl_detect >/dev/null 2>&1; then
+      if z2r_quic_curl_detect >/dev/null 2>&1; then
+        submenu_item 11 "h3-curl для QUIC-проверок (установить/удалить)" "[есть]"
+      else
+        submenu_item 11 "h3-curl для QUIC-проверок (установить/удалить)" "[нет]" 0
+      fi
+    else
+      submenu_item 11 "h3-curl для QUIC-проверок (установить/удалить)"
+    fi
     submenu_item 0 "Назад в главное меню"
     echo ""
-    read -re -p "" answer
+    read -re -p "" answer || answer=""
     case "$answer" in
       1)
         deploy_check_latest || true
@@ -1289,7 +1380,7 @@ deploy_update_menu() {
         if [ "$DEPLOY_UPDATE_ZATOR" = "1" ]; then
           if [ "$(deploy_version_field TRACKING)" != "latest" ]; then
             echo -e "${yellow}Закреплена версия $(deploy_version_field TRACKING); обновление до latest снимет закрепление.${plain}"
-            read -re -p "1 - продолжить, 0 - отмена: " pin_answer
+            read -re -p "1 - продолжить, 0 - отмена: " pin_answer || pin_answer=""
             if [ "$pin_answer" != "1" ]; then
               echo -e "${yellow}Отменено.${plain}"
               pause_enter
@@ -1320,7 +1411,7 @@ deploy_update_menu() {
           pause_enter
           continue
         fi
-        read -re -p "Номер релиза (0 - отмена): " rel_num
+        read -re -p "Номер релиза (0 - отмена): " rel_num || rel_num=""
         if [ "$rel_num" = "0" ] || ! ui_is_number_in_range "$rel_num" 1 99; then
           echo -e "${yellow}Отменено.${plain}"
           pause_enter
@@ -1354,13 +1445,17 @@ $i. $tar_file"
           continue
         fi
         echo -e "${yellow}Файлы:${plain}$found"
-        read -re -p "Номер файла (0 - отмена): " file_num
+        read -re -p "Номер файла (0 - отмена): " file_num || file_num=""
         if [ "$file_num" != "0" ] && ui_is_number_in_range "$file_num" 1 $((i - 1)); then
           eval "tar_file=\"\$DEPLOY_LOCAL_TAR_$file_num\""
           if deploy_from_tar "$tar_file"; then
-            read -re -p $'\033[33mЗакрепить установленную версию (выключить автообновление лаунчера)? 1 - Да, Enter - нет (следить за latest)\033[0m\n' pin_answer
+            read -re -p $'\033[33mЗакрепить установленную версию (выключить автообновление лаунчера)? 1 - Да, Enter - нет (следить за latest)\033[0m\n' pin_answer || pin_answer=""
             if [ "$pin_answer" = "1" ]; then
-              ver="$(deploy_version_field ZATOR_VERSION)"
+              ver="$(deploy_version_field ZATOR_VERSION)" || ver=""
+              if [ ! -f "$DEPLOY_VERSION_FILE" ]; then
+                mkdir -p "$DEPLOY_CACHE_DIR"
+                : > "$DEPLOY_VERSION_FILE"
+              fi
               sed -i "s/^TRACKING=.*/TRACKING=\"${ver:-local}\"/" "$DEPLOY_VERSION_FILE"
               echo -e "${yellow}Версия закреплена: автообновление лаунчера выключено.${plain}"
             fi
@@ -1373,12 +1468,12 @@ $i. $tar_file"
         echo -e "  ${Fcyan}1${plain} — скачать с GitHub (выбор версии)"
         echo -e "  ${Fcyan}2${plain} — локальный архив из /tmp"
         echo -e "  ${Fyellow}0${plain} — отмена"
-        read -re -p "" ans
+        read -re -p "" ans || ans=""
         case "$ans" in
           1)
             echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
             echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
-            read -re -p "" ans
+            read -re -p "" ans || ans=""
             if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
               DEPLOY_WANT_REINSTALL=1
               return 0
@@ -1405,6 +1500,9 @@ $i. $tar_file"
         ;;
       10)
         deploy_sources_menu
+        ;;
+      11)
+        deploy_h3curl_menu
         ;;
       0|"")
         return 0
@@ -1433,10 +1531,10 @@ deploy_sources_menu() {
     submenu_item 2 "Сбросить на стандартный (GitHub)"
     submenu_item 0 "Назад"
     echo ""
-    read -re -p "" answer
+    read -re -p "" answer || answer=""
     case "$answer" in
       1)
-        read -re -p "Базовый URL зеркала (0 - отмена): " url
+        read -re -p "Базовый URL зеркала (0 - отмена): " url || url=""
         case "$url" in
           0|"") ;;
           http://*|https://*)
@@ -1484,7 +1582,7 @@ deploy_transition_menu() {
     submenu_item 3 "Полный сброс листов и config до эталона (прежнее поведение п.5)"
     submenu_item 0 "Назад"
     echo ""
-    read -re -p "" answer
+    read -re -p "" answer || answer=""
     case "$answer" in
       1)
         deploy_apply_installed_config || true

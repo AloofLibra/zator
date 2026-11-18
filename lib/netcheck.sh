@@ -643,7 +643,7 @@ z2r_dns_parse_addrs() {
 z2r_dns_check_target() {
     local domain="${1:-$Z2R_DNS_CHECK_DOMAIN}" server="${2:-$Z2R_DNS_CHECK_SERVER}"
     local out rc parsed v4 v6 hits a k
-    out="$(z2r_dns_probe "$domain" "$server")"; rc=$?
+    rc=0; out="$(z2r_dns_probe "$domain" "$server")" || rc=$?
     parsed="$(printf '%s\n' "$out" | z2r_dns_parse_addrs "$server")"
     v4="${parsed%%|*}"
     v6="${parsed#*|}"
@@ -694,7 +694,7 @@ z2r_dns_check_series() {
         if [ "$i" -gt 1 ] && [ "$Z2R_DNS_INTERVAL" -gt 0 ] 2>/dev/null; then
             sleep "$Z2R_DNS_INTERVAL"
         fi
-        res="$(z2r_dns_check_target "$domain" "$server")"
+        res="$(z2r_dns_check_target "$domain" "$server")" || res=""
         state="$(z2r_dns_field "$res" 1)"
         reason="$(z2r_dns_field "$res" 2)"
         states="${states} ${state}/${reason}"
@@ -777,7 +777,7 @@ z2r_dns_check_print() {
     local domain="${1:-$Z2R_DNS_CHECK_DOMAIN}" server="${2:-$Z2R_DNS_CHECK_SERVER}"
     local out res states state color short i=0 s
     echo "Проверка резолва: nslookup ${domain} @ ${server} (${Z2R_DNS_TRIES} проверки, интервал ${Z2R_DNS_INTERVAL} c)"
-    out="$(z2r_dns_check_series "$domain" "$server")"
+    out="$(z2r_dns_check_series "$domain" "$server")" || out=""
     res="$(printf '%s\n' "$out" | sed -n 1p)"
     states="$(printf '%s\n' "$out" | sed -n 2p)"
     for s in $states; do

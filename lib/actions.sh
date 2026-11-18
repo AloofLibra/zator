@@ -39,7 +39,7 @@ get_keenetic_policy_status() {
 menu_action_set_keenetic_policy_name() {
   local name mark=""
   ensure_keenetic_policy_config || return 1
-  read -re -p "Введите имя Keenetic-политики. Enter очистит настройку, 0 - отмена: " name
+  read -re -p "Введите имя Keenetic-политики. Enter очистит настройку, 0 - отмена: " name || name=""
   [ "$name" = "0" ] && { echo "Изменение отменено."; return; }
   case "$name" in *$'\n'*|*'|'*) echo -e "${red}Недопустимое имя политики.${plain}"; return 1;; esac
   if [ -n "$name" ]; then
@@ -48,7 +48,7 @@ menu_action_set_keenetic_policy_name() {
   fi
   config_set_var /opt/zapret2/config POLICY_NAME "$name"
   config_set_var /opt/zapret2/config POLICY_MARK "$mark"
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   [ -n "$name" ] && echo -e "${green}Установлена Keenetic-политика:${plain} $name" || echo -e "${yellow}Ограничение по Keenetic-политике отключено.${plain}"
 }
 
@@ -58,7 +58,7 @@ menu_action_toggle_keenetic_policy_mode() {
   value="$(sed -n 's/^POLICY_EXCLUDE=//p' /opt/zapret2/config | tail -n1)"
   [ "$value" = "1" ] && { next=0; value="Только устройства из политики"; } || { next=1; value="Все, кроме устройств из политики"; }
   sed -i "s/^POLICY_EXCLUDE=.*/POLICY_EXCLUDE=$next/" /opt/zapret2/config
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Режим Keenetic-политики изменён:${plain} $value"
 }
 
@@ -81,6 +81,17 @@ config_apply_from_default() {
 
   profile_apply_all "$root/config.default"
   config_fwtype_apply_default "$root/config.default" || return 1
+
+  # Кастомные пользовательские стратегии: заново инжектим в свежий эталон,
+  # чтобы они пережили применение config.default (локи ремапятся сами).
+  if type custom_strategies_apply_file >/dev/null 2>&1; then
+    custom_strategies_apply_file "$root/config.default" || true
+  fi
+  # Выбор блобов (глобальный maxru + слоты z2r_prof_N) персистится в
+  # blob_files.tsv и переживает регенерацию конфига — как локи в locked.tsv.
+  if type blob_files_apply >/dev/null 2>&1; then
+    blob_files_apply "$root/config.default" || true
+  fi
 
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then
@@ -148,10 +159,14 @@ menu_action_update_config_reset() {
     fi
   fi
 
-  config_apply_from_default
+  if ! config_apply_from_default; then
+    echo -e "${red}Не удалось применить config.default к живому конфигу — восстанавливаю сервис.${plain}"
+    z2r_service_action start >/dev/null 2>&1 || true
+    return 1
+  fi
 
   if [ "$BACKUP_HELPER_CREATED" != "1" ] || [ ! -f "$BACKUP_LAST_ARCHIVE" ]; then
-    z2r_service_action start
+    z2r_service_action start >/dev/null 2>&1 || true
   fi
 
   echo -e "${green}Config файл обновлён. Листы подбора стратегий и исключений сброшены в дефолт, если не просили сохранить. Фейк файлы обновлены.${plain}"
@@ -180,15 +195,18 @@ fwtype_apply() {
 
   config_set_var "$cfg" FWTYPE "$target"
   /opt/zapret2/install_prereq.sh
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Zapret mode: $target.${plain}"
   return 0
 }
 
 menu_action_toggle_udp_range() {
   local cfg current_ports new_ports state
-  cfg="$(get_config_file)"
-  current_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)"
+  if ! cfg="$(get_config_file)"; then
+    echo -e "${red}Не найден config/config.default — сначала установите/обновите zapret2 (п.5).${plain}"
+    return 0
+  fi
+  current_ports="$(config_get_var "$cfg" NFQWS2_PORTS_UDP)" || current_ports=""
   state="$(config_mode_text udp_games "$cfg")"
 
   if [ "$state" = "Включен" ]; then
@@ -209,7 +227,7 @@ menu_action_toggle_udp_range() {
     return 0
   fi
 
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Выполнение переключений завершено.${plain}"
   return 0
 }
@@ -246,7 +264,7 @@ menu_action_toggle_dns_desync() {
       ;;
   esac
 
-  z2r_service_action restart
+  z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
   echo -e "${green}Выполнение переключений завершено.${plain}"
   return 0
 }
@@ -341,7 +359,7 @@ menu_action_set_tls_blob() {
     echo "$i. $b"
   done
   echo "0. Отмена"
-  read -re -p "Ваш выбор: " choice
+  read -re -p "Ваш выбор: " choice || choice=""
 
   if [ "$choice" = "0" ] || [ -z "$choice" ]; then
     echo "Отменено."
@@ -360,6 +378,8 @@ menu_action_set_tls_blob() {
     else
       sed -i -r '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)maxru#\1fake_default_tls#g; }' "$cfg"
     fi
+    # Персистим выбор: переживёт применение config.default (5 -> 7) и деплои.
+    type blob_files_set >/dev/null 2>&1 && blob_files_set maxru fake_default_tls
     echo -e "${green}В TLS-стратегиях выбран встроенный blob: fake_default_tls${plain}"
     echo -e "${yellow}Строка --blob=maxru:@... сохранена без изменений для обратного переключения.${plain}"
     telemetry_notify
@@ -382,6 +402,8 @@ menu_action_set_tls_blob() {
     sed -i -r '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
     sed -i -r "s#--blob=maxru:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#${prefix}${selected_blob}#g" "$cfg"
   fi
+  # Персистим выбор: переживёт применение config.default (5 -> 7) и деплои.
+  type blob_files_set >/dev/null 2>&1 && blob_files_set maxru "$selected_blob"
   echo -e "${green}Обновлено: --blob=maxru -> ${selected_blob}${plain}"
   echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы применить изменения.${plain}"
   telemetry_notify
@@ -390,7 +412,8 @@ menu_action_set_tls_blob() {
 }
 
 # Прописывает файл в декларацию слота z2r_prof_N конфига $1 (зеркало sed'а maxru
-# из menu_action_set_tls_blob, path-agnostic zapret2|zator). Возвращает 1, если
+# из menu_action_set_tls_blob, path-agnostic zapret2|zator) и персистит выбор в
+# blob_files.tsv (переживает применение config.default). Возвращает 1, если
 # декларации нет в конфиге (нужно применить новый config.default: п.5 -> п.7).
 tls_blob_profile_apply_file() {
   local cfg="$1" profile="$2" file="$3" slot ereg
@@ -398,6 +421,7 @@ tls_blob_profile_apply_file() {
   ereg="$(config_sed_ereg)"
   grep -qE -- "--blob=${slot}:@/opt/(zapret2|zator)/files/fake/" "$cfg" || return 1
   sed -i $ereg "s#--blob=${slot}:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#--blob=${slot}:@/opt/zator/files/fake/${file}#g" "$cfg"
+  type blob_files_set >/dev/null 2>&1 && blob_files_set "$slot" "$file"
   return 0
 }
 
@@ -546,7 +570,7 @@ menu_action_set_wg_blob() {
     echo "$i. $b"
   done
   echo "0. Отмена"
-  read -re -p "Ваш выбор: " choice
+  read -re -p "Ваш выбор: " choice || choice=""
 
   if [ "$choice" = "0" ] || [ -z "$choice" ]; then
     echo "Отменено."
@@ -903,6 +927,10 @@ ports_set_rkn_filter() {
 # Добавление пользовательских портов (tcp|udp).
 # Порты добавляются в начало строки (до якоря 80/443) и читаются прямо из config.
 ports_add() {
+  if [ ! -f /opt/zapret2/config ]; then
+    echo -e "${red}Не найден /opt/zapret2/config — сначала установите zapret2 (п.5).${plain}"
+    return 0
+  fi
   local proto="$1"
   local var label input
   var="$(ports_var "$proto")" || return 1
@@ -919,7 +947,7 @@ ports_add() {
   echo "Формат: один порт (8080) или диапазон (9000-9100)."
   echo "Несколько значений — через запятую без пробелов: 8080,9090,9000-9100"
   echo ""
-  read -re -p "Введите порты: " input
+  read -re -p "Введите порты: " input || input=""
 
   if ! ports_apply_add "$proto" "$input"; then
     echo -e "${yellow}Ничего не добавлено.${plain}"
@@ -939,6 +967,10 @@ ports_add() {
 # Просмотр и удаление пользовательских портов (tcp|udp).
 # Показываются только порты слева от якоря (80/443) — их и можно удалить.
 ports_manage() {
+  if [ ! -f /opt/zapret2/config ]; then
+    echo -e "${red}Не найден /opt/zapret2/config — сначала установите zapret2 (п.5).${plain}"
+    return 0
+  fi
   local proto="$1" cfg="/opt/zapret2/config"
   local var anchor label line choice confirm i target
   local ports=()
@@ -974,7 +1006,7 @@ ports_manage() {
     done
     echo ""
     echo -e "Введите номер порта для удаления, ${Fyellow}0${plain} - назад."
-    read -re -p "Ваш выбор: " choice
+    read -re -p "Ваш выбор: " choice || choice=""
 
     case "$choice" in
       "0"|"")
@@ -992,7 +1024,7 @@ ports_manage() {
         [ "$proto" = "tcp" ] && echo "(также убирается из стратегии RKN)"
         echo "1 - да, удалить"
         echo "0 - отмена"
-        read -re -p "Ваш выбор: " confirm
+        read -re -p "Ваш выбор: " confirm || confirm=""
         case "$confirm" in
           "1")
             if ports_apply_remove "$proto" "$target"; then
@@ -1014,7 +1046,7 @@ ports_manage() {
   done
 }
 
-Z2R_BACKUP_DIR="/opt/zator_backup"
+Z2R_BACKUP_DIR="${Z2R_BACKUP_DIR:-/opt/zator_backup}"
 
 z2r_backup_state_files() {
   cat <<'EOF'
@@ -1026,16 +1058,24 @@ extra_strats/cache/orchestra/locked.tsv
 extra_strats/cache/orchestra/locked.manual.tsv
 extra_strats/cache/orchestra/auto_locked.tsv
 extra_strats/cache/orchestra/blob_override.tsv
+extra_strats/cache/orchestra/blob_files.tsv
 extra_strats/cache/orchestra/sni_override.tsv
 extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv
+extra_strats/cache/orchestra/custom_strategies.tsv
 EOF
   # самый свежий архив результатов суперавтопрогона едет в бэкапе вместе с
   # locked.tsv (только последний — историю ротация хранит в cache/supersweep)
   local ss_dir ss_newest
   ss_dir="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/orchestra/supersweep"
-  ss_newest="$(ls -1t "$ss_dir"/supersweep-*.tar 2>/dev/null | head -n1)"
-  [ -n "$ss_newest" ] && printf 'extra_strats/cache/orchestra/supersweep/%s\n' "$(basename "$ss_newest")"
+  # || true внутри подстановки: ls на пустом каталоге даёт rc=2, под pipefail
+  # (смоуки/WebUI) убивал бы присваивание
+  ss_newest="$( { ls -1t "$ss_dir"/supersweep-*.tar 2>/dev/null || true; } | head -n1)"
+  # if вместо «&& ...»: на свежей установке без супер-свип-архивов андр-лист
+  # короткозамыкался rc=1 и под set -e убивал меню при создании бэкапа (п.21)
+  if [ -n "$ss_newest" ]; then
+    printf 'extra_strats/cache/orchestra/supersweep/%s\n' "$(basename "$ss_newest")"
+  fi
   return 0
 }
 
@@ -1082,7 +1122,7 @@ backup_pick_archive() {
   done < "$list_file"
   echo -e "  ${Fyellow}0.${plain} ${Fyellow}Отмена${plain}"
   echo ""
-  read -re -p "$prompt" choice
+  read -re -p "$prompt" choice || choice=""
 
   if [ "$choice" = "0" ] || [ -z "$choice" ]; then
     rm -f "$list_file"
@@ -1127,14 +1167,14 @@ backup_create_core() {
   rm -rf "$stage"
   mkdir -p "$stage" || return 1
 
-  if [ -f /opt/zapret2/config ]; then
-    cp -f /opt/zapret2/config "$stage/config" || { rm -rf "$stage" "$tmp_list"; return 1; }
+  if [ -f "${ZAPRET2_ROOT:-/opt/zapret2}/config" ]; then
+    cp -f "${ZAPRET2_ROOT:-/opt/zapret2}/config" "$stage/config" || { rm -rf "$stage" "$tmp_list"; return 1; }
   fi
 
   z2r_backup_state_files > "$tmp_list"
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
-    src="/opt/zator/$rel"
+    src="${ZATOR_ROOT:-/opt/zator}/$rel"
     [ -f "$src" ] || continue
     mkdir -p "$stage/$(dirname "$rel")"
     cp -f "$src" "$stage/$rel" || { rm -rf "$stage" "$tmp_list"; return 1; }
@@ -1257,7 +1297,7 @@ backup_update_offer_restore() {
     echo -e "${yellow}(Доступны только безопасные режимы: умный перенос / списки. Полное восстановление заблокировано, чтобы не затереть обновлённый config.)${plain}"
     echo -e "  ${Fcyan}1${plain} — да, восстановить из свежего бэкапа"
     echo -e "  ${Fyellow}0${plain} — нет, оставить обновлённый config как есть"
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       1|5|y|Y|д|Д)
         # block_full=1: режим «Полное» (a) недоступен — только списки (2) и умный перенос (3).
@@ -1282,7 +1322,7 @@ backup_update_offer_restore() {
     echo -e "${yellow}(Полное восстановление будет заблокировано в контексте обновления.)${plain}"
     echo -e "  ${Fcyan}1${plain} — да, перейти в меню бэкапов"
     echo -e "  ${Fyellow}0${plain} — нет, продолжить без восстановления из бэкапов"
-    read -re -p "Ваш выбор: " ans
+    read -re -p "Ваш выбор: " ans || ans=""
     case "$ans" in
       1|5|y|Y|д|Д)
         # block_full=1 пробрасывается в подменю: полное восстановление скрыто.
@@ -1764,7 +1804,7 @@ menu_action_backup_restore() {
       echo -e "  ${Fcyan}3${plain} — ${green}Умный перенос настроек${plain} (config не заменяется; переносятся порты, blob'ы, флаги п.13/18/19/20)"
       echo -e "  ${Fyellow}0${plain} — ${Fyellow}Отмена${plain}"
     fi
-    read -re -p "Ваш выбор: " mode
+    read -re -p "Ваш выбор: " mode || mode=""
     case "$mode" in
       2|3) break ;;
       1)
@@ -1852,7 +1892,7 @@ menu_action_backup_restore() {
     [ -n "$rel" ] || continue
     src="$restore_dir/$rel"
     [ -f "$src" ] || continue
-    dst="/opt/zator/$rel"
+    dst="${ZATOR_ROOT:-/opt/zator}/$rel"
     mkdir -p "$(dirname "$dst")"
     if ! cp -f "$src" "$dst"; then
       rm -rf "$restore_dir" "$tmp_list"
@@ -1862,6 +1902,23 @@ menu_action_backup_restore() {
   done < "$tmp_list"
   rm -f "$tmp_list"
   echo -e "${green}Списки доменов и номера стратегий восстановлены.${plain}"
+
+  # Кастомные стратегии восстановлены из TSV — переинжектим их в живой config
+  # (номера могли сместиться между бэкапом и текущим конфигом; локи ремапятся).
+  if [ -f "/opt/zator/extra_strats/cache/orchestra/custom_strategies.tsv" ] \
+     && type custom_strategies_apply_file >/dev/null 2>&1; then
+    if custom_strategies_apply_file "${ZAPRET2_ROOT:-/opt/zapret2}/config"; then
+      echo -e "${green}Кастомные стратегии восстановлены в конфиг (рестарт применит).${plain}"
+    else
+      echo -e "${yellow}Кастомные стратегии не переинжектились — примените вручную (п.1 -> 14 -> 6).${plain}"
+    fi
+  fi
+
+  # Выбор блобов восстановлен из blob_files.tsv — возвращаем его в живой config.
+  if type blob_files_apply >/dev/null 2>&1; then
+    blob_files_apply "${ZAPRET2_ROOT:-/opt/zapret2}/config" && \
+      echo -e "${green}Выбор блобов восстановлен в конфиг (рестарт применит).${plain}"
+  fi
 
   rm -rf "$restore_dir"
 
@@ -1886,7 +1943,7 @@ menu_action_backup_delete() {
   echo -e "${yellow}Удалить архив ${green}$(basename "$archive")${yellow} безвозвратно?${plain}"
   echo -e "  ${Fcyan}1${plain} — да, удалить"
   echo -e "  ${Fyellow}0${plain} — отмена"
-  read -re -p "Ваш выбор: " confirm
+  read -re -p "Ваш выбор: " confirm || confirm=""
 
   if [ "$confirm" = "1" ]; then
     rm -f "$archive"

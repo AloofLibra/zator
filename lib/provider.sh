@@ -213,8 +213,8 @@ provider_set_manual() {
 
 provider_set_manual_menu() {
   local p c
-  read -re -p "Провайдер (например MTS/Beeline): " p
-  read -re -p "Город (можно пусто): " c
+  read -re -p "Провайдер (например MTS/Beeline): " p || p=""
+  read -re -p "Город (можно пусто): " c || c=""
   provider_set_manual "$p" "$c" || echo -e "${red:-}Провайдер не задан.${plain:-}"
 }
 # ---- /Provider detector integration ----

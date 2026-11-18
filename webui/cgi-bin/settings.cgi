@@ -50,6 +50,9 @@ case "${REQUEST_METHOD:-GET}" in
       supersweep)
         api_supersweep_get
         ;;
+      h3_curl)
+        api_h3_curl_get
+        ;;
       update_check)
         api_update_check
         ;;

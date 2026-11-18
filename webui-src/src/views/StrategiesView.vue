@@ -5,8 +5,8 @@ import { busyActive, busyButton, withBusy } from '../stores/busy'
 import { fetchAndApplyState } from '../stores/state'
 import { locks, refreshAll, scope, scopes, status, statusLoaded } from '../stores/status'
 import { showToast } from '../stores/toast'
-import { fetchRecommendations } from '../api/endpoints'
-import type { Recommendations } from '../api/types'
+import { fetchH3Curl, fetchRecommendations } from '../api/endpoints'
+import type { H3CurlStatus, Recommendations } from '../api/types'
 import { provider } from '../stores/settings'
 import StrategyCard from '../components/strategies/StrategyCard.vue'
 import SupersweepPanel from '../components/strategies/SupersweepPanel.vue'
@@ -17,6 +17,20 @@ const router = useRouter()
 const recommendations = ref<Recommendations | null>(null)
 const recommendationsLoading = ref(false)
 const recommendationsRefresh = ref(0)
+const h3Curl = ref<H3CurlStatus | null>(null)
+// Статус h3-curl необязателен: нет ответа — карточка профиля 5 не показывает строку.
+watch([statusLoaded, recommendationsRefresh], async ([loaded], _previous, onCleanup) => {
+  if (!loaded) return
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 8000)
+  onCleanup(() => { controller.abort(); window.clearTimeout(timeout) })
+  try {
+    const data = await fetchH3Curl(controller.signal)
+    if (typeof data.found === 'boolean') h3Curl.value = data
+  } catch {
+    // проверка необязательна: управление стратегиями не блокируется
+  }
+}, { immediate: true })
 const recommendationProvider = computed(() => provider.value?.provider || status.value?.provider || '')
 const recommendationDate = computed(() => {
   const timestamp = recommendations.value?.generated_at
@@ -135,7 +149,8 @@ async function refresh() {
     </aside>
     <div v-if="!statusLoaded" class="status-loading" aria-live="polite">Пожалуйста подождите...</div>
     <div v-else class="profile-grid" id="strategy-cards">
-      <StrategyCard v-for="profile in locks" :key="profile.profile" :profile="profile" :recommendations="recommendations" />
+      <StrategyCard v-for="profile in locks" :key="profile.profile" :profile="profile"
+        :recommendations="recommendations" :h3-curl="h3Curl" />
     </div>
   </section>
 </template>

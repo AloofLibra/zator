@@ -48,6 +48,25 @@ api_supersweep_get() {
   send_json '200 OK' "$body"
 }
 
+# --- h3-curl: статус тестового curl с HTTP/3 (карточка профиля 5 QUIC) -------
+# Только чтение (детект из quic_media.sh). Установка/удаление остаются в CLI
+# (п.5 -> п.11): сетевые инсталляции из CGI не выполняются по дизайну.
+api_h3_curl_get() {
+  if ! type z2r_quic_curl_detect >/dev/null 2>&1 \
+      || ! type z2r_quic_curl_arch >/dev/null 2>&1; then
+    send_error '503 Service Unavailable' 'Для статуса h3-curl обновите Core zator.'
+  fi
+  local arch path=""
+  arch="$(z2r_quic_curl_arch 2>/dev/null)" || arch=""
+  if path="$(z2r_quic_curl_detect 2>/dev/null)"; then
+    printf 'Cache-Control: no-store\r\n'
+    send_json '200 OK' "{\"found\":true,\"path\":\"$(json_escape "$path")\",\"arch\":\"$(json_escape "$arch")\"}"
+  else
+    printf 'Cache-Control: no-store\r\n'
+    send_json '200 OK' "{\"found\":false,\"path\":\"\",\"arch\":\"$(json_escape "$arch")\"}"
+  fi
+}
+
 find_runtime_libs() {
   local here dir file
   here="$(cd -- "$(dirname -- "$0")" && pwd)"
@@ -74,6 +93,19 @@ if [ "${0##*/}" = settings.cgi ] && [ "${REQUEST_METHOD:-GET}" = GET ] && [ "${Q
   exit 0
 fi
 
+# Статус h3-curl тоже лёгкий: quic_media.sh сам тянет youtube_media.sh при
+# наличии; модуль необязательный (старый bootstrap мог не доставить) — тогда
+# честный 503 с просьбой обновить Core.
+if [ "${0##*/}" = settings.cgi ] && [ "${REQUEST_METHOD:-GET}" = GET ] && [ "${QUERY_STRING:-}" = setting=h3_curl ]; then
+  if find_runtime_libs quic_media.sh; then
+    . "$LIB_DIR/quic_media.sh"
+    api_h3_curl_get
+  else
+    send_error '503 Service Unavailable' 'Для статуса h3-curl обновите Core zator.'
+  fi
+  exit 0
+fi
+
 find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{"error":"missing z2r runtime libs"}'; exit 0; }
 . "$LIB_DIR/config.sh"
 . "$LIB_DIR/orchestra_state.sh"
@@ -86,6 +118,7 @@ find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { ec
 [ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
 [ -f "$LIB_DIR/googlevideo_ips.sh" ] && . "$LIB_DIR/googlevideo_ips.sh"
 [ -f "$LIB_DIR/supersweep.sh" ] && . "$LIB_DIR/supersweep.sh"
+[ -f "$LIB_DIR/custom_strategies.sh" ] && . "$LIB_DIR/custom_strategies.sh"
 
 telemetry_notify() {
   type send_stats >/dev/null 2>&1 && send_stats || true
@@ -113,12 +146,20 @@ parse_params() {
   PARAM_MODE=""
   PARAM_SCALE=""
   PARAM_SCOPE="default"
+  PARAM_BLOCK=""
+  PARAM_COMMENT=""
+  PARAM_TEXT=""
+  PARAM_ID=""
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
     value="${part#*=}"
     value="${value//+/ }"
-    printf -v value '%b' "${value//%/\\x}"
+    # URL-decode %XX -> \xXX для printf %b. НЕ инлайнить замену «//%/\x»:
+    # bash теряет бэкслеш в ${var//pat/repl} на всех версиях (проверено
+    # 4.4 и 5.2) — декод вырождался в мусор «xHH» (кириллица, \n импорта).
+    local url_hex='\x'
+    printf -v value '%b' "${value//%/$url_hex}"
     case "$key" in
       profile) PARAM_PROFILE="$value" ;;
       strategy) PARAM_STRATEGY="$value" ;;
@@ -135,6 +176,10 @@ parse_params() {
       mode) PARAM_MODE="$value" ;;
       scale) PARAM_SCALE="$value" ;;
       scope) PARAM_SCOPE="${value:-default}" ;;
+      block) PARAM_BLOCK="$value" ;;
+      comment) PARAM_COMMENT="$value" ;;
+      text) PARAM_TEXT="$value" ;;
+      id) PARAM_ID="$value" ;;
     esac
   done
 }
@@ -714,7 +759,7 @@ api_state() {
     version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_release\":\"\",\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
   fi
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"quic_blobs":[$(api_quic_blobs_json)],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -850,6 +895,34 @@ api_update_check() {
   send_json "200 OK" "{\"update_available\":$update,\"release\":\"$j_rel\",\"latest_zator_date\":\"$j_lz\",\"latest_webui_date\":\"$j_lw\",\"checked_at\":\"$j_ck\",\"error\":\"$j_err\"}"
 }
 
+# Кандидаты QUIC-блобов (профиль 5): UDP-полезные нагрузки из каталога фейков.
+# Фильтр зеркалит blob_override_file_valid 5 / _tls_blob_list_files 5 CLI —
+# держать синхронно при изменении любого из трёх.
+api_quic_blobs_json() {
+  local fake_dir="${Z2R_BLOB_FAKE_DIR:-/opt/zator/files/fake}" f out=""
+  [ -d "$fake_dir" ] || { printf ''; return 0; }
+  if sort -z </dev/null >/dev/null 2>&1; then
+    while IFS= read -r -d '' f; do
+      f="$(basename "$f")"
+      case "$f" in
+        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
+          out="${out}${out:+,}\"$(json_escape "$f")\""
+          ;;
+      esac
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
+  else
+    while IFS= read -r f; do
+      f="$(basename "$f")"
+      case "$f" in
+        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
+          out="${out}${out:+,}\"$(json_escape "$f")\""
+          ;;
+      esac
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' | sort)
+  fi
+  printf '%s' "$out"
+}
+
 api_tls_blob_get() {
   local cfg="/opt/zapret2/config"
   local fake_dir="/opt/zator/files/fake"
@@ -887,6 +960,7 @@ api_tls_blob_get() {
     \"current_mode\":\"$(json_escape "$current_mode")\",
     \"current_blob\":\"$(json_escape "$current_blob")\",
     \"available_blobs\":[$available_blobs],
+    \"quic_blobs\":[$(api_quic_blobs_json)],
     \"profile_blobs\":{$(api_tls_blob_profile_blobs_json)},
     \"profile_modes\":{$(api_fake_mode_modes_json)},
     \"profile_snis\":{$(api_fake_mode_snis_json)},
@@ -944,6 +1018,9 @@ api_tls_blob_set() {
 # Per-profile TLS блоб: value = "" (сброс к глобальному) | fake_default_tls | файл слота.
 # Сброс и встроенный блоб применяются без рестарта (TTL-кэш locked.lua ~2с);
 # смена файла слота рестартит автоматически, как глобальная смена.
+# Профиль 5 (QUIC): сброс — то же «как в стратегиях конфига»; fake_default_tls —
+# TLS-концепт, для QUIC запрещён; кандидаты — UDP-блобы (blob_override_file_valid
+# профиль-aware, второй аргумент обязателен, иначе QUIC-файлы отсеются TLS-фильтром).
 api_tls_blob_profile_set() {
   local profile="${PARAM_PROFILE:-}" value="${PARAM_VALUE:-}"
   local cfg="/opt/zapret2/config" slot supported=0 p
@@ -960,13 +1037,16 @@ api_tls_blob_profile_set() {
   fi
 
   if [ "$value" = "fake_default_tls" ]; then
+    if [ "$profile" = "5" ]; then
+      send_error "400 Bad Request" "fake_default_tls неприменим к QUIC-профилю (только TLS-профили)"
+    fi
     blob_override_set "$profile" fake_default_tls || send_error "500 Internal Server Error" "Не удалось сохранить переопределение"
     telemetry_notify
     send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
     return
   fi
 
-  blob_override_file_valid "$value" || send_error "400 Bad Request" "Некорректное значение блоба: $value"
+  blob_override_file_valid "$value" "$profile" || send_error "400 Bad Request" "Некорректное значение блоба: $value"
 
   slot="$(blob_override_slot "$profile")"
   tls_blob_profile_apply_file "$cfg" "$profile" "$value" \
@@ -1969,6 +2049,164 @@ api_domains_action() {
       domain="${PARAM_DOMAIN:-}"
       [ -n "$domain" ] || send_error "400 Bad Request" "Не указан домен"
       send_json "200 OK" "{\"ok\":true,\"check\":$(_domains_check_json "$domain")}"
+      ;;
+    *)
+      send_error "400 Bad Request" "Неизвестное действие: $action"
+      ;;
+  esac
+}
+
+# --- Кастомные стратегии пользователя (custom_strategies.tsv, CLI п.1 -> 14) --
+# CRUD поверх lib/custom_strategies.sh: та же строгая валидация и нормализация,
+# что в CLI (whitelist символов/примитивов/ключей, блобы — только объявленные).
+# apply переливает конфиг (маркерные регионы, номера после максимума блока) и
+# ремапит локи; изменение конфига — рестарт zapret2 (авто, если был запущен).
+
+_custom_lib_guard() {
+  type custom_strategies_blocks >/dev/null 2>&1 \
+    && type custom_strategies_validate >/dev/null 2>&1 \
+    || send_error "503 Service Unavailable" "Для кастомных стратегий обновите Core zator."
+}
+
+_custom_config_path() {
+  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+  printf '%s' "$cfg"
+}
+
+# Сообщения валидатора (stderr) в переменную: stdout функции несёт результат.
+_custom_capture_err() {
+  local errfile="/tmp/z2r-custom-err.$$"
+  local out rc=0
+  out="$("$@" 2>"$errfile")" || rc=$?
+  REPLY_OUT="$out"
+  REPLY_RC=$rc
+  REPLY_ERR="$(cat "$errfile" 2>/dev/null)"
+  rm -f "$errfile" 2>/dev/null || true
+}
+
+api_custom_blocks_json() {
+  local out="" b label profiles protos transport
+  while IFS="$(printf '\t')" read -r b label profiles protos transport; do
+    out="${out}${out:+,}{\"block\":\"$(json_escape "$b")\",\"label\":\"$(json_escape "$label")\",\"profiles\":\"$(json_escape "$profiles")\",\"transport\":\"$(json_escape "$transport")\"}"
+  done < <(custom_strategies_blocks)
+  printf '%s' "$out"
+}
+
+# GET /cgi-bin/custom.cgi[?block=p5] — таблица блоков + записи (все или блока).
+api_custom_list() {
+  _custom_lib_guard
+  parse_params
+  local filter="${PARAM_BLOCK:-}" rows="" row
+  if [ -n "$filter" ] && ! custom_strategies_block_valid "$filter"; then
+    send_error "400 Bad Request" "Некорректный блок: $filter"
+  fi
+  # Поля — через _custom_strats_split: bash-read с табами сжимал пустые поля,
+  # и у записей без комментария assigned «уезжал» в комментарий.
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    if [ "${_CS_ENABLED:-1}" = "1" ]; then enabled=true; else enabled=false; fi
+    rows="${rows}${rows:+,}{\"id\":$_CS_ID,\"block\":\"$(json_escape "$_CS_BLOCK")\",\"spec\":\"$(json_escape "$_CS_SPEC")\",\"enabled\":$enabled,\"comment\":\"$(json_escape "${_CS_COMMENT:-}")\",\"assigned\":\"$(json_escape "${_CS_ASSIGNED:-}")\"}"
+  done < <(custom_strategies_list "$filter")
+  printf 'Cache-Control: no-store\r\n'
+  send_json "200 OK" "{\"blocks\":[$(api_custom_blocks_json)],\"strategies\":[$rows]}"
+}
+
+# Нормализация + валидация spec от пользователя — ВЫЗЫВАТЬ ТОЛЬКО на верхнем
+# уровне api-функции (не в подшелле!): send_error должен прервать весь CGI.
+# Нормализатор срезает «--lua-desync=» и хвостовые «:strategy=N» (клиент может
+# вставить готовую строку из конфига целиком); ошибки — 400 с текстом валидатора.
+_custom_normalize_and_check() {
+  local block="$1" raw="$2" cfg="$3"
+  local spec err
+  spec="$(custom_strategies_normalize "$raw" 2>/dev/null)" || \
+    send_error "400 Bad Request" "Не удалось разобрать строку: «strategy=» допустим только в конце групп"
+  _custom_capture_err custom_strategies_validate "$block" "$spec" "$cfg"
+  if [ "$REPLY_RC" != "0" ]; then
+    err="${REPLY_ERR:-не прошла валидация}"
+    err="${err//$'\n'/ }"
+    send_error "400 Bad Request" "$(printf '%s' "$err" | head -n1)"
+  fi
+  REPLY_OUT="$spec"
+}
+
+api_custom_action() {
+  _custom_lib_guard
+  parse_params
+  local action="${PARAM_ACTION:-}" id="${PARAM_ID:-}" block="${PARAM_BLOCK:-}"
+  local spec comment text cfg err rc=0
+  cfg="$(_custom_config_path)"
+
+  case "$action" in
+    add|edit)
+      custom_strategies_block_valid "$block" || send_error "400 Bad Request" "Некорректный блок: $block"
+      _custom_normalize_and_check "$block" "${PARAM_VALUE:-}" "$cfg"
+      spec="$REPLY_OUT"
+      comment="${PARAM_COMMENT:-}"
+      if [ "$action" = "add" ]; then
+        _custom_capture_err custom_strategies_add "$block" "$spec" "$comment"
+        [ "$REPLY_RC" = "0" ] || send_error "500 Internal Server Error" "Не удалось добавить запись"
+        send_json "200 OK" "{\"ok\":true,\"id\":$REPLY_OUT,\"apply_required\":true}"
+      else
+        case "$id" in ''|*[!0-9]*) send_error "400 Bad Request" "Некорректный ID" ;; esac
+        custom_strategies_row "$id" >/dev/null || send_error "400 Bad Request" "Нет записи $id"
+        local enabled
+        enabled="$(custom_strategies_row "$id" | awk -F '\t' '{print $4}')"
+        [ "${enabled:-1}" = "1" ] && enabled=1 || enabled=0
+        _custom_capture_err custom_strategies_replace "$id" "$block" "$spec" "$enabled" "$comment"
+        [ "$REPLY_RC" = "0" ] || send_error "500 Internal Server Error" "Не удалось обновить запись"
+        send_json "200 OK" "{\"ok\":true,\"apply_required\":true}"
+      fi
+      ;;
+    enable)
+      case "$id" in ''|*[!0-9]*) send_error "400 Bad Request" "Некорректный ID" ;; esac
+      case "${PARAM_VALUE:-}" in 0|1) ;; *) send_error "400 Bad Request" "enabled = 0 или 1" ;; esac
+      custom_strategies_set_enabled "$id" "${PARAM_VALUE:-}" || \
+        send_error "400 Bad Request" "Нет записи $id"
+      send_json "200 OK" "{\"ok\":true,\"apply_required\":true}"
+      ;;
+    delete)
+      case "$id" in ''|*[!0-9]*) send_error "400 Bad Request" "Некорректный ID" ;; esac
+      custom_strategies_delete "$id" || send_error "500 Internal Server Error" "Не удалось удалить запись"
+      send_json "200 OK" "{\"ok\":true,\"apply_required\":true}"
+      ;;
+    import)
+      custom_strategies_block_valid "$block" || send_error "400 Bad Request" "Некорректный блок: $block"
+      text="${PARAM_TEXT:-}"
+      [ -n "$text" ] || send_error "400 Bad Request" "Пустой импорт"
+      local IFS=$'\n' line ispec count=0
+      local added=0 skipped=0 errors=""
+      set -f
+      for line in $text; do
+        set +f
+        count=$((count + 1))
+        [ "$count" -le 64 ] || { skipped=$((skipped + 1)); continue; }
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || { skipped=$((skipped + 1)); continue; }
+        printf '%s' "$line" | grep -Eq '^[[:space:]]*#' && { skipped=$((skipped + 1)); continue; }
+        ispec="$(custom_strategies_normalize "$line" 2>/dev/null)" || {
+          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"не удалось разобрать строку\"}"
+          skipped=$((skipped + 1)); continue;
+        }
+        _custom_capture_err custom_strategies_add "$block" "$ispec" "импорт"
+        if [ "$REPLY_RC" = "0" ]; then
+          added=$((added + 1))
+        else
+          err="${REPLY_ERR:-не прошла валидация}"; err="${err//$'\n'/ }"
+          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$(printf '%s' "$err" | head -n1)")\"}"
+          skipped=$((skipped + 1))
+        fi
+      done
+      set +f
+      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"skipped\":$skipped,\"errors\":[$errors],\"apply_required\":true}"
+      ;;
+    apply)
+      _custom_capture_err custom_strategies_apply_file "$cfg"
+      [ "$REPLY_RC" = "0" ] || send_error "500 Internal Server Error" "Не удалось применить кастомные стратегии к конфигу"
+      PARAM_RESTART="${PARAM_RESTART:-1}" _service_apply_restart
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"restart_required\":true}"
       ;;
     *)
       send_error "400 Bad Request" "Неизвестное действие: $action"

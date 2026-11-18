@@ -91,8 +91,8 @@ assert_contains "$LOCKED_LUA_SRC" 'MODE_OVERRIDES\[tostring\(profile_key\)\]' \
   "хук не читает режим по profile_key"
 assert_contains "$LOCKED_LUA_SRC" 'clone_data and Z2R_CLONE_FIELD or name' \
   "клон не выигрывает у блоба-override"
-assert_contains "$LOCKED_LUA_SRC" 'saved_blob == "maxru" or saved_blob == "fake_default_tls"' \
-  "хук подменяет только maxru|fake_default_tls"
+assert_contains "$LOCKED_LUA_SRC" 'z2r_blob_override_swap' \
+  "хук подменяет источники через z2r_blob_override_swap (TLS и QUIC-блобы p5)"
 assert_contains "$LOCKED_LUA_SRC" 'instance\.arg\.blob = saved_blob' "хук не восстанавливает instance.arg"
 assert_contains "$LOCKED_LUA_SRC" 'blob_override_execute\(desync, verdict, instance, base_profile\)' \
   "circular_locked не передаёт base_profile в хук"
@@ -231,7 +231,7 @@ assert_contains "$Z2R_SRC" 'FAKE_ADAPT_LUA="\$ZATOR_ROOT/lua/fake-adapt\.lua"' \
   "z2r.sh нет переменной FAKE_ADAPT_LUA"
 assert_contains "$Z2R_SRC" 'z2r_download_project_file "\$FAKE_ADAPT_LUA" "lua/fake-adapt\.lua"' \
   "z2r.sh не докачивает fake-adapt.lua"
-assert_contains "$Z2R_SRC" 'silent-drop-detector\.lua dns-clone\.lua fake-adapt\.lua strategy-validator\.sh' \
+assert_contains "$Z2R_SRC" 'silent-drop-detector\.lua dns-clone\.lua fake-adapt\.lua wssize-ramp\.lua strategy-validator\.sh' \
   "миграция z2r.sh не переносит fake-adapt.lua"
 assert_contains "$Z2R_SRC" 's#/opt/zapret2/lua/fake-adapt\.lua#/opt/zator/lua/fake-adapt\.lua#g' \
   "миграция z2r.sh не переписывает путь fake-adapt.lua"

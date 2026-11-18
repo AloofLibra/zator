@@ -1,9 +1,10 @@
 import { api, formBody } from './client'
 import type {
-  ApplyResult, BackupsPayload, CheckPayload, DomainsImportResult, DomainsListPayload,
-  FallbackSettings, ModeSettingData, PortInfo, PortsSettings, ProfileInfo, ProviderSettings,
-  ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult,
-  WgBlobSettings, WgStateSettings, Recommendations, SupersweepPayload, WssizeRampSettings,
+  ApplyResult, BackupsPayload, CheckPayload, CustomImportResult, CustomListPayload,
+  DomainsImportResult, DomainsListPayload, FallbackSettings, H3CurlStatus, ModeSettingData,
+  PortInfo, PortsSettings, ProfileInfo, ProviderSettings, ScopesPayload, StatePayload,
+  StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult, WgBlobSettings,
+  WgStateSettings, Recommendations, SupersweepPayload, WssizeRampSettings,
 } from './types'
 
 export const fetchStatus = (scope: string) =>
@@ -17,6 +18,28 @@ export const fetchRecommendations = (signal?: AbortSignal) =>
 
 export const fetchSupersweep = (signal?: AbortSignal) =>
   api<SupersweepPayload>('/cgi-bin/settings.cgi?setting=supersweep', { signal })
+
+export const fetchH3Curl = (signal?: AbortSignal) =>
+  api<H3CurlStatus>('/cgi-bin/settings.cgi?setting=h3_curl', { signal })
+
+export const fetchCustomStrats = (block: string, signal?: AbortSignal) =>
+  api<CustomListPayload>(
+    `/cgi-bin/custom.cgi${block ? `?block=${encodeURIComponent(block)}` : ''}`, { signal })
+
+export const customStratsPost = (body: Record<string, string>) =>
+  api<ApplyResult & CustomImportResult>('/cgi-bin/custom.cgi', formBody(body))
+
+export const customStrats = {
+  add: (block: string, value: string, comment: string) =>
+    customStratsPost({ action: 'add', block, value, comment }),
+  edit: (id: string, block: string, value: string, comment: string) =>
+    customStratsPost({ action: 'edit', id, block, value, comment }),
+  enable: (id: string, enabled: boolean) =>
+    customStratsPost({ action: 'enable', id, value: enabled ? '1' : '0' }),
+  remove: (id: string) => customStratsPost({ action: 'delete', id }),
+  import: (block: string, text: string) => customStratsPost({ action: 'import', block, text }),
+  apply: () => customStratsPost({ action: 'apply' }),
+}
 
 export const fetchScopes = () => api<ScopesPayload>('/cgi-bin/scopes.cgi')
 

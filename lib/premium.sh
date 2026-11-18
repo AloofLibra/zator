@@ -21,7 +21,7 @@ spinner_for_seconds() {
   local _had_tput=0
   if command -v tput >/dev/null 2>&1; then
     _had_tput=1
-    tput civis
+    tput civis 2>/dev/null || true
     trap 'tput cnorm; trap - EXIT INT TERM' EXIT INT TERM
   fi
 
@@ -34,7 +34,7 @@ spinner_for_seconds() {
   printf "\r\033[2K%s... [OK]\n" "$msg"
 
   if (( _had_tput )); then
-    tput cnorm
+    tput cnorm 2>/dev/null || true
     trap - EXIT INT TERM
   fi
 }
@@ -59,7 +59,7 @@ premium_get_or_set_title() {
     "Владыка TTL (ненадолго)" \
     "Амбассадор «Тест не точен»" \
   )"
-  echo "$title" > "$PREMIUM_TITLE_FILE"
+  echo "$title" > "$PREMIUM_TITLE_FILE" || true
   echo "$title"
 }
 
@@ -94,7 +94,7 @@ zefeer_premium_777() {
   echo -e "Premium активирован ${green}ヽ(o^ ^o)ﾉ ${plain}"
   echo -e "Присвоен титул: ${pink}${title}${plain}"
 
-  : > "$PREMIUM_FLAG"
+  : > "$PREMIUM_FLAG" || true
 }
 
 zefeer_space_999() {
