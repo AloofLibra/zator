@@ -1252,6 +1252,88 @@ deploy_menu_header() {
   return 0
 }
 
+# П.11 подменю обновлений: h3-curl (curl с HTTP/3) для QUIC-проверок видео.
+# Функции z2r_quic_curl_* живут в необязательном quic_media.sh — старый
+# bootstrap мог его не доставить, тогда пункт честно отправляет обновлять zator.
+deploy_h3curl_menu() {
+  local answer arch dest used
+  while true; do
+    clear -x
+    echo -e "${Fcyan}===== h3-curl: curl с HTTP/3 для QUIC-проверок =====${plain}"
+    if ! type z2r_quic_curl_detect >/dev/null 2>&1 \
+        || ! type z2r_quic_curl_install >/dev/null 2>&1 \
+        || ! type z2r_quic_curl_remove >/dev/null 2>&1; then
+      echo -e "${yellow}Модуль quic_media.sh не установлен (старая версия zator).${plain}"
+      echo -e "${yellow}Обновите zator: п.5 -> п.2, затем вернитесь сюда.${plain}"
+      pause_enter
+      return 0
+    fi
+    arch="$(z2r_quic_curl_arch 2>/dev/null)" || arch=""
+    dest="${ZATOR_ROOT:-/opt/zator}/tools/bin/curl-h3-$arch"
+    if [ -n "$arch" ] && [ -x "$dest" ]; then
+      echo -e "Наш бинарник: ${green}установлен${plain} ($dest)"
+    elif [ -n "$arch" ]; then
+      echo -e "Наш бинарник: ${yellow}не установлен${plain} (curl-h3-$arch)"
+    else
+      echo -e "Наш бинарник: ${red}архитектура не определена ($(uname -m 2>/dev/null))${plain}"
+    fi
+    if used="$(z2r_quic_curl_detect 2>/dev/null)"; then
+      echo -e "Для QUIC-проверок будет использован: ${green}$used${plain}"
+    else
+      echo -e "Для QUIC-проверок будет использован: ${red}нет curl с HTTP/3 — проверки видео недоступны${plain}"
+    fi
+    echo ""
+    submenu_item 1 "Установить/обновить (скачать с z2r-curl-h3)"
+    submenu_item 2 "Удалить наш бинарник (QUIC-проверки отключатся, если нет другого curl с HTTP/3)"
+    submenu_item 0 "Назад"
+    echo ""
+    read -re -p "" answer || answer=""
+    case "$answer" in
+      1)
+        if [ -n "$arch" ] && [ -x "$dest" ]; then
+          echo -e "${yellow}Бинарник уже установлен.${plain}"
+          read -re -p "Перекачать заново (обновить)? 1 - да, Enter - нет: " answer || answer=""
+          if [ "$answer" = "1" ]; then
+            rm -f "$dest" || true
+          else
+            echo -e "${yellow}Отменено.${plain}"
+            pause_enter
+            continue
+          fi
+        fi
+        if [ "${Z2R_OFFLINE:-0}" = 1 ]; then
+          echo -e "${yellow}Офлайн-режим: установка из сети недоступна.${plain}"
+        elif [ -z "$arch" ]; then
+          echo -e "${red}Не удалось определить архитектуру платформы ($(uname -m 2>/dev/null)).${plain}"
+        elif z2r_quic_curl_install; then
+          echo -e "${green}Готово: QUIC-проверки видео (профиль 5, меню 01) теперь доступны.${plain}"
+        else
+          echo -e "${red}Установить h3-curl не удалось (причина выше).${plain}"
+        fi
+        pause_enter
+        ;;
+      2)
+        if [ -n "$arch" ] && [ -x "$dest" ]; then
+          read -re -p "Удалить $dest? 1 - да, Enter - нет: " answer || answer=""
+          [ "$answer" = "1" ] || { echo -e "${yellow}Отменено.${plain}"; pause_enter; continue; }
+        fi
+        if z2r_quic_curl_remove; then
+          echo -e "${green}Удаление завершено.${plain}"
+        else
+          echo -e "${red}Удалить h3-curl не удалось (причина выше).${plain}"
+        fi
+        pause_enter
+        ;;
+      0|"")
+        return 0
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
 deploy_update_menu() {
   DEPLOY_WANT_REINSTALL=0
   unset ZAPRET2_ARCHIVE_DIR ZAPRET2_VERSION
@@ -1272,6 +1354,15 @@ deploy_update_menu() {
     submenu_item 8 "Сбросить пользовательские файлы к эталону (netrogat и др.)"
     submenu_item 9 "Проверить целостность установки"
     submenu_item 10 "Источник обновлений (зеркало или стандартный GitHub)"
+    if type z2r_quic_curl_detect >/dev/null 2>&1; then
+      if z2r_quic_curl_detect >/dev/null 2>&1; then
+        submenu_item 11 "h3-curl для QUIC-проверок (установить/удалить)" "[есть]"
+      else
+        submenu_item 11 "h3-curl для QUIC-проверок (установить/удалить)" "[нет]" 0
+      fi
+    else
+      submenu_item 11 "h3-curl для QUIC-проверок (установить/удалить)"
+    fi
     submenu_item 0 "Назад в главное меню"
     echo ""
     read -re -p "" answer || answer=""
@@ -1409,6 +1500,9 @@ $i. $tar_file"
         ;;
       10)
         deploy_sources_menu
+        ;;
+      11)
+        deploy_h3curl_menu
         ;;
       0|"")
         return 0

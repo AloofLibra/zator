@@ -43,6 +43,14 @@ grep -q 'z2r_quic_single_round' lib/strategies.sh \
   || fail "проводка: ручной подбор профиля 5 не вызывает QUIC-проверку"
 grep -q '_z2r_quic_trial _orch_profile_manual_sweep' lib/strategies.sh \
   || fail "проводка: ручной подбор профиля 5 не обёрнут в QUIC-trial"
+grep -q 'deploy_h3curl_menu() {' lib/deploy.sh \
+  || fail "проводка: в deploy.sh нет функции deploy_h3curl_menu"
+grep -q 'submenu_item 11 "h3-curl для QUIC-проверок' lib/deploy.sh \
+  || fail "проводка: в меню обновлений нет пункта 11 h3-curl"
+grep -q '^        deploy_h3curl_menu$' lib/deploy.sh \
+  || fail "проводка: пункт 11 меню обновлений не вызывает deploy_h3curl_menu"
+grep -q 'меню 5 предложит установку' lib/quic_media.sh \
+  || fail "проводка: подсказка меню 01 должна ссылаться на меню 5"
 
 # == 1. архитектура артефакта =========*
 printf '\177ELF\001\001' > "$TMP_DIR/elf-little"   # EI_DATA=1
@@ -186,6 +194,69 @@ mkdir -p "$WGET_ROOT/tools/bin"
     exit 0
 ) || fail "установка: fallback на wget не сработал"
 test -s "$WGET_ROOT/tools/bin/curl-h3-i686" || fail "установка: wget-бинарник не установлен"
+
+# == 4b. удаление h3-curl и UA h3-проб ========================================
+# В $TMP_DIR/tools/bin лежит curl-h3-i686 из секции 3 (детект).
+MOCK_UNAME=i686 ZATOR_ROOT="$TMP_DIR" z2r_quic_curl_remove >/dev/null \
+  || fail "удаление: rc!=0 при живом бинарнике"
+test ! -e "$TMP_DIR/tools/bin/curl-h3-i686" || fail "удаление: бинарник не удалён"
+# Чужие файлы не трогаются, повторный вызов идемпотентен.
+printf keep > "$TMP_DIR/tools/bin/keep-me"
+MOCK_UNAME=i686 ZATOR_ROOT="$TMP_DIR" z2r_quic_curl_remove >/dev/null \
+  || fail "удаление: повторный вызов должен быть rc=0"
+test -s "$TMP_DIR/tools/bin/keep-me" || fail "удаление: чужой файл в tools/bin удалён"
+# Артефакты прочих архитектур уносятся тем же вызовом.
+mkdir -p "$TMP_DIR/rm2/tools/bin"
+: > "$TMP_DIR/rm2/tools/bin/curl-h3-mipssf"
+MOCK_UNAME=i686 ZATOR_ROOT="$TMP_DIR/rm2" z2r_quic_curl_remove >/dev/null \
+  || fail "удаление: чужая архитектура не удалена"
+test ! -e "$TMP_DIR/rm2/tools/bin/curl-h3-mipssf" || fail "удаление: артефакт mipssf остался"
+# Нет каталога — rc=0 (идемпотентно), нет UA-хелпера — дефолт и override.
+MOCK_UNAME=i686 ZATOR_ROOT="$TMP_DIR/no-such-root" z2r_quic_curl_remove >/dev/null \
+  || fail "удаление: отсутствие каталога не должно быть ошибкой"
+
+# == 4c. меню h3-curl в deploy.sh: живой прогон ===============================
+if source lib/deploy.sh; then
+    clear() { :; }
+    # Мок потребляет строку, как настоящий pause_enter (сдвиг stdin ломает сценарий).
+    pause_enter() { IFS= read -r _ || true; }
+    # Цвета меню в z2r.sh задаёт z2r.sh; под set -u нужны пустые, но заданные.
+    Fcyan="" Fgreen="" Fyellow="" red="" green="" yellow="" plain="" Bgreen="" Fplain=""
+    # Сеть всегда под моком dlbin: даже сбежавший в install сценарий не ходит на GitHub.
+    # (Префиксные присваивания инлайном: массив в позиции команды ломает разбор.)
+    # Удаление через меню: «2» (удалить) → «1» (подтвердить) → пауза съест «0».
+    menu_root="$TMP_DIR/menu-rm"
+    mkdir -p "$menu_root/tools/bin"
+    : > "$menu_root/tools/bin/curl-h3-i686"
+    out="$(printf '2\n1\n0\n' | MOCK_UNAME=i686 ZATOR_ROOT="$menu_root" \
+        MOCK_DL_SRC="$TMP_DIR/dl/good.gz" PATH="$TMP_DIR/dlbin:$PATH" deploy_h3curl_menu 2>&1)" \
+      || fail "меню: ветка удаления упала"
+    test ! -e "$menu_root/tools/bin/curl-h3-i686" \
+      || fail "меню: удаление через меню не сработало"
+    grep -q 'Удаление завершено' <<<"$out" || fail "меню: нет итога удаления"
+    # Установка через меню: «1» → пауза съест «0». Сеть — мок dlbin из секции 4.
+    menu_root="$TMP_DIR/menu-inst"
+    mkdir -p "$menu_root/tools/bin"
+    out="$(printf '1\n0\n' | MOCK_UNAME=i686 ZATOR_ROOT="$menu_root" \
+        MOCK_DL_SRC="$TMP_DIR/dl/good.gz" PATH="$TMP_DIR/dlbin:$PATH" deploy_h3curl_menu 2>&1)" \
+      || fail "меню: ветка установки упала"
+    test -s "$menu_root/tools/bin/curl-h3-i686" \
+      || fail "меню: установка через меню не сработала"
+    grep -q 'Готово' <<<"$out" || fail "меню: нет итога установки"
+    # Переустановка через меню: «1» → «1» (перекачать заново) → пауза съест «0».
+    : > "$MOCK_DL_CALLS"
+    out="$(printf '1\n1\n0\n' | MOCK_UNAME=i686 ZATOR_ROOT="$menu_root" \
+        MOCK_DL_SRC="$TMP_DIR/dl/good.gz" PATH="$TMP_DIR/dlbin:$PATH" deploy_h3curl_menu 2>&1)" \
+      || fail "меню: ветка переустановки упала"
+    test -s "$menu_root/tools/bin/curl-h3-i686" \
+      || fail "меню: переустановка не вернула бинарник"
+    test -s "$MOCK_DL_CALLS" || fail "меню: переустановка не качала заново"
+    # Модуль quic_media недоступен: пункт не падает, а сообщает об обновлении.
+    out="$(unset -f z2r_quic_curl_detect z2r_quic_curl_install z2r_quic_curl_remove
+        printf '\n' | MOCK_UNAME=i686 ZATOR_ROOT="$TMP_DIR" deploy_h3curl_menu 2>&1)" \
+      || fail "меню: пропажа quic-функций не должна ронять меню"
+    grep -q 'quic_media.sh не установлен' <<<"$out" || fail "меню: нет подсказки при отсутствующем модуле"
+fi
 
 # == 5. проба: один h3-GET по подписанной ссылке ==============================
 media="$TMP_DIR/media"

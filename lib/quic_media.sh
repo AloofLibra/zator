@@ -178,6 +178,21 @@ z2r_quic_curl_install() {
     return 1
 }
 
+# Удаление установленных бинарников h3-curl (текущей и прочих архитектур —
+# артефакты старой arch тоже мусор). Идемпотентно: нет ничего — rc=0.
+z2r_quic_curl_remove() {
+    local dir="${ZATOR_ROOT:-/opt/zator}/tools/bin" f removed=0
+    [ -d "$dir" ] || { echo "h3-curl: наш бинарник не установлен." >&2; return 0; }
+    for f in "$dir"/curl-h3-*; do
+        [ -e "$f" ] || continue
+        rm -f "$f" || { echo "h3-curl: не удалось удалить $f." >&2; return 1; }
+        echo "h3-curl: удалён $f." >&2
+        removed=$((removed + 1))
+    done
+    [ "$removed" -gt 0 ] || echo "h3-curl: наш бинарник не установлен." >&2
+    return 0
+}
+
 # Детект + предложение установки (диалог). rc=0 — h3-curl есть.
 z2r_quic_offer_install() {
     z2r_quic_curl_detect >/dev/null 2>&1 && return 0
