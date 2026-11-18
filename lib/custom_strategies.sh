@@ -101,6 +101,22 @@ custom_strategies_row() {
   custom_strategies_list | awk -F '\t' -v want="$id" '$1 == want { print; exit }'
 }
 
+# Разбор строки TSV на поля. НЕ через «IFS='\t' read»: bash-read сжимает
+# подряд идущие IFS-пробельные символы, и пустой комментарий (два таба
+# подряд) сдвигал поля — номер assigned «уезжал» в комментарий. Табы
+# переводятся в \x01 (в полях его быть не может — comment санируется) и
+# читаются с IFS=\x01, который пустые поля сохраняет. Поля — в глобальных
+# _CS_ID/_CS_BLOCK/_CS_SPEC/_CS_ENABLED/_CS_COMMENT/_CS_ASSIGNED.
+_CS_SOH=$'\x01'
+_custom_strats_split() {
+  local line="${1%$'\n'}"
+  case "$line" in ''|'#'*) return 1 ;; esac
+  line="${line//$'\t'/$_CS_SOH}"
+  IFS=$_CS_SOH read -r _CS_ID _CS_BLOCK _CS_SPEC _CS_ENABLED _CS_COMMENT _CS_ASSIGNED <<<"$line"
+  case "$_CS_ID" in ''|*[!0-9]*) return 1 ;; esac
+  return 0
+}
+
 # --- нормализация ввода -------------------------------------------------------
 
 # Приводит вставленную пользователем строку к каноническому виду: срезает
@@ -334,6 +350,7 @@ custom_strategies_add() {
   local block="$1" spec="$2" comment="${3:-}" id
   custom_strategies_validate "$block" "$spec" || return 2
   comment="${comment//$'\t'/ }"
+  comment="${comment//$_CS_SOH/ }"
   [ "${#comment}" -le 64 ] || comment="${comment:0:64}"
   id="$(custom_strategies_next_id)"
   local content rows
@@ -352,15 +369,17 @@ custom_strategies_replace() {
   custom_strategies_row "$id" >/dev/null || return 2
   custom_strategies_validate "$block" "$spec" || return 2
   comment="${comment//$'\t'/ }"
+  comment="${comment//$_CS_SOH/ }"
   [ "${#comment}" -le 64 ] || comment="${comment:0:64}"
   local content row
   content="$(_custom_strats_header)"$'
 '
-  while IFS="$(printf '\t')" read -r rid rblock rspec renabled rcomment rassigned; do
-    if [ "$rid" = "$id" ]; then
-      row="$(printf '%s\t%s\t%s\t%s\t%s\t' "$rid" "$block" "$spec" "$enabled" "$comment")"
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    if [ "$_CS_ID" = "$id" ]; then
+      row="$(printf '%s\t%s\t%s\t%s\t%s\t' "$_CS_ID" "$block" "$spec" "$enabled" "$comment")"
     else
-      row="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$rid" "$rblock" "$rspec" "$renabled" "$rcomment" "${rassigned:-}")"
+      row="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$_CS_ID" "$_CS_BLOCK" "$_CS_SPEC" "$_CS_ENABLED" "$_CS_COMMENT" "${_CS_ASSIGNED:-}")"
     fi
     content="$content$row
 "
@@ -373,9 +392,10 @@ custom_strategies_set_enabled() {
   local content row changed=0
   content="$(_custom_strats_header)"$'
 '
-  while IFS="$(printf '\t')" read -r rid rblock rspec renabled rcomment rassigned; do
-    [ "$rid" = "$id" ] && { renabled="$enabled"; changed=1; }
-    row="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$rid" "$rblock" "$rspec" "$renabled" "$rcomment" "${rassigned:-}")"
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    [ "$_CS_ID" = "$id" ] && { _CS_ENABLED="$enabled"; changed=1; }
+    row="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$_CS_ID" "$_CS_BLOCK" "$_CS_SPEC" "$_CS_ENABLED" "$_CS_COMMENT" "${_CS_ASSIGNED:-}")"
     content="$content$row
 "
   done < <(custom_strategies_list)
@@ -388,10 +408,11 @@ custom_strategies_delete() {
   local id="$1" content row newid=0
   content="$(_custom_strats_header)"$'
 '
-  while IFS="$(printf '\t')" read -r rid rblock rspec renabled rcomment rassigned; do
-    [ "$rid" = "$id" ] && continue
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    [ "$_CS_ID" = "$id" ] && continue
     newid=$((newid + 1))
-    row="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$newid" "$rblock" "$rspec" "$renabled" "$rcomment" "${rassigned:-}")"
+    row="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$newid" "$_CS_BLOCK" "$_CS_SPEC" "$_CS_ENABLED" "$_CS_COMMENT" "${_CS_ASSIGNED:-}")"
     content="$content$row
 "
   done < <(custom_strategies_list)
@@ -511,8 +532,11 @@ custom_strategies_apply_file() {
   # валидные (по блоку) записи; кривые блоки — warning и skip
   local tsv="$work/all.tsv" had_entries=0
   : > "$tsv"
-  local id bblock spec enabled comment assigned
-  while IFS="$(printf '\t')" read -r id bblock spec enabled comment assigned; do
+  local id bblock spec enabled comment assigned row
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    id="$_CS_ID" bblock="$_CS_BLOCK" spec="$_CS_SPEC" enabled="$_CS_ENABLED"
+    comment="$_CS_COMMENT" assigned="$_CS_ASSIGNED"
     if ! custom_strategies_block_valid "$bblock"; then
       echo "custom strategies: строка $id с неизвестным блоком «$bblock» пропущена" >&2
       continue
@@ -541,7 +565,10 @@ custom_strategies_apply_file() {
       *)   askey="" ;;
     esac
     # записи блока в порядке id; включённые получают номера max+1..
-    while IFS="$(printf '\t')" read -r id bblock spec enabled comment assigned; do
+    while IFS= read -r row; do
+      _custom_strats_split "$row" || continue
+      id="$_CS_ID" bblock="$_CS_BLOCK" spec="$_CS_SPEC" enabled="$_CS_ENABLED"
+      comment="$_CS_COMMENT" assigned="$_CS_ASSIGNED"
       [ "$bblock" = "$block" ] || continue
       num=""
       if [ "${enabled:-1}" = "1" ]; then
@@ -748,12 +775,14 @@ custom_strategies_submenu() {
       echo -e "${yellow}импортируйте готовые строки --lua-desync=... :strategy=N — номера срежутся.${plain}"
     else
       printf "${yellow}%-3s %-4s %-4s %-4s %s${plain}\n" "ID" "Блок" "№" "Вкл" "Комментарий / стратегия"
-      while IFS="$(printf '\t')" read -r id block spec enabled comment assigned; do
+      local row
+      while IFS= read -r row; do
+        _custom_strats_split "$row" || continue
         local onoff="да" no="-"
-        [ "$enabled" = "1" ] || onoff="${red}нет${plain}"
-        [ -n "$assigned" ] && no="$assigned"
-        printf "%-3s %-4s %-4s %-4s %s\n" "$id" "$block" "$no" "$onoff" "$comment"
-        printf "      ${cyan}%s${plain}\n" "$spec"
+        [ "$_CS_ENABLED" = "1" ] || onoff="${red}нет${plain}"
+        [ -n "$_CS_ASSIGNED" ] && no="$_CS_ASSIGNED"
+        printf "%-3s %-4s %-4s %-4s %s\n" "$_CS_ID" "$_CS_BLOCK" "$no" "$onoff" "$_CS_COMMENT"
+        printf "      ${cyan}%s${plain}\n" "$_CS_SPEC"
       done < <(custom_strategies_list)
     fi
     echo ""
@@ -910,7 +939,8 @@ _custom_edit_flow() {
   case "$id" in ""|0|*[!0-9]*) ui_invalid_input; return ;; esac
   row="$(custom_strategies_row "$id")"
   [ -n "$row" ] || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }
-  IFS="$(printf '\t')" read -r _id block spec enabled comment _assigned <<<"$row"
+  _custom_strats_split "$row" || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }
+  block="$_CS_BLOCK" spec="$_CS_SPEC" enabled="$_CS_ENABLED" comment="$_CS_COMMENT"
   echo -e "${yellow}Текущий блок: ${plain}${green}$block${plain}"
   local nb; nb="$(_custom_pick_block)" || nb=""
   [ -n "$nb" ] || nb="$block"

@@ -183,6 +183,15 @@ grep -Fq '"id":1,' <<<"$report" && grep -Fq '"id":2,' <<<"$report" \
   && fail "custom: удалённая запись осталась в списке"
 report="$(custom_post 'action=enable&id=9&value=1')"
 grep -q 'Нет записи 9' <<<"$report" || fail "custom: отсутствующий ID должен давать 400"
+# Запись без комментария: два таба подряд в TSV — assigned не должен
+# «уезжать» в комментарий (bash-read с табами сжимал пустые поля).
+report="$(custom_post 'action=add&block=p5&value=fake%3Ablob%3Dfakewgblob%3Arepeats%3D6')"
+grep -Fq '"ok":true,"id":2' <<<"$report" || fail "custom: запись без комментария не добавлена: $report"
+report="$(custom_post 'action=apply')"
+grep -Fq '"ok":true' <<<"$report" || fail "custom: повторный apply упал"
+report="$(custom_get)"
+grep -Fq '"id":2,"block":"p5","spec":"fake:blob=fakewgblob:repeats=6","enabled":true,"comment":"","assigned":"1"' \
+  <<<"$report" || fail "custom: у записи без комментария assigned не дошёл до JSON: $report"
 
 # == 1. Статические инварианты wiring'а ==
 

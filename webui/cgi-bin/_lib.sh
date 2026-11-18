@@ -2097,14 +2097,16 @@ api_custom_blocks_json() {
 api_custom_list() {
   _custom_lib_guard
   parse_params
-  local filter="${PARAM_BLOCK:-}" rows="" id block spec enabled comment assigned
+  local filter="${PARAM_BLOCK:-}" rows="" row
   if [ -n "$filter" ] && ! custom_strategies_block_valid "$filter"; then
     send_error "400 Bad Request" "Некорректный блок: $filter"
   fi
-  while IFS="$(printf '\t')" read -r id block spec enabled comment assigned; do
-    case "$id" in ''|*[!0-9]*) continue ;; esac
-    [ "${enabled:-1}" = "1" ] && enabled=true || enabled=false
-    rows="${rows}${rows:+,}{\"id\":$id,\"block\":\"$(json_escape "$block")\",\"spec\":\"$(json_escape "$spec")\",\"enabled\":$enabled,\"comment\":\"$(json_escape "${comment:-}")\",\"assigned\":\"$(json_escape "${assigned:-}")\"}"
+  # Поля — через _custom_strats_split: bash-read с табами сжимал пустые поля,
+  # и у записей без комментария assigned «уезжал» в комментарий.
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    if [ "${_CS_ENABLED:-1}" = "1" ]; then enabled=true; else enabled=false; fi
+    rows="${rows}${rows:+,}{\"id\":$_CS_ID,\"block\":\"$(json_escape "$_CS_BLOCK")\",\"spec\":\"$(json_escape "$_CS_SPEC")\",\"enabled\":$enabled,\"comment\":\"$(json_escape "${_CS_COMMENT:-}")\",\"assigned\":\"$(json_escape "${_CS_ASSIGNED:-}")\"}"
   done < <(custom_strategies_list "$filter")
   printf 'Cache-Control: no-store\r\n'
   send_json "200 OK" "{\"blocks\":[$(api_custom_blocks_json)],\"strategies\":[$rows]}"

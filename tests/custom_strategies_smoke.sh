@@ -258,6 +258,31 @@ awk '/^#Z2R_CUSTOM_P5_BEGIN$/ {inb=1; next} /^#Z2R_CUSTOM_P5_END$/ {inb=0}
 # id уплотнены: было 1,2,3 -> стало 1,2
 [ "$(custom_strategies_count)" = "2" ] || fail "delete: id не уплотнены ($(custom_strategies_count))"
 
+# --- 7b. Пустой комментарий: assigned не «уезжает» в комментарий --------------
+
+# В строке с пустым комментарием два таба подряд; bash-read с IFS='\t' сжимал
+# их в один разделитель, и номер assigned попадал в комментарий (баг прод).
+printf '3\ttpl\tmultidisorder:pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1\t1\t\t47\n' >> "$CUSTOM_STRATS_FILE"
+awk -F '\t' '$1==3 {exit !($5=="" && $6=="47")}' "$CUSTOM_STRATS_FILE" \
+  || fail "пустой комментарий: строка с двумя табами записана неверно"
+
+custom_strategies_set_enabled 3 0 >/dev/null || fail "пустой комментарий: set_enabled"
+awk -F '\t' '$1==3 {exit !($4=="0" && $5=="" && $6=="47")}' "$CUSTOM_STRATS_FILE" \
+  || fail "пустой комментарий: set_enabled сдвинул поля (assigned уехал в комментарий)"
+custom_strategies_set_enabled 3 1 >/dev/null || fail "пустой комментарий: set_enabled обратно"
+
+custom_strategies_replace 3 tpl \
+  'multidisorder:pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1' 1 '' \
+  >/dev/null || fail "пустой комментарий: replace"
+awk -F '\t' '$1==3 {exit !($5=="" && $6=="")}' "$CUSTOM_STRATS_FILE" \
+  || fail "пустой комментарий: replace должен сбросить assigned и не трогать пустой комментарий"
+
+custom_strategies_apply_file "$CFG" 2>>"$TMP_DIR/apply.log" || fail "пустой комментарий: apply rc!=0"
+awk -F '\t' '$1==3 {exit !($5=="" && $6!="")}' "$CUSTOM_STRATS_FILE" \
+  || fail "пустой комментарий: после apply assigned пуст"
+grep -qxF -- '--lua-desync=multidisorder:pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1:strategy=47' "$CFG" \
+  || fail "пустой комментарий: стратегия не получила номер 47 (после stock max=46)"
+
 # --- 8. Маркеры в конфиге без них (старые установки) --------------------------
 
 # чистый config.default без маркеров = живой конфиг до обновления затора
