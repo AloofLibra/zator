@@ -994,6 +994,15 @@ BLOB_PROFILE_IDS = ("1", "2", "3", "4", "8")
 # Переопределения блобов — включая профиль 5 QUIC (Z2R_BLOB_PROFILES).
 BLOB_OVERRIDE_PROFILE_IDS = ("1", "2", "3", "4", "5", "8")
 
+# Таблица блоков кастомных стратегий (custom_strategies_blocks() — lib/custom_strategies.sh).
+CUSTOM_BLOCKS = [
+    {"block": "tpl", "label": "TCP TLS (профили 1/2/3/8 — общий набор)", "profiles": "1 2 3 8", "transport": "tcp"},
+    {"block": "p4", "label": "Discord TCP (профиль 4)", "profiles": "4", "transport": "tcp"},
+    {"block": "p5", "label": "QUIC (профиль 5, UDP 443)", "profiles": "5", "transport": "udp"},
+    {"block": "p6", "label": "Голосовой UDP (профиль 6)", "profiles": "6", "transport": "udp"},
+    {"block": "p7", "label": "Игровой UDP (профиль 7)", "profiles": "7", "transport": "udp"},
+]
+
 
 def config_tls_blob_slot_file(cfg_text, profile):
     """Файл из декларации слота z2r_prof_N (blob_override_get, lib/orchestra_state.sh)."""
@@ -1658,6 +1667,12 @@ class FakeRouterState:
         self.recommendations_status = "ready"
         # api_h3_curl_get (settings.cgi?setting=h3_curl): только чтение, установка в CLI.
         self.h3_curl = {"found": True, "path": "/opt/zator/tools/bin/curl-h3-i686", "arch": "i686"}
+        # Кастомные стратегии (custom.cgi): одна демо-запись для dev-просмотра.
+        self.custom_strategies = [
+            {"id": 1, "block": "p5",
+             "spec": "fake:blob=fakewgblob:ipfrag:ipfrag_pos_udp=8:ipfrag_disorder:repeats=3:out_range=-d10",
+             "enabled": True, "comment": "авторский QUIC", "assigned": ""},
+        ]
         self.supersweep_report = {
             "available": False, "state": "idle", "active": False, "source": "none",
             "started": 0, "updated": 0, "scope": "default", "phase": "",
@@ -2608,6 +2623,116 @@ class FakeRouterState:
                 fh.write((new if ln == old else ln) + "\n")
         return True
 
+    # --- Кастомные стратегии пользователя (custom.cgi) ------------------------
+
+    def build_custom_list(self, block=""):
+        """api_custom_list() — _lib.sh: таблица блоков + записи (фильтр блока)."""
+        rows = [s for s in self.custom_strategies if not block or s["block"] == block]
+        return {
+            "blocks": [dict(b) for b in CUSTOM_BLOCKS],
+            "strategies": [dict(s) for s in rows],
+        }
+
+    @staticmethod
+    def _custom_block_info(block):
+        for b in CUSTOM_BLOCKS:
+            if b["block"] == block:
+                return b
+        raise ValueError("Некорректный блок: {0}".format(block))
+
+    @staticmethod
+    def _custom_normalize(spec):
+        """custom_strategies_normalize() — срезает --lua-desync= и хвост :strategy=N."""
+        spec = spec.strip()
+        if spec.startswith("--lua-desync="):
+            spec = spec[len("--lua-desync="):]
+        groups = [g.strip() for g in re.split(r" --lua-desync=", spec)]
+        out = []
+        for g in groups:
+            g = re.sub(r"(:strategy=\d+)+$", "", g)
+            if not g or "strategy=" in g:
+                raise ValueError("«strategy=» допустим только в конце групп")
+            out.append(g)
+        if not out:
+            raise ValueError("Пустая стратегия")
+        return " --lua-desync=".join(out)
+
+    def _custom_find(self, id_str):
+        if not re.match(r"^[0-9]+$", str(id_str)):
+            raise ValueError("Некорректный ID")
+        for s in self.custom_strategies:
+            if s["id"] == int(id_str):
+                return s
+        raise ValueError("Нет записи {0}".format(id_str))
+
+    def apply_custom_action(self, action, params):
+        """api_custom_action() — _lib.sh. ValueError → 400 в handler."""
+        block = params.get("block", "")
+
+        if action == "add" or action == "edit":
+            self._custom_block_info(block)
+            spec = self._custom_normalize(params.get("value", ""))
+            comment = params.get("comment", "").replace("\t", " ")[:64]
+            if action == "add":
+                new_id = max((s["id"] for s in self.custom_strategies), default=0) + 1
+                self.custom_strategies.append({"id": new_id, "block": block, "spec": spec,
+                                               "enabled": True, "comment": comment, "assigned": ""})
+                return {"ok": True, "id": new_id, "apply_required": True}
+            row = self._custom_find(params.get("id", ""))
+            row["block"] = block
+            row["spec"] = spec
+            row["comment"] = comment
+            row["assigned"] = ""
+            return {"ok": True, "apply_required": True}
+
+        if action == "enable":
+            row = self._custom_find(params.get("id", ""))
+            if params.get("value", "") not in ("0", "1"):
+                raise ValueError("enabled = 0 или 1")
+            row["enabled"] = params["value"] == "1"
+            return {"ok": True, "apply_required": True}
+
+        if action == "delete":
+            row = self._custom_find(params.get("id", ""))
+            self.custom_strategies.remove(row)
+            for i, s in enumerate(self.custom_strategies, start=1):
+                s["id"] = i
+            return {"ok": True, "apply_required": True}
+
+        if action == "import":
+            self._custom_block_info(block)
+            added, skipped, errors = 0, 0, []
+            for i, line in enumerate(params.get("text", "").splitlines()):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    skipped += 1
+                    continue
+                if i >= 64:
+                    skipped += 1
+                    continue
+                try:
+                    spec = self._custom_normalize(line)
+                except ValueError as e:
+                    errors.append({"line": line, "reason": str(e)})
+                    skipped += 1
+                    continue
+                new_id = max((s["id"] for s in self.custom_strategies), default=0) + 1
+                self.custom_strategies.append({"id": new_id, "block": block, "spec": spec,
+                                               "enabled": True, "comment": "импорт", "assigned": ""})
+                added += 1
+            return {"ok": True, "added": added, "skipped": skipped,
+                    "errors": errors, "apply_required": True}
+
+        if action == "apply":
+            num = 0
+            for s in self.custom_strategies:
+                if s["enabled"]:
+                    num += 1
+                    s["assigned"] = str(100 + num)
+            return {"ok": True, "restarted": self._apply_restart(), "restart_required": True}
+
+        raise ValueError("Неизвестное действие: {0}".format(action))
+
     def apply_domains_action(self, name, action, domain, strategy, new_domain=""):
         """api_domains_action() — _lib.sh. ValueError → 400 в handler."""
         path, kind, _title, _desc = self._domains_resolve(name)
@@ -2987,6 +3112,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 
         if endpoint == "domains":
             self._handle_domains(params, parsed)
+            return
+
+        if endpoint == "custom":
+            self._handle_custom(params, parsed)
             return
 
         if endpoint == "backups":
@@ -3414,6 +3543,33 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     self._send_json(result)
             except ValueError as e:
                 self._send_error_json(409 if isinstance(e, ConflictError) else 400, str(e))
+            return
+
+        self._send_error_json(405, "Метод не поддерживается")
+
+    def _handle_custom(self, params, parsed):
+        """Обработчик endpoint /cgi-bin/custom.cgi (api_custom_* из _lib.sh).
+
+        GET  ?block=p5  -> блоки + записи (фильтр необязателен)
+        POST action=add|edit|enable|delete|import|apply
+        """
+        if self.command == "GET":
+            with self.state.lock:
+                result = self.state.build_custom_list(params.get("block", ""))
+                self._log("GET {0} | custom list block={1}".format(
+                    parsed.path, params.get("block", "")))
+                self._send_json(result)
+            return
+
+        if self.command == "POST":
+            action = params.get("action", "")
+            try:
+                with self.state.lock:
+                    result = self.state.apply_custom_action(action, params)
+                    self._log("POST {0} | custom action={1}".format(parsed.path, action))
+                    self._send_json(result)
+            except ValueError as e:
+                self._send_error_json(400, str(e))
             return
 
         self._send_error_json(405, "Метод не поддерживается")

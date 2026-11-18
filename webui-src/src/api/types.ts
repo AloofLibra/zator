@@ -74,6 +74,35 @@ export interface H3CurlStatus {
   arch?: string
 }
 
+// Кастомные стратегии пользователя (custom.cgi, CLI п.1 -> 14).
+export interface CustomBlockInfo {
+  block: string
+  label: string
+  profiles: string
+  transport: 'tcp' | 'udp'
+}
+
+export interface CustomStrategy {
+  id: number
+  block: string
+  spec: string
+  enabled: boolean
+  comment: string
+  // Номер последнего инжекта; '' — ещё не применялась (или выключена).
+  assigned: string
+}
+
+export interface CustomListPayload {
+  blocks?: CustomBlockInfo[]
+  strategies?: CustomStrategy[]
+}
+
+export interface CustomImportResult {
+  added?: number
+  skipped?: number
+  errors?: { line: string; reason: string }[]
+}
+
 export interface TlsBlobSettings {
   current_mode?: string
   current_blob?: string

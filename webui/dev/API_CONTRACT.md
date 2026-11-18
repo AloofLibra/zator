@@ -609,6 +609,45 @@ curl с HTTP/3 из `lib/quic_media.sh` (env `Z2R_QUIC_CURL` → `/opt/bin/curl`
 **Dev:** fake-router возвращает `FakeRouterState.h3_curl`
 (по умолчанию `found: true`, `curl-h3-i686`).
 
+### Кастомные стратегии пользователя — `custom.cgi`
+
+Эквивалент CLI (п.1 -> 14): просмотр/добавление/редактирование/включение/
+удаление/импорт собственных `--lua-desync=` стратегий и применение к конфигу.
+Валидация и нормализация — строго на бэкенде (`lib/custom_strategies.sh`):
+whitelist символов/примитивов/ключей по транспорту, блобы — только объявленные
+в конфиге; `--lua-desync=` и хвостовые `:strategy=N` срезаются (номера назначает
+инжектор). Хранение: `extra_strats/cache/orchestra/custom_strategies.tsv`.
+
+`GET /cgi-bin/custom.cgi[?block=p5]` → `api_custom_list`:
+
+```jsonc
+{
+  "blocks": [ { "block": "tpl", "label": "TCP TLS (профили 1/2/3/8 — общий набор)",
+                "profiles": "1 2 3 8", "transport": "tcp" }, "..." ],
+  "strategies": [ { "id": 1, "block": "p5", "spec": "fake:blob=fakewgblob:...",
+                    "enabled": true, "comment": "авторский QUIC",
+                    "assigned": "" } ]  // assigned: "" = ещё не применялась
+}
+```
+
+`POST /cgi-bin/custom.cgi` (`action=…`):
+
+| `action` | параметры | Что делает |
+| --- | --- | --- |
+| `add` | `block=<tpl\|p4\|p5\|p6\|p7>&value=<spec>&comment=` | добавить (валидация строгая; ошибки — `400` с текстом валидатора) |
+| `edit` | `id=<N>&block=&value=&comment=` | заменить spec/блок/комментарий; `assigned` сбрасывается |
+| `enable` | `id=<N>&value=0\|1` | вкл/выкл запись (выключенные не инжектятся, нумерация сжимается) |
+| `delete` | `id=<N>` | удалить (ID уплотняются) |
+| `import` | `block=&text=<многострочно>` | по строке на запись, ≤64; `added/skipped/errors[{line,reason}]` |
+| `apply` | — | инжект в config (номера после максимума блока) + ремап локов + авто-рестарт |
+
+Успех: `{ "ok": true, "apply_required": true }` (apply: `+ "restarted": true|false,
+"restart_required": true`). Изменения живут в TSV сразу, в конфиг попадают только
+по `apply` — фронтенд показывает счётчик неприменённых записей.
+
+**Dev:** fake-router держит `FakeRouterState.custom_strategies` (одна демо-запись
+QUIC), `apply` назначает номера 101+ и вызывает штатный `_apply_restart`.
+
 ### POST — применение настроек
 
 Тело: `setting=<...>&value=<...>` (для портов/провайдера — свои ключи, см. ниже).

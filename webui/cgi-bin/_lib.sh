@@ -118,6 +118,7 @@ find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { ec
 [ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
 [ -f "$LIB_DIR/googlevideo_ips.sh" ] && . "$LIB_DIR/googlevideo_ips.sh"
 [ -f "$LIB_DIR/supersweep.sh" ] && . "$LIB_DIR/supersweep.sh"
+[ -f "$LIB_DIR/custom_strategies.sh" ] && . "$LIB_DIR/custom_strategies.sh"
 
 telemetry_notify() {
   type send_stats >/dev/null 2>&1 && send_stats || true
@@ -145,12 +146,20 @@ parse_params() {
   PARAM_MODE=""
   PARAM_SCALE=""
   PARAM_SCOPE="default"
+  PARAM_BLOCK=""
+  PARAM_COMMENT=""
+  PARAM_TEXT=""
+  PARAM_ID=""
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
     value="${part#*=}"
     value="${value//+/ }"
-    printf -v value '%b' "${value//%/\\x}"
+    # URL-decode %XX -> \xXX для printf %b. НЕ инлайнить замену «//%/\x»:
+    # bash теряет бэкслеш в ${var//pat/repl} на всех версиях (проверено
+    # 4.4 и 5.2) — декод вырождался в мусор «xHH» (кириллица, \n импорта).
+    local url_hex='\x'
+    printf -v value '%b' "${value//%/$url_hex}"
     case "$key" in
       profile) PARAM_PROFILE="$value" ;;
       strategy) PARAM_STRATEGY="$value" ;;
@@ -167,6 +176,10 @@ parse_params() {
       mode) PARAM_MODE="$value" ;;
       scale) PARAM_SCALE="$value" ;;
       scope) PARAM_SCOPE="${value:-default}" ;;
+      block) PARAM_BLOCK="$value" ;;
+      comment) PARAM_COMMENT="$value" ;;
+      text) PARAM_TEXT="$value" ;;
+      id) PARAM_ID="$value" ;;
     esac
   done
 }
@@ -2036,6 +2049,162 @@ api_domains_action() {
       domain="${PARAM_DOMAIN:-}"
       [ -n "$domain" ] || send_error "400 Bad Request" "Не указан домен"
       send_json "200 OK" "{\"ok\":true,\"check\":$(_domains_check_json "$domain")}"
+      ;;
+    *)
+      send_error "400 Bad Request" "Неизвестное действие: $action"
+      ;;
+  esac
+}
+
+# --- Кастомные стратегии пользователя (custom_strategies.tsv, CLI п.1 -> 14) --
+# CRUD поверх lib/custom_strategies.sh: та же строгая валидация и нормализация,
+# что в CLI (whitelist символов/примитивов/ключей, блобы — только объявленные).
+# apply переливает конфиг (маркерные регионы, номера после максимума блока) и
+# ремапит локи; изменение конфига — рестарт zapret2 (авто, если был запущен).
+
+_custom_lib_guard() {
+  type custom_strategies_blocks >/dev/null 2>&1 \
+    && type custom_strategies_validate >/dev/null 2>&1 \
+    || send_error "503 Service Unavailable" "Для кастомных стратегий обновите Core zator."
+}
+
+_custom_config_path() {
+  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+  printf '%s' "$cfg"
+}
+
+# Сообщения валидатора (stderr) в переменную: stdout функции несёт результат.
+_custom_capture_err() {
+  local errfile="/tmp/z2r-custom-err.$$"
+  local out rc=0
+  out="$("$@" 2>"$errfile")" || rc=$?
+  REPLY_OUT="$out"
+  REPLY_RC=$rc
+  REPLY_ERR="$(cat "$errfile" 2>/dev/null)"
+  rm -f "$errfile" 2>/dev/null || true
+}
+
+api_custom_blocks_json() {
+  local out="" b label profiles protos transport
+  while IFS="$(printf '\t')" read -r b label profiles protos transport; do
+    out="${out}${out:+,}{\"block\":\"$(json_escape "$b")\",\"label\":\"$(json_escape "$label")\",\"profiles\":\"$(json_escape "$profiles")\",\"transport\":\"$(json_escape "$transport")\"}"
+  done < <(custom_strategies_blocks)
+  printf '%s' "$out"
+}
+
+# GET /cgi-bin/custom.cgi[?block=p5] — таблица блоков + записи (все или блока).
+api_custom_list() {
+  _custom_lib_guard
+  parse_params
+  local filter="${PARAM_BLOCK:-}" rows="" id block spec enabled comment assigned
+  if [ -n "$filter" ] && ! custom_strategies_block_valid "$filter"; then
+    send_error "400 Bad Request" "Некорректный блок: $filter"
+  fi
+  while IFS="$(printf '\t')" read -r id block spec enabled comment assigned; do
+    case "$id" in ''|*[!0-9]*) continue ;; esac
+    [ "${enabled:-1}" = "1" ] && enabled=true || enabled=false
+    rows="${rows}${rows:+,}{\"id\":$id,\"block\":\"$(json_escape "$block")\",\"spec\":\"$(json_escape "$spec")\",\"enabled\":$enabled,\"comment\":\"$(json_escape "${comment:-}")\",\"assigned\":\"$(json_escape "${assigned:-}")\"}"
+  done < <(custom_strategies_list "$filter")
+  printf 'Cache-Control: no-store\r\n'
+  send_json "200 OK" "{\"blocks\":[$(api_custom_blocks_json)],\"strategies\":[$rows]}"
+}
+
+# Нормализация + валидация spec от пользователя — ВЫЗЫВАТЬ ТОЛЬКО на верхнем
+# уровне api-функции (не в подшелле!): send_error должен прервать весь CGI.
+# Нормализатор срезает «--lua-desync=» и хвостовые «:strategy=N» (клиент может
+# вставить готовую строку из конфига целиком); ошибки — 400 с текстом валидатора.
+_custom_normalize_and_check() {
+  local block="$1" raw="$2" cfg="$3"
+  local spec err
+  spec="$(custom_strategies_normalize "$raw" 2>/dev/null)" || \
+    send_error "400 Bad Request" "Не удалось разобрать строку: «strategy=» допустим только в конце групп"
+  _custom_capture_err custom_strategies_validate "$block" "$spec" "$cfg"
+  if [ "$REPLY_RC" != "0" ]; then
+    err="${REPLY_ERR:-не прошла валидация}"
+    err="${err//$'\n'/ }"
+    send_error "400 Bad Request" "$(printf '%s' "$err" | head -n1)"
+  fi
+  REPLY_OUT="$spec"
+}
+
+api_custom_action() {
+  _custom_lib_guard
+  parse_params
+  local action="${PARAM_ACTION:-}" id="${PARAM_ID:-}" block="${PARAM_BLOCK:-}"
+  local spec comment text cfg err rc=0
+  cfg="$(_custom_config_path)"
+
+  case "$action" in
+    add|edit)
+      custom_strategies_block_valid "$block" || send_error "400 Bad Request" "Некорректный блок: $block"
+      _custom_normalize_and_check "$block" "${PARAM_VALUE:-}" "$cfg"
+      spec="$REPLY_OUT"
+      comment="${PARAM_COMMENT:-}"
+      if [ "$action" = "add" ]; then
+        _custom_capture_err custom_strategies_add "$block" "$spec" "$comment"
+        [ "$REPLY_RC" = "0" ] || send_error "500 Internal Server Error" "Не удалось добавить запись"
+        send_json "200 OK" "{\"ok\":true,\"id\":$REPLY_OUT,\"apply_required\":true}"
+      else
+        case "$id" in ''|*[!0-9]*) send_error "400 Bad Request" "Некорректный ID" ;; esac
+        custom_strategies_row "$id" >/dev/null || send_error "400 Bad Request" "Нет записи $id"
+        local enabled
+        enabled="$(custom_strategies_row "$id" | awk -F '\t' '{print $4}')"
+        [ "${enabled:-1}" = "1" ] && enabled=1 || enabled=0
+        _custom_capture_err custom_strategies_replace "$id" "$block" "$spec" "$enabled" "$comment"
+        [ "$REPLY_RC" = "0" ] || send_error "500 Internal Server Error" "Не удалось обновить запись"
+        send_json "200 OK" "{\"ok\":true,\"apply_required\":true}"
+      fi
+      ;;
+    enable)
+      case "$id" in ''|*[!0-9]*) send_error "400 Bad Request" "Некорректный ID" ;; esac
+      case "${PARAM_VALUE:-}" in 0|1) ;; *) send_error "400 Bad Request" "enabled = 0 или 1" ;; esac
+      custom_strategies_set_enabled "$id" "${PARAM_VALUE:-}" || \
+        send_error "400 Bad Request" "Нет записи $id"
+      send_json "200 OK" "{\"ok\":true,\"apply_required\":true}"
+      ;;
+    delete)
+      case "$id" in ''|*[!0-9]*) send_error "400 Bad Request" "Некорректный ID" ;; esac
+      custom_strategies_delete "$id" || send_error "500 Internal Server Error" "Не удалось удалить запись"
+      send_json "200 OK" "{\"ok\":true,\"apply_required\":true}"
+      ;;
+    import)
+      custom_strategies_block_valid "$block" || send_error "400 Bad Request" "Некорректный блок: $block"
+      text="${PARAM_TEXT:-}"
+      [ -n "$text" ] || send_error "400 Bad Request" "Пустой импорт"
+      local IFS=$'\n' line ispec count=0
+      local added=0 skipped=0 errors=""
+      set -f
+      for line in $text; do
+        set +f
+        count=$((count + 1))
+        [ "$count" -le 64 ] || { skipped=$((skipped + 1)); continue; }
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || { skipped=$((skipped + 1)); continue; }
+        printf '%s' "$line" | grep -Eq '^[[:space:]]*#' && { skipped=$((skipped + 1)); continue; }
+        ispec="$(custom_strategies_normalize "$line" 2>/dev/null)" || {
+          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"не удалось разобрать строку\"}"
+          skipped=$((skipped + 1)); continue;
+        }
+        _custom_capture_err custom_strategies_add "$block" "$ispec" "импорт"
+        if [ "$REPLY_RC" = "0" ]; then
+          added=$((added + 1))
+        else
+          err="${REPLY_ERR:-не прошла валидация}"; err="${err//$'\n'/ }"
+          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$(printf '%s' "$err" | head -n1)")\"}"
+          skipped=$((skipped + 1))
+        fi
+      done
+      set +f
+      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"skipped\":$skipped,\"errors\":[$errors],\"apply_required\":true}"
+      ;;
+    apply)
+      _custom_capture_err custom_strategies_apply_file "$cfg"
+      [ "$REPLY_RC" = "0" ] || send_error "500 Internal Server Error" "Не удалось применить кастомные стратегии к конфигу"
+      PARAM_RESTART="${PARAM_RESTART:-1}" _service_apply_restart
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"restart_required\":true}"
       ;;
     *)
       send_error "400 Bad Request" "Неизвестное действие: $action"

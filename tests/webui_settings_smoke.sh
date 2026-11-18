@@ -111,6 +111,79 @@ normal_rc=0
 REQUEST_METHOD=GET QUERY_STRING=setting=ports bash "$TMP_DIR/panel/cgi-bin/settings.cgi" || normal_rc=$?
 [ "$normal_rc" = 97 ] || fail 'ordinary settings skipped the runtime loader'
 
+# == 0b. custom.cgi: кастомные стратегии (CRUD поверх lib/custom_strategies.sh) ==
+CUSTOM_DIR="$TMP_DIR/custom"
+mkdir -p "$CUSTOM_DIR/panel/cgi-bin" "$CUSTOM_DIR/runtime/z2r_lib" \
+  "$CUSTOM_DIR/runtime/extra_strats/cache/orchestra" "$CUSTOM_DIR/runtime/zapret2/files/fake"
+sed "s#/opt/zator#$CUSTOM_DIR/runtime#g; s#/opt/zapret2#$CUSTOM_DIR/runtime/zapret2#g" \
+  "$REPO_DIR/webui/cgi-bin/_lib.sh" > "$CUSTOM_DIR/panel/cgi-bin/_lib.sh"
+sed "s#/opt/zator/webui/cgi-bin/_lib.sh#$CUSTOM_DIR/panel/cgi-bin/_lib.sh#" \
+  "$REPO_DIR/webui/cgi-bin/custom.cgi" > "$CUSTOM_DIR/panel/cgi-bin/custom.cgi"
+printf ':\n' > "$CUSTOM_DIR/runtime/z2r_lib/config.sh"
+printf 'zapret2_running() { return 1; }\n' > "$CUSTOM_DIR/runtime/z2r_lib/orchestra_state.sh"
+for file in strategies netcheck; do
+  printf ':\n' > "$CUSTOM_DIR/runtime/z2r_lib/$file.sh"
+done
+cp "$REPO_DIR/lib/custom_strategies.sh" "$CUSTOM_DIR/runtime/z2r_lib/"
+# Мок-конфиг: маркерные регионы (tpl/p5) и объявления блобов для валидации имён.
+cat > "$CUSTOM_DIR/runtime/zapret2/config" <<CFG
+--template=z2r_tcp_tls_common
+--lua-desync=fake:blob=maxru:repeats=2:strategy=2
+--new
+--lua-desync=circular_locked:key=5:why=quic
+--new
+--blob=maxru:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
+--blob=fakewgblob:@/opt/zator/files/fake/wg_initial_fake_1.bin
+CFG
+custom_post() {
+  local body="$1"
+  printf '%s' "$body" | ZAPRET2_ROOT="$CUSTOM_DIR/runtime/zapret2" \
+    ORCH_LOCK_FILE="$CUSTOM_DIR/runtime/extra_strats/cache/orchestra/locked.tsv" \
+    REQUEST_METHOD=POST CONTENT_LENGTH="${#body}" \
+    bash "$CUSTOM_DIR/panel/cgi-bin/custom.cgi"
+}
+custom_get() {
+  ZAPRET2_ROOT="$CUSTOM_DIR/runtime/zapret2" \
+    ORCH_LOCK_FILE="$CUSTOM_DIR/runtime/extra_strats/cache/orchestra/locked.tsv" \
+    REQUEST_METHOD=GET QUERY_STRING="${1:-}" \
+    bash "$CUSTOM_DIR/panel/cgi-bin/custom.cgi"
+}
+custom_config="$CUSTOM_DIR/runtime/zapret2/config"
+
+report="$(custom_get)"
+grep -Fq '"strategies":[]' <<<"$report" || fail "custom: свежий список не пуст"
+report="$(custom_post 'action=add&block=p5&value=fake%3Ablob%3Dfakewgblob%3Arepeats%3D3&comment=test')"
+grep -Fq '"ok":true,"id":1' <<<"$report" || fail "custom: валидная QUIC-стратегия не добавлена: $report"
+report="$(custom_post 'action=add&block=p5&value=evil%3Acurl%3Ax')"
+grep -q 'Неизвестный примитив' <<<"$report" || fail "custom: мусорный примитив прошёл валидацию: $report"
+report="$(custom_post 'action=add&block=p5&value=fake%3Ablob%3Dfakewgblob%3Astrategy%3D2%3Arepeats%3D3')"
+grep -q 'разобрать строку' <<<"$report" || fail "custom: strategy= в середине группы должен ронять разбор: $report"
+report="$(custom_post 'action=add&block=tpl&value=--lua-desync%3Dmultidisorder%3Apos%3Dmidsld%3Astrategy%3D12&comment=auto')"
+grep -Fq '"ok":true,"id":2' <<<"$report" || fail "custom: готовая строка конфига не нормализована: $report"
+report="$(custom_get)"
+grep -Fq '"spec":"multidisorder:pos=midsld"' <<<"$report" || fail "custom: normalize не срезал префикс/strategy=: $report"
+grep -Fq '"assigned":""' <<<"$report" || fail "custom: assigned должен быть пуст до apply"
+report="$(custom_post 'action=enable&id=1&value=0')"
+grep -Fq '"ok":true' <<<"$report" || fail "custom: выключение не сработало"
+report="$(custom_get)"
+grep -Fq '"enabled":false' <<<"$report" || fail "custom: enabled не отразился в списке"
+# Включённая tpl-стратегия при apply получает номер после максимума блока (2).
+report="$(custom_post 'action=enable&id=2&value=1')"
+report="$(custom_post 'action=apply')"
+grep -Fq '"ok":true' <<<"$report" || fail "custom: apply упал: $report"
+grep -qF 'strategy=' "$custom_config" || fail "custom: apply не дописал стратегии в конфиг"
+grep -qF -- '--lua-desync=multidisorder:pos=midsld:strategy=3' "$custom_config" \
+  || fail "custom: tpl-стратегия не получила номер после максимума блока (2)"
+report="$(custom_get)"
+grep -Fq '"assigned":"3"' <<<"$report" || fail "custom: assigned не обновился при apply: $report"
+report="$(custom_post 'action=delete&id=2')"
+grep -Fq '"ok":true' <<<"$report" || fail "custom: удаление не сработало"
+report="$(custom_get)"
+grep -Fq '"id":1,' <<<"$report" && grep -Fq '"id":2,' <<<"$report" \
+  && fail "custom: удалённая запись осталась в списке"
+report="$(custom_post 'action=enable&id=9&value=1')"
+grep -q 'Нет записи 9' <<<"$report" || fail "custom: отсутствующий ID должен давать 400"
+
 # == 1. Статические инварианты wiring'а ==
 
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" '\$LIB_DIR/actions\.sh' "_lib.sh не подключает lib/actions.sh"
@@ -151,6 +224,23 @@ assert_contains "$fake_py_check" 'h3_curl' "fake_router_server.py без ста�
 assert_contains "$fake_py_check" 'BLOB_OVERRIDE_PROFILE_IDS' "fake_router_server.py: профиль 5 не в переопределениях блобов"
 assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'h3_curl' "API_CONTRACT.md без h3_curl"
 assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'quic_blobs' "API_CONTRACT.md без quic_blobs"
+# Кастомные стратегии в вебе: CGI-эндпоинт, либа-инжектор, фронт, мок, контракт.
+[ -f "$REPO_DIR/webui/cgi-bin/custom.cgi" ] || fail "custom.cgi отсутствует"
+grep -q 'api_custom_list' "$REPO_DIR/webui/cgi-bin/custom.cgi" || fail "custom.cgi GET без api_custom_list"
+grep -q 'api_custom_action' "$REPO_DIR/webui/cgi-bin/custom.cgi" || fail "custom.cgi POST без api_custom_action"
+assert_contains "$_lib_raw_check" 'custom_strategies_validate' "_lib.sh: кастомные стратегии без валидатора lib"
+assert_contains "$_lib_raw_check" 'custom_strategies_apply_file' "_lib.sh: apply не использует инжектор lib"
+assert_contains "$_lib_raw_check" 'custom_strategies.sh' "_lib.sh не source-ит lib/custom_strategies.sh"
+grep -q 'custom-strats' "$REPO_DIR/webui-src/src/router/index.ts" || fail "роутер без /custom-strats"
+grep -rq 'custom-strats' "$REPO_DIR/webui-src/src/App.vue" || fail "App.vue без вкладки кастомных стратегий"
+for id in custom-strat-form custom-strat-spec custom-import-text custom-apply-btn custom-strats-filter; do
+  grep -rq "$id" "$REPO_DIR/webui-src/src" || fail "webui-src не содержит #$id"
+done
+assert_contains "$app_js_check" 'fetchCustomStrats' "webui-src: нет загрузки custom.cgi"
+assert_contains "$app_js_check" 'customStrats.apply' "webui-src: нет применения кастомных стратегий"
+assert_contains "$fake_py_check" '_handle_custom' "fake_router_server.py без custom.cgi"
+assert_contains "$fake_py_check" 'CUSTOM_BLOCKS' "fake_router_server.py без таблицы блоков"
+assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'custom.cgi' "API_CONTRACT.md без custom.cgi"
 
 [ -f "$REPO_DIR/webui/cgi-bin/backups.cgi" ] || fail "backups.cgi отсутствует"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/backups.cgi")" '405 Method Not Allowed' "backups.cgi не отдаёт 405"
