@@ -78,6 +78,9 @@ NFQWS2_TCP_PKT_OUT=20
 NFQWS2_TCP_PKT_IN=10
 # Experimental Googlevideo-list wssize_ramp settings; disabled by default.
 Z2R_WSSIZE_RAMP_ENABLE=0
+Z2R_WSSIZE_RAMP_SYNDATA=0
+# Named SYN payload; set empty to use syndata's default 16 zero bytes.
+Z2R_WSSIZE_RAMP_SYN_BLOB=tlsgoogle
 Z2R_WSSIZE_MARK=0x04000000
 Z2R_WSSIZE_RAMP_IPSET=/opt/zator/lists/googlevideo-ipv4.txt
 Z2R_WSSIZE_RAMP_MODE=full
@@ -85,10 +88,23 @@ Z2R_WSSIZE_RAMP_WSIZE=1
 Z2R_WSSIZE_RAMP_SCALE=1
 Z2R_WSSIZE_RAMP_OPEN=1
 Z2R_WSSIZE_RAMP_ARGS=
+Z2R_WSSIZE_RAMP_SYN_OPT=
+Z2R_WSSIZE_RAMP_SYN_BLOB_ARG=
 Z2R_WSSIZE_RAMP_SKIP=--skip
 if [ "$Z2R_WSSIZE_RAMP_ENABLE" = 1 ]; then
   Z2R_WSSIZE_RAMP_ARGS=":mode=$Z2R_WSSIZE_RAMP_MODE:wsize=$Z2R_WSSIZE_RAMP_WSIZE:scale=$Z2R_WSSIZE_RAMP_SCALE:open=$Z2R_WSSIZE_RAMP_OPEN"
   Z2R_WSSIZE_RAMP_SKIP=
+  if [ "$Z2R_WSSIZE_RAMP_SYNDATA" = 1 ]; then
+    case "$Z2R_WSSIZE_RAMP_SYN_BLOB" in
+      '') ;;
+      *[!a-zA-Z0-9_.-]*) echo "wssize_ramp: invalid SYN blob name; using zero payload" >&2 ;;
+      *) Z2R_WSSIZE_RAMP_SYN_BLOB_ARG=":blob=$Z2R_WSSIZE_RAMP_SYN_BLOB" ;;
+    esac
+    Z2R_WSSIZE_RAMP_SYN_OPT="--out-range=-n1 --in-range=x --payload=empty --lua-desync=z2r_googlevideo_syndata${Z2R_WSSIZE_RAMP_SYN_BLOB_ARG}
+--out-range=a
+--in-range=a
+--payload=all,empty"
+  fi
 fi
 NFQWS2_UDP_PKT_OUT=5
 NFQWS2_UDP_PKT_IN=3
@@ -123,6 +139,7 @@ NFQWS2_OPT="
 --blob=z2r_prof_8:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
 --blob=z2r_prof_5:@/opt/zator/files/fake/quic_initial_www_google_com.bin
 --blob=google_www:@/opt/zator/files/fake/tls_clienthello_www_google_com.bin
+--blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin
 --blob=tls4:@/opt/zator/files/fake/tls_clienthello_4.bin
 --blob=custom:@/opt/zator/files/fake/custom_tls.bin
 --blob=tls5:@/opt/zator/files/fake/tls_clienthello_5.bin
@@ -198,6 +215,7 @@ ${Z2R_WSSIZE_RAMP_SKIP} --filter-l3=ipv4 --filter-tcp=443 --filter-mark=${Z2R_WS
 --in-range=a
 --payload=all,empty
 --lua-desync=wssize_ramp${Z2R_WSSIZE_RAMP_ARGS}
+${Z2R_WSSIZE_RAMP_SYN_OPT}
 --in-range=-s32768 --lua-desync=rst_guard_locked:key=2:exclude_substrings=/opt/zator/lists/netrogat_substrings.txt:payload=tls_client_hello
 --import=z2r_tcp_tls_common
 

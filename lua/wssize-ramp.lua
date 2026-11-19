@@ -89,3 +89,21 @@ function wssize_ramp(ctx, desync)
 	win = win > 65535 and 65535 or win
 	if tcp.th_win ~= win then tcp.th_win = win; return VERDICT_MODIFY end
 end
+
+-- Reuse zapret2's stock syndata implementation only after Ramp initialized the
+-- same flow. desync.arg.blob is forwarded unchanged; stock syndata uses its
+-- default 16 zero bytes only when no named blob is supplied.
+-- The enclosing profile's mark filter limits this to Googlevideo IPv4.
+function z2r_googlevideo_syndata(ctx, desync)
+	local tcp = desync.dis.tcp
+	if not tcp or not desync.outgoing or not direction_check(desync) then return end
+	if bitand(tcp.th_flags, TH_SYN + TH_ACK) ~= TH_SYN then return end
+	local track = desync.track
+	local state = track and track.lua_state
+	if not state or state.wssize_ramp_shift == nil or state.wssize_ramp_syndata_attempted then return end
+	-- Keep retries/replays from injecting multiple copies. A failed raw send leaves
+	-- this original SYN eligible for normal NFQUEUE delivery.
+	state.wssize_ramp_syndata_attempted = true
+	if type(syndata) == "function" then return syndata(ctx, desync) end
+	DLOG("z2r_googlevideo_syndata: stock syndata is unavailable; passing original SYN")
+end

@@ -2544,8 +2544,8 @@ googlevideo_upload_local_manual() {
 }
 
 wssize_ramp_submenu() {
-  local cfg=/opt/zapret2/config enabled mode scale count ans
-  local new_enabled new_mode new_scale
+  local cfg=/opt/zapret2/config enabled mode scale syndata count ans
+  local new_enabled new_mode new_scale new_syndata
   [ -f "$cfg" ] || { echo -e "${red}Config не найден${plain}"; pause_enter; return 1; }
   while true; do
     enabled="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE)" || enabled=""
@@ -2554,6 +2554,8 @@ wssize_ramp_submenu() {
     [ -n "$mode" ] || mode=full
     scale="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE)" || scale=""
     [ -n "$scale" ] || scale=1
+    syndata="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SYNDATA)" || syndata=""
+    [ "$syndata" = 1 ] || syndata=0
     count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
     clear -x
     echo -e "${cyan}--- Экспериментальный wssize_ramp (Googlevideo) ---${plain}"
@@ -2569,15 +2571,28 @@ wssize_ramp_submenu() {
     fi
     submenu_status_item "2" "Режим после расхождения соединения" "$mode" green
     submenu_status_item "3" "Scale — насколько зажимать окно (0-14)" "$scale" green
+    if [ "$enabled" = 1 ]; then
+      submenu_status_item "4" "SYN-data для Googlevideo (экспериментально)" "$([ "$syndata" = 1 ] && echo включена || echo выключена)" "$([ "$syndata" = 1 ] && echo green || echo red)"
+    else
+      submenu_status_item "4" "SYN-data для Googlevideo (экспериментально)" "недоступна: включите wssize_ramp" dim
+    fi
+    echo -e "${dim}Добавляет данные в первый TCP SYN перед TLS-рукопожатием. Работает только с включённым Ramp; на некоторых серверах может нарушить подключение.${plain}"
     echo ""
     submenu_item "0" "Назад"
     echo ""
     read -re -p "Ваш выбор: " ans || ans=""
-    new_enabled="$enabled"; new_mode="$mode"; new_scale="$scale"
+    new_enabled="$enabled"; new_mode="$mode"; new_scale="$scale"; new_syndata="$syndata"
     case "$ans" in
       "1") [ "$enabled" = 1 ] && new_enabled=0 || new_enabled=1 ;;
       "2") new_mode="$(_wssize_ramp_ask_mode "$mode")" || new_mode="" ;;
       "3") new_scale="$(_wssize_ramp_ask_scale "$scale")" || new_scale="" ;;
+      "4")
+        if [ "$enabled" = 1 ]; then
+          [ "$syndata" = 1 ] && new_syndata=0 || new_syndata=1
+        else
+          echo -e "${yellow}Сначала включите wssize_ramp.${plain}"; pause_enter; continue
+        fi
+        ;;
       "0"|"") return ;;
       *) ui_invalid_input; continue ;;
     esac
@@ -2587,7 +2602,7 @@ wssize_ramp_submenu() {
       echo -e "${red}Нет /opt/zator/lua/wssize-ramp.lua; обновите zator через меню 5.${plain}"; pause_enter; continue
     fi
     if [ "$new_enabled" = 1 ]; then googlevideo_ips_update || true; fi
-    if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_mode" "$new_scale"; then
+    if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_mode" "$new_scale" "$new_syndata"; then
       z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}Настройки wssize_ramp применены.${plain}"
     else

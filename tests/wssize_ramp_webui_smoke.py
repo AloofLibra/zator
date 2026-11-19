@@ -25,25 +25,35 @@ base = "http://127.0.0.1:{0}/cgi-bin/settings.cgi".format(server.server_port)
 try:
     with urllib.request.urlopen(base + "?setting=wssize_ramp") as response:
         initial = json.load(response)
-    assert initial == {"enabled": False, "mode": "full", "scale": 1, "googlevideo_ips": 0,
+    assert initial == {"enabled": False, "mode": "full", "scale": 1, "syndata": False, "googlevideo_ips": 0,
                        "googlevideo_local_collection": "unsupported"}, initial
 
     body = urllib.parse.urlencode({
-        "setting": "wssize_ramp", "value": "1", "mode": "lite", "scale": "8",
+        "setting": "wssize_ramp", "value": "1", "mode": "lite", "scale": "8", "syndata": "1",
     }).encode()
     request = urllib.request.Request(base, data=body, method="POST")
     with urllib.request.urlopen(request) as response:
         applied = json.load(response)
     assert applied["enabled"]
     assert applied["mode"] == "lite" and applied["scale"] == 8
+    assert applied["syndata"] is True
     assert applied["restarted"] is True
 
+    # An older client omitting syndata preserves it while Ramp remains enabled.
+    body = urllib.parse.urlencode({
+        "setting": "wssize_ramp", "value": "1", "mode": "full", "scale": "4",
+    }).encode()
+    with urllib.request.urlopen(urllib.request.Request(base, data=body, method="POST")) as response:
+        legacy_update = json.load(response)
+    assert legacy_update["syndata"] is True
+
+    # Turning Ramp off always turns SYN-data off, including for an older client.
     body = urllib.parse.urlencode({
         "setting": "wssize_ramp", "value": "0", "mode": "full", "scale": "1",
     }).encode()
     with urllib.request.urlopen(urllib.request.Request(base, data=body, method="POST")) as response:
         disabled = json.load(response)
-    assert disabled["enabled"] is False and disabled["scale"] == 1
+    assert disabled["enabled"] is False and disabled["scale"] == 1 and disabled["syndata"] is False
 finally:
     server.shutdown()
     server.server_close()

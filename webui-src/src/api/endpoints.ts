@@ -125,7 +125,7 @@ export const applySetting = {
   wssize_ramp: (settings: WssizeRampSettings) =>
     api<ApplyResult & WssizeRampSettings>('/cgi-bin/settings.cgi',
       formBody({ setting: 'wssize_ramp', value: settings.enabled ? '1' : '0',
-        mode: settings.mode, scale: String(settings.scale) })),
+        mode: settings.mode, scale: String(settings.scale), syndata: settings.syndata ? '1' : '0' })),
 }
 
 export const fetchDomainsList = (list: string) =>

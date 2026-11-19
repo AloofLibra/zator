@@ -145,6 +145,7 @@ parse_params() {
   PARAM_IP=""
   PARAM_MODE=""
   PARAM_SCALE=""
+  PARAM_SYNDATA=""
   PARAM_SCOPE="default"
   PARAM_BLOCK=""
   PARAM_COMMENT=""
@@ -175,6 +176,7 @@ parse_params() {
       ip) PARAM_IP="$value" ;;
       mode) PARAM_MODE="$value" ;;
       scale) PARAM_SCALE="$value" ;;
+      syndata) PARAM_SYNDATA="$value" ;;
       scope) PARAM_SCOPE="${value:-default}" ;;
       block) PARAM_BLOCK="$value" ;;
       comment) PARAM_COMMENT="$value" ;;
@@ -1544,24 +1546,33 @@ api_dns_desync_set() {
 
 api_wssize_ramp_get() {
   _require_config
-  local enabled mode scale count dnsmasq_state
+  local enabled mode scale syndata count dnsmasq_state
   enabled="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE)"
   mode="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_MODE)"
   scale="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE)"
+  syndata="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SYNDATA)"
+  [ "$syndata" = 1 ] || syndata=0
   case "$scale" in ''|*[!0-9]*) scale=1 ;; esac
   [ "$scale" -le 14 ] 2>/dev/null || scale=1
   count="$(googlevideo_ips_count 2>/dev/null || echo 0)"
   dnsmasq_state="$(googlevideo_openwrt_dnsmasq_state 2>/dev/null || echo unsupported)"
-  send_json "200 OK" "{\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$(json_escape "${mode:-full}")\",\"scale\":$scale,\"googlevideo_ips\":$count,\"googlevideo_local_collection\":\"$dnsmasq_state\"}"
+  send_json "200 OK" "{\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$(json_escape "${mode:-full}")\",\"scale\":$scale,\"syndata\":$([ "$syndata" = 1 ] && echo true || echo false),\"googlevideo_ips\":$count,\"googlevideo_local_collection\":\"$dnsmasq_state\"}"
 }
 
 api_wssize_ramp_set() {
-  local enabled="$PARAM_VALUE" mode="$PARAM_MODE" scale="$PARAM_SCALE" rc count
+  local enabled="$PARAM_VALUE" mode="$PARAM_MODE" scale="$PARAM_SCALE" syndata rc count
   _require_config
   [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || send_error "400 Bad Request" "Некорректный флаг включения"
   case "$mode" in full|lite) ;; *) send_error "400 Bad Request" "Режим должен быть full или lite" ;; esac
   case "$scale" in ''|*[!0-9]*) send_error "400 Bad Request" "Scale должен быть целым числом от 0 до 14" ;; esac
   [ "$scale" -le 14 ] 2>/dev/null || send_error "400 Bad Request" "Scale должен быть целым числом от 0 до 14"
+  syndata="$PARAM_SYNDATA"
+  if [ -z "$syndata" ]; then
+    syndata="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SYNDATA)"
+    [ "$syndata" = 1 ] || syndata=0
+  fi
+  [ "$syndata" = 0 ] || [ "$syndata" = 1 ] || send_error "400 Bad Request" "Некорректный флаг SYN-data"
+  [ "$enabled" = 1 ] || syndata=0
   if [ "$enabled" = 1 ]; then
     [ -s "$ZATOR_ROOT/lua/wssize-ramp.lua" ] || send_error "503 Service Unavailable" "Файл wssize-ramp.lua отсутствует. Обновите Core zator."
     googlevideo_ips_update >/dev/null 2>&1 || true
@@ -1569,7 +1580,7 @@ api_wssize_ramp_set() {
     # An empty central cache is valid on OpenWrt: dnsmasq can fill the shared
     # kernel set after the next local googlevideo.com lookup.
   fi
-  backup_smart_set_wssize_ramp "$CONFIG_FILE" "$enabled" "$mode" "$scale"; rc=$?
+  backup_smart_set_wssize_ramp "$CONFIG_FILE" "$enabled" "$mode" "$scale" "$syndata"; rc=$?
   case "$rc" in
     0) ;;
     2) send_error "503 Service Unavailable" "Профиль wssize_ramp отсутствует в config. Обновите конфиг через CLI (пункт 5)." ;;
@@ -1577,7 +1588,7 @@ api_wssize_ramp_set() {
   esac
   _service_apply_restart
   dnsmasq_state="$(googlevideo_openwrt_dnsmasq_state 2>/dev/null || echo unsupported)"
-  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$mode\",\"scale\":$scale,\"googlevideo_ips\":$(googlevideo_ips_count 2>/dev/null || echo 0),\"googlevideo_local_collection\":\"$dnsmasq_state\"}"
+  send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$mode\",\"scale\":$scale,\"syndata\":$([ "$syndata" = 1 ] && echo true || echo false),\"googlevideo_ips\":$(googlevideo_ips_count 2>/dev/null || echo 0),\"googlevideo_local_collection\":\"$dnsmasq_state\"}"
 }
 
 _ports_tokens_json() {

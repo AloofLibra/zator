@@ -39,6 +39,8 @@ check_update entware 1 nftables iptables
 cat > "$ZAPRET2_ROOT/config.default" <<'EOF'
 FWTYPE=iptables
 Z2R_WSSIZE_RAMP_ENABLE=0
+Z2R_WSSIZE_RAMP_SYNDATA=0
+Z2R_WSSIZE_RAMP_SYN_BLOB=tlsgoogle
 Z2R_WSSIZE_RAMP_MODE=full
 Z2R_WSSIZE_RAMP_WSIZE=1
 Z2R_WSSIZE_RAMP_SCALE=1
@@ -49,6 +51,8 @@ EOF
 cat > "$ZAPRET2_ROOT/config" <<'EOF'
 FWTYPE=iptables
 Z2R_WSSIZE_RAMP_ENABLE=1
+Z2R_WSSIZE_RAMP_SYNDATA=1
+Z2R_WSSIZE_RAMP_SYN_BLOB=google_www
 Z2R_WSSIZE_RAMP_MODE=lite
 Z2R_WSSIZE_RAMP_SCALE=8
 EOF
@@ -56,6 +60,8 @@ config_apply_from_default preserve_wssize
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_ENABLE)" = 1 ]
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_MODE)" = lite ]
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SCALE)" = 8 ]
+[ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SYNDATA)" = 1 ]
+[ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SYN_BLOB)" = google_www ]
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_ARGS)" = ':mode=lite:wsize=1:scale=8:open=1' ]
 [ -z "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SKIP)" ]
 
@@ -64,7 +70,14 @@ config_apply_from_default
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_ENABLE)" = 0 ]
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_MODE)" = full ]
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SCALE)" = 1 ]
+[ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SYNDATA)" = 0 ]
+[ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SYN_BLOB)" = tlsgoogle ]
 [ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SKIP)" = --skip ]
+
+# Configurations predating the blob key keep the shipped blob default.
+sed -i '/^Z2R_WSSIZE_RAMP_SYN_BLOB=/d' "$ZAPRET2_ROOT/config"
+config_apply_from_default preserve_wssize
+[ "$(config_get_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_SYN_BLOB)" = tlsgoogle ]
 
 # Both normal and economy deploy paths must request preservation.
 sed -n '/^deploy_apply_config_to_live() {/,/^}/p' "$REPO_DIR/lib/deploy.sh" | grep -q 'config_apply_from_default preserve_wssize' || {

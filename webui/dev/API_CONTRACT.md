@@ -132,7 +132,7 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
   "wg_state": { /* settings.cgi?setting=wg_state */ },
   "fallback": { /* settings.cgi?setting=fallback */ },
   "udp_games":{ /* settings.cgi?setting=udp-games */ },
-  "wssize_ramp": {"enabled":false,"mode":"full","scale":1,"googlevideo_ips":0,"googlevideo_local_collection":"unsupported"},
+  "wssize_ramp": {"enabled":false,"mode":"full","scale":1,"syndata":false,"googlevideo_ips":0,"googlevideo_local_collection":"unsupported"},
   "auto_mode":{ /* settings.cgi?setting=auto_mode */ },
   "hostlist": { /* settings.cgi?setting=hostlist */ },
   "rst_guard":{ /* settings.cgi?setting=rst_guard */ },
@@ -373,7 +373,7 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
 | `fallback` | `api_fallback_get` | состояние fallback ([§7](#7-fallback-безразборный-режим)) |
 | `udp-games` | `api_udp_games_get` | состояние игрового UDP (профиль 7) |
 | `h3_curl` | `api_h3_curl_get` | статус h3-curl (read-only, установка в CLI) |
-| `wssize_ramp` | `api_wssize_ramp_get` | состояние, размер центрального списка Googlevideo, локальный DNS-сбор (`enabled`, `disabled`, `unsupported`), Full/Lite и scale |
+| `wssize_ramp` | `api_wssize_ramp_get` | состояние, размер центрального списка Googlevideo, локальный DNS-сбор (`enabled`, `disabled`, `unsupported`), Full/Lite, scale и `syndata` |
 | `auto_mode` | `api_auto_mode_get` | авторотация TCP/HTTP |
 | `hostlist` | `api_hostlist_get` | режим фильтрации по спискам |
 | `rst_guard` | `api_rst_guard_get` | защита от RST-инъекций |
@@ -384,8 +384,10 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
 | `provider` | `api_provider_get` | провайдер (cache/provider.txt) |
 
 `POST setting=wssize_ramp` принимает `value=0|1`, `mode=full|lite`,
-`scale=0..14`; проверяет Lua-профиль и файл модуля при включении, сохраняет
-параметры и перезапускает zapret2, если процесс запущен.
+`scale=0..14` и необязательный `syndata=0|1`; проверяет Lua-профиль и файл
+модуля при включении, сохраняет параметры и перезапускает zapret2, если процесс
+запущен. Старый клиент без `syndata` сохраняет текущее значение при включённом
+Ramp; отключение Ramp всегда сбрасывает `syndata` в `0`.
 
 **TLS** (`GET /cgi-bin/settings.cgi`):
 

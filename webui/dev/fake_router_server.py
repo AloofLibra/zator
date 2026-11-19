@@ -2286,22 +2286,30 @@ class FakeRouterState:
             "enabled": config_get_var(self.cfg_text, "Z2R_WSSIZE_RAMP_ENABLE") == "1",
             "mode": config_get_var(self.cfg_text, "Z2R_WSSIZE_RAMP_MODE") or "full",
             "scale": scale if 0 <= scale <= 14 else 1,
+            "syndata": config_get_var(self.cfg_text, "Z2R_WSSIZE_RAMP_SYNDATA") == "1",
             "googlevideo_ips": 0,
             "googlevideo_local_collection": "unsupported",
         }
 
-    def apply_wssize_ramp(self, enabled, mode, scale):
+    def apply_wssize_ramp(self, enabled, mode, scale, syndata=None):
         if enabled not in ("0", "1"):
             raise ValueError("Некорректный флаг включения")
         if mode not in ("full", "lite"):
             raise ValueError("Режим должен быть full или lite")
         if not re.match(r"^[0-9]+$", scale) or int(scale) > 14:
             raise ValueError("Scale должен быть целым числом от 0 до 14")
+        if syndata is None:
+            syndata = "1" if self.build_wssize_ramp_settings()["syndata"] else "0"
+        if syndata not in ("0", "1"):
+            raise ValueError("Некорректный флаг SYN-data")
+        if enabled == "0":
+            syndata = "0"
         if enabled == "1" and "--lua-desync=wssize_ramp" not in self.cfg_text:
             raise ValueError("Профиль wssize_ramp отсутствует в config")
         for name, value in (("Z2R_WSSIZE_RAMP_ENABLE", enabled),
                             ("Z2R_WSSIZE_RAMP_MODE", mode),
-                            ("Z2R_WSSIZE_RAMP_SCALE", scale)):
+                            ("Z2R_WSSIZE_RAMP_SCALE", scale),
+                            ("Z2R_WSSIZE_RAMP_SYNDATA", syndata)):
             self.cfg_text = config_set_var(self.cfg_text, name, value)
         self._save_config()
         return {"ok": True, "restarted": self._apply_restart(), **self.build_wssize_ramp_settings()}
@@ -3321,10 +3329,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 try:
                     with self.state.lock:
                         result = self.state.apply_wssize_ramp(
-                            params.get("value", ""), params.get("mode", ""), params.get("scale", ""))
-                        self._log("POST {0} | wssize_ramp enabled={1} mode={2} scale={3}".format(
+                            params.get("value", ""), params.get("mode", ""), params.get("scale", ""),
+                            params.get("syndata"))
+                        self._log("POST {0} | wssize_ramp enabled={1} mode={2} scale={3} syndata={4}".format(
                             parsed.path, params.get("value"),
-                            params.get("mode"), params.get("scale")))
+                            params.get("mode"), params.get("scale"), params.get("syndata")))
                         self._send_json(result)
                 except ValueError as e:
                     self._send_error_json(400, str(e))

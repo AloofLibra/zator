@@ -16,20 +16,24 @@ const localCollectionLabel = computed(() => ({
 const enabled = ref(false)
 const mode = ref<WssizeRampSettings['mode']>('full')
 const scale = ref(1)
+const syndata = ref(false)
 watch(settings, (value) => {
   if (!value) return
   enabled.value = value.enabled
   mode.value = value.mode
   scale.value = value.scale
+  syndata.value = value.syndata
 }, { immediate: true })
+watch(enabled, (value) => { if (!value) syndata.value = false })
 
 const unchanged = computed(() => !!settings.value && enabled.value === settings.value.enabled
   && mode.value === settings.value.mode
-  && scale.value === settings.value.scale)
+  && scale.value === settings.value.scale
+  && syndata.value === settings.value.syndata)
 
 async function submit() {
   if (!Number.isInteger(scale.value) || scale.value < 0 || scale.value > 14) return
-  const value = { ...settings.value!, enabled: enabled.value, mode: mode.value, scale: scale.value }
+  const value = { ...settings.value!, enabled: enabled.value, mode: mode.value, scale: scale.value, syndata: syndata.value }
   try {
     await withBusy('wssize-ramp', async () => {
       announceRestart()
@@ -70,6 +74,11 @@ async function submit() {
         <span>Scale (0–14)</span>
         <input id="wssize-ramp-scale" v-model.number="scale" type="number" min="0" max="14" step="1" :disabled="busyActive">
       </label>
+      <label class="toggle-field">
+        <input id="wssize-ramp-syndata" v-model="syndata" type="checkbox" :disabled="busyActive || !enabled">
+        <span>SYN-data для Googlevideo (экспериментально)</span>
+      </label>
+      <p class="panel-desc">Добавляет данные в первый TCP SYN перед TLS-рукопожатием. Работает только при включённом wssize_ramp. Может вызывать проблемы с подключением на некоторых серверах.</p>
       <div class="card-actions">
         <button type="submit" class="primary" :class="{ 'is-busy': busyButton === 'wssize-ramp' }"
           :disabled="busyActive || unchanged || !Number.isInteger(scale) || scale < 0 || scale > 14">Сохранить</button>
