@@ -2114,12 +2114,16 @@ api_custom_list() {
 
 # Нормализация + валидация spec от пользователя — ВЫЗЫВАТЬ ТОЛЬКО на верхнем
 # уровне api-функции (не в подшелле!): send_error должен прервать весь CGI.
-# Нормализатор срезает «--lua-desync=» и хвостовые «:strategy=N» (клиент может
-# вставить готовую строку из конфига целиком); ошибки — 400 с текстом валидатора.
+# Разбор — импортный движок custom_strategies_import_spec: клиент может
+# вставить готовую строку из конфига целиком, строку SUMMARY blockcheck2 или
+# команду nfqws2 («--lua-desync=», «:strategy=N», шапка «curl_test_… : nfqws2»
+# и лишние аргументы демона срезаются); ошибки — 400 с текстом валидатора.
 _custom_normalize_and_check() {
   local block="$1" raw="$2" cfg="$3"
   local spec err
-  spec="$(custom_strategies_normalize "$raw" 2>/dev/null)" || \
+  # textarea может прийти многострочной (копипаста с жёсткими переносами)
+  raw="$(custom_strategies_join_wraps "$raw")"
+  spec="$(custom_strategies_import_spec "$raw" "$block" "$cfg" 2>/dev/null)" || \
     send_error "400 Bad Request" "Не удалось разобрать строку: «strategy=» допустим только в конце групп"
   _custom_capture_err custom_strategies_validate "$block" "$spec" "$cfg"
   if [ "$REPLY_RC" != "0" ]; then

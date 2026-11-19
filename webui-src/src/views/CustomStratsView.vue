@@ -347,7 +347,7 @@ async function applyToConfig() {
         <label>
           <span>Стратегия (одна группа или комбо через « --lua-desync=»)</span>
           <textarea id="custom-strat-spec" ref="specField" v-model="formSpec" rows="4" :disabled="busyActive"
-            placeholder="можно вставить готовую строку из конфига — --lua-desync= и :strategy=N срежутся"></textarea>
+            placeholder="можно вставить готовую строку из конфига, строку SUMMARY blockcheck2 или команду nfqws2 целиком — лишнее срежется само"></textarea>
         </label>
         <div class="form-hint">
           Пример: <code>{{ formExamples.single }}</code>

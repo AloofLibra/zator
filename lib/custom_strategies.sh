@@ -212,7 +212,7 @@ custom_strategies_bc_groups() {
       --import=*|--filter-*|--hostlist*|--new|--skip|--daemon*|--pidfile=*|\
       --uid=*|--gid=*|--user=*|--qnum=*|--fwmark=*|--debug=*|--dry-run|--comment=*)
         : ;;
-      --*) echo "вырезано лишнее: $tok" >&2 ;;
+      *) echo "вырезано лишнее: $tok" >&2 ;;
     esac
   done
   set +f
@@ -259,6 +259,35 @@ custom_strategies_bc_fix_group() {
   printf '%s' "$out"
 }
 
+# Склейка жёстких переносов (копипаста из чатов/textarea рвёт длинные строки):
+# кусок, который сам не начинается запись — нет « : nfqws2 », не «nfqws2 …»,
+# нет «--lua-desync=» — приклеивается к предыдущей строке БЕЗ разделителя
+# (перенос обычно рвёт строку посреди токена). Пустые, «#…» и «* SUMMARY» — мимо.
+custom_strategies_join_wraps() {
+  local joined="" linebuf="" line
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    case "$line" in ''|'#'*|'*'*) continue ;; esac
+    case "$line" in
+      *" : nfqws2 "*|nfqws2\ *|*--lua-desync=*)
+        if [ -n "$linebuf" ]; then
+          joined="$joined$linebuf"$'\n'
+          linebuf=""
+        fi
+        linebuf="$line"
+        ;;
+      *)
+        line="${line#"${line%%[![:space:]]*}"}"
+        linebuf="$linebuf$line"
+        ;;
+    esac
+  done <<<"$1"
+  if [ -n "$linebuf" ]; then
+    joined="$joined$linebuf"$'\n'
+  fi
+  printf '%s' "$joined"
+}
+
 # Полный импорт одной строки: SUMMARY блокчека, команда nfqws2 или обычная
 # строка --lua-desync=. stdout — канонический spec (готов к custom_strategies_add);
 # rc: 0 — ok, 1 — не распознано/не разобралось (сообщения — в stderr).
@@ -293,6 +322,10 @@ custom_strategies_import_text() {
   local bcdomain="" comment
   existing="$(custom_strategies_list "$block" | awk -F '\t' '{print $3}')"$'\n'
   local added=0 dups=0 failed=0
+
+  # Склейка жёстких переносов (см. custom_strategies_join_wraps)
+  text="$(custom_strategies_join_wraps "$text")"
+
   while IFS= read -r line; do
     line="${line%$'\r'}"
     # пустые, комментарии и заголовки отчёта блокчека («* SUMMARY») — молча
@@ -1126,7 +1159,10 @@ _custom_ask_spec() {
     echo -e "${yellow}  • комбо — несколько групп через « --lua-desync=», всем им${plain}" >&2
     echo -e "${yellow}    присвоится ОДИН номер стратегии (как строкам 20/21 конфига);${plain}" >&2
     echo -e "${yellow}  • можно вставить готовую строку из конфига целиком —${plain}" >&2
-    echo -e "${yellow}    «--lua-desync=» и «:strategy=N» срежутся автоматически.${plain}" >&2
+    echo -e "${yellow}    «--lua-desync=» и «:strategy=N» срежутся автоматически;${plain}" >&2
+    echo -e "${yellow}  • можно вставить строку SUMMARY blockcheck2 или команду nfqws2 —${plain}" >&2
+    echo -e "${yellow}    шапка «curl_test_… : nfqws2» и лишние аргументы вырежутся,${plain}" >&2
+    echo -e "${yellow}    гугловский блоб блокчека заменится на дефолтный из конфига.${plain}" >&2
     echo "" >&2
     echo -e "${yellow}Пример (${transport}):${plain}" >&2
     echo -e "${cyan}${example}${plain}" >&2
@@ -1135,7 +1171,9 @@ _custom_ask_spec() {
     echo "" >&2
     read -re -p "Стратегия (Enter - отмена): " input || input=""
     [ -z "$input" ] && return 0
-    spec="$(custom_strategies_normalize "$input")" || {
+    # импортный разбор: понимает и обычную строку, и SUMMARY блокчека, и команду
+    # nfqws2 (шапка curl_test_… и лишние аргументы демона вырезаются сами)
+    spec="$(custom_strategies_import_spec "$(custom_strategies_join_wraps "$input")" "$_CUSTOM_BLOCK")" || {
       echo -e "${red}Не удалось разобрать строку: «strategy=» допустим только в конце групп.${plain}" >&2
       continue
     }

@@ -383,6 +383,15 @@ out="$(printf '%s
 ' 'badprim:x=1' '' | _custom_ask_spec 2>/dev/null)" || out=""
 [ -z "$out" ] || fail "ask_spec: кривая строка + отмена должны давать пустой stdout"
 
+# ask_spec понимает и строку SUMMARY блокчека / команду nfqws2 (живой кейс:
+# вставка «curl_test_… : nfqws2 …» в добавление давала «Пробел внутри группы»)
+_CUSTOM_BLOCK=tpl
+_bc142='curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:nofake2:disorder_after=-1:tcp_md5:repeats=3:strategy=142'
+out="$(printf '%s
+' "$_bc142" | _custom_ask_spec 2>/dev/null)" || out=""
+[ "$out" = "hostfakesplit:host=www.google.com:nofake2:disorder_after=-1:tcp_md5:repeats=3" ] \
+  || fail "ask_spec: строка блокчека должна разбираться в добавлении (получено: $out)"
+
 unset -f clear
 
 # --- 11. Импорт блокчека (SUMMARY blockcheck2 / команды nfqws2) ----------------
@@ -457,6 +466,7 @@ n="$(custom_strategies_import_spec "$_bc_line" tpl "$CFG")"
 # 11c. Импорт файла целиком в чистый TSV/конфиг
 cat > "$TMP_DIR/bc.txt" <<'BCEOF'
 * SUMMARY
+это какая-то мусорная строка
 curl_test_https_tls12 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=25
 curl_test_https_tls12 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_md5:repeats=3:strategy=128
 curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=25
@@ -469,7 +479,6 @@ curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload
 curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=tls_client_hello_clone:blob=clone_www2:fallback=tlsgoogle:sni_del:sni_first=www.google.com:sni_snt_new=0:strategy=333 --lua-desync=multisplit:blob=clone_www2:tcp_md5:pos=2:nodrop:strategy=333 --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3:strategy=333
 curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=multisplit:pos=midsld:seqovl=211:seqovl_pattern=0x1603042000:strategy=278
 curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-init=@/opt/zator/lua/locked.lua --payload=tls_client_hello --lua-desync=fakemultidisorder:fake_blob=tlsgoogle:pos=1,sniext+1,midsld:fake_count=2:tcp_seq=-3000:repeats=2:strategy=340
-это какая-то мусорная строка
 --lua-desync=fake:blob=quic_google:out_range=-d2:strategy=18
 BCEOF
 
@@ -502,12 +511,23 @@ printf '%s\n' "$res2" | awk -F '\t' '$1=="RESULT" && $2==0 && $3==13 && $4==1 {o
   || fail "import_text: повторный импорт должен давать RESULT 0/13/1 (получено: $(printf '%s\n' "$res2"))"
 [ "$(custom_strategies_count)" = "12" ] || fail "import_text: дубликаты задвоились"
 
-# 11d. Инжект импортированного в конфиг
+# 11c-2. Жёсткие переносы внутри строки блокчека (копипаста из чатов) склеиваются
+cat > "$TMP_DIR/bc-wrapped.txt" <<'BCEOF'
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.
+google.com:nofake2:disorder_after=-1:tcp_md5:repeats=3:strategy=142
+BCEOF
+res3="$(custom_strategies_import_text "$(cat "$TMP_DIR/bc-wrapped.txt")" tpl)"
+printf '%s\n' "$res3" | awk -F '\t' '$1=="RESULT" && $2==1 && $3==0 && $4==0 {ok=1} END {exit !ok}' \
+  || fail "import_text: разорванная переносом строка блокчека должна склеиться (получено: $(printf '%s\n' "$res3"))"
+awk -F '\t' '$3=="hostfakesplit:host=www.google.com:nofake2:disorder_after=-1:tcp_md5:repeats=3" && $5 ~ /^blockcheck /' "$CUSTOM_STRATS_FILE" | grep -q . \
+  || fail "import_text: склеенная стратегия должна добавиться с blockcheck-комментарием"
+
+# 11d. Инжект импортированного в конфиг (12 записей секции 11c + 1 склеенная = 13)
 custom_strategies_apply_file "$CFG_BC" 2>/dev/null || fail "import: apply rc!=0"
 grep -qE -- '--lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxru:strategy=45' "$CFG_BC" \
   || fail "import: первая импортированная стратегия не в конфиге (strategy=45)"
-[ "$(config_profile_max_strategy 1 "$CFG_BC")" = "56" ] \
-  || fail "import: config_profile_max_strategy(1) != 56 (получено $(config_profile_max_strategy 1 "$CFG_BC"))"
+[ "$(config_profile_max_strategy 1 "$CFG_BC")" = "57" ] \
+  || fail "import: config_profile_max_strategy(1) != 57 (получено $(config_profile_max_strategy 1 "$CFG_BC"))"
 
 export CUSTOM_STRATS_FILE="$ORCH_DIR/custom_strategies.tsv"
 
