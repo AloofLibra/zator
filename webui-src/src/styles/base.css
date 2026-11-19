@@ -234,6 +234,7 @@ h3 { font-size: 1rem; line-height: 1.25; }
 
 .tabs, .subtabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -1094,7 +1095,10 @@ button.port-remove:not(:disabled):hover {
   min-width: 0;
 }
 
-@media (min-width: 900px) {
+/* Две колонки шапки (текст | меню) — только когда меню гарантированно
+   влезает рядом с текстом. С 900 до ~1200 левая колонка сжималась до
+   ~110px и подзаголовок упирался в панель вкладок. */
+@media (min-width: 1200px) {
   .hero {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
