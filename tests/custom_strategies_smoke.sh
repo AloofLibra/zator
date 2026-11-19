@@ -463,6 +463,24 @@ n="$(custom_strategies_import_spec "$_bc_line" tpl "$CFG")"
 [ "$n" = "multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxru" ] \
   || fail "import_spec: гугловский блоб не заменён на maxru ($n)"
 
+# плоская строка (без шапки блокчека) с чужим блобом тоже подменяется,
+# с предупреждением в stderr (живой кейс: «Блоб «tlsgoogle» не объявлен»
+# при добавлении строки из блокчека без шапки curl_test_…)
+n="$(custom_strategies_import_spec \
+  '--lua-desync=multisplit:blob=tlsgoogle:badsum:tcp_seq=-3000:pos=2:nodrop:strategy=244 --lua-desync=fakeddisorder:pos=midsld:badsum:tcp_seq=-3000:strategy=244' \
+  tpl "$CFG" 2>"$TMP_DIR/imp.err")"
+[ "$n" = "multisplit:blob=maxru:badsum:tcp_seq=-3000:pos=2:nodrop --lua-desync=fakeddisorder:pos=midsld:badsum:tcp_seq=-3000" ] \
+  || fail "import_spec: плоская строка с tlsgoogle должна заменяться на maxru ($n)"
+grep -qF 'блоб «tlsgoogle» не объявлен — заменён на maxru' "$TMP_DIR/imp.err" \
+  || fail "import_spec: нет предупреждения о подмене блоба"
+
+# клон-цель в плоской строке (и с ведущим --lua-desync=, и без) остаётся как есть
+n="$(custom_strategies_import_spec \
+  '--lua-desync=tls_client_hello_clone:blob=clone_www2:fallback=maxru:sni_del --lua-desync=fake:blob=clone_www2:tcp_seq=-3000' \
+  tpl "$CFG" 2>/dev/null)"
+[ "$n" = "tls_client_hello_clone:blob=clone_www2:fallback=maxru:sni_del --lua-desync=fake:blob=clone_www2:tcp_seq=-3000" ] \
+  || fail "import_spec: клон-цель в плоской строке должна остаться как есть ($n)"
+
 # 11c. Импорт файла целиком в чистый TSV/конфиг
 cat > "$TMP_DIR/bc.txt" <<'BCEOF'
 * SUMMARY

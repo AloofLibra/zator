@@ -247,7 +247,9 @@ custom_strategies_bc_fix_group() {
             if _custom_blob_known "$val" "$cfg"; then
               out="${out:+$out:}$tok"
             else
-              out="${out:+$out:}$key=$(custom_strategies_bc_blob_target "$val" "$transport")"
+              val="$(custom_strategies_bc_blob_target "$val" "$transport")"
+              echo "блоб «${tok#*=}» не объявлен — заменён на $val" >&2
+              out="${out:+$out:}$key=$val"
             fi
             ;;
           *) out="${out:+$out:}$tok" ;;
@@ -292,22 +294,30 @@ custom_strategies_join_wraps() {
 # строка --lua-desync=. stdout — канонический spec (готов к custom_strategies_add);
 # rc: 0 — ok, 1 — не распознано/не разобралось (сообщения — в stderr).
 custom_strategies_import_spec() {
-  local line="$1" block="${2:-tpl}" cfg="${3:-}" spec="" groups g fixed transport targets
+  local line="$1" block="${2:-tpl}" cfg="${3:-}" spec="" groups g fixed transport targets rest
   [ -n "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
   transport="$(custom_strategies_block_transport "$block")"
   BC_DOMAIN=""
   if groups="$(custom_strategies_bc_groups "$line")"; then
-    targets="$(_custom_clone_targets <<<"$groups")"
+    :
+  else
+    # обычная строка (без шапки блокчека) — тоже может прийти с чужими именами
+    # блобов (копипаста из чужого блокчека или чужой установки), разберём группы
+    rest="${line// --lua-desync=/$'\x01'}"
+    groups=""
     while IFS= read -r g; do
       [ -n "$g" ] || continue
-      fixed="$(custom_strategies_bc_fix_group "$g" "$transport" "$cfg" "$targets")"
-      if [ -z "$spec" ]; then spec="$fixed"; else spec="$spec --lua-desync=$fixed"; fi
-    done <<<"$groups"
-    spec="$(custom_strategies_normalize "$spec")" || return 1
-  else
-    spec="$(custom_strategies_normalize "$line")" || return 1
+      groups="${groups}${groups:+$'\n'}${g#--lua-desync=}"
+    done <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")"
   fi
+  targets="$(_custom_clone_targets <<<"$groups")"
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    fixed="$(custom_strategies_bc_fix_group "$g" "$transport" "$cfg" "$targets")"
+    if [ -z "$spec" ]; then spec="$fixed"; else spec="$spec --lua-desync=$fixed"; fi
+  done <<<"$groups"
+  spec="$(custom_strategies_normalize "$spec")" || return 1
   printf '%s' "$spec"
 }
 
