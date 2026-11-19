@@ -224,4 +224,62 @@ TAR_BIN="$(z2r_pick_tar)"
 "$TAR_BIN" -tf "$ARCHIVE" | grep -q 'custom_blob/second.bin' && \
   fail "удалённый файл блоба не должен быть в архиве"
 
+# --- 10. CLI-подменю (п.16 -> «Свои блобы») ------------------------------------
+# Статический wiring: пункт в tls_blob_submenu + диспетч-case.
+SUBMENUS_SRC="$(tr -d '\r' < "$REPO_DIR/lib/submenus.sh")"
+assert_contains "$SUBMENUS_SRC" 'Свои блобы — декларации --blob= \(custom_blob\)' \
+  "п.16: нет пункта «Свои блобы»"
+assert_contains "$SUBMENUS_SRC" 'custom_blobs_submenu' "п.16: пункт не открывает custom_blobs_submenu"
+
+# Сквозной прогон подменю на поданном stdin под set -e.
+clear() { :; }
+cyan=""; plain=""; green=""; red=""; yellow=""; Fcyan=""; Fyellow=""; Fgreen=""; Fpink=""
+
+_blobs_submenu_drive() { # stdin; результаты в REPLY_OUT/REPLY_ERR/REPLY_RC
+  local input="$1" out rc=0
+  out="$(set -e; printf '%s' "$input" | custom_blobs_submenu 2>"$TMP_DIR/cb.err")" || rc=$?
+  REPLY_OUT="$out"; REPLY_ERR="$(cat "$TMP_DIR/cb.err")"; REPLY_RC=$rc
+}
+
+# добавление: файл 1, имя по умолчанию (Enter), комментарий (Enter)
+# (сообщения верхнеуровневого подменю печатаются в stdout)
+printf 'BKDATA' > "$ROOT/files/fake/custom_blob/cli_test.bin"
+_blobs_submenu_drive $'1\n1\n\n\n'
+[ "$REPLY_RC" = "0" ] || fail "CLI п.16: rc=$REPLY_RC на добавлении"
+grep -qF 'Добавлено' <<<"$REPLY_OUT" || fail "CLI п.16: нет «Добавлено»"
+awk -F '\t' '$2=="cli_test" {exit !($3=="cli_test.bin")}' "$CUSTOM_BLOBS_FILE" \
+  || fail "CLI п.16: декларация cli_test не добавлена"
+
+# ссылка из пользовательской стратегии + переименование через подменю
+# (cli_test — id 2: id 1 занят third_fake из секции 8)
+custom_strategies_add tpl 'fake:blob=cli_test:tcp_seq=-3000' 'ссылка' >/dev/null \
+  || fail "CLI п.16: не добавлена тестовая стратегия"
+_blobs_submenu_drive $'2\n2\ncli_renamed\n\n\n'
+grep -qF 'обновлены' <<<"$REPLY_OUT" || fail "CLI п.16: переименование не отозвалось в стратегиях"
+awk -F '\t' '$3 ~ /blob=cli_renamed/ {found=1} END {exit !found}' "$CUSTOM_STRATS_FILE" \
+  || fail "CLI п.16: ссылка в стратегии не переписана"
+
+# удаление используемого блоба отказывает
+_blobs_submenu_drive $'3\n2\n'
+grep -qF 'используется' <<<"$REPLY_OUT" \
+  || fail "CLI п.16: удаление используемого блоба должно отказывать"
+
+# отмена на выборе файла/записи и выход
+_blobs_submenu_drive $'1\n0\n'
+grep -qF 'Неверный ввод' <<<"$REPLY_ERR" \
+  && fail "CLI п.16: 0 на выборе файла должен отменять"
+_blobs_submenu_drive $'2\n0\n'
+grep -qF 'Неверный ввод' <<<"$REPLY_ERR" \
+  && fail "CLI п.16: 0 на выборе записи должен отменять"
+_blobs_submenu_drive $'0\n'
+[ "$REPLY_RC" = "0" ] || fail "CLI п.16: rc=$REPLY_RC на выходе"
+
+# применение к конфигу (без рестарта)
+_blobs_submenu_drive $'4\n\n'
+[ "$REPLY_RC" = "0" ] || fail "CLI п.16: rc=$REPLY_RC на apply"
+grep -q -- '--blob=cli_renamed:@'"$ROOT"'/files/fake/custom_blob/cli_test.bin' "$CFG" \
+  || fail "CLI п.16: декларация не в конфиге после apply"
+
+unset -f clear
+
 echo "custom blobs smoke ok"

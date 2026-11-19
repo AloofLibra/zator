@@ -314,3 +314,218 @@ custom_blobs_apply_file() {
   rm -rf "$work"
   return 0
 }
+
+# --- подменю CLI (п.16 -> «Свои блобы»; панель дублирует через blobs.cgi) ------
+# Загрузка файлов через CLI не делается: кладите файлы в custom_blob/
+# (scp/веб-панелью — там кнопка загрузки) — каталог и TSV едут в бэкапах.
+
+# Имя блоба по умолчанию из имени файла: база без расширения, мусор в _,
+# цифра в начале -> префикс blob_.
+_custom_blobs_name_from_file() {
+  local base="${1%.*}" auto
+  auto="$(printf '%s' "$base" | tr -c 'A-Za-z0-9_' '_')"
+  case "$auto" in
+    [0-9]*) auto="blob_$auto" ;;
+    ""|_*) auto="blob_1" ;;
+  esac
+  printf '%s' "$auto"
+}
+
+# Выбор файла из custom_blob/. stdout — ТОЛЬКО имя файла (рендер в stderr);
+# 0/Enter/EOF — отмена (rc 0, пустой stdout).
+_custom_blobs_pick_file() {
+  local files=() f i choice n
+  while IFS= read -r f; do
+    [ -n "$f" ] && files+=("$f")
+  done < <(custom_blobs_files_list)
+  if [ "${#files[@]}" = "0" ]; then
+    echo -e "${yellow}Каталог $(custom_blobs_dir) пуст.${plain}" >&2
+    echo -e "${yellow}Положите файл блоба туда (scp) или загрузите через веб-панель —${plain}" >&2
+    echo -e "${yellow}«Свои блобы» -> «Загрузка блоба». Каталог едет в бэкапах.${plain}" >&2
+    return 0
+  fi
+  while true; do
+    i=1
+    echo -e "${cyan}--- Файлы в $(custom_blobs_dir) ---${plain}" >&2
+    echo "" >&2
+    for f in "${files[@]}"; do
+      submenu_item "$i" "$f" >&2
+      i=$((i + 1))
+    done
+    submenu_item "0" "Отмена" >&2
+    echo "" >&2
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in ""|0) return 0 ;; esac
+    case "$choice" in *[!0-9]*) ui_invalid_input >&2; continue ;; esac
+    n="${#files[@]}"
+    if [ "$choice" -ge 1 ] && [ "$choice" -le "$n" ]; then
+      printf '%s\n' "${files[$((choice - 1))]}"
+      return 0
+    fi
+    ui_invalid_input >&2
+  done
+}
+
+# Ввод имени блоба. $1 — значение по умолчанию (Enter принимает его).
+# stdout — ТОЛЬКО имя; пустой ввод при пустом default — отмена (пустой stdout).
+_custom_blobs_ask_name() {
+  local def="${1:-}" input
+  while true; do
+    if [ -n "$def" ]; then
+      read -re -p "Имя блоба (Enter = $def): " input || input="$def"
+      [ -z "$input" ] && input="$def"
+    else
+      read -re -p "Имя блоба (Enter - отмена): " input || input=""
+      [ -z "$input" ] && return 0
+    fi
+    if custom_blobs_name_wellformed "$input"; then
+      printf '%s\n' "$input"
+      return 0
+    fi
+    echo -e "${red}Имя блоба: буква/подчёркивание, дальше буквы/цифры/подчёркивание (до 32).${plain}" >&2
+  done
+}
+
+# Выбор существующей записи. stdout — ТОЛЬКО id; 0/Enter/EOF — отмена.
+_custom_blobs_pick_row() {
+  local row choice n=0
+  while true; do
+    n=0
+    echo -e "${cyan}--- Свои блобы ---${plain}" >&2
+    echo "" >&2
+    while IFS= read -r row; do
+      _custom_blobs_split "$row" || continue
+      n=$((n + 1))
+      submenu_item "$_CB_ID" "$_CB_NAME — $_CB_FILE" >&2
+    done < <(custom_blobs_list)
+    submenu_item "0" "Отмена" >&2
+    echo "" >&2
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in ""|0) return 0 ;; esac
+    case "$choice" in *[!0-9]*) ui_invalid_input >&2; continue ;; esac
+    if custom_blobs_row "$choice" >/dev/null 2>&1; then
+      printf '%s\n' "$choice"
+      return 0
+    fi
+    ui_invalid_input >&2
+  done
+}
+
+custom_blobs_submenu() {
+  local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+  local ans id name file comment row refs
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Свои блобы (custom_blob) ---${plain}"
+    echo ""
+    echo -e "${yellow}Декларации --blob=ИМЯ:@файл дописываются в конфиг после штатных блобов${plain}"
+    echo -e "${yellow}(секция #Z2R_CUSTOM_BLOBS). Файлы кладите в:${plain}"
+    echo -e "${cyan}$(custom_blobs_dir)${plain}"
+    echo -e "${yellow}(scp или загрузка через веб-панель; каталог и список едут в бэкапах).${plain}"
+    echo -e "${yellow}Имя не должно совпадать со штатным. Смена имени правит ссылки${plain}"
+    echo -e "${yellow}в «Своих стратегиях». Вступает в силу после «Применить» (пункт 4).${plain}"
+    echo ""
+    if [ "$(custom_blobs_count)" = "0" ]; then
+      echo -e "${yellow}Деклараций нет.${plain}"
+    else
+      printf "${yellow}%-3s %-16s %-24s %-6s %s${plain}\n" "ID" "Имя" "Файл" "Ссыл." "Комментарий"
+      local row
+      while IFS= read -r row; do
+        _custom_blobs_split "$row" || continue
+        refs="$(custom_strategies_blob_ref_rows "$_CB_NAME")"
+        printf "%-3s %-16s %-24s %-6s %s\n" "$_CB_ID" "$_CB_NAME" "$_CB_FILE" "$refs" "$_CB_COMMENT"
+      done < <(custom_blobs_list)
+    fi
+    echo ""
+    submenu_item "1" "Добавить блоб (из файла каталога)"
+    submenu_item "2" "Изменить / переименовать"
+    submenu_item "3" "Удалить"
+    submenu_item "4" "Применить к конфигу"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans || ans=""
+    case "$ans" in
+      "0"|"")
+        return
+        ;;
+      "1")
+        file="$(_custom_blobs_pick_file)" || file=""
+        if [ -n "$file" ]; then
+          name="$(_custom_blobs_ask_name "$(_custom_blobs_name_from_file "$file")")" || name=""
+        fi
+        [ -n "${file:-}" ] && [ -n "${name:-}" ] || { echo "Отменено."; pause_enter; continue; }
+        read -re -p "Комментарий (Enter - пусто): " comment || comment=""
+        if id="$(custom_blobs_add "$name" "$file" "$comment")"; then
+          echo -e "${green}Добавлено: ID $id, блоб «$name».${plain}"
+          echo -e "${yellow}Примените к конфигу (п.4) и перезапустите zapret2.${plain}"
+        else
+          echo -e "${red}Не добавлено (имя занято/кривое или файл пропал).${plain}"
+        fi
+        pause_enter
+        ;;
+      "2")
+        id="$(_custom_blobs_pick_row)" || id=""
+        [ -n "$id" ] || { echo "Отменено."; pause_enter; continue; }
+        row="$(custom_blobs_row "$id")"
+        _custom_blobs_split "$row" || { pause_enter; continue; }
+        echo -e "${yellow}Текущее: имя «$_CB_NAME», файл «$_CB_FILE», комментарий «$_CB_COMMENT»${plain}"
+        name="$(_custom_blobs_ask_name "$_CB_NAME")" || name="$_CB_NAME"
+        file="$(_custom_blobs_pick_file)" || file="$_CB_FILE"
+        [ -z "$file" ] && file="$_CB_FILE"
+        read -re -p "Комментарий (Enter - прежний): " comment || comment="$_CB_COMMENT"
+        [ -z "$comment" ] && comment="$_CB_COMMENT"
+        if custom_blobs_replace "$id" "$name" "$file" "$comment" "$cfg"; then
+          if [ "$name" != "$_CB_NAME" ]; then
+            echo -e "${green}Переименовано: «$_CB_NAME» -> «$name». Ссылки в «Своих стратегиях» обновлены.${plain}"
+          else
+            echo -e "${green}Обновлено.${plain}"
+          fi
+          echo -e "${yellow}Примените к конфигу (п.4).${plain}"
+        else
+          echo -e "${red}Не обновлено (имя занято/кривое или файл пропал).${plain}"
+        fi
+        pause_enter
+        ;;
+      "3")
+        id="$(_custom_blobs_pick_row)" || id=""
+        [ -n "$id" ] || { echo "Отменено."; pause_enter; continue; }
+        row="$(custom_blobs_row "$id")"
+        _custom_blobs_split "$row" || { pause_enter; continue; }
+        refs="$(custom_strategies_blob_ref_rows "$_CB_NAME")"
+        if [ "$refs" != "0" ]; then
+          echo -e "${red}Блоб «$_CB_NAME» используется в $refs стратеги(ях) — сначала уберите ссылки (п.1 -> 14).${plain}"
+          pause_enter
+          continue
+        fi
+        if custom_blobs_delete "$id"; then
+          echo -e "${green}Удалено (запись и файл).${plain}"
+        else
+          echo -e "${red}Не удалено.${plain}"
+        fi
+        pause_enter
+        ;;
+      "4")
+        local strat_ok=1
+        if type custom_strategies_apply_file >/dev/null 2>&1; then
+          custom_strategies_apply_file "$cfg" || strat_ok=0
+        fi
+        if custom_blobs_apply_file "$cfg" && [ "$strat_ok" = "1" ]; then
+          echo -e "${green}Пользовательские блобы применены к $cfg.${plain}"
+          read -re -p "Перезапустить zapret2 сейчас? 1 - да, Enter - нет: " ans || ans=""
+          if [ "$ans" = "1" ]; then
+            z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
+          fi
+        else
+          echo -e "${red}Не удалось применить блобы к $cfg.${plain}"
+        fi
+        pause_enter
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
