@@ -383,10 +383,10 @@ custom_strategies_import_text() {
 # wssize/syndata/tcpseg/multidisorder_legacy и nofake2/nofake4/tls_mod/midhost
 # встречаются только в выводе блокчека; disorder_after бывает и флагом (конфиг),
 # и ключом со значением (блокчек: disorder_after=-1) — потому в обоих списках.
-custom_strategies_primitives_tcp="fake multisplit multidisorder multidisorder_legacy fakeddisorder fakedsplit fakemultisplit fakemultidisorder hostfakesplit syndata wssize tcpseg send tls_client_hello_clone"
+custom_strategies_primitives_tcp="fake multisplit multidisorder multidisorder_legacy fakeddisorder fakedsplit fakemultisplit fakemultidisorder hostfakesplit syndata wssize tcpseg send tls_client_hello_clone oob"
 custom_strategies_primitives_udp="fake send udplen dnsclone"
 
-custom_strategies_keys_tcp="fake_blob fallback host midhost pos seqovl seqovl_pattern sni_first sni_snt_new tcp_seq tcp_ack tcp_ts fake_count wsize scale disorder_after"
+custom_strategies_keys_tcp="fake_blob fallback host midhost pos seqovl seqovl_pattern sni_first sni_snt_new tcp_seq tcp_ack tcp_ts fake_count wsize scale disorder_after urp char byte"
 custom_strategies_keys_udp="increment min ipfrag_pos_udp"
 custom_strategies_keys_both="blob repeats out_range ip_autottl ip6_autottl ip_ttl ip6_ttl ip_id payload tls_mod pattern"
 
@@ -552,12 +552,17 @@ _custom_validate_kv() {
     return 1
   fi
   case "$key" in
-    repeats|fake_count|tcp_seq|tcp_ack|tcp_ts|increment|min|ipfrag_pos_udp|sni_snt_new|wsize|scale|disorder_after)
+    repeats|fake_count|tcp_seq|tcp_ack|tcp_ts|increment|min|ipfrag_pos_udp|sni_snt_new|wsize|scale|disorder_after|byte)
       printf '%s' "$val" | grep -Eq '^-?[0-9]+$' || { echo "Ключ $key= ждёт целое число." >&2; return 1; } ;;
     seqovl)
       # число или маркер-позиция (блокчек: seqovl=midsld-1, host+1, sniext)
       printf '%s' "$val" | grep -Eq '^(-?[0-9]+|[A-Za-z_][A-Za-z0-9_]*([+-][0-9]+)?)$' \
         || { echo "Ключ seqovl= ждёт число или маркер (midsld-1, host+1, sniext)." >&2; return 1; } ;;
+    urp)
+      # позиционный маркер urgent pointer: "b"|"e" (док. fork) или число
+      printf '%s' "$val" | grep -Eq '^([bBeE]|[0-9]+)$'         || { echo "Ключ urp= ждёт b, e или число." >&2; return 1; } ;;
+    char)
+      printf '%s' "$val" | grep -Eq '^[A-Za-z0-9]$'         || { echo "Ключ char= ждёт ровно один символ (букву/цифру)." >&2; return 1; } ;;
     midhost)
       printf '%s' "$val" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$' \
         || { echo "Ключ midhost= ждёт маркер позиции (midsld и т.п.)." >&2; return 1; } ;;

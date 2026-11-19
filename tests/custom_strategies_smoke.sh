@@ -421,6 +421,24 @@ custom_strategies_validate tpl 'multisplit:pos=midsld:seqovl=211:seqovl_pattern=
   || fail "validate: seqovl_pattern hex-литералом должен проходить"
 custom_strategies_validate tpl 'fakeddisorder:pos=midsld:pattern=maxru:nofake4' \
   || fail "validate: pattern именем блоба + nofake4 должен проходить"
+# oob из документации fork (живой кейс: «Неизвестный примитив: oob» на вставке
+# oob:urp=1 + hostfakesplit с ip_id=zero)
+custom_strategies_validate tpl 'oob:urp=1' \
+  || fail "validate: oob:urp=1 должен проходить"
+custom_strategies_validate tpl 'oob:urp=b --lua-desync=fake:blob=maxru:repeats=2' \
+  || fail "validate: oob:urp=b должен проходить"
+custom_strategies_validate tpl 'oob:urp=e:char=X:byte=7' \
+  || fail "validate: oob с char/byte должен проходить"
+custom_strategies_validate tpl 'oob:urp=1 --lua-desync=hostfakesplit:ip_id=zero:host=developers.google.com:tcp_ts=-600000:tcp_ts_up:ip_ttl=4:ip6_ttl=4' \
+  || fail "validate: точная стратегия пользователя с oob должна проходить"
+custom_strategies_import_spec $'oob:urp=1\n--lua-desync=hostfakesplit:ip_id=zero:host=developers.google.com:tcp_ts=-600000:tcp_ts_up:ip_ttl=4:ip6_ttl=4' tpl "$CFG" >/dev/null \
+  || fail "import_spec: стратегия пользователя с oob должна разбираться"
+if custom_strategies_validate p5 'oob:urp=1' 2>/dev/null; then
+  fail "validate: oob в UDP-блоке должен падать"
+fi
+if custom_strategies_validate tpl 'oob:urp=zz' 2>/dev/null; then
+  fail "validate: urp мусором должен падать"
+fi
 # blob= у tls_client_hello_clone — цель, nfqws2 создаёт её сам в рантайме
 # (живой кейс: «Блоб «clone_www2» не объявлен в конфиге» на ручном вводе)
 custom_strategies_validate tpl 'tls_client_hello_clone:blob=clone_www2:fallback=fake_default_tls:sni_del:sni_first=www.google.com:sni_snt_new=0' \
