@@ -198,10 +198,11 @@ button.ghost { color: var(--text); }
 
 .hero-copy { display: grid; gap: 6px; }
 
-/* Кнопка «Поддержать проект» живёт под подзаголовком (вне ряда меню),
-   чтобы шесть вкладок на десктопе не растягивали header-controls. */
-.hero-support { display: flex; }
+/* Кнопка «Поддержать проект» и выбор темы живут под подзаголовком (вне ряда
+   меню), чтобы шесть вкладок на десктопе не растягивали header-controls. */
+.hero-support { display: flex; gap: 8px; align-items: stretch; }
 .hero-support .support-button { flex: 0 0 auto; padding: 0.45rem 0.9rem; font-size: 0.85rem; }
+.hero-support .theme-field select { padding: 0.45rem 0.9rem; font-size: 0.85rem; min-width: 7rem; }
 
 .header-controls {
   display: flex;
