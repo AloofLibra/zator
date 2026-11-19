@@ -2605,6 +2605,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
 	echo -e "${Bred}${Fplain}17. Не знаешь, с чего начать? Есть проблемы? Жми сюда!${plain}"
 	if [[ -f "$PREMIUM_FLAG" ]]; then
       echo -e "${red}999. Секретный пункт. Нажимать на свой страх и риск${plain}"
+      echo -e "${pink}     premium активен — повторный ввод 777 сбросит титул и скроет этот пункт${plain}"
     fi
   read -re -p "" answer_menu || answer_menu=0
     case "$answer_menu" in
