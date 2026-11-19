@@ -638,7 +638,7 @@ whitelist символов/примитивов/ключей по транспо
 | `edit` | `id=<N>&block=&value=&comment=` | заменить spec/блок/комментарий; `assigned` сбрасывается |
 | `enable` | `id=<N>&value=0\|1` | вкл/выкл запись (выключенные не инжектятся, нумерация сжимается) |
 | `delete` | `id=<N>` | удалить (ID уплотняются) |
-| `import` | `block=&text=<многострочно>` | по строке на запись, ≤64; `added/skipped/errors[{line,reason}]` |
+| `import` | `block=&text=<многострочно>` | по строке на запись, ≤256; каждая строка — готовая стратегия `--lua-desync=…`, строка SUMMARY blockcheck2 (`… : nfqws2 …`) или команда `nfqws2 …` целиком: лишнее демона (`--blob/--payload/--lua-init`, `:strategy=N`) вырезается, необъявленные блобы переезжают на объявленные (гугловский `tlsgoogle` → `maxru` из живого конфига, `clone_www2` → `clone_vk`); дубликаты (в партии и против имеющихся записей блока) пропускаются; `added/dups/skipped/errors[{line,reason}]` |
 | `apply` | — | инжект в config (номера после максимума блока) + ремап локов + авто-рестарт |
 
 Успех: `{ "ok": true, "apply_required": true }` (apply: `+ "restarted": true|false,

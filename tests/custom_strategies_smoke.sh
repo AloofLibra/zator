@@ -385,4 +385,115 @@ out="$(printf '%s
 
 unset -f clear
 
+# --- 11. Импорт блокчека (SUMMARY blockcheck2 / команды nfqws2) ----------------
+# Реальные строки вывода блокчека: лишние аргументы демона вырезаются,
+# :strategy=N срезается, необъявленные блобы (гугловский tlsgoogle блокчека,
+# clone_www2) переезжают на объявленные (maxru из живого конфига, clone_vk),
+# дубликаты tls12/tls13 и повторный импорт не задваиваются.
+
+# 11a. Новые примитивы/ключи валидатора (встречаются только в выводе блокчека)
+custom_strategies_validate tpl 'wssize:wsize=4:scale=6 --lua-desync=multidisorder:pos=1,midsld' \
+  || fail "validate: wssize combo из блокчека должен проходить"
+custom_strategies_validate tpl 'syndata:blob=maxru' \
+  || fail "validate: syndata должен проходить"
+custom_strategies_validate tpl 'tcpseg:pos=0,host' \
+  || fail "validate: tcpseg должен проходить"
+custom_strategies_validate tpl 'multidisorder_legacy:pos=1,midsld' \
+  || fail "validate: multidisorder_legacy должен проходить"
+custom_strategies_validate tpl 'hostfakesplit:host=www.google.com:midhost=midsld:nofake2:disorder_after=-1:tcp_md5:repeats=3' \
+  || fail "validate: hostfakesplit c midhost/nofake2/disorder_after должен проходить"
+custom_strategies_validate tpl 'hostfakesplit:disorder_after:tcp_ack=-66000' \
+  || fail "validate: disorder_after без значения (флаг конфига) должен проходить"
+custom_strategies_validate tpl 'fake:blob=maxru:tcp_md5:tls_mod=rnd,dupsid,padencap:repeats=6' \
+  || fail "validate: tls_mod должен проходить"
+custom_strategies_validate tpl 'multisplit:pos=midsld:seqovl=midsld-1' \
+  || fail "validate: seqovl маркером (midsld-1) должен проходить"
+custom_strategies_validate tpl 'multisplit:pos=midsld:seqovl=211:seqovl_pattern=0x1603042000' \
+  || fail "validate: seqovl_pattern hex-литералом должен проходить"
+custom_strategies_validate tpl 'fakeddisorder:pos=midsld:pattern=maxru:nofake4' \
+  || fail "validate: pattern именем блоба + nofake4 должен проходить"
+if custom_strategies_validate tpl 'fakeddisorder:pos=midsld:pattern=nosuchblob' 2>/dev/null; then
+  fail "validate: pattern необъявленным блобом должен падать"
+fi
+if custom_strategies_validate tpl 'multisplit:pos=midsld:seqovl=абв' 2>/dev/null; then
+  fail "validate: seqovl мусором должен падать"
+fi
+if custom_strategies_validate tpl 'fakeddisorder:pos=midsld:nofake9' 2>/dev/null; then
+  fail "validate: неизвестный nofake9 должен падать"
+fi
+if custom_strategies_validate tpl 'fakeddisorder:pos=midsld:tls_mod=BAD!' 2>/dev/null; then
+  fail "validate: кривой tls_mod должен падать"
+fi
+
+# 11b. Разбор строки блокчека: домен и группы (домен — глобальная BC_DOMAIN,
+# вызывать НЕ в подshell $(...))
+_bc_line='curl_test_https_tls12 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=25'
+custom_strategies_bc_groups "$_bc_line" > "$TMP_DIR/bc.groups" \
+  || fail "bc_groups: строка блокчека не распознана"
+[ "$BC_DOMAIN" = "rr2---sn-aj5go5-53.googlevideo.com" ] || fail "bc_groups: домен не извлечён ($BC_DOMAIN)"
+[ "$(cat "$TMP_DIR/bc.groups")" = "multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle" ] \
+  || fail "bc_groups: группы не совпали ($(cat "$TMP_DIR/bc.groups"))"
+if custom_strategies_bc_groups "--lua-desync=multisplit:pos=1" >/dev/null 2>&1; then
+  fail "bc_groups: обычная строка стратегии не должна распознаваться как блокчек"
+fi
+n="$(custom_strategies_import_spec "$_bc_line" tpl "$CFG")"
+[ "$n" = "multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxru" ] \
+  || fail "import_spec: гугловский блоб не заменён на maxru ($n)"
+
+# 11c. Импорт файла целиком в чистый TSV/конфиг
+cat > "$TMP_DIR/bc.txt" <<'BCEOF'
+* SUMMARY
+curl_test_https_tls12 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=25
+curl_test_https_tls12 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_md5:repeats=3:strategy=128
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=tlsgoogle:strategy=25
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=multidisorder:pos=midsld:seqovl=midsld-1:strategy=63
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=tcpseg:pos=0,host:strategy=144
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --lua-desync=wssize:wsize=4:scale=6:strategy=169 --payload=tls_client_hello --lua-desync=multidisorder:pos=1,midsld:strategy=169
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-desync=syndata:blob=tlsgoogle:strategy=160 --payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:strategy=160
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=fake:blob=tlsgoogle:tcp_md5:tls_mod=rnd,dupsid,padencap:repeats=6:strategy=89
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=fakeddisorder:pos=midsld:pattern=tlsgoogle:nofake2:disorder_after=-1:tcp_md5:repeats=2:strategy=127
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --payload=tls_client_hello --lua-desync=tls_client_hello_clone:blob=clone_www2:fallback=tlsgoogle:sni_del:sni_first=www.google.com:sni_snt_new=0:strategy=333 --lua-desync=multisplit:blob=clone_www2:tcp_md5:pos=2:nodrop:strategy=333 --lua-desync=fakeddisorder:pos=midsld:tcp_md5:nofake3:strategy=333
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --payload=tls_client_hello --lua-desync=multisplit:pos=midsld:seqovl=211:seqovl_pattern=0x1603042000:strategy=278
+curl_test_https_tls13 ipv4 rr2---sn-aj5go5-53.googlevideo.com : nfqws2 --blob=tlsgoogle:@/opt/zator/files/fake/tls_clienthello_www_google_com_2.bin --lua-init=@/opt/zator/lua/locked.lua --payload=tls_client_hello --lua-desync=fakemultidisorder:fake_blob=tlsgoogle:pos=1,sniext+1,midsld:fake_count=2:tcp_seq=-3000:repeats=2:strategy=340
+это какая-то мусорная строка
+--lua-desync=fake:blob=quic_google:out_range=-d2:strategy=18
+BCEOF
+
+export CUSTOM_STRATS_FILE="$TMP_DIR/custom_bc.tsv"
+printf '# header\n' > "$CUSTOM_STRATS_FILE"
+CFG_BC="$TMP_DIR/config.bc"
+tr -d '\r' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g" > "$CFG_BC"
+
+res="$(custom_strategies_import_text "$(cat "$TMP_DIR/bc.txt")" tpl)"
+printf '%s\n' "$res" | awk -F '\t' '$1=="RESULT" && $2==12 && $3==1 && $4==1 {ok=1} END {exit !ok}' \
+  || fail "import_text: итог должен быть RESULT 12/1/1 (получено: $(printf '%s\n' "$res"))"
+[ "$(custom_strategies_count)" = "12" ] || fail "import_text: в TSV должно быть 12 записей"
+
+# гугловские блобы блокчека нигде не остались, деклараций и номеров в spec нет
+grep -Eq 'tlsgoogle|clone_www2|www_google_com_2' "$CUSTOM_STRATS_FILE" \
+  && fail "import_text: блобы блокчека не заменены"
+awk -F '\t' '$3 ~ /--blob=|(^|:)strategy=/ {bad=1} END {exit !bad}' "$CUSTOM_STRATS_FILE" \
+  && fail "import_text: в spec остались --blob= или strategy="
+awk -F '\t' '$3=="multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxru" && $5=="blockcheck rr2---sn-aj5go5-53.googlevideo.com"' "$CUSTOM_STRATS_FILE" | grep -q . \
+  || fail "import_text: нет замены tlsgoogle->maxru с комментарием blockcheck"
+awk -F '\t' '$3 ~ /^tls_client_hello_clone:blob=clone_vk:fallback=maxru:/' "$CUSTOM_STRATS_FILE" | grep -q . \
+  || fail "import_text: clone_www2 не заменён на clone_vk"
+awk -F '\t' '$3=="fake:blob=quic_google:out_range=-d2" && $5=="импорт"' "$CUSTOM_STRATS_FILE" | grep -q . \
+  || fail "import_text: обычная строка --lua-desync= должна добавляться с комментарием «импорт»"
+
+# повторный импорт того же текста: всё дубликаты, ноль добавлений
+res2="$(custom_strategies_import_text "$(cat "$TMP_DIR/bc.txt")" tpl)"
+printf '%s\n' "$res2" | awk -F '\t' '$1=="RESULT" && $2==0 && $3==13 && $4==1 {ok=1} END {exit !ok}' \
+  || fail "import_text: повторный импорт должен давать RESULT 0/13/1 (получено: $(printf '%s\n' "$res2"))"
+[ "$(custom_strategies_count)" = "12" ] || fail "import_text: дубликаты задвоились"
+
+# 11d. Инжект импортированного в конфиг
+custom_strategies_apply_file "$CFG_BC" 2>/dev/null || fail "import: apply rc!=0"
+grep -qE -- '--lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxru:strategy=45' "$CFG_BC" \
+  || fail "import: первая импортированная стратегия не в конфиге (strategy=45)"
+[ "$(config_profile_max_strategy 1 "$CFG_BC")" = "56" ] \
+  || fail "import: config_profile_max_strategy(1) != 56 (получено $(config_profile_max_strategy 1 "$CFG_BC"))"
+
+export CUSTOM_STRATS_FILE="$ORCH_DIR/custom_strategies.tsv"
+
 echo "custom strategies smoke ok"

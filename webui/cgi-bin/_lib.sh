@@ -2174,32 +2174,29 @@ api_custom_action() {
       custom_strategies_block_valid "$block" || send_error "400 Bad Request" "Некорректный блок: $block"
       text="${PARAM_TEXT:-}"
       [ -n "$text" ] || send_error "400 Bad Request" "Пустой импорт"
-      local IFS=$'\n' line ispec count=0
-      local added=0 skipped=0 errors=""
-      set -f
-      for line in $text; do
-        set +f
-        count=$((count + 1))
-        [ "$count" -le 64 ] || { skipped=$((skipped + 1)); continue; }
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [ -n "$line" ] || { skipped=$((skipped + 1)); continue; }
-        printf '%s' "$line" | grep -Eq '^[[:space:]]*#' && { skipped=$((skipped + 1)); continue; }
-        ispec="$(custom_strategies_normalize "$line" 2>/dev/null)" || {
-          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"не удалось разобрать строку\"}"
-          skipped=$((skipped + 1)); continue;
-        }
-        _custom_capture_err custom_strategies_add "$block" "$ispec" "импорт"
-        if [ "$REPLY_RC" = "0" ]; then
-          added=$((added + 1))
-        else
-          err="${REPLY_ERR:-не прошла валидация}"; err="${err//$'\n'/ }"
-          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$(printf '%s' "$err" | head -n1)")\"}"
-          skipped=$((skipped + 1))
-        fi
-      done
-      set +f
-      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"skipped\":$skipped,\"errors\":[$errors],\"apply_required\":true}"
+      # общий движок с CLI (custom_strategies_import_text): понимает и строки
+      # SUMMARY blockcheck2 (лишнее вырезается, гугловский блоб -> maxru из
+      # живого конфига), и обычные строки --lua-desync=. Лимит — 256 строк
+      # за раз (целый SUMMARY блокчека влезает).
+      local added=0 dups=0 failed=0 skipped=0 errors="" report line ereason sep="" tab
+      tab=$'\t'
+      _custom_capture_err custom_strategies_import_text "$(printf '%s\n' "$text" | awk 'NR<=256')" "$block"
+      report="$REPLY_OUT"
+      added="$(printf '%s\n' "$report" | awk -F '\t' '$1=="RESULT"{print $2; exit}')"
+      dups="$(printf '%s\n' "$report" | awk -F '\t' '$1=="RESULT"{print $3; exit}')"
+      failed="$(printf '%s\n' "$report" | awk -F '\t' '$1=="RESULT"{print $4; exit}')"
+      added="${added:-0}"; dups="${dups:-0}"; failed="${failed:-0}"
+      skipped=$((dups + failed))
+      while IFS= read -r line; do
+        case "$line" in ERR$tab*) line="${line#ERR$tab}" ;; *) continue ;; esac
+        ereason="${line#*$tab}"
+        line="${line%$tab*}"
+        errors="${errors}${sep}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$ereason")\"}"
+        sep=","
+      done <<EOF
+$report
+EOF
+      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"dups\":$dups,\"skipped\":$skipped,\"errors\":[$errors],\"apply_required\":true}"
       ;;
     apply)
       _custom_capture_err custom_strategies_apply_file "$cfg"

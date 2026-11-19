@@ -217,7 +217,7 @@ async function importLines() {
     await withBusy('custom-import', async () => {
       const payload = await customStrats.import(importBlock.value, importText.value)
       importErrors.value = Array.isArray(payload?.errors) ? payload.errors : []
-      showToast(`Импорт: добавлено ${payload?.added ?? 0}, пропущено ${payload?.skipped ?? 0}.`
+      showToast(`Импорт: добавлено ${payload?.added ?? 0}, дубликатов ${payload?.dups ?? 0}, пропущено ${payload?.skipped ?? 0}.`
         + ' Примените к конфигу.')
       importText.value = ''
       await load()
@@ -286,7 +286,7 @@ async function applyToConfig() {
         </div>
 
         <details class="import-block" id="custom-import-block-details">
-          <summary>Импорт готовых строк (по одной на запись)</summary>
+          <summary>Импорт готовых строк (стратегии / блокчек / nfqws2)</summary>
           <label>
             <span>Блок импорта</span>
             <select id="custom-import-block" v-model="importBlock" :disabled="busyActive">
@@ -294,7 +294,7 @@ async function applyToConfig() {
             </select>
           </label>
           <textarea id="custom-import-text" v-model="importText" rows="6" :disabled="busyActive"
-            placeholder="--lua-desync=... :strategy=N — номера срежутся сами; пустая строка не нужна"></textarea>
+            placeholder="--lua-desync=... :strategy=N, строка SUMMARY blockcheck2 или команда nfqws2 целиком — лишнее (--blob/--payload, номера) вырежется само; гугловский блоб блокчека заменится на дефолтный из конфига"></textarea>
           <ul v-if="importErrors.length" class="settings-alert" id="custom-import-errors">
             <li v-for="e in importErrors" :key="e.line"><code>{{ e.line }}</code> — {{ e.reason }}</li>
           </ul>

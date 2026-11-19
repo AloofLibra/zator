@@ -2642,7 +2642,16 @@ class FakeRouterState:
 
     @staticmethod
     def _custom_normalize(spec):
-        """custom_strategies_normalize() — срезает --lua-desync= и хвост :strategy=N."""
+        """custom_strategies_normalize() — срезает --lua-desync= и хвост :strategy=N.
+        Строки SUMMARY blockcheck2 / команды nfqws2: берётся только часть после
+        «: nfqws2», прочие --токены демона (--blob/--payload/--lua-init) вырезаются."""
+        spec = spec.strip()
+        if ": nfqws2 " in spec:
+            spec = spec.split(": nfqws2 ", 1)[1]
+        elif spec.startswith("nfqws2 "):
+            spec = spec[len("nfqws2 "):]
+        spec = " ".join(t for t in spec.split()
+                        if t.startswith("--lua-desync="))
         spec = spec.strip()
         if spec.startswith("--lua-desync="):
             spec = spec[len("--lua-desync="):]
@@ -2701,13 +2710,15 @@ class FakeRouterState:
 
         if action == "import":
             self._custom_block_info(block)
-            added, skipped, errors = 0, 0, []
+            added, dups, skipped, errors = 0, 0, 0, []
+            seen = set()
+            existing = {s["spec"] for s in self.custom_strategies if s["block"] == block}
             for i, line in enumerate(params.get("text", "").splitlines()):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     skipped += 1
                     continue
-                if i >= 64:
+                if i >= 256:
                     skipped += 1
                     continue
                 try:
@@ -2716,11 +2727,15 @@ class FakeRouterState:
                     errors.append({"line": line, "reason": str(e)})
                     skipped += 1
                     continue
+                if spec in seen or spec in existing:
+                    dups += 1
+                    continue
+                seen.add(spec)
                 new_id = max((s["id"] for s in self.custom_strategies), default=0) + 1
                 self.custom_strategies.append({"id": new_id, "block": block, "spec": spec,
                                                "enabled": True, "comment": "импорт", "assigned": ""})
                 added += 1
-            return {"ok": True, "added": added, "skipped": skipped,
+            return {"ok": True, "added": added, "dups": dups, "skipped": skipped,
                     "errors": errors, "apply_required": True}
 
         if action == "apply":

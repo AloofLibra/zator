@@ -99,6 +99,8 @@ export interface CustomListPayload {
 
 export interface CustomImportResult {
   added?: number
+  // Дубликаты (внутри партии и против уже имеющихся записей блока) — не ошибка
+  dups?: number
   skipped?: number
   errors?: { line: string; reason: string }[]
 }
