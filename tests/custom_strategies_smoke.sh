@@ -324,9 +324,9 @@ backup_create_core >/dev/null || fail "backup_create_core"
 ARCHIVE="$(ls -1t "$Z2R_BACKUP_DIR"/z2r_backup_*.tar 2>/dev/null | head -n1)"
 [ -n "$ARCHIVE" ] || fail "архив бэкапа не создан"
 TAR_BIN="$(z2r_pick_tar)"
-"$TAR_BIN" -tf "$ARCHIVE" | grep -q 'custom_strategies.tsv' || fail "custom_strategies.tsv не в архиве"
-"$TAR_BIN" -tf "$ARCHIVE" | grep -q 'blob_files.tsv' || fail "blob_files.tsv не в архиве"
-"$TAR_BIN" -tf "$ARCHIVE" | grep -qE '\./config$' || fail "config не в архиве"
+{ "$TAR_BIN" -tf "$ARCHIVE" || true; } | grep -q 'custom_strategies.tsv' || fail "custom_strategies.tsv не в архиве"
+{ "$TAR_BIN" -tf "$ARCHIVE" || true; } | grep -q 'blob_files.tsv' || fail "blob_files.tsv не в архиве"
+{ "$TAR_BIN" -tf "$ARCHIVE" || true; } | grep -qE '\./config$' || fail "config не в архиве"
 # катастрофа: TSV снесены, конфиг снова эталонный
 rm -f "$CUSTOM_STRATS_FILE" "$ORCH_BLOB_FILES_TSV"
 grep -vE 'quic_google:repeats=9' "$CFG" > "$TMP_DIR/cfg.nocustom" && cp -f "$TMP_DIR/cfg.nocustom" "$CFG"
@@ -558,12 +558,32 @@ printf '%s\n' "$res3" | awk -F '\t' '$1=="RESULT" && $2==1 && $3==0 && $4==0 {ok
 awk -F '\t' '$3=="hostfakesplit:host=www.google.com:nofake2:disorder_after=-1:tcp_md5:repeats=3" && $5 ~ /^blockcheck /' "$CUSTOM_STRATS_FILE" | grep -q . \
   || fail "import_text: склеенная стратегия должна добавиться с blockcheck-комментарием"
 
-# 11d. Инжект импортированного в конфиг (12 записей секции 11c + 1 склеенная = 13)
+# 11c-3. Комбо, вставленное ПОСТРОЧНО (копипаста из документации): обе плоские
+# строки без :strategy=N — одна запись-комбо; разные N — разные записи
+cat > "$TMP_DIR/bc-combo.txt" <<'BCEOF'
+--lua-desync=oob:urp=1
+--lua-desync=hostfakesplit:ip_id=zero:host=developers.google.com:tcp_ts=-600000:tcp_ts_up:ip_ttl=4:ip6_ttl=4
+BCEOF
+res4="$(custom_strategies_import_text "$(cat "$TMP_DIR/bc-combo.txt")" tpl)"
+printf '%s\n' "$res4" | awk -F '\t' '$1=="RESULT" && $2==1 && $3==0 && $4==0 {ok=1} END {exit !ok}' \
+  || fail "join_wraps: две плоские строки без N должны склеиться в одну запись-комбо (получено: $(printf '%s\n' "$res4"))"
+awk -F '\t' '$3=="oob:urp=1 --lua-desync=hostfakesplit:ip_id=zero:host=developers.google.com:tcp_ts=-600000:tcp_ts_up:ip_ttl=4:ip6_ttl=4"' "$CUSTOM_STRATS_FILE" | grep -q . \
+  || fail "join_wraps: комбо oob+hostfakesplit не в TSV"
+
+cat > "$TMP_DIR/bc-split.txt" <<'BCEOF'
+--lua-desync=fake:blob=maxru:repeats=2:strategy=5
+--lua-desync=fakeddisorder:pos=midsld:strategy=6
+BCEOF
+res5="$(custom_strategies_import_text "$(cat "$TMP_DIR/bc-split.txt")" tpl)"
+printf '%s\n' "$res5" | awk -F '\t' '$1=="RESULT" && $2==2 {ok=1} END {exit !ok}' \
+  || fail "join_wraps: строки с разными :strategy=N должны стать отдельными записями"
+
+# 11d. Инжект импортированного в конфиг (12+1 склеенная +1 комбо +2 раздельных = 16)
 custom_strategies_apply_file "$CFG_BC" 2>/dev/null || fail "import: apply rc!=0"
 grep -qE -- '--lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxru:strategy=45' "$CFG_BC" \
   || fail "import: первая импортированная стратегия не в конфиге (strategy=45)"
-[ "$(config_profile_max_strategy 1 "$CFG_BC")" = "57" ] \
-  || fail "import: config_profile_max_strategy(1) != 57 (получено $(config_profile_max_strategy 1 "$CFG_BC"))"
+[ "$(config_profile_max_strategy 1 "$CFG_BC")" = "60" ] \
+  || fail "import: config_profile_max_strategy(1) != 60 (получено $(config_profile_max_strategy 1 "$CFG_BC"))"
 
 export CUSTOM_STRATS_FILE="$ORCH_DIR/custom_strategies.tsv"
 

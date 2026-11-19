@@ -265,18 +265,40 @@ custom_strategies_bc_fix_group() {
 # кусок, который сам не начинается запись — нет « : nfqws2 », не «nfqws2 …»,
 # нет «--lua-desync=» — приклеивается к предыдущей строке БЕЗ разделителя
 # (перенос обычно рвёт строку посреди токена). Пустые, «#…» и «* SUMMARY» — мимо.
+# Подряд идущие ПЛОСКИЕ строки «--lua-desync=группа» с одинаковым хвостом
+# :strategy=N (или оба без него) — комбо из копипасты документации/конфига:
+# склеиваются в одну запись (разделителем служит их собственный --lua-desync=).
+_custom_strats_strategy_tail() {
+  local t
+  t="$(printf '%s' "$1" | grep -oE ':strategy=[0-9]+$' | tail -n1)"
+  printf '%s' "${t#*:strategy=}"
+}
+
 custom_strategies_join_wraps() {
   local joined="" linebuf="" line
   while IFS= read -r line; do
     line="${line%$'\r'}"
     case "$line" in ''|'#'*|'*'*) continue ;; esac
     case "$line" in
-      *" : nfqws2 "*|nfqws2\ *|*--lua-desync=*)
+      *" : nfqws2 "*|nfqws2\ *)
         if [ -n "$linebuf" ]; then
           joined="$joined$linebuf"$'\n'
           linebuf=""
         fi
         linebuf="$line"
+        ;;
+      *--lua-desync=*)
+        line="${line#"${line%%[![:space:]]*}"}"
+        if [ -n "$linebuf" ] \
+           && case "$linebuf" in --lua-desync=*) true ;; *) false ;; esac \
+           && [ "$(_custom_strats_strategy_tail "$linebuf")" = "$(_custom_strats_strategy_tail "$line")" ]; then
+          linebuf="$linebuf $line"
+        else
+          if [ -n "$linebuf" ]; then
+            joined="$joined$linebuf"$'\n'
+          fi
+          linebuf="$line"
+        fi
         ;;
       *)
         line="${line#"${line%%[![:space:]]*}"}"

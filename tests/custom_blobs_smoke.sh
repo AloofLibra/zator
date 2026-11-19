@@ -219,9 +219,9 @@ backup_create_core >/dev/null || fail "backup_create_core"
 ARCHIVE="$(ls -1t "$Z2R_BACKUP_DIR"/z2r_backup_*.tar 2>/dev/null | head -n1)"
 [ -n "$ARCHIVE" ] || fail "архив бэкапа не создан"
 TAR_BIN="$(z2r_pick_tar)"
-"$TAR_BIN" -tf "$ARCHIVE" | grep -q 'custom_blobs.tsv' || fail "custom_blobs.tsv не в архиве"
-"$TAR_BIN" -tf "$ARCHIVE" | grep -q 'custom_blob/my_fake.bin' || fail "файл блоба не в архиве"
-"$TAR_BIN" -tf "$ARCHIVE" | grep -q 'custom_blob/second.bin' && \
+{ "$TAR_BIN" -tf "$ARCHIVE" || true; } | grep -q 'custom_blobs.tsv' || fail "custom_blobs.tsv не в архиве"
+{ "$TAR_BIN" -tf "$ARCHIVE" || true; } | grep -q 'custom_blob/my_fake.bin' || fail "файл блоба не в архиве"
+{ "$TAR_BIN" -tf "$ARCHIVE" || true; } | grep -q 'custom_blob/second.bin' && \
   fail "удалённый файл блоба не должен быть в архиве"
 
 # --- 10. CLI-подменю (п.16 -> «Свои блобы») ------------------------------------
