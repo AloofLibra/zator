@@ -61,7 +61,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh custom_blobs.sh"
 
 # Release assets are separate from the deploy tar so each router stores only
 # its own static binary. This is optional: the central Googlevideo feed works
@@ -432,6 +432,10 @@ source "$LIB_DIR/orchestra_state.sh"
 # Кастомные пользовательские стратегии (п.1 -> 14): после orchestra_state —
 # нужен ORCH_DIR/ORCH_LOCK_FILE; сама либа опциональна для подменю (guard по type).
 source "$LIB_DIR/custom_strategies.sh"
+
+# Пользовательские блобы (панель: «Свои блобы») — после custom_strategies:
+# нужны _CS_SOH и custom_strategies_blob_names/rename_blob.
+source "$LIB_DIR/custom_blobs.sh"
 
 # База подсказок по стратегиям (скачивание + вывод подсказки по провайдеру)
 # Функции: update_recommendations, show_hint
@@ -1985,6 +1989,7 @@ webui_install_files() {
   webui_repo_fetch "cgi-bin/settings.cgi" "$WEBUI_CGI/settings.cgi" || return 1
   webui_repo_fetch "cgi-bin/backups.cgi" "$WEBUI_CGI/backups.cgi" || return 1
   webui_repo_fetch "cgi-bin/custom.cgi" "$WEBUI_CGI/custom.cgi" || return 1
+  webui_repo_fetch "cgi-bin/blobs.cgi" "$WEBUI_CGI/blobs.cgi" || return 1
 
   chmod +x "$WEBUI_RUNNER" "$WEBUI_CGI"/*.sh "$WEBUI_CGI"/*.cgi
   webui_fix_interpreters
@@ -3024,6 +3029,11 @@ while true; do
  if type custom_strategies_apply_file >/dev/null 2>&1; then
   custom_strategies_apply_file "$ZAPRET2_ROOT/config.default" \
     || echo -e "${yellow}Кастомные стратегии не применились — продолжаю без них.${plain}"
+ fi
+ # Пользовательские блобы (custom_blobs.tsv + файлы custom_blob/) — тоже переживают.
+ if type custom_blobs_apply_file >/dev/null 2>&1; then
+  custom_blobs_apply_file "$ZAPRET2_ROOT/config.default" \
+    || echo -e "${yellow}Пользовательские блобы не применились — продолжаю без них.${plain}"
  fi
  # Выбор блобов (maxru + слоты z2r_prof_N) из blob_files.tsv — тоже переживает.
  if type blob_files_apply >/dev/null 2>&1; then

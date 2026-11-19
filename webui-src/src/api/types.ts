@@ -97,6 +97,25 @@ export interface CustomListPayload {
   strategies?: CustomStrategy[]
 }
 
+// Пользовательский блоб («Свои блобы»): декларация --blob=ИМЯ:@custom_blob/файл
+export interface CustomBlobInfo {
+  id: number
+  name: string
+  file: string
+  comment: string
+  // Сколько пользовательских стратегий ссылаются на имя (защита от удаления)
+  refs: number
+}
+
+export interface CustomBlobsPayload {
+  dir?: string
+  blobs?: CustomBlobInfo[]
+  // Файлы, уже лежащие в custom_blob/ (для привязки при редактировании)
+  files?: string[]
+  // Штатные имена блобов — их пользовательские имена занимать нельзя
+  stock?: string[]
+}
+
 export interface CustomImportResult {
   added?: number
   // Дубликаты (внутри партии и против уже имеющихся записей блока) — не ошибка

@@ -648,6 +648,43 @@ whitelist символов/примитивов/ключей по транспо
 **Dev:** fake-router держит `FakeRouterState.custom_strategies` (одна демо-запись
 QUIC), `apply` назначает номера 101+ и вызывает штатный `_apply_restart`.
 
+### Пользовательские блобы — `blobs.cgi`
+
+Страница «Свои блобы»: файлы блобов загружаются через браузер в
+`/opt/zator/files/fake/custom_blob/` (каталог и `extra_strats/cache/orchestra/custom_blobs.tsv`
+едут в бэкапах), декларации `--blob=ИМЯ:@…` инжектятся в config между
+`#Z2R_CUSTOM_BLOBS_BEGIN/END` (сразу после штатных деклараций). Валидация имён/файлов —
+на бэкенде (`lib/custom_blobs.sh`); имя не должно совпадать со штатным; переименование
+правит ссылки на имя в «Своих стратегиях» (только пользовательские записи).
+
+`GET /cgi-bin/blobs.cgi`:
+
+```jsonc
+{
+  "dir": "/opt/zator/files/fake/custom_blob",
+  "blobs": [ { "id": 1, "name": "my_fake", "file": "my_fake.bin",
+               "comment": "загружен из панели", "refs": 2 } ],
+  "files": [ "my_fake.bin" ],   // что уже лежит в custom_blob/
+  "stock": [ "maxru", "…" ]     // занятые (штатные) имена
+}
+```
+
+`POST /cgi-bin/blobs.cgi` (`action=…`):
+
+| `action` | параметры | Что делает |
+| --- | --- | --- |
+| `upload` | query `name=<файл.bin>` + **бинарное тело** (octet-stream, 1 Б…256 КиБ) | сохранить файл в `custom_blob/` и авто-создать декларацию (имя = файл без расширения, если свободно); `{"ok":true,"file":…,"created":id\|null}` |
+| `add` | `value=<имя>&file=<файл>&comment=` | добавить декларацию (файл должен быть загружен; имя свободно) |
+| `edit` | `id=<N>&value=&file=&comment=` | изменить; смена имени правит ссылки в `custom_strategies.tsv` |
+| `delete` | `id=<N>` | удалить запись + файл; блоб, на который ссылаются стратегии, — 400 |
+| `apply` | — | инжект деклараций в config (`#Z2R_CUSTOM_BLOBS`) + переинжект «Своих стратегий» + авто-рестарт |
+
+Успех: `{ "ok": true, "apply_required": true }` (apply: `+ "restarted": true|false,
+"restart_required": true`).
+
+**Dev:** fake-router держит `FakeRouterState.custom_blobs`/`custom_blob_files`
+(по умолчанию пусто), `apply` вызывает штатный `_apply_restart`.
+
 ### POST — применение настроек
 
 Тело: `setting=<...>&value=<...>` (для портов/провайдера — свои ключи, см. ниже).

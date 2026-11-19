@@ -87,6 +87,11 @@ config_apply_from_default() {
   if type custom_strategies_apply_file >/dev/null 2>&1; then
     custom_strategies_apply_file "$root/config.default" || true
   fi
+  # Пользовательские блобы (декларации --blob= между #Z2R_CUSTOM_BLOBS_*) —
+  # тоже переживают применение config.default.
+  if type custom_blobs_apply_file >/dev/null 2>&1; then
+    custom_blobs_apply_file "$root/config.default" || true
+  fi
   # Выбор блобов (глобальный maxru + слоты z2r_prof_N) персистится в
   # blob_files.tsv и переживает регенерацию конфига — как локи в locked.tsv.
   if type blob_files_apply >/dev/null 2>&1; then
@@ -1063,6 +1068,8 @@ extra_strats/cache/orchestra/sni_override.tsv
 extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv
 extra_strats/cache/orchestra/custom_strategies.tsv
+extra_strats/cache/orchestra/custom_blobs.tsv
+files/fake/custom_blob
 EOF
   # самый свежий архив результатов суперавтопрогона едет в бэкапе вместе с
   # locked.tsv (только последний — историю ротация хранит в cache/supersweep)
@@ -1175,9 +1182,15 @@ backup_create_core() {
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     src="${ZATOR_ROOT:-/opt/zator}/$rel"
-    [ -f "$src" ] || continue
-    mkdir -p "$stage/$(dirname "$rel")"
-    cp -f "$src" "$stage/$rel" || { rm -rf "$stage" "$tmp_list"; return 1; }
+    if [ -f "$src" ]; then
+      mkdir -p "$stage/$(dirname "$rel")"
+      cp -f "$src" "$stage/$rel" || { rm -rf "$stage" "$tmp_list"; return 1; }
+    elif [ -d "$src" ]; then
+      # каталог целиком (пользовательские блобы custom_blob/)
+      rm -rf "$stage/$rel"
+      mkdir -p "$stage/$(dirname "$rel")"
+      cp -R "$src" "$stage/$rel" || { rm -rf "$stage" "$tmp_list"; return 1; }
+    fi
   done < "$tmp_list"
   rm -f "$tmp_list"
 
@@ -1883,13 +1896,23 @@ menu_action_backup_restore() {
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     src="$restore_dir/$rel"
-    [ -f "$src" ] || continue
     dst="${ZATOR_ROOT:-/opt/zator}/$rel"
-    mkdir -p "$(dirname "$dst")"
-    if ! cp -f "$src" "$dst"; then
-      rm -rf "$restore_dir" "$tmp_list"
-      echo -e "${red}Ошибка восстановления $rel.${plain}"
-      return 1
+    if [ -f "$src" ]; then
+      mkdir -p "$(dirname "$dst")"
+      if ! cp -f "$src" "$dst"; then
+        rm -rf "$restore_dir" "$tmp_list"
+        echo -e "${red}Ошибка восстановления $rel.${plain}"
+        return 1
+      fi
+    elif [ -d "$src" ]; then
+      # каталог целиком (пользовательские блобы): замена содержимого
+      rm -rf "$dst"
+      mkdir -p "$(dirname "$dst")"
+      if ! cp -R "$src" "$dst"; then
+        rm -rf "$restore_dir" "$tmp_list"
+        echo -e "${red}Ошибка восстановления $rel.${plain}"
+        return 1
+      fi
     fi
   done < "$tmp_list"
   rm -f "$tmp_list"
@@ -1903,6 +1926,17 @@ menu_action_backup_restore() {
       echo -e "${green}Кастомные стратегии восстановлены в конфиг (рестарт применит).${plain}"
     else
       echo -e "${yellow}Кастомные стратегии не переинжектились — примените вручную (п.1 -> 14 -> 6).${plain}"
+    fi
+  fi
+
+  # Пользовательские блобы (файлы custom_blob/ вернулись из бэкапа) —
+  # переинжектим декларации в живой config.
+  if [ -f "/opt/zator/extra_strats/cache/orchestra/custom_blobs.tsv" ] \
+     && type custom_blobs_apply_file >/dev/null 2>&1; then
+    if custom_blobs_apply_file "${ZAPRET2_ROOT:-/opt/zapret2}/config"; then
+      echo -e "${green}Пользовательские блобы восстановлены в конфиг (рестарт применит).${plain}"
+    else
+      echo -e "${yellow}Пользовательские блобы не переинжектились — примените вручную из панели.${plain}"
     fi
   fi
 

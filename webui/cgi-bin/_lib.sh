@@ -119,6 +119,7 @@ find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { ec
 [ -f "$LIB_DIR/googlevideo_ips.sh" ] && . "$LIB_DIR/googlevideo_ips.sh"
 [ -f "$LIB_DIR/supersweep.sh" ] && . "$LIB_DIR/supersweep.sh"
 [ -f "$LIB_DIR/custom_strategies.sh" ] && . "$LIB_DIR/custom_strategies.sh"
+[ -f "$LIB_DIR/custom_blobs.sh" ] && . "$LIB_DIR/custom_blobs.sh"
 
 telemetry_notify() {
   type send_stats >/dev/null 2>&1 && send_stats || true
@@ -150,6 +151,7 @@ parse_params() {
   PARAM_COMMENT=""
   PARAM_TEXT=""
   PARAM_ID=""
+  PARAM_FILE=""
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
@@ -180,6 +182,7 @@ parse_params() {
       comment) PARAM_COMMENT="$value" ;;
       text) PARAM_TEXT="$value" ;;
       id) PARAM_ID="$value" ;;
+      file) PARAM_FILE="$value" ;;
     esac
   done
 }

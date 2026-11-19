@@ -400,14 +400,21 @@ _custom_in_list() {
   return 1
 }
 
-# Объявленные в конфиге имена блобов (--blob=ИМЯ:@...) + встроенные/литеральные.
+# Объявленные в конфиге имена блобов (--blob=ИМЯ:@...) + встроенные/литеральные
+# + пользовательские из custom_blobs.tsv (декларация может ждать apply —
+# ссылки на имя уже валидны и не переписываются импортом).
 custom_strategies_blob_names() {
   local cfg="${1:-${ZAPRET2_ROOT:-/opt/zapret2}/config}"
   [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
-  [ -f "$cfg" ] || return 0
-  sed -n -E 's/^[[:space:]]*--blob=([A-Za-z0-9_]+):.*/\1/p' "$cfg" | sort -u
+  if [ -f "$cfg" ]; then
+    sed -n -E 's/^[[:space:]]*--blob=([A-Za-z0-9_]+):.*/\1/p' "$cfg" | sort -u
+  fi
   printf '%s\n' fake_default_tls fake_default_http \
     clone_vk clone_hcaptcha clone_vk_fmd clone_hcaptcha_fms
+  if type custom_blobs_list >/dev/null 2>&1; then
+    custom_blobs_list | awk -F '\t' '{print $2}'
+  fi
+  return 0
 }
 
 _custom_blob_known() {
@@ -692,6 +699,77 @@ custom_strategies_delete() {
 "
   done < <(custom_strategies_list)
   _custom_strats_write "$content" || return 1
+}
+
+# Сколько записей TSV ссылаются на блоб ИМЯ (токен-точно: blob=/fake_blob=/
+# fallback=/pattern=/seqovl_pattern= и цели tls_client_hello_clone:blob=).
+custom_strategies_blob_ref_rows() {
+  local name="$1"
+  [ -n "$name" ] || { echo 0; return 0; }
+  custom_strategies_list | awk -F '\t' -v name="$name" '
+    {
+      n = split($3, groups, / --lua-desync=/)
+      for (gi = 1; gi <= n; gi++) {
+        cnt = split(groups[gi], toks, /:/)
+        for (ti = 1; ti <= cnt; ti++) {
+          if (toks[ti] ~ /^(blob|fake_blob|fallback|pattern|seqovl_pattern)=/ \
+              && substr(toks[ti], index(toks[ti], "=") + 1) == name) { found = 1; break }
+          if (toks[ti] == "blob=" name) { found = 1; break }
+        }
+        if (found) break
+      }
+      if (found) { rows++; found = 0 }
+    }
+    END { print rows + 0 }
+  '
+}
+
+# Переименование пользовательского блоба: правит ссылки на старое имя во всех
+# spec'ах custom_strategies.tsv (только пользовательские записи — штатный
+# конфиг собственных имён не содержит). Токен-точно: заменяется именно ЗНАЧЕНИЕ
+# blob=/fake_blob=/fallback=/pattern=/seqovl_pattern=/blob= (цель клона).
+custom_strategies_rename_blob() {
+  local old="$1" new="$2" content row newspec changed=0
+  [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ] || return 2
+  _custom_rename_blob_in_group() {
+    local group="$1" out="" tok key val
+    local IFS=':'
+    for tok in $group; do
+      case "$tok" in
+        *=*)
+          key="${tok%%=*}"; val="${tok#*=}"
+          case "$key" in
+            blob|fake_blob|fallback|pattern|seqovl_pattern)
+              [ "$val" = "$old" ] && val="$new"
+              out="${out:+$out:}$key=$val"
+              ;;
+            *) out="${out:+$out:}$tok" ;;
+          esac
+          ;;
+        *) out="${out:+$out:}$tok" ;;
+      esac
+    done
+    printf '%s' "$out"
+  }
+  content="$(_custom_strats_header)"$'
+'
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    newspec=""
+    local rest="${_CS_SPEC// --lua-desync=/$'\x01'}" g
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      g="$(_custom_rename_blob_in_group "$g")"
+      if [ -z "$newspec" ]; then newspec="$g"; else newspec="$newspec --lua-desync=$g"; fi
+    done <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")"
+    if [ "$newspec" != "$_CS_SPEC" ]; then changed=$((changed + 1)); fi
+    content="$content$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$_CS_ID" "$_CS_BLOCK" "$newspec" "$_CS_ENABLED" "$_CS_COMMENT" "${_CS_ASSIGNED:-}")"$'\n'
+  done < <(custom_strategies_list)
+  if [ "$changed" -gt 0 ]; then
+    _custom_strats_write "$content" || return 1
+    printf '%s\n' "custom strategies: блоб $old -> $new, правлено записей: $changed" >&2
+  fi
+  return 0
 }
 
 # --- инжект в конфиг ----------------------------------------------------------

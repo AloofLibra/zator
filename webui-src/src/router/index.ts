@@ -5,6 +5,7 @@ import StatusView from '../views/StatusView.vue'
 import StrategiesView from '../views/StrategiesView.vue'
 import DomainsView from '../views/DomainsView.vue'
 import CustomStratsView from '../views/CustomStratsView.vue'
+import CustomBlobsView from '../views/CustomBlobsView.vue'
 import SettingsView from '../views/SettingsView.vue'
 
 export const router = createRouter({
@@ -14,6 +15,7 @@ export const router = createRouter({
     { path: '/strategies', name: 'strategies', component: StrategiesView },
     { path: '/domains/:list?', name: 'domains', component: DomainsView },
     { path: '/custom-strats', name: 'custom-strats', component: CustomStratsView },
+    { path: '/custom-blobs', name: 'custom-blobs', component: CustomBlobsView },
     { path: '/settings/:panel?', name: 'settings', component: SettingsView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
