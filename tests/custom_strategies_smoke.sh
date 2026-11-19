@@ -554,4 +554,60 @@ export CUSTOM_STRATS_FILE="$ORCH_DIR/custom_strategies.tsv"
 grep -qF '""|0|*[!0-9]*' <<<"$CUSTOM_SRC" \
   && fail "меню 14: 0 в ID-промптах должен отменять, а не ругаться «Неверный ввод»"
 
+# --- 13. Все 6 пунктов подменю: 0/Enter отменяют, «Неверный ввод» только на мусор
+# Подменю гоняется целиком на поданном stdin под set -e: любой пункт, отвечающий
+# «Неверный ввод» на 0, или умирание по rc!=0 — провал.
+_submenu_drive() { # stdin-сценарий; stdout+stderr разделены; rc должен быть 0
+  local input="$1" out err rc=0
+  out="$(set -e; printf '%s' "$input" | custom_strategies_submenu 2>"$TMP_DIR/sub.err")" || rc=$?
+  err="$(cat "$TMP_DIR/sub.err")"
+  REPLY_OUT="$out"; REPLY_ERR="$err"; REPLY_RC=$rc
+}
+
+clear() { :; }  # подменю зовёт clear -x; в песочнице — заглушка
+
+_submenu_drive $'1\n0\n'
+[ "$REPLY_RC" = "0" ] || fail "п.1: подменю вернуло rc=$REPLY_RC на отмене выбора блока"
+grep -qF 'Неверный ввод' <<<"$REPLY_ERR" \
+  && fail "п.1: 0 в выборе блока должен отменять, а не ругаться"
+
+_submenu_drive $'2\n0\n'
+[ "$REPLY_RC" = "0" ] || fail "п.2: rc=$REPLY_RC на отмене ID"
+grep -qF 'Неверный ввод' <<<"$REPLY_ERR" \
+  && fail "п.2: 0 в ID должен отменять"
+
+_submenu_drive $'3\n0\n'
+[ "$REPLY_RC" = "0" ] || fail "п.3: rc=$REPLY_RC на отмене ID"
+grep -qF 'Неверный ввод' <<<"$REPLY_ERR" \
+  && fail "п.3: 0 в ID должен отменять"
+
+_submenu_drive $'4\n0\n'
+[ "$REPLY_RC" = "0" ] || fail "п.4: rc=$REPLY_RC на отмене ID"
+grep -qF 'Неверный ввод' <<<"$REPLY_ERR" \
+  && fail "п.4: 0 в ID должен отменять"
+
+_submenu_drive $'5\n0\n'
+[ "$REPLY_RC" = "0" ] || fail "п.5: rc=$REPLY_RC на отмене выбора блока"
+grep -qF 'Неверный ввод' <<<"$REPLY_ERR" \
+  && fail "п.5: 0 в выборе блока должен отменять"
+grep -qF 'Отменено' <<<"$REPLY_OUT" \
+  || fail "п.5: отмена выбора блока должна печатать «Отменено.»"
+
+# п.6: применение к песочному конфигу + Enter на промпте рестарта
+_submenu_drive $'6\n\n'
+[ "$REPLY_RC" = "0" ] || fail "п.6: rc=$REPLY_RC на apply без рестарта"
+
+# мусор в ID-промптах по-прежнему ловится (ui_invalid_input печатает в stdout),
+# дальше 0 отменяет
+_submenu_drive $'3\nx\n0\n'
+grep -qF 'Неверный ввод' <<<"$REPLY_OUT" \
+  || fail "п.3: мусор вместо ID должен ловиться «Неверный ввод»"
+[ "$REPLY_RC" = "0" ] || fail "п.3: rc=$REPLY_RC после мусора+отмены"
+
+# выход из подменю
+_submenu_drive $'0\n'
+[ "$REPLY_RC" = "0" ] || fail "меню: rc=$REPLY_RC на выходе"
+
+unset -f clear
+
 echo "custom strategies smoke ok"

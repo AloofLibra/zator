@@ -1209,7 +1209,7 @@ _custom_pick_block() {
     submenu_item "0" "Отмена" >&2
     echo "" >&2
     read -re -p "Ваш выбор: " choice || choice=""
-    [ -z "$choice" ] && return 0
+    case "$choice" in ""|0) return 0 ;; esac
     local n=0
     while IFS="$(printf '\t')" read -r b _rest; do
       n=$((n + 1))
