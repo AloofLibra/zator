@@ -198,6 +198,11 @@ button.ghost { color: var(--text); }
 
 .hero-copy { display: grid; gap: 6px; }
 
+/* Кнопка «Поддержать проект» живёт под подзаголовком (вне ряда меню),
+   чтобы шесть вкладок на десктопе не растягивали header-controls. */
+.hero-support { display: flex; }
+.hero-support .support-button { flex: 0 0 auto; padding: 0.45rem 0.9rem; font-size: 0.85rem; }
+
 .header-controls {
   display: flex;
   gap: 12px;

@@ -67,6 +67,11 @@ onBeforeUnmount(() => {
           <img class="brand-logo" :src="'/favicon.svg'" alt="" aria-hidden="true"><span class="brand-label">z2r Web UI</span>
         </router-link>
         <p class="subtitle">Управление zapret2: статус, проверки доступности, стратегии и настройки обхода.</p>
+        <!-- Кнопка поддержки живёт в левой колонке: шестая вкладка меню на десктопе
+             больше не растягивает ряд контролов и подзаголовок вмещается. -->
+        <div class="hero-support">
+          <SupportModal />
+        </div>
       </div>
 
       <div class="header-controls">
@@ -85,8 +90,6 @@ onBeforeUnmount(() => {
             <option value="dark">Тёмная</option>
           </select>
         </label>
-
-        <SupportModal />
       </div>
     </header>
 
