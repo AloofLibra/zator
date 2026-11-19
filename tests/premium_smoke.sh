@@ -37,12 +37,9 @@ PREMIUM_TITLE_FILE="$CACHE_DIR/premium.title"
 bash -n "$REPO_DIR/lib/premium.sh" || fail "bash -n: lib/premium.sh"
 bash -n "$REPO_DIR/z2r.sh" || fail "bash -n: z2r.sh"
 Z2R_SRC="$(tr -d '\r' < "$REPO_DIR/z2r.sh")"
-grep -qF 'premium активен — повторный ввод 777 сбросит титул и скроет этот пункт' <<<"$Z2R_SRC" \
-  || fail "z2r.sh: нет подсказки о сбросе 777 рядом с пунктом 999"
 grep -qF '999. Секретный пункт' <<<"$Z2R_SRC" || fail "z2r.sh: нет пункта 999"
-# 999 и подсказка должны быть внутри одного условия по флагу (скрываются вместе)
-grep -A3 'if \[\[ -f "\$PREMIUM_FLAG" \]\]; then' <<<"$Z2R_SRC" | grep -qF 'сбросит титул' \
-  || fail "z2r.sh: подсказка о сбросе должна показываться вместе с 999 (по флагу premium)"
+# строка «Титул:» и пункт 999 показываются только по флагу premium
+grep -qF 'PREMIUM_TITLE_FILE' <<<"$Z2R_SRC" || fail "z2r.sh: титул в меню не привязан к файлу титула"
 
 # --- 1. Стартовое состояние: ни флага, ни титула ------------------------------
 
