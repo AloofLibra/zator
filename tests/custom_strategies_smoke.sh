@@ -412,6 +412,20 @@ custom_strategies_validate tpl 'multisplit:pos=midsld:seqovl=211:seqovl_pattern=
   || fail "validate: seqovl_pattern hex-литералом должен проходить"
 custom_strategies_validate tpl 'fakeddisorder:pos=midsld:pattern=maxru:nofake4' \
   || fail "validate: pattern именем блоба + nofake4 должен проходить"
+# blob= у tls_client_hello_clone — цель, nfqws2 создаёт её сам в рантайме
+# (живой кейс: «Блоб «clone_www2» не объявлен в конфиге» на ручном вводе)
+custom_strategies_validate tpl 'tls_client_hello_clone:blob=clone_www2:fallback=fake_default_tls:sni_del:sni_first=www.google.com:sni_snt_new=0' \
+  || fail "validate: blob= клона не обязан быть объявленным (создаётся в рантайме)"
+custom_strategies_validate tpl 'tls_client_hello_clone:blob=clone_www2:fallback=fake_default_tls:sni_del:sni_first=www.google.com:sni_snt_new=0 --lua-desync=fake:blob=clone_www2:tcp_seq=-3000' \
+  || fail "validate: ссылка fake:blob= на цель клона должна проходить"
+custom_strategies_validate tpl 'tls_client_hello_clone:blob=clone_www2:fallback=fake_default_tls --lua-desync=fakemultidisorder:fake_blob=clone_www2:pos=1,midsld:fake_count=2:tcp_seq=-3000:repeats=2' \
+  || fail "validate: fake_blob= на цель клона должен проходить"
+if custom_strategies_validate tpl 'fake:blob=clone_www2:repeats=2' 2>/dev/null; then
+  fail "validate: необъявленный блоб без группы-клона должен падать"
+fi
+if custom_strategies_validate tpl 'tls_client_hello_clone:blob=clone_www2:fallback=tlsgoogle' 2>/dev/null; then
+  fail "validate: fallback= клона обязан быть объявленным (это контент-блоб)"
+fi
 if custom_strategies_validate tpl 'fakeddisorder:pos=midsld:pattern=nosuchblob' 2>/dev/null; then
   fail "validate: pattern необъявленным блобом должен падать"
 fi
@@ -469,15 +483,16 @@ printf '%s\n' "$res" | awk -F '\t' '$1=="RESULT" && $2==12 && $3==1 && $4==1 {ok
   || fail "import_text: итог должен быть RESULT 12/1/1 (получено: $(printf '%s\n' "$res"))"
 [ "$(custom_strategies_count)" = "12" ] || fail "import_text: в TSV должно быть 12 записей"
 
-# гугловские блобы блокчека нигде не остались, деклараций и номеров в spec нет
-grep -Eq 'tlsgoogle|clone_www2|www_google_com_2' "$CUSTOM_STRATS_FILE" \
-  && fail "import_text: блобы блокчека не заменены"
+# гугловский контент-блоб блокчека нигде не остался, деклараций и номеров в spec нет;
+# имена-цели клона (clone_www2) остаются как есть — nfqws2 создаёт их в рантайме
+grep -Eq 'tlsgoogle|www_google_com_2' "$CUSTOM_STRATS_FILE" \
+  && fail "import_text: гугловский блоб блокчека не заменён на maxru"
 awk -F '\t' '$3 ~ /--blob=|(^|:)strategy=/ {bad=1} END {exit !bad}' "$CUSTOM_STRATS_FILE" \
   && fail "import_text: в spec остались --blob= или strategy="
 awk -F '\t' '$3=="multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxru" && $5=="blockcheck rr2---sn-aj5go5-53.googlevideo.com"' "$CUSTOM_STRATS_FILE" | grep -q . \
   || fail "import_text: нет замены tlsgoogle->maxru с комментарием blockcheck"
-awk -F '\t' '$3 ~ /^tls_client_hello_clone:blob=clone_vk:fallback=maxru:/' "$CUSTOM_STRATS_FILE" | grep -q . \
-  || fail "import_text: clone_www2 не заменён на clone_vk"
+awk -F '\t' '$3 ~ /^tls_client_hello_clone:blob=clone_www2:fallback=maxru:/ && $3 ~ /fake:blob=clone_www2|multisplit:blob=clone_www2/' "$CUSTOM_STRATS_FILE" | grep -q . \
+  || fail "import_text: цель клона clone_www2 должна остаться как есть (fallback=tlsgoogle -> maxru)"
 awk -F '\t' '$3=="fake:blob=quic_google:out_range=-d2" && $5=="импорт"' "$CUSTOM_STRATS_FILE" | grep -q . \
   || fail "import_text: обычная строка --lua-desync= должна добавляться с комментарием «импорт»"
 
@@ -495,5 +510,10 @@ grep -qE -- '--lua-desync=multisplit:pos=1,midsld:seqovl=654:seqovl_pattern=maxr
   || fail "import: config_profile_max_strategy(1) != 56 (получено $(config_profile_max_strategy 1 "$CFG_BC"))"
 
 export CUSTOM_STRATS_FILE="$ORCH_DIR/custom_strategies.tsv"
+
+# --- 12. Меню 14: промпты «ID записи (0 - отмена)» обязаны отменять по 0 ------
+# Живой кейс: пункты 2/3/4 считали 0 мусором («Неверный ввод»), отмена не работала.
+grep -qF '""|0|*[!0-9]*' <<<"$CUSTOM_SRC" \
+  && fail "меню 14: 0 в ID-промптах должен отменять, а не ругаться «Неверный ввод»"
 
 echo "custom strategies smoke ok"

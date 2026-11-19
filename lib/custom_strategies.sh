@@ -155,14 +155,13 @@ custom_strategies_normalize() {
 # на машине пользователя не существует: все ссылки на него получают имя
 # дефолтного TLS-блоба конфига maxru — а файл за объявлением --blob=maxru:@…
 # пользователь может заменить когда угодно (п.16/панель), имя не меняется.
-# clone_www2 — шаблон-блоб tls_client_hello_clone, содержимое nfqws2 пересоздаёт
-# сам, поэтому подходит любой объявленный clone-блоб конфига. Остальные
-# неизвестные имена — на дефолт транспорта (maxru / quic_google).
+# Остальные неизвестные имена — на дефолт транспорта (maxru / quic_google).
+# Имена-цели клона (tls_client_hello_clone:blob=…) сюда не попадают — они
+# остаются как есть: nfqws2 создаёт такие блобы сам в рантайме.
 custom_strategies_bc_blob_target() {
   local name="$1" transport="$2"
   case "$name" in
     tlsgoogle|google_www|tls_clienthello*) echo maxru ;;
-    clone_www2) echo clone_vk ;;
     *)
       case "$transport" in
         udp) echo quic_google ;;
@@ -222,9 +221,11 @@ custom_strategies_bc_groups() {
 }
 
 # Подменяет в группе имена необъявленных блобов на объявленные
-# (custom_strategies_bc_blob_target). Литералы (0x…, числа) не трогает.
+# (custom_strategies_bc_blob_target). Литералы (0x…, числа), blob= самого
+# tls_client_hello_clone и ссылки на имена-цели клона ($4) не трогает —
+# такие блобы nfqws2 создаёт сам в рантайме.
 custom_strategies_bc_fix_group() {
-  local group="$1" transport="$2" cfg="$3" out="" tok key val
+  local group="$1" transport="$2" cfg="$3" clones="${4:-}" out="" tok key val
   local IFS=':'
   for tok in $group; do
     case "$tok" in
@@ -232,6 +233,14 @@ custom_strategies_bc_fix_group() {
         key="${tok%%=*}"; val="${tok#*=}"
         case "$key" in
           blob|fake_blob|fallback|pattern|seqovl_pattern)
+            if [ "$key" = "blob" ]; then
+              case "$group" in
+                tls_client_hello_clone:*) out="${out:+$out:}$tok"; continue ;;
+              esac
+            fi
+            case " ${clones} " in
+              *" $val "*) out="${out:+$out:}$tok"; continue ;;
+            esac
             case "$val" in
               0x*|[0-9]*) out="${out:+$out:}$tok"; continue ;;
             esac
@@ -254,15 +263,16 @@ custom_strategies_bc_fix_group() {
 # строка --lua-desync=. stdout — канонический spec (готов к custom_strategies_add);
 # rc: 0 — ok, 1 — не распознано/не разобралось (сообщения — в stderr).
 custom_strategies_import_spec() {
-  local line="$1" block="${2:-tpl}" cfg="${3:-}" spec="" groups g fixed transport
+  local line="$1" block="${2:-tpl}" cfg="${3:-}" spec="" groups g fixed transport targets
   [ -n "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
   transport="$(custom_strategies_block_transport "$block")"
   BC_DOMAIN=""
   if groups="$(custom_strategies_bc_groups "$line")"; then
+    targets="$(_custom_clone_targets <<<"$groups")"
     while IFS= read -r g; do
       [ -n "$g" ] || continue
-      fixed="$(custom_strategies_bc_fix_group "$g" "$transport" "$cfg")"
+      fixed="$(custom_strategies_bc_fix_group "$g" "$transport" "$cfg" "$targets")"
       if [ -z "$spec" ]; then spec="$fixed"; else spec="$spec --lua-desync=$fixed"; fi
     done <<<"$groups"
     spec="$(custom_strategies_normalize "$spec")" || return 1
@@ -370,6 +380,26 @@ _custom_blob_known() {
   return 1
 }
 
+# Имена блобов-целей tls_client_hello_clone:blob= в перечне групп (по одной на
+# строку). nfqws2 создаёт/перезаписывает их сам в рантайме, поэтому декларация
+# --blob= для них не нужна — имя валидно в ссылках той же стратегии.
+_custom_clone_targets() {
+  local g body tok
+  while IFS= read -r g; do
+    case "$g" in
+      tls_client_hello_clone:*)
+        body="${g#*:}"
+        while [ -n "$body" ]; do
+          tok="${body%%:*}"
+          [ "$tok" = "$body" ] && body="" || body="${body#*:}"
+          case "$tok" in
+            blob=*) printf '%s ' "${tok#blob=}"; break ;;
+          esac
+        done ;;
+    esac
+  done
+}
+
 # Валидирует spec блока. Сообщения — в stderr; rc: 0 — годен (возможны warning),
 # 2 — фатальная ошибка.
 custom_strategies_validate() {
@@ -386,10 +416,11 @@ custom_strategies_validate() {
       return 2 ;;
   esac
 
-  local rest="${spec// --lua-desync=/$'\x01'}" ngroups=0 g
+  local rest="${spec// --lua-desync=/$'\x01'}" ngroups=0 g targets
+  targets="$(_custom_clone_targets <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")")"
   while IFS= read -r g; do
     ngroups=$((ngroups + 1))
-    _custom_validate_group "$g" "$transport" "$cfg" || return 2
+    _custom_validate_group "$g" "$transport" "$cfg" "$targets" || return 2
   done <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")"
   [ "$ngroups" -ge 1 ] && [ "$ngroups" -le 8 ] || {
     echo "От 1 до 8 групп --lua-desync= в одной стратегии." >&2
@@ -399,7 +430,7 @@ custom_strategies_validate() {
 }
 
 _custom_validate_group() {
-  local group="$1" transport="$2" cfg="$3"
+  local group="$1" transport="$2" cfg="$3" clones="${4:-}"
   case "$group" in
     *' '*) echo "Пробел внутри группы (группы разделяются « --lua-desync=»)." >&2; return 1 ;;
   esac
@@ -435,6 +466,12 @@ _custom_validate_group() {
           case "$key" in
             pattern|seqovl_pattern) case "$val" in 0x*|[0-9]*) _blit=1 ;; esac ;;
           esac
+          # blob= самого клона не обязан быть объявленным (nfqws2 создаёт блоб
+          # сам), и ссылки на имя-цель клона той же стратегии валидны как есть
+          if [ "$prim" = "tls_client_hello_clone" ] && [ "$key" = "blob" ]; then
+            _blit=1
+          fi
+          case " ${clones} " in *" $val "*) _blit=1 ;; esac
           if [ "$_blit" = "0" ] && ! _custom_blob_known "$val" "$cfg"; then
             echo "Блоб «$val» не объявлен в конфиге." >&2
             echo "Доступные: $(custom_strategies_blob_names "$cfg" | tr '\n' ' ')0x…" >&2
@@ -997,7 +1034,7 @@ custom_strategies_submenu() {
       "2") _custom_edit_flow ;;
       "3")
         read -re -p "ID записи (0 - отмена): " id || id=""
-        case "$id" in ""|0|*[!0-9]*) ui_invalid_input; continue ;; esac
+        case "$id" in ""|0) continue ;; *[!0-9]*) ui_invalid_input; continue ;; esac
         if [ "$(awk -F '\t' -v i="$id" '$1==i {print $4; exit}' < <(custom_strategies_list))" = "1" ]; then
           if custom_strategies_set_enabled "$id" 0; then
             echo -e "${green}Запись $id выключена.${plain}"
@@ -1015,7 +1052,7 @@ custom_strategies_submenu() {
         ;;
       "4")
         read -re -p "ID записи (0 - отмена): " id || id=""
-        case "$id" in ""|0|*[!0-9]*) ui_invalid_input; continue ;; esac
+        case "$id" in ""|0) continue ;; *[!0-9]*) ui_invalid_input; continue ;; esac
         custom_strategies_delete "$id" && echo -e "${green}Удалено (ID уплотнены).${plain}"
         pause_enter
         ;;
@@ -1131,7 +1168,7 @@ _custom_add_flow() {
 _custom_edit_flow() {
   local id row block spec comment enabled
   read -re -p "ID записи (0 - отмена): " id || id=""
-  case "$id" in ""|0|*[!0-9]*) ui_invalid_input; return ;; esac
+  case "$id" in ""|0) return ;; *[!0-9]*) ui_invalid_input; return ;; esac
   row="$(custom_strategies_row "$id")"
   [ -n "$row" ] || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }
   _custom_strats_split "$row" || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }
