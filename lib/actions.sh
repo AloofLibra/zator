@@ -1719,6 +1719,14 @@ backup_smart_apply_flags() {
     backup_smart_set_quic443 "$new_cfg" "$v_old"
   fi
 
+  # --- Экспериментальный wssize_ramp ---
+  v_old="$(config_get_var "$old_cfg" Z2R_WSSIZE_RAMP_ENABLE)"
+  if [ -n "$v_old" ]; then
+    backup_smart_set_wssize_ramp "$new_cfg" "$v_old" \
+      "$(config_get_var "$old_cfg" Z2R_WSSIZE_RAMP_MODE)" \
+      "$(config_get_var "$old_cfg" Z2R_WSSIZE_RAMP_SCALE)" || true
+  fi
+
   # --- Пункт 19: FWTYPE ---
   v_old="$(config_get_var "$old_cfg" FWTYPE)"
   v_new="$(config_get_var "$new_cfg" FWTYPE)"

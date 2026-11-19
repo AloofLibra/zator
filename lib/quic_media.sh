@@ -61,7 +61,7 @@ z2r_quic_elf_endian() {
 # Имя артефакта z2r-curl-h3-linux-<arch>.gz. MIPS-эндзианесс по ELF-байту
 # (uname на MIPS не различает), little-endian — доминирующий случай роутеров.
 z2r_quic_curl_arch() {
-    local machine
+    local machine endian platform_arch
     machine="$(uname -m 2>/dev/null)"
     case "$machine" in
         x86_64|amd64) echo x86_64 ;;
@@ -70,7 +70,22 @@ z2r_quic_curl_arch() {
         arm|armv6l|armv7l|armv8l) echo arm ;;
         mipsel*|mipsle*) echo mipsel ;;
         mips*)
-            case "$(z2r_quic_elf_endian)" in
+            endian="$(z2r_quic_elf_endian 2>/dev/null)" || endian=""
+            if [ -z "$endian" ] && [ -r "${Z2R_QUIC_OPENWRT_RELEASE:-/etc/openwrt_release}" ]; then
+                platform_arch="$(sed -n 's/^DISTRIB_ARCH=//p' "${Z2R_QUIC_OPENWRT_RELEASE:-/etc/openwrt_release}" | head -n1 | tr -d "'\"")"
+                case "$platform_arch" in
+                    mipsel*|mipsle*) endian=little ;;
+                    mips*) endian=big ;;
+                esac
+            fi
+            if [ -z "$endian" ] && command -v opkg >/dev/null 2>&1; then
+                platform_arch="$(opkg print-architecture 2>/dev/null | awk '$2 != "all" && $2 != "noarch" {print $2; exit}')"
+                case "$platform_arch" in
+                    mipsel*|mipsle*) endian=little ;;
+                    mips*) endian=big ;;
+                esac
+            fi
+            case "$endian" in
                 big) echo mipssf ;;
                 *) echo mipsel ;;
             esac ;;
