@@ -18,6 +18,7 @@ const tabs = [
   { view: 'strategies', label: 'Стратегии' },
   { view: 'domains', label: 'Домены' },
   { view: 'custom-strats', label: 'Свои стратегии' },
+  { view: 'custom-blobs', label: 'Свои блобы' },
   { view: 'settings', label: 'Настройки' },
 ]
 
@@ -66,6 +67,19 @@ onBeforeUnmount(() => {
           <img class="brand-logo" :src="'/favicon.svg'" alt="" aria-hidden="true"><span class="brand-label">z2r Web UI</span>
         </router-link>
         <p class="subtitle">Управление zapret2: статус, проверки доступности, стратегии и настройки обхода.</p>
+        <!-- Кнопка поддержки и выбор темы живут в левой колонке: ряд меню —
+             только вкладки, ничего не растягивается и не наезжает на текст. -->
+        <div class="hero-support">
+          <SupportModal />
+          <label class="theme-field" for="theme-mode">
+            <span>Тема</span>
+            <select id="theme-mode" v-model="themeSelect" aria-label="Тема интерфейса">
+              <option value="auto">Авто</option>
+              <option value="light">Светлая</option>
+              <option value="dark">Тёмная</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div class="header-controls">
@@ -75,17 +89,6 @@ onBeforeUnmount(() => {
             {{ tab.label }}
           </router-link>
         </nav>
-
-        <label class="theme-field" for="theme-mode">
-          <span>Тема</span>
-          <select id="theme-mode" v-model="themeSelect" aria-label="Тема интерфейса">
-            <option value="auto">Авто</option>
-            <option value="light">Светлая</option>
-            <option value="dark">Тёмная</option>
-          </select>
-        </label>
-
-        <SupportModal />
       </div>
     </header>
 

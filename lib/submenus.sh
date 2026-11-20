@@ -1617,6 +1617,9 @@ tls_blob_submenu() {
     i=$((i+1))
     submenu_item "$i" "Размер клонов — максимальный размер по профилям"
     local size_item=$i
+    i=$((i+1))
+    submenu_item "$i" "Свои блобы — декларации --blob= (custom_blob)"
+    local blobs_item=$i
     echo ""
     submenu_item "0" "Назад"
     echo ""
@@ -1637,6 +1640,9 @@ tls_blob_submenu() {
         ;;
       "$size_item")
         clone_size_submenu
+        ;;
+      "$blobs_item")
+        custom_blobs_submenu
         ;;
       *)
         if ui_is_number_in_range "$ans" 2 "$(( ${#profiles[@]} + 1 ))"; then

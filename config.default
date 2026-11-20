@@ -1,4 +1,4 @@
-# Last modified: 2026-11-18 17:25:49 UTC
+# Last modified: 2026-11-19 17:42:43 UTC
 # this file is included from init scripts
 # change values here
 
@@ -134,6 +134,10 @@ NFQWS2_OPT="
 --blob=fakewgblob:@/opt/zator/files/fake/wg_initial_fake_2.bin
 --blob=discord_udp_1:@/opt/zator/files/fake/discord_udp_1.bin
 --blob=discord_udp_2:@/opt/zator/files/fake/discord_udp_2.bin
+# Пользовательские блобы (панель: «Свои блобы», /opt/zator/files/fake/custom_blob).
+# Инжектятся между маркерами; имена не должны совпадать со штатными.
+#Z2R_CUSTOM_BLOBS_BEGIN
+#Z2R_CUSTOM_BLOBS_END
 # Общий TCP TLS шаблон на базе блока YT. Содержит range/payload для lua-desync.
 # Фулинг без изменения TCP timestamp и перестановки timestamp-опции.
 --template=z2r_tcp_tls_common
