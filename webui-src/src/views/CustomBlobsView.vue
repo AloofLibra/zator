@@ -29,6 +29,9 @@ async function load() {
   blobs.value = Array.isArray(data.blobs) ? data.blobs : []
   files.value = Array.isArray(data.files) ? data.files : []
   stock.value = Array.isArray(data.stock) ? data.stock : []
+  // серверное состояние «TSV != конфиг» — основа флага; локальные мутации
+  // ставят его в true поверх
+  needsApply.value = !!data.config_dirty
 }
 
 async function refresh() {

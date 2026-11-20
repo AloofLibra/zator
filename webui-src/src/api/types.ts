@@ -114,6 +114,9 @@ export interface CustomBlobsPayload {
   files?: string[]
   // Штатные имена блобов — их пользовательские имена занимать нельзя
   stock?: string[]
+  // Серверный признак «TSV ≠ секция #Z2R_CUSTOM_BLOBS в конфиге» —
+  // переживает обновление страницы (Vue-флаг needsApply был только в памяти)
+  config_dirty?: boolean
 }
 
 export interface CustomImportResult {
@@ -124,6 +127,9 @@ export interface CustomImportResult {
   errors?: { line: string; reason: string }[]
   // Подстановки необъявленных блобов («tlsgoogle → maxru») — информационные
   notes?: string[]
+  // Лимит импорта и полный объём вставки (NR>limit не обрабатывались)
+  total?: number
+  limit?: number
 }
 
 export interface TlsBlobSettings {

@@ -2188,8 +2188,10 @@ api_custom_action() {
       # SUMMARY blockcheck2 (лишнее вырезается, гугловский блоб -> maxru из
       # живого конфига), и обычные строки --lua-desync=. Лимит — 256 строк
       # за раз (целый SUMMARY блокчека влезает).
-      local added=0 dups=0 failed=0 skipped=0 errors="" notes="" report line ereason sep="" sep_n="" tab
+      local added=0 dups=0 failed=0 skipped=0 errors="" notes="" report line ereason sep="" sep_n="" tab total=0
       tab=$'\t'
+      # не обрезать молча: лимит 256 строк, полный объём уходит в ответ (total)
+      total="$(printf '%s\n' "$text" | awk 'END{print NR+0}')"
       _custom_capture_err custom_strategies_import_text "$(printf '%s\n' "$text" | awk 'NR<=256')" "$block"
       report="$REPLY_OUT"
       added="$(printf '%s\n' "$report" | awk -F '\t' '$1=="RESULT"{print $2; exit}')"
@@ -2214,7 +2216,7 @@ api_custom_action() {
       done <<EOF
 $report
 EOF
-      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"dups\":$dups,\"skipped\":$skipped,\"errors\":[$errors],\"notes\":[$notes],\"apply_required\":true}"
+      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"dups\":$dups,\"skipped\":$skipped,\"errors\":[$errors],\"notes\":[$notes],\"total\":${total:-0},\"limit\":256,\"apply_required\":true}"
       ;;
     apply)
       _custom_capture_err custom_strategies_apply_file "$cfg"

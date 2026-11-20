@@ -222,6 +222,11 @@ async function importLines() {
       showToast(`Импорт: добавлено ${payload?.added ?? 0}, дубликатов ${payload?.dups ?? 0}, пропущено ${payload?.skipped ?? 0}.`
         + (importNotes.value.length ? ` Подмен блобов: ${importNotes.value.length}.` : '')
         + ' Примените к конфигу.')
+      const totalLines = payload?.total ?? 0
+      if (totalLines > (payload?.limit ?? 256)) {
+        showToast(`Импорт ограничен ${payload?.limit} строками: получено ${totalLines}. `
+          + `Остальные ${(totalLines - (payload?.limit ?? 256))} строк не обработаны — импортируйте их отдельно или файлом через CLI (п.1 -> 14 -> 5).`, 'warning')
+      }
       importText.value = ''
       await load()
     })

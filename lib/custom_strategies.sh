@@ -434,7 +434,7 @@ custom_strategies_import_text() {
   if [ -s "$rows_file" ]; then
     if ! custom_strategies_bulk_add "$block" "$rows_file"; then
       printf 'ERR\t%s\t%s\n' "*" "не удалось записать TSV (пакет добавлений откатан)"
-      added=0; failed=$((failed + added))
+      failed=$((failed + added)); added=0
     fi
   fi
   # подстановки блобов — отдельными NOTE-строками (панель показывает их список)

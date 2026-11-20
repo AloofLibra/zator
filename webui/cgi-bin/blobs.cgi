@@ -36,8 +36,18 @@ api_blobs_list() {
     [ -n "$b" ] || continue
     stock="${stock}${stock:+,}\"$(json_escape "$b")\""
   done < <(custom_strategies_blob_names "$cfg")
+  # серверный признак «есть неприменённые изменения» (замечание автора PR #82:
+  # после удаления последнего блоба и обновления страницы Vue-флаг терялся, а
+  # старая декларация оставалась в конфиге): сверяем ожидаемый инжект с секцией
+  local expected="" actual dirty=0
+  while IFS= read -r row; do
+    _custom_blobs_split "$row" || continue
+    expected="${expected}--blob=$_CB_NAME:@$(custom_blobs_dir)/$_CB_FILE"$'\n'
+  done < <(custom_blobs_list)
+  actual="$(awk '/^#Z2R_CUSTOM_BLOBS_BEGIN$/{f=1;next} /^#Z2R_CUSTOM_BLOBS_END$/{f=0} f && /^--blob=/' "$cfg")"
+  [ "$actual" != "$expected" ] && dirty=1
   printf 'Cache-Control: no-store\r\n'
-  send_json "200 OK" "{\"dir\":\"$(json_escape "$(custom_blobs_dir)")\",\"blobs\":[$rows],\"files\":[$files],\"stock\":[$stock]}"
+  send_json "200 OK" "{\"dir\":\"$(json_escape "$(custom_blobs_dir)")\",\"blobs\":[$rows],\"files\":[$files],\"stock\":[$stock],\"config_dirty\":$dirty}"
 }
 
 # Параметр ТОЛЬКО из QUERY_STRING (parse_params при POST читает тело — для
@@ -64,7 +74,7 @@ _blobs_query_param() {
 # POST action=upload&name=файл.bin — бинарное тело запроса.
 api_blobs_upload() {
   _blobs_lib_guard
-  local name="$(_blobs_query_param name)" tmp base auto size rc
+  local name="$(_blobs_query_param name)" tmp base auto size rc got=0 chunk_before
   case "$name" in
     ""|*/*|*".."*) send_error "400 Bad Request" "Некорректное имя файла." ;;
   esac
@@ -77,8 +87,18 @@ api_blobs_upload() {
   esac
   [ "${CONTENT_LENGTH:-0}" -ge 1 ] && [ "${CONTENT_LENGTH:-0}" -le 262144 ] \
     || send_error "413 Payload Too Large" "Размер файла 1 Б…256 КиБ."
+  # чтение тела: в цикле до нужного объёма (один dd с count может вернуть
+  # короткую запись и недобрать байты — замечание автора PR #82)
   tmp="/tmp/z2r-blob-up.$$"
-  dd bs=8192 count=$(( (CONTENT_LENGTH + 8191) / 8192 )) of="$tmp" 2>/dev/null || true
+  : > "$tmp"
+  got=0
+  while [ "$got" -lt "${CONTENT_LENGTH:-0}" ]; do
+    chunk_before="$(wc -c < "$tmp" 2>/dev/null | tr -d '[:space:]')"
+    dd bs=8192 count=1 2>/dev/null >> "$tmp" || true
+    got="$(wc -c < "$tmp" 2>/dev/null | tr -d '[:space:]')"
+    # тело кончилось раньше CONTENT_LENGTH (клиент отвалился) — не крутимся
+    [ "$got" -gt "$chunk_before" ] || { rm -f "$tmp"; send_error "400 Bad Request" "Загрузка прервана (получено ${got} из ${CONTENT_LENGTH} Б)."; }
+  done
   size="$(wc -c < "$tmp" 2>/dev/null | tr -d '[:space:]')"
   [ "${size:-0}" = "${CONTENT_LENGTH:-0}" ] || { rm -f "$tmp"; send_error "400 Bad Request" "Тело загрузки пришло не целиком."; }
   _custom_capture_err custom_blobs_upload_file "$tmp" "$name"
