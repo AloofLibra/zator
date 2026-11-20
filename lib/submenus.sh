@@ -2368,7 +2368,8 @@ advanced_settings_submenu() {
     local quic_block quic_value quic_color
     local keenetic_status keenetic_color
     local wd_status wd_color
-    local wssize_value wssize_color googlevideo_collect_value
+    local wssize_value wssize_color wssize_syndata_value wssize_syndata_color googlevideo_collect_value
+    local ramp_mode ramp_scale ramp_syndata
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -2431,6 +2432,16 @@ advanced_settings_submenu() {
     fi
     submenu_status_item "7" "Экспериментальный wssize_ramp (список Googlevideo)." "$wssize_value" "$wssize_color"
     submenu_item "8" "Обновить центральный список IPv4 Googlevideo. Сейчас: $(googlevideo_ips_count)"
+    if [ "$wssize_value" = "включен" ]; then
+      if [ "$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_SYNDATA)" = 1 ]; then
+        wssize_syndata_value="включена"; wssize_syndata_color="green"
+      else
+        wssize_syndata_value="выключена"; wssize_syndata_color="red"
+      fi
+    else
+      wssize_syndata_value="недоступна: включите wssize_ramp"; wssize_syndata_color="dim"
+    fi
+    submenu_status_item "11" "SYN-data для Googlevideo (экспериментально)." "$wssize_syndata_value" "$wssize_syndata_color"
     if googlevideo_local_collection_supported "${OSystem:-}"; then
       case "$(googlevideo_openwrt_dnsmasq_state)" in
         enabled) googlevideo_collect_value="listener запущен" ;;
@@ -2492,6 +2503,26 @@ advanced_settings_submenu() {
         ;;
       "10")
         googlevideo_upload_local_manual || true
+        pause_enter
+        ;;
+      "11")
+        if [ "$wssize_value" != "включен" ]; then
+          echo -e "${yellow}Сначала включите wssize_ramp в пункте 19-7.${plain}"
+          pause_enter
+          continue
+        fi
+        ramp_mode="$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_MODE)" || ramp_mode=""
+        ramp_scale="$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_SCALE)" || ramp_scale=""
+        [ -n "$ramp_mode" ] || ramp_mode=full
+        [ -n "$ramp_scale" ] || ramp_scale=1
+        ramp_syndata=1
+        [ "$(config_get_var /opt/zapret2/config Z2R_WSSIZE_RAMP_SYNDATA)" = 1 ] && ramp_syndata=0
+        if backup_smart_set_wssize_ramp /opt/zapret2/config 1 "$ramp_mode" "$ramp_scale" "$ramp_syndata"; then
+          z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
+          echo -e "${green}SYN-data для Googlevideo теперь $([ "$ramp_syndata" = 1 ] && echo включена || echo выключена).${plain}"
+        else
+          echo -e "${red}Не удалось сохранить переключатель SYN-data.${plain}"
+        fi
         pause_enter
         ;;
       "0"|"")
