@@ -1352,8 +1352,13 @@ backup_update_offer_restore() {
 # Проверка наличия всех blob-файлов, на которые ссылается config.
 # Если хотя бы один файл отсутствует — печатает его и возвращает 1 (импорт недопустим).
 # Если все на месте — возвращает 0.
+# $2 — каталог распакованного архива (опционально): файл, отсутствующий на
+# устройстве, но лежащий в архиве, считается доступным — restore сейчас же
+# скопирует его (custom_blob/ и штатные fake/ едут в бэкапе; замечание автора
+# PR #82: без этого архив с custom_blob нельзя было восстановить после
+# переустановки Entware — проверка находила отсутствие файла до копирования).
 backup_check_blobs() {
-  local cfg="$1"
+  local cfg="$1" archive_dir="${2:-}"
   local tmp_pairs name file missing
   [ -f "$cfg" ] || return 0
 
@@ -1368,6 +1373,10 @@ backup_check_blobs() {
     [ -n "$name" ] || continue
     [ -n "$file" ] || continue
     if [ ! -f "/opt/zator/files/fake/$file" ]; then
+      if [ -n "$archive_dir" ] && [ -f "$archive_dir/files/fake/$file" ]; then
+        # файл приедет из самого архива при копировании — не блокируем
+        continue
+      fi
       echo -e "${red}Blob ${name}: файл ${file} отсутствует на устройстве.${plain}"
       missing=1
     fi
@@ -1856,7 +1865,7 @@ menu_action_backup_restore() {
   # Режим 1: предварительная проверка blob-файлов. Если config из архива
   # ссылается на отсутствующий blob — прерываем импорт, ничего не меняем.
   if [ "$mode" = "1" ] && [ -f "$restore_dir/config" ]; then
-    if ! backup_check_blobs "$restore_dir/config"; then
+    if ! backup_check_blobs "$restore_dir/config" "$restore_dir"; then
       rm -rf "$restore_dir"
       echo ""
       echo -e "${red}Восстановление прервано: отсутствуют blob-файлы.${plain}"

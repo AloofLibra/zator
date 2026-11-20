@@ -2120,13 +2120,16 @@ api_custom_list() {
 # Разбор — импортный движок custom_strategies_import_spec: клиент может
 # вставить готовую строку из конфига целиком, строку SUMMARY blockcheck2 или
 # команду nfqws2 («--lua-desync=», «:strategy=N», шапка «curl_test_… : nfqws2»
-# и лишние аргументы демона срезаются); ошибки — 400 с текстом валидатора.
+# и лишние аргументы демона срезаются). Подмена необъявленных блобов для
+# add/edit ОТКЛЮЧЕНА (allow_remap=0): пользователь вводит имя осознанно —
+# неизвестное имя даёт честную 400 с текстом валидатора (замечание автора
+# PR #82), подмена с выводом NOTE остаётся только в action=import.
 _custom_normalize_and_check() {
   local block="$1" raw="$2" cfg="$3"
   local spec err
   # textarea может прийти многострочной (копипаста с жёсткими переносами)
   raw="$(custom_strategies_join_wraps "$raw")"
-  spec="$(custom_strategies_import_spec "$raw" "$block" "$cfg" 2>/dev/null)" || \
+  spec="$(custom_strategies_import_spec "$raw" "$block" "$cfg" 0 2>/dev/null)" || \
     send_error "400 Bad Request" "Не удалось разобрать строку: «strategy=» допустим только в конце групп"
   _custom_capture_err custom_strategies_validate "$block" "$spec" "$cfg"
   if [ "$REPLY_RC" != "0" ]; then
@@ -2185,7 +2188,7 @@ api_custom_action() {
       # SUMMARY blockcheck2 (лишнее вырезается, гугловский блоб -> maxru из
       # живого конфига), и обычные строки --lua-desync=. Лимит — 256 строк
       # за раз (целый SUMMARY блокчека влезает).
-      local added=0 dups=0 failed=0 skipped=0 errors="" report line ereason sep="" tab
+      local added=0 dups=0 failed=0 skipped=0 errors="" notes="" report line ereason sep="" sep_n="" tab
       tab=$'\t'
       _custom_capture_err custom_strategies_import_text "$(printf '%s\n' "$text" | awk 'NR<=256')" "$block"
       report="$REPLY_OUT"
@@ -2195,15 +2198,23 @@ api_custom_action() {
       added="${added:-0}"; dups="${dups:-0}"; failed="${failed:-0}"
       skipped=$((dups + failed))
       while IFS= read -r line; do
-        case "$line" in ERR$tab*) line="${line#ERR$tab}" ;; *) continue ;; esac
-        ereason="${line#*$tab}"
-        line="${line%$tab*}"
-        errors="${errors}${sep}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$ereason")\"}"
-        sep=","
+        case "$line" in
+          ERR$tab*)
+            line="${line#ERR$tab}"
+            ereason="${line#*$tab}"
+            line="${line%$tab*}"
+            errors="${errors}${sep}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$ereason")\"}"
+            sep=","
+            ;;
+          NOTE$tab*)
+            notes="${notes}${sep_n}\"$(json_escape "${line#NOTE$tab}")\""
+            sep_n=","
+            ;;
+        esac
       done <<EOF
 $report
 EOF
-      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"dups\":$dups,\"skipped\":$skipped,\"errors\":[$errors],\"apply_required\":true}"
+      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"dups\":$dups,\"skipped\":$skipped,\"errors\":[$errors],\"notes\":[$notes],\"apply_required\":true}"
       ;;
     apply)
       _custom_capture_err custom_strategies_apply_file "$cfg"

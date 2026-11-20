@@ -122,6 +122,8 @@ export interface CustomImportResult {
   dups?: number
   skipped?: number
   errors?: { line: string; reason: string }[]
+  // Подстановки необъявленных блобов («tlsgoogle → maxru») — информационные
+  notes?: string[]
 }
 
 export interface TlsBlobSettings {

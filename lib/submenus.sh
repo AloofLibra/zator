@@ -1635,6 +1635,12 @@ tls_blob_submenu() {
       "$sni_item")
         sni_submenu
         ;;
+      "$mode_item")
+        fake_mode_submenu
+        ;;
+      "$size_item")
+        clone_size_submenu
+        ;;
       "$blobs_item")
         custom_blobs_submenu
         ;;

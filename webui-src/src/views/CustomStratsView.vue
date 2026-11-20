@@ -207,6 +207,7 @@ async function removeItem(item: CustomStrategy) {
 const importBlock = ref('p5')
 const importText = ref('')
 const importErrors = ref<{ line: string; reason: string }[]>([])
+const importNotes = ref<string[]>([])
 
 async function importLines() {
   if (!importText.value.trim()) {
@@ -217,7 +218,9 @@ async function importLines() {
     await withBusy('custom-import', async () => {
       const payload = await customStrats.import(importBlock.value, importText.value)
       importErrors.value = Array.isArray(payload?.errors) ? payload.errors : []
+      importNotes.value = Array.isArray(payload?.notes) ? payload.notes : []
       showToast(`Импорт: добавлено ${payload?.added ?? 0}, дубликатов ${payload?.dups ?? 0}, пропущено ${payload?.skipped ?? 0}.`
+        + (importNotes.value.length ? ` Подмен блобов: ${importNotes.value.length}.` : '')
         + ' Примените к конфигу.')
       importText.value = ''
       await load()
@@ -295,6 +298,9 @@ async function applyToConfig() {
           </label>
           <textarea id="custom-import-text" v-model="importText" rows="6" :disabled="busyActive"
             placeholder="--lua-desync=... :strategy=N, строка SUMMARY blockcheck2 или команда nfqws2 целиком — лишнее (--blob/--payload, номера) вырежется само; гугловский блоб блокчека заменится на дефолтный из конфига"></textarea>
+          <ul v-if="importNotes.length" class="form-hint" id="custom-import-notes">
+            <li v-for="n in importNotes" :key="n">{{ n }}</li>
+          </ul>
           <ul v-if="importErrors.length" class="settings-alert" id="custom-import-errors">
             <li v-for="e in importErrors" :key="e.line"><code>{{ e.line }}</code> — {{ e.reason }}</li>
           </ul>

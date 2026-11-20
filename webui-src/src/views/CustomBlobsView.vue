@@ -15,6 +15,11 @@ const blobs = ref<CustomBlobInfo[]>([])
 const files = ref<string[]>([])
 const stock = ref<string[]>([])
 const loaded = ref(false)
+// есть несохранённые изменения (декларация добавлена/изменена/удалена, но
+// конфиг ещё не применён) — кнопка «Применить» активна даже при пустом списке,
+// иначе последнее удаление нельзя было бы довести до конфига (замечание автора
+// PR #82: «Применить» дизейблился на blobs.length===0)
+const needsApply = ref(false)
 
 const refsTotal = computed(() => blobs.value.reduce((acc, b) => acc + (b.refs || 0), 0))
 
@@ -74,6 +79,7 @@ async function upload() {
       const payload = await customBlobsUpload(file.name, buffer)
       uploadFile.value = null
       if (fileInput.value) fileInput.value.value = ''
+      if (payload?.created) needsApply.value = true
       showToast(payload?.created
         ? `Загружено и добавлено как «${payload.created}». Примените к конфигу.`
         : `Файл ${payload?.file || file.name} сохранён в ${dir.value}.`)
@@ -172,12 +178,14 @@ async function saveForm() {
         const payload = await customBlobs.add(name, formFile.value, formComment.value.trim())
         const newId = typeof payload?.id === 'number' ? payload.id : null
         formOpen.value = false
+        needsApply.value = true
         showToast('Добавлено. Примените к конфигу, чтобы блоб объявился.')
         if (newId !== null) highlightRow(newId)
         await load()
         return
       }
       formOpen.value = false
+      needsApply.value = true
       showToast('Сохранено.'
         + (formName.value.trim() !== original.value.name
           ? ' Ссылки в «Своих стратегиях» обновлены.'
@@ -206,6 +214,7 @@ async function removeItem(item: CustomBlobInfo) {
   try {
     await withBusy(`custom-blob-delete-${item.id}`, async () => {
       await customBlobs.remove(String(item.id))
+      needsApply.value = true
       showToast('Удалено.')
       await load()
     })
@@ -226,6 +235,7 @@ async function applyToConfig() {
   try {
     await withBusy('custom-blob-apply', async () => {
       const payload = await customBlobs.apply()
+      needsApply.value = false
       showToast('Применено.' + (payload?.restarted ? ' zapret2 перезапущен.' : ' zapret2 не был запущен — запустится со следующим стартом.'))
       await load()
     })
@@ -239,9 +249,9 @@ async function applyToConfig() {
   <section class="view is-active" id="view-custom-blobs" :class="{ 'is-loading': !loaded }">
     <div class="actions">
       <button id="custom-blob-apply-btn" type="button" class="primary"
-        :class="{ 'is-busy': busyButton === 'custom-blob-apply' }" :disabled="busyActive || !blobs.length"
-        title="Дописать декларации --blob= в config и перезапустить zapret2"
-        @click="applyToConfig">Применить к конфигу</button>
+        :class="{ 'is-busy': busyButton === 'custom-blob-apply' }" :disabled="busyActive || (!blobs.length && !needsApply)"
+        title="Дописать декларации --blob= в config (в т.ч. вычистить удалённые) и перезапустить zapret2"
+        @click="applyToConfig">Применить к конфигу{{ needsApply ? ' (есть изменения)' : '' }}</button>
       <button id="refresh-custom-blobs" :class="{ 'is-busy': busyButton === 'refresh-custom-blobs' }"
         :disabled="busyActive" type="button" @click="refresh">Обновить</button>
     </div>

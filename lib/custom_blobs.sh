@@ -175,10 +175,20 @@ custom_blobs_replace() {
     content="$content$row
 "
   done < <(custom_blobs_list)
-  _custom_blobs_write "$content" || return 1
-  # имя сменилось — правим ссылки в пользовательских стратегиях
+  # атомарность (замечание автора PR #82): сначала правим ссылки в стратегиях,
+  # затем TSV блобов; ошибка любого шага откатывает предыдущий
   if [ "$name" != "$oldname" ]; then
-    custom_strategies_rename_blob "$oldname" "$name"
+    if ! custom_strategies_rename_blob "$oldname" "$name"; then
+      echo "Не удалось обновить ссылки в «Своих стратегиях» — переименование откачено." >&2
+      return 1
+    fi
+  fi
+  if ! _custom_blobs_write "$content"; then
+    if [ "$name" != "$oldname" ]; then
+      custom_strategies_rename_blob "$name" "$oldname" 2>/dev/null || true
+    fi
+    echo "Не удалось записать TSV блобов — переименование откачено." >&2
+    return 1
   fi
   return 0
 }
@@ -201,7 +211,17 @@ custom_blobs_delete() {
 "
   done < <(custom_blobs_list)
   _custom_blobs_write "$content" || return 1
-  [ -n "$file" ] && rm -f "$(custom_blobs_dir)/$file" 2>/dev/null
+  # физический файл сносит только если на него больше не ссылается другая
+  # декларация (два имени могут указывать на один файл — замечание автора PR #82)
+  local still_used=0
+  if [ -n "$file" ]; then
+    if custom_blobs_list | awk -F '\t' -v f="$file" '$3 == f {found=1} END {exit !found}'; then
+      still_used=1
+    fi
+  fi
+  if [ -n "$file" ] && [ "$still_used" = "0" ]; then
+    rm -f "$(custom_blobs_dir)/$file" 2>/dev/null
+  fi
   return 0
 }
 

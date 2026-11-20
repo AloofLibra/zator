@@ -265,9 +265,10 @@ custom_strategies_bc_fix_group() {
 # кусок, который сам не начинается запись — нет « : nfqws2 », не «nfqws2 …»,
 # нет «--lua-desync=» — приклеивается к предыдущей строке БЕЗ разделителя
 # (перенос обычно рвёт строку посреди токена). Пустые, «#…» и «* SUMMARY» — мимо.
-# Подряд идущие ПЛОСКИЕ строки «--lua-desync=группа» с одинаковым хвостом
-# :strategy=N (или оба без него) — комбо из копипасты документации/конфига:
-# склеиваются в одну запись (разделителем служит их собственный --lua-desync=).
+# Подряд идущие ПЛОСКИЕ строки «--lua-desync=группа:strategy=N» с ОДИНАКОВЫМ
+# НЕПУСТЫМ номером — комбо из конфига (одна запись = один номер); строки без
+# номера НЕ склеиваются — «одна строка = одна стратегия» (замечание автора
+# PR #82: массовый импорт безномерных строк схлопывался в одну стратегию).
 _custom_strats_strategy_tail() {
   local t
   t="$(printf '%s' "$1" | grep -oE ':strategy=[0-9]+$' | tail -n1)"
@@ -291,6 +292,7 @@ custom_strategies_join_wraps() {
         line="${line#"${line%%[![:space:]]*}"}"
         if [ -n "$linebuf" ] \
            && case "$linebuf" in --lua-desync=*) true ;; *) false ;; esac \
+           && [ -n "$(_custom_strats_strategy_tail "$linebuf")" ] \
            && [ "$(_custom_strats_strategy_tail "$linebuf")" = "$(_custom_strats_strategy_tail "$line")" ]; then
           linebuf="$linebuf $line"
         else
@@ -317,6 +319,10 @@ custom_strategies_join_wraps() {
 # rc: 0 — ok, 1 — не распознано/не разобралось (сообщения — в stderr).
 custom_strategies_import_spec() {
   local line="$1" block="${2:-tpl}" cfg="${3:-}" spec="" groups g fixed transport targets rest
+  # $4 — разрешить подмену необъявленных блобов (по умолчанию да). Ручное
+  # добавление/правка вызывает с 0: неизвестное имя — честная ошибка валидатора,
+  # а не молчаливая замена на maxru (замечание автора PR #82).
+  local allow_remap="${4:-1}"
   [ -n "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
   transport="$(custom_strategies_block_transport "$block")"
@@ -336,11 +342,33 @@ custom_strategies_import_spec() {
   targets="$(_custom_clone_targets <<<"$groups")"
   while IFS= read -r g; do
     [ -n "$g" ] || continue
-    fixed="$(custom_strategies_bc_fix_group "$g" "$transport" "$cfg" "$targets")"
+    if [ "$allow_remap" = "1" ]; then
+      fixed="$(custom_strategies_bc_fix_group "$g" "$transport" "$cfg" "$targets")"
+    else
+      fixed="$g"
+    fi
     if [ -z "$spec" ]; then spec="$fixed"; else spec="$spec --lua-desync=$fixed"; fi
   done <<<"$groups"
   spec="$(custom_strategies_normalize "$spec")" || return 1
   printf '%s' "$spec"
+}
+
+# Пакетное добавление уже провалидированных spec'ов: ОДНА перезапись TSV
+# на весь пакет (custom_strategies_add на каждую строку давал квадратичный
+# рост на больших импортах — замечание автора PR #82). Файл $2: spec<TAB>comment.
+custom_strategies_bulk_add() {
+  local block="$1" list="$2" id content rows spec comment
+  [ -f "$list" ] || return 1
+  id="$(custom_strategies_next_id)"
+  rows="$(custom_strategies_list)"
+  content="$(_custom_strats_header)"
+  [ -n "$rows" ] && content="$content"$'\n'"$rows"
+  while IFS="$(printf '\t')" read -r spec comment; do
+    [ -n "$spec" ] || continue
+    content="$content"$'\n'"$(printf '%s\t%s\t%s\t1\t%s\t' "$id" "$block" "$spec" "${comment:-}")"
+    id=$((id + 1))
+  done < "$list"
+  _custom_strats_write "$content"
 }
 
 # Импорт многострочного текста (паста или файл блокчека) в блок $2.
@@ -350,10 +378,20 @@ custom_strategies_import_spec() {
 # пропускаются, а не задваиваются. Записям из блокчека комментарий —
 # «blockcheck <домен из заголовка>», обычной вставке — «импорт».
 custom_strategies_import_text() {
-  local text="$1" block="$2" line spec reason seen="" existing
+  local text="$1" block="$2" line spec reason existing
   local bcdomain="" comment
+  local cfg_imp="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg_imp" ] || cfg_imp="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
   existing="$(custom_strategies_list "$block" | awk -F '\t' '{print $3}')"$'\n'
   local added=0 dups=0 failed=0
+  local -A seen_map=()
+  local TMP_DIR_IMP="/tmp/z2r-imp-$$"
+  mkdir -p "$TMP_DIR_IMP" || return 1
+  local rows_file="$TMP_DIR_IMP/rows" notes_file="$TMP_DIR_IMP/notes"
+  : > "$rows_file"; : > "$notes_file"
+  # кеш имён блобов на время пакета (сброс после цикла)
+  local _prev_blob_cache="${_CUSTOM_BLOBS_NAMES_CACHE:-}"
+  _CUSTOM_BLOBS_NAMES_CACHE=1
 
   # Склейка жёстких переносов (см. custom_strategies_join_wraps)
   text="$(custom_strategies_join_wraps "$text")"
@@ -373,26 +411,41 @@ custom_strategies_import_text() {
     case "$line" in
       *": nfqws2 "*) bcdomain="$(printf '%s' "${line%% : nfqws2 *}" | awk '{print $3}')" ;;
     esac
-    spec="$(custom_strategies_import_spec "$line" "$block")" || {
+    spec="$(custom_strategies_import_spec "$line" "$block" "$cfg_imp" 1 2>>"$notes_file")" || {
       printf 'ERR\t%s\t%s\n' "$(printf '%s' "$line" | tr '\t' ' ')" "не удалось разобрать строку"
       failed=$((failed + 1)); continue
     }
-    case "$seen" in
-      *"$spec"$'\n'*) dups=$((dups + 1)); continue ;;
-    esac
-    case "$existing" in
-      *"$spec"$'\n'*) dups=$((dups + 1)); continue ;;
-    esac
+    if [[ -n "${seen_map[$spec]+x}" ]]; then dups=$((dups + 1)); continue; fi
+    if grep -Fxq "$spec" <<<"$existing"; then dups=$((dups + 1)); continue; fi
     comment="импорт"
     [ -n "$bcdomain" ] && comment="blockcheck ${bcdomain}"
-    if ! custom_strategies_add "$block" "$spec" "$comment" >/dev/null 2>&1; then
+    if ! custom_strategies_validate "$block" "$spec" 2>/dev/null; then
       reason="$(custom_strategies_validate "$block" "$spec" 2>&1 | head -n1)"
       printf 'ERR\t%s\t%s\n' "$(printf '%s' "$spec" | tr '\t' ' ')" "${reason:-не прошла валидация}"
       failed=$((failed + 1)); continue
     fi
-    seen="$seen$spec"$'\n'
+    printf '%s\t%s\n' "$spec" "$comment" >> "$rows_file"
+    seen_map["$spec"]=1
     added=$((added + 1))
   done <<<"$text"
+
+  # одна перезапись TSV на весь пакет (замечание автора: add-на-строку давал
+  # квадратичный рост — каждый вызов читал TSV и переписывал файл целиком)
+  if [ -s "$rows_file" ]; then
+    if ! custom_strategies_bulk_add "$block" "$rows_file"; then
+      printf 'ERR\t%s\t%s\n' "*" "не удалось записать TSV (пакет добавлений откатан)"
+      added=0; failed=$((failed + added))
+    fi
+  fi
+  # подстановки блобов — отдельными NOTE-строками (панель показывает их список)
+  if [ -s "$notes_file" ]; then
+    while IFS= read -r note; do
+      [ -n "$note" ] || continue
+      printf 'NOTE\t%s\n' "$(printf '%s' "$note" | tr '\t' ' ')"
+    done < "$notes_file"
+  fi
+  rm -rf "$TMP_DIR_IMP"
+  _CUSTOM_BLOBS_NAMES_CACHE="$_prev_blob_cache"
   printf 'RESULT\t%s\t%s\t%s\n' "$added" "$dups" "$failed"
 }
 
@@ -425,17 +478,36 @@ _custom_in_list() {
 # Объявленные в конфиге имена блобов (--blob=ИМЯ:@...) + встроенные/литеральные
 # + пользовательские из custom_blobs.tsv (декларация может ждать apply —
 # ссылки на имя уже валидны и не переписываются импортом).
+# Кеш на время пакетного импорта (_CUSTOM_BLOBS_NAMES_CACHE=1 выставляет
+# custom_strategies_import_text): без него каждая валидация строки перечитывала
+# конфиг — квадратичный рост на сотнях строк (замечание автора PR #82).
+# Инвалидация — переменной окружения: любой другой поток сбрасывает её просто
+# не выставляя; конфиг не меняется, пока импорт крутит свой цикл.
+__CBN_CFG=""; __CBN_VAL=""
 custom_strategies_blob_names() {
   local cfg="${1:-${ZAPRET2_ROOT:-/opt/zapret2}/config}"
   [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+  if [ "${_CUSTOM_BLOBS_NAMES_CACHE:-0}" = "1" ] && [ "$__CBN_CFG" = "$cfg" ]; then
+    printf '%s\n' "$__CBN_VAL"
+    return 0
+  fi
+  local val=""
   if [ -f "$cfg" ]; then
-    sed -n -E 's/^[[:space:]]*--blob=([A-Za-z0-9_]+):.*/\1/p' "$cfg" | sort -u
+    val="$(sed -n -E 's/^[[:space:]]*--blob=([A-Za-z0-9_]+):.*/\1/p' "$cfg" | sort -u)"
   fi
-  printf '%s\n' fake_default_tls fake_default_http \
-    clone_vk clone_hcaptcha clone_vk_fmd clone_hcaptcha_fms
+  val="$val
+fake_default_tls
+fake_default_http
+clone_vk
+clone_hcaptcha
+clone_vk_fmd
+clone_hcaptcha_fms"
   if type custom_blobs_list >/dev/null 2>&1; then
-    custom_blobs_list | awk -F '\t' '{print $2}'
+    val="$val
+$(custom_blobs_list | awk -F '\t' '{print $2}')"
   fi
+  __CBN_CFG="$cfg"; __CBN_VAL="$val"
+  printf '%s\n' "$val"
   return 0
 }
 
@@ -1288,13 +1360,29 @@ _custom_ask_spec() {
     [ -z "$input" ] && return 0
     # импортный разбор: понимает и обычную строку, и SUMMARY блокчека, и команду
     # nfqws2 (шапка curl_test_… и лишние аргументы демона вырезаются сами)
-    spec="$(custom_strategies_import_spec "$(custom_strategies_join_wraps "$input")" "$_CUSTOM_BLOCK")" || {
+    spec="$(custom_strategies_import_spec "$(custom_strategies_join_wraps "$input")" "$_CUSTOM_BLOCK" "" 0)" || {
       echo -e "${red}Не удалось разобрать строку: «strategy=» допустим только в конце групп.${plain}" >&2
       continue
     }
     if custom_strategies_validate "$_CUSTOM_BLOCK" "$spec"; then
       echo "$spec"
       return 0
+    fi
+    # необъявленные блобы — не молчаливая подмена, а явное согласие
+    # (замечание автора PR #82)
+    local spec_alt
+    if spec_alt="$(custom_strategies_import_spec "$(custom_strategies_join_wraps "$input")" "$_CUSTOM_BLOCK" "" 1 2>/dev/null)" \
+       && custom_strategies_validate "$_CUSTOM_BLOCK" "$spec_alt" 2>/dev/null; then
+      echo -e "${yellow}В стратегии есть необъявленные блобы (например, из чужого блокчека).${plain}" >&2
+      echo -e "${yellow}Могу заменить их на стандартные из вашего конфига (список в ошибке выше).${plain}" >&2
+      read -re -p "Заменить необъявленные блобы на стандартные? 1 - да, Enter - нет: " _swap || _swap=""
+      if [ "$_swap" = "1" ]; then
+        echo "$spec_alt"
+        return 0
+      fi
+      echo -e "${red}Стратегия не прошла валидацию — исправьте по сообщениям выше.${plain}" >&2
+      read -re -p "Enter — вернуться к вводу: " _retry || _retry=""
+      continue
     fi
     echo -e "${red}Стратегия не прошла валидацию — исправьте по сообщениям выше.${plain}" >&2
     read -re -p "Enter — вернуться к вводу: " _retry || _retry=""
