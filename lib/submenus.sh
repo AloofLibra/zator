@@ -1614,17 +1614,11 @@ tls_blob_submenu() {
         v="${yellow}глобальный${plain}"
       fi
       # профиль 5 (QUIC) — без SNI-части (клоны/SNI не про UDP); у классики
-      # сводка пуста, пока не задан ни пин, ни пул
+      # сводка пуста, пока не задан ни пин, ни пул; сводка приходит уже
+      # раскрашенной (слова жёлтым, значение зелёным)
       if [ "${profiles[$idx]}" != "5" ]; then
-        t="$(fake_mode_sni_summary "${profiles[$idx]}")"
-        if [ -n "$t" ]; then
-          if [ -n "$(sni_override_get "${profiles[$idx]}")" ] \
-            || [ -n "$(sni_pool_list "${profiles[$idx]}")" ]; then
-            v="${v}${yellow} · ${plain}${green}${t}${plain}"
-          else
-            v="${v}${yellow} · ${plain}${yellow}${t}${plain}"
-          fi
-        fi
+        t="$(fake_mode_sni_summary_colored "${profiles[$idx]}")"
+        [ -n "$t" ] && v="${v}${yellow} · ${plain}${t}"
       fi
       submenu_status_item_raw "$i" "${green}${tag}${plain} Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v"
       i=$((i+1))
@@ -2161,6 +2155,45 @@ fake_mode_sni_summary() {
   fi
   if [ "$(mode_override_get "$profile")" = "clone" ]; then
     printf 'SNI: www.google.com (дефолт)'
+  fi
+  return 0
+}
+
+# Раскрашенная SNI-сводка для «Сейчас:» п.16: служебные слова («SNI:»,
+# «набор», детали в скобках) — жёлтым, само значение (имя набора / домен
+# пина / «свой список») — зелёным.
+fake_mode_sni_summary_colored() {
+  local profile="$1" pin d name mid rest
+  pin="$(sni_override_get "$profile")"
+  if [ -n "$pin" ]; then
+    echo -e "${yellow}SNI: ${plain}${green}${pin}${plain}${yellow} (пин)${plain}"
+    return 0
+  fi
+  if [ -n "$(sni_pool_list "$profile")" ]; then
+    d="$(sni_pool_display "$profile")"
+    case "$d" in
+      "набор "*"("*")")
+        pre="${d%% (*}"        # «набор google» | «набор google + свои»
+        rest="(${d##*(}"       # «(9 имён, по кругу, автосмена)»
+        name="${pre#набор }"
+        case "$name" in
+          *" "*) base="${name%% *}"; extra=" ${name#* }" ;;
+          *) base="$name"; extra="" ;;
+        esac
+        echo -e "${yellow}SNI: набор ${plain}${green}${base}${plain}${yellow}${extra} ${rest}${plain}"
+        ;;
+      "свой список "*"("*")")
+        rest="(${d##*(}"
+        echo -e "${yellow}SNI: ${plain}${green}свой список${plain}${yellow} ${rest}${plain}"
+        ;;
+      *)
+        echo -e "${yellow}SNI: ${d}${plain}"
+        ;;
+    esac
+    return 0
+  fi
+  if [ "$(mode_override_get "$profile")" = "clone" ]; then
+    echo -e "${yellow}SNI: www.google.com (дефолт)${plain}"
   fi
   return 0
 }
