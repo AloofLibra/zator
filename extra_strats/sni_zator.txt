@@ -1,0 +1,28 @@
+# SNI-наборы проекта zator для SNI-пула клон-режима.
+# Формат: строка вида «# set: имя» открывает набор, дальше — доменные имена
+# по одному в строке; прочие строки с «#» — комментарии. Набор назначается
+# профилю в меню (п.16 -> SNI-пул) или строкой «N<TAB>@имя» в файле
+# extra_strats/cache/orchestra/sni_pool.tsv; на каждое новое соединение
+# клон берёт следующий SNI назначенного набора.
+# Файл проектный: обновления zator перезаписывают его целиком. Свои наборы
+# ведите в extra_strats/sni_user.txt — он пользовательский, едет в бэкапах;
+# набор с тем же именем там перекрывает проектный.
+
+# set: google
+www.google.com
+developers.google.com
+codelabs.developers.google.com
+www.gstatic.com
+accounts.google.com
+fonts.gstatic.com
+google.com
+lh3.google.com
+fonts.googleapis.com
+
+# set: rkn
+300.ya.ru
+ya.ru
+max.ru
+vk.com
+mail.ru
+hcaptcha.com

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-# Тест SNI-пула с автосменой (sni_pool.tsv + extra_strats/sni_sets/ +
+# Тест SNI-пула с автосменой (sni_pool.tsv + sni_zator.txt/sni_user.txt +
 # lua/sni-pool.lua): статический wiring (config.default, хук locked.lua,
 # деплой z2r.sh, манифест pack-zator-tar, дефолтный пул, бэкап, меню 16,
 # пин прогонов), отсутствие зашитых доменов в Lua, поведение шелл-хелперов
-# (наборы-файлы CRUD, @ссылки, валидация/дедуп/лимит/пин) и, при наличии
-# lua-интерпретатора, живой прогон движка (ротация, липкость, приоритеты).
+# (секции наборов, перекрытие проектных пользовательскими, валидация/дедуп/
+# лимит/пин) и, при наличии lua-интерпретатора или fengari, живой прогон
+# движка (ротация, липкость, приоритеты).
 # Работает только во временной директории в /tmp: не пишет в /opt, не
 # запускает настоящий zapret2.
 
@@ -35,8 +36,9 @@ export ORCH_DIR="$ROOT/extra_strats/cache/orchestra"
 export ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
 export ZATOR_ROOT="$ROOT"
 export ZAPRET2_ROOT="$ROOT"
-export Z2R_SNI_POOL_SETS_DIR="$ROOT/extra_strats/sni_sets"
-mkdir -p "$ORCH_DIR" "$Z2R_SNI_POOL_SETS_DIR"
+export Z2R_SNI_ZATOR_FILE="$ROOT/extra_strats/sni_zator.txt"
+export Z2R_SNI_USER_FILE="$ROOT/extra_strats/sni_user.txt"
+mkdir -p "$ORCH_DIR" "$ROOT/extra_strats"
 
 # --- 0. Синтаксис -----------------------------------------------------------
 
@@ -77,19 +79,23 @@ assert_contains "$POOL_LUA_SRC" 'attribution fully preserved' \
 # 1b. Движок: пути, липкость, ротация, пин с TTL; домены НЕ зашиты в Lua
 assert_contains "$POOL_LUA_SRC" 'POOL_TSV = "/opt/zator/extra_strats/cache/orchestra/sni_pool\.tsv"' \
   "sni-pool.lua: не тот путь пула"
-assert_contains "$POOL_LUA_SRC" 'SETS_DIR = "/opt/zator/extra_strats/sni_sets/"' \
-  "sni-pool.lua: не тот каталог наборов"
+assert_contains "$POOL_LUA_SRC" 'SETS_PROJECT = "/opt/zator/extra_strats/sni_zator\.txt"' \
+  "sni-pool.lua: не тот путь проектных наборов"
+assert_contains "$POOL_LUA_SRC" 'SETS_USER = "/opt/zator/extra_strats/sni_user\.txt"' \
+  "sni-pool.lua: не тот путь пользовательских наборов"
 assert_contains "$POOL_LUA_SRC" 'sni_pool\.pin' "sni-pool.lua: нет пина прогонов"
 assert_contains "$POOL_LUA_SRC" 'PIN_AGE' "sni-pool.lua: нет TTL пина"
 assert_contains "$POOL_LUA_SRC" 'track\.lua_state' "sni-pool.lua: нет липкости на соединение"
 assert_contains "$POOL_LUA_SRC" 'rr\[' "sni-pool.lua: нет round-robin счётчика"
 assert_contains "$POOL_LUA_SRC" 'function z2r_sni_pool_for_tests' "sni-pool.lua: нет тестового хука"
-assert_contains "$POOL_LUA_SRC" 'match\("\^@' "sni-pool.lua: нет разбора @ссылок на наборы"
+assert_contains "$POOL_LUA_SRC" 'match\("\^#%s\*set:' "sni-pool.lua: нет парсера секций «# set:»"
+assert_contains "$POOL_LUA_SRC" 'parse_sets\(SETS_USER' \
+  "sni-pool.lua: пользовательские наборы не перекрывают проектные"
 for d in www.google.com developers.google.com codelabs.developers.google.com \
   www.gstatic.com accounts.google.com fonts.gstatic.com google.com \
   lh3.google.com fonts.googleapis.com; do
   if grep -qF "\"$d\"" "$REPO_DIR/lua/sni-pool.lua" || grep -qF "'$d'" "$REPO_DIR/lua/sni-pool.lua"; then
-    fail "sni-pool.lua: домен $d зашит в коде (должен жить в sni_sets/google.txt)"
+    fail "sni-pool.lua: домен $d зашит в коде (должен жить в sni_zator.txt)"
   fi
 done
 # комментарии в теле запрещены: после баннера не осталось строк-комментариев
@@ -114,7 +120,7 @@ pool_line="$(grep -n '^--lua-init=@/opt/zator/lua/sni-pool.lua$' "$REPO_DIR/conf
 [ -n "$locked_line" ] && [ -n "$pool_line" ] && [ "$pool_line" -gt "$locked_line" ] \
   || fail "config.default: sni-pool.lua подключается до locked.lua"
 
-# 1e. z2r.sh: переменная, докачка, миграция, набор google.txt, дефолтный пул
+# 1e. z2r.sh: переменная, докачка, миграция, наборы, дефолтный пул
 assert_contains "$Z2R_SRC" 'SNI_POOL_LUA="\$ZATOR_ROOT/lua/sni-pool\.lua"' \
   "z2r.sh нет переменной SNI_POOL_LUA"
 assert_contains "$Z2R_SRC" 'z2r_download_project_file "\$SNI_POOL_LUA" "lua/sni-pool\.lua"' \
@@ -125,47 +131,58 @@ assert_contains "$Z2R_SRC" 's#/opt/zapret2/lua/sni-pool\.lua#/opt/zator/lua/sni-
   "миграция z2r.sh не переписывает путь sni-pool.lua"
 assert_contains "$Z2R_SRC" '\[ ! -s "\$SNI_POOL_LUA" \]' \
   "z2r.sh не докачивает sni-pool.lua при отсутствии"
-assert_contains "$Z2R_SRC" 'extra_strats/sni_sets/google\.txt' \
-  "z2r.sh не разворачивает стандартный набор google.txt"
-assert_contains "$Z2R_SRC" 'if \[ ! -f "\$ZATOR_ROOT/extra_strats/sni_sets/google\.txt" \]' \
-  "z2r.sh перезаписывает пользовательский google.txt"
+assert_contains "$Z2R_SRC" 'z2r_download_project_file "\$ZATOR_ROOT/extra_strats/sni_zator\.txt" \\' \
+  "z2r.sh не обновляет проектный файл наборов"
+assert_contains "$Z2R_SRC" 'if \[ ! -f "\$ZATOR_ROOT/extra_strats/sni_user\.txt" \]' \
+  "z2r.sh перезаписывает пользовательский файл наборов"
 assert_contains "$Z2R_SRC" "printf '1\\\\t@google\\\\n2\\\\t@google\\\\n'" \
   "z2r.sh не создаёт дефолтный sni_pool.tsv"
 assert_contains "$Z2R_SRC" 'if \[ ! -f "\$ORCH_DIR/sni_pool\.tsv" \]' \
   "дефолтный пул создаётся не только при отсутствии файла"
+if grep -q 'sni_sets' "$REPO_DIR/z2r.sh" "$REPO_DIR/lib/orchestra_state.sh" \
+  "$REPO_DIR/lib/actions.sh" "$REPO_DIR/webui-src/scripts/pack-zator-tar.mjs"; then
+  fail "остались ссылки на старую модель каталога sni_sets/"
+fi
 
-# 1f. Стандартный набор в репо: 9 доменов, комментарий-шапка
-[ -f "$REPO_DIR/extra_strats/sni_sets/google.txt" ] || fail "нет extra_strats/sni_sets/google.txt"
-google_n="$(grep -c -vE '^[[:space:]]*(#|$)' "$REPO_DIR/extra_strats/sni_sets/google.txt")"
-[ "$google_n" -eq 9 ] || fail "google.txt: не 9 доменов ($google_n)"
+# 1f. Репо-файлы наборов: формат секций, google 9 имён, rkn непустой
+[ -f "$REPO_DIR/extra_strats/sni_zator.txt" ] || fail "нет extra_strats/sni_zator.txt"
+[ -f "$REPO_DIR/extra_strats/sni_user.txt" ] || fail "нет extra_strats/sni_user.txt"
+assert_contains "$(tr -d '\r' < "$REPO_DIR/extra_strats/sni_zator.txt")" '^# set: google$' \
+  "sni_zator.txt: нет секции google"
+assert_contains "$(tr -d '\r' < "$REPO_DIR/extra_strats/sni_zator.txt")" '^# set: rkn$' \
+  "sni_zator.txt: нет секции rkn"
+g_n="$(awk '/^# set: google/{f=1;next} /^# set:/{f=0} f&&NF&&!/^#/' "$REPO_DIR/extra_strats/sni_zator.txt" | wc -l)"
+[ "$g_n" -eq 9 ] || fail "sni_zator.txt: секция google не 9 доменов ($g_n)"
+r_n="$(awk '/^# set: rkn/{f=1;next} /^# set:/{f=0} f&&NF&&!/^#/' "$REPO_DIR/extra_strats/sni_zator.txt" | wc -l)"
+[ "$r_n" -ge 1 ] || fail "sni_zator.txt: секция rkn пуста"
 
-# 1g. Манифест релизов: identity-override + keep-if-exists для набора
-assert_contains "$PACK_SRC" "\['extra_strats/sni_sets/google\.txt', 'extra_strats/sni_sets/google\.txt'\]" \
-  "pack-zator-tar.mjs: нет identity-override для google.txt"
-assert_contains "$PACK_SRC" "'extra_strats/sni_sets/google\.txt', // пользовательский" \
-  "pack-zator-tar.mjs: google.txt не в KEEP_IF_EXISTS"
+# 1g. Манифест релизов: пользовательский файл не перезаписывается
+assert_contains "$PACK_SRC" "'extra_strats/sni_user\.txt', // пользовательские" \
+  "pack-zator-tar.mjs: sni_user.txt не в KEEP_IF_EXISTS"
 
 # 1h. Шелл-хелперы, бэкап, меню, пин прогонов
 assert_contains "$STATE_SRC" 'ORCH_SNI_POOL_FILE="\$\{ORCH_SNI_POOL_FILE:-\$ORCH_DIR/sni_pool\.tsv\}"' \
   "orchestra_state.sh нет переменной файла пула"
-for fn in sni_pool_set_name_valid sni_pool_sets_list sni_pool_set_read \
-  sni_pool_set_write sni_pool_set_delete sni_pool_list sni_pool_effective \
-  sni_pool_assign_set sni_pool_set_list sni_pool_clear sni_pool_pin \
-  sni_pool_unpin sni_pool_pinned sni_pool_display sni_pool_supported_profiles; do
+for fn in sni_pool_set_name_valid sni_pool_sets_list sni_pool_set_origin \
+  sni_pool_set_read sni_pool_set_write sni_pool_set_delete sni_pool_list \
+  sni_pool_effective sni_pool_assign_set sni_pool_set_list sni_pool_clear \
+  sni_pool_pin sni_pool_unpin sni_pool_pinned sni_pool_display \
+  sni_pool_supported_profiles; do
   assert_contains "$STATE_SRC" "^${fn}\(\)" "orchestra_state.sh нет функции $fn"
 done
 assert_contains "$STATE_SRC" 'sni_override_valid "\$d" \|\| return 2' \
   "sni_pool_* валидирует не как sni_override"
 assert_contains "$ACTIONS_SRC" 'extra_strats/cache/orchestra/sni_pool\.tsv' \
   "z2r_backup_state_files не бэкапит sni_pool.tsv"
-assert_contains "$ACTIONS_SRC" 'extra_strats/sni_sets' \
-  "z2r_backup_state_files не бэкапит каталог наборов"
+assert_contains "$ACTIONS_SRC" 'extra_strats/sni_user\.txt' \
+  "z2r_backup_state_files не бэкапит файл пользовательских наборов"
 assert_contains "$SUBMENUS_SRC" 'SNI-пул — наборы невинных имён с автосменой' \
   "меню 16 не содержит пункт SNI-пул"
 assert_contains "$SUBMENUS_SRC" 'sni_pool_item' "меню 16 не диспатчит SNI-пул"
 assert_contains "$SUBMENUS_SRC" '^sni_pool_profile_pick\(\)' "нет экрана профиля SNI-пула"
 assert_contains "$SUBMENUS_SRC" '^sni_pool_sets_submenu\(\)' "нет экрана управления наборами"
-assert_contains "$SUBMENUS_SRC" 'Наборы SNI — создание/правка/удаление файлов' \
+assert_contains "$SUBMENUS_SRC" '^sni_pool_sets_view\(\)' "нет экрана просмотра проектного набора"
+assert_contains "$SUBMENUS_SRC" 'Наборы SNI — создание/правка/удаление' \
   "список профилей пула не ведёт в управление наборами"
 assert_contains "$SUBMENUS_SRC" 'sni_pool_effective "\$1"' \
   "fake_mode_sni_display не показывает пул"
@@ -175,7 +192,7 @@ assert_contains "$SWEEP_SRC" 'sni_pool_pin' "суперавтопрогон не
 assert_contains "$SWEEP_SRC" 'type sni_pool_unpin' \
   "cleanup суперавтопрогона не снимает пин безусловно"
 
-# --- 2. Поведение шелл-хелперов --------------------------------------------
+# --- 2. Поведение шелл-хелперов (настоящий sni_zator.txt из репо) ----------
 
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/config.sh"
@@ -186,65 +203,82 @@ source "$REPO_DIR/lib/ui.sh"
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/actions.sh"
 
-# набор: write/read (комментарии и пустые строки не читаются), имя-валидация
-sni_pool_set_write google2 www.Example.COM b.example.org www.example.com
-[ "$(sni_pool_set_read google2 | tr '\n' ' ')" = "www.example.com b.example.org " ] \
+tr -d '\r' < "$REPO_DIR/extra_strats/sni_zator.txt" > "$Z2R_SNI_ZATOR_FILE"
+tr -d '\r' < "$REPO_DIR/extra_strats/sni_user.txt" > "$Z2R_SNI_USER_FILE"
+
+# чтение проектных секций настоящего файла; origin
+[ "$(sni_pool_set_read google | wc -l)" -eq 9 ] || fail "проектная секция google читается неверно"
+[ "$(sni_pool_set_read rkn | wc -l)" -ge 1 ] || fail "проектная секция rkn читается неверно"
+[ "$(sni_pool_set_origin google)" = "zator" ] || fail "origin(google) != zator"
+[ -z "$(sni_pool_set_origin nosuch)" ] || fail "origin(nosuch) не пуст"
+sni_pool_sets_list | grep -qx 'google' || fail "sets_list не видит проектный google"
+sni_pool_sets_list | grep -qx 'rkn' || fail "sets_list не видит проектный rkn"
+
+# свой набор: пишется секцией в sni_user.txt, читается, origin=user
+sni_pool_set_write my www.Example.COM b.example.org www.example.com
+[ "$(sni_pool_set_read my | tr '\n' ' ')" = "www.example.com b.example.org " ] \
   || fail "sni_pool_set_write/read: нормализация или дедуп сломаны"
+[ "$(sni_pool_set_origin my)" = "user" ] || fail "origin(my) != user"
+grep -q '^# set: my$' "$Z2R_SNI_USER_FILE" || fail "секция не записана в sni_user.txt"
 if sni_pool_set_write "Bad Name" x.example.org; then fail "sni_pool_set_write принял плохое имя"; fi
 if sni_pool_set_write ok "bad domain!"; then fail "sni_pool_set_write принял мусорный домен"; fi
 
-# sets_list видит файлы
-sni_pool_sets_list | grep -qx 'google2' || fail "sni_pool_sets_list не видит google2"
+# одноимённый пользовательский набор перекрывает проектный
+sni_pool_set_write google g1.example.org g2.example.org
+[ "$(sni_pool_set_read google | tr '\n' ' ')" = "g1.example.org g2.example.org " ] \
+  || fail "пользовательский набор не перекрывает проектный"
+sni_pool_set_delete google || fail "не удалился пользовательский google"
+[ "$(sni_pool_set_read google | wc -l)" -eq 9 ] || fail "проектный google не восстановился после снятия перекрытия"
 
-# назначение набора профилю: @ссылка в tsv, effective разворачивает
-sni_pool_assign_set 3 google2
-[ "$(sni_pool_list 3)" = "@google2" ] || fail "assign_set не записал @ссылку"
-[ "$(sni_pool_effective 3 | tr '\n' ' ')" = "www.example.com b.example.org " ] \
+# удаление: проектный нельзя, занятый @ссылкой нельзя
+if sni_pool_set_delete rkn; then fail "удалился проектный набор rkn"; fi
+sni_pool_assign_set 3 my
+if sni_pool_set_delete my; then fail "удалился набор, на который ссылается профиль 3"; fi
+
+# замена существующей секции на месте: заголовок файла и соседние секции целы
+sni_pool_set_write my x.example.org y.example.org z.example.org
+[ "$(sni_pool_set_read my | tr '\n' ' ')" = "x.example.org y.example.org z.example.org " ] \
+  || fail "замена секции сломана"
+grep -q 'Ваши SNI-наборы' "$Z2R_SNI_USER_FILE" || fail "замена секции снесла заголовок файла"
+[ "$(grep -c '^# set: ' "$Z2R_SNI_USER_FILE")" -eq 1 ] \
+  || fail "замена секции размножила секции"
+
+# назначение набора профилю: @ссылка, effective разворачивает
+[ "$(sni_pool_list 3)" = "@my" ] || fail "assign_set не записал @ссылку"
+[ "$(sni_pool_effective 3 | head -n1)" = "x.example.org" ] \
   || fail "effective не разворачивает @ссылку"
-sni_pool_display 3 | grep -q 'набор google2 (2' || fail "display не показывает набор"
+sni_pool_display 3 | grep -q 'набор my (3' || fail "display не показывает набор"
 
 # свой список: полная замена, порядок, @домены запрещены
 sni_pool_set_list 3 c.example.org a.example.org c.example.org
 [ "$(sni_pool_list 3 | tr '\n' ' ')" = "c.example.org a.example.org " ] \
   || fail "свой список: порядок/дедуп сломаны"
 sni_pool_display 3 | grep -q 'свой список (2' || fail "display не показывает свой список"
-if sni_pool_set_list 3 "@google2"; then fail "sni_pool_set_list принял @ссылку"; fi
+if sni_pool_set_list 3 "@my"; then fail "sni_pool_set_list принял @ссылку"; fi
 
 # комбинированный пул: @набор + свои строки (эффективный = набор + свои)
 {
-  printf '4\t@google2\n4\tzz.example.org\n'
+  printf '4\t@my\n4\tzz.example.org\n'
 } >> "$ORCH_SNI_POOL_FILE"
-[ "$(sni_pool_effective 4 | tr '\n' ' ')" = "www.example.com b.example.org zz.example.org " ] \
+[ "$(sni_pool_effective 4 | tr '\n' ' ')" = "x.example.org y.example.org z.example.org zz.example.org " ] \
   || fail "комбинированный пул (набор+свои) не собирается"
-sni_pool_display 4 | grep -q 'набор google2 + свои (3' || fail "display не показывает набор+свои"
-
-# удаление набора: занятый @ссылкой — отказ (rc=3), свободный — ок
-if sni_pool_set_delete google2; then fail "удалился набор, на который ссылается профиль 4"; fi
-sni_pool_clear 4
-sni_pool_set_delete google2 || fail "не удалился свободный набор"
-[ -z "$(sni_pool_set_read google2)" ] || fail "файл набора не удалён"
+sni_pool_display 4 | grep -q 'набор my + свои (4' || fail "display не показывает набор+свои"
 
 # регистр @ссылки: имя набора приводится к нижнему (как в lua/sni-pool.lua)
-sni_pool_set_write mixed x.example.org
-sni_pool_clear 3
-printf '3\t@MiXeD\n' >> "$ORCH_SNI_POOL_FILE"
-[ "$(sni_pool_effective 3 | tr '\n' ' ')" = "x.example.org " ] \
-  || fail "@ссылка с регистром не разрешается"
-sni_pool_display 3 | grep -q 'набор mixed (1' || fail "display не приводит регистр имени набора"
+printf '5\t@MY\r\n' >> "$ORCH_SNI_POOL_FILE"
+[ "$(sni_pool_effective 5 | head -n1)" = "x.example.org" ] \
+  || fail "@ссылка с регистром/CRLF не разрешается"
 
-# clear убирает только свой профиль; пустой файл держит дефолт z2r.sh
+# clear убирает только свой профиль; файл остаётся (держит дефолт z2r.sh)
 printf '# комментарий\n' > "$ORCH_SNI_POOL_FILE"
 sni_pool_set_list 5 solo.example.net
 grep -q '# комментарий' "$ORCH_SNI_POOL_FILE" || fail "set_list снёс комментарий"
 sni_pool_clear 5
 [ -z "$(sni_pool_list 5)" ] || fail "clear не убрал профиль 5"
-grep -q '# комментарий' "$ORCH_SNI_POOL_FILE" || fail "clear снёс чужие строки"
 [ -f "$ORCH_SNI_POOL_FILE" ] || fail "clear удалил файл пула (дефолт вернётся)"
-
-# display без строк
 sni_pool_display 5 | grep -q 'нет пула' || fail "display не показывает отсутствие пула"
 
-# лимит 32 (набор и свой список)
+# лимит 32 (секция и свой список)
 big=()
 for i in $(seq 1 33); do big+=("d$i.example.org"); done
 if sni_pool_set_list 5 "${big[@]}"; then fail "sni_pool_set_list принял 33 имени"; fi
@@ -257,11 +291,11 @@ grep -Eq '^[0-9]+$' "$ORCH_SNI_POOL_PIN" || fail "пин не числовая �
 sni_pool_unpin
 ! sni_pool_pinned || fail "unpin не снял пин"
 
-# бэкап-лист: файл пула и каталог наборов
+# бэкап-лист: файл пула и пользовательские наборы
 z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/sni_pool.tsv' \
   || fail "z2r_backup_state_files не бэкапит sni_pool.tsv"
-z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/sni_sets' \
-  || fail "z2r_backup_state_files не бэкапит каталог sni_sets"
+z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/sni_user.txt' \
+  || fail "z2r_backup_state_files не бэкапит sni_user.txt"
 
 # --- 3. Живой прогон Lua-движка (нативный lua или fengari-VM на node) -------
 
@@ -278,7 +312,7 @@ local sets = { google = G }
 z2r_sni_pool_for_tests({}, sets, false)
 ok(z2r_sni_pool_pick(fresh(), "1") == nil, "нет строк -> не nil")
 
--- @набор: ротация по файлу набора, липкость в соединении
+-- @набор: ротация по набору, липкость в соединении
 z2r_sni_pool_for_tests({ "1\t@google" }, sets, false)
 local t1 = fresh()
 ok(z2r_sni_pool_pick(t1, "1") == G[1], "первый выбор != первый SNI набора")

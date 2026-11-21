@@ -684,13 +684,14 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
   z2r_download_project_file "$SNI_POOL_LUA" "lua/sni-pool.lua" || return 1
   z2r_download_project_file "$FAKE_ADAPT_LUA" "lua/fake-adapt.lua" || return 1
-  # SNI-наборы: стандартный google.txt — пользовательский файл, существующий
-  # не перезаписываем (как netrogat.txt); свои наборы пользователь кладёт
-  # в этот же каталог свободно.
-  mkdir -p "$ZATOR_ROOT/extra_strats/sni_sets" || return 1
-  if [ ! -f "$ZATOR_ROOT/extra_strats/sni_sets/google.txt" ]; then
-    z2r_download_project_file "$ZATOR_ROOT/extra_strats/sni_sets/google.txt" \
-      "extra_strats/sni_sets/google.txt" || true
+  # SNI-наборы: sni_zator.txt — проектный (обновляем как есть: google, rkn,
+  # будущие секции), sni_user.txt — пользовательский, существующий не
+  # перезаписываем (как netrogat.txt); свои секции пользователь ведёт там.
+  z2r_download_project_file "$ZATOR_ROOT/extra_strats/sni_zator.txt" \
+    "extra_strats/sni_zator.txt" || true
+  if [ ! -f "$ZATOR_ROOT/extra_strats/sni_user.txt" ]; then
+    z2r_download_project_file "$ZATOR_ROOT/extra_strats/sni_user.txt" \
+      "extra_strats/sni_user.txt" || true
   fi
   z2r_download_project_file "$WSSIZE_RAMP_LUA" "lua/wssize-ramp.lua" || return 1
   if [ -n "$WSSIZE_RAMP_FIREWALL" ] && [ -d "$(dirname "$WSSIZE_RAMP_FIREWALL")/.." ]; then

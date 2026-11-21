@@ -774,17 +774,19 @@ sni_override_clear() {
   return 0
 }
 
-# --- per-profile пул невинных SNI с автосменой (sni_pool.tsv + sni_sets/) ---
+# --- per-profile пул невинных SNI с автосменой (sni_pool.tsv + файлы наборов) ---
 # Единый источник «профиль -> набор невинных SNI» для CLI-меню (и позже WebUI).
-# Назначения живут в sni_pool.tsv: строка «profile<TAB>@имя» ссылается на файл
-# набора extra_strats/sni_sets/<имя>.txt (стандартный google.txt + любые
-# пользовательские файлы), строки «profile<TAB>домен» — свой список профиля
-# (могут дополнять @имя). Читает lua/sni-pool.lua с TTL-кэшом 2с — применяется
-# без рестарта nfqws2. Приоритет: пин sni_override.tsv -> пул -> прежнее
-# поведение (дефолт/конфиг). Файл пула и каталог наборов едут в бэкапах.
+# Назначения живут в sni_pool.tsv: строка «profile<TAB>@имя» ссылается на
+# набор, строки «profile<TAB>домен» — свой список профиля (могут дополнять
+# @имя). Наборы — секции «# set: имя» в двух файлах: sni_zator.txt (проектный,
+# обновления перезаписывают: google, rkn, будущие) и sni_user.txt
+# (пользовательский, едет в бэкапах; одноимённый набор перекрывает проектный).
+# Читает lua/sni-pool.lua с TTL-кэшом 2с — применяется без рестарта nfqws2.
+# Приоритет: пин sni_override.tsv -> пул -> прежнее поведение (дефолт/конфиг).
 ORCH_SNI_POOL_FILE="${ORCH_SNI_POOL_FILE:-$ORCH_DIR/sni_pool.tsv}"
 ORCH_SNI_POOL_PIN="${ORCH_SNI_POOL_PIN:-$ORCH_DIR/sni_pool.pin}"
-Z2R_SNI_POOL_SETS_DIR="${Z2R_SNI_POOL_SETS_DIR:-${ZATOR_ROOT:-/opt/zator}/extra_strats/sni_sets}"
+Z2R_SNI_ZATOR_FILE="${Z2R_SNI_ZATOR_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/sni_zator.txt}"
+Z2R_SNI_USER_FILE="${Z2R_SNI_USER_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/sni_user.txt}"
 Z2R_SNI_POOL_PROFILES="${Z2R_SNI_POOL_PROFILES:-1 2 3 4 8}"
 Z2R_SNI_POOL_MAX="${Z2R_SNI_POOL_MAX:-32}"
 
@@ -792,37 +794,62 @@ sni_pool_supported_profiles() {
   printf '%s\n' $Z2R_SNI_POOL_PROFILES
 }
 
-# Имя набора (файл <имя>.txt): строчные буквы/цифры/подчёркивание, 1..32.
+# Имя набора: строчные буквы/цифры/подчёркивание, 1..32.
 sni_pool_set_name_valid() {
   printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9_]{0,31}$'
 }
 
-sni_pool_set_file() {
-  printf '%s/%s.txt' "$Z2R_SNI_POOL_SETS_DIR" "$1"
-}
-
-# Имена наборов (файлы *.txt в каталоге), по алфавиту.
-sni_pool_sets_list() {
-  [ -d "$Z2R_SNI_POOL_SETS_DIR" ] || return 0
-  find "$Z2R_SNI_POOL_SETS_DIR" -maxdepth 1 -type f -name '*.txt' 2>/dev/null \
-    | sed 's#.*/##; s#\.txt$##' | sort
-}
-
-# Домены набора: по строке, без комментариев/пустых, нижний регистр.
-sni_pool_set_read() {
-  local f
-  f="$(sni_pool_set_file "$1")"
-  [ -f "$f" ] || return 0
-  sed -e 's/\r$//' "$f" | awk '
-    { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") }
-    $0 == "" || $0 ~ /^#/ { next }
-    { print tolower($0) }
+# Секции файла наборов -> строки «имя<TAB>домен» (порядок сохранён).
+_sni_pool_sections() {
+  [ -f "$1" ] || return 0
+  sed -e 's/\r$//' "$1" | awk '
+    /^# set: / { name = tolower($3); next }
+    !name { next }
+    /^[[:space:]]*#/ { next }
+    {
+      sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
+      if ($0 == "") next
+      print name "\t" tolower($0)
+    }
   '
 }
 
-# Создать/заменить набор: валидация доменов как sni_override_valid, нижний
-# регистр, дедуп с сохранением порядка, лимит Z2R_SNI_POOL_MAX. Запись
-# атомарная (tmp+mv).
+# Имена наборов: сначала пользовательские, затем проектные (без повторов).
+sni_pool_sets_list() {
+  {
+    _sni_pool_sections "$Z2R_SNI_USER_FILE"
+    _sni_pool_sections "$Z2R_SNI_ZATOR_FILE"
+  } | awk -F '\t' '!seen[$1]++ {print $1}'
+}
+
+# Откуда набор: user | zator | пусто (нет нигде).
+sni_pool_set_origin() {
+  local n
+  n="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  if _sni_pool_sections "$Z2R_SNI_USER_FILE" | awk -F '\t' -v n="$n" '$1==n {found=1} END{exit !found}'; then
+    printf 'user'
+  elif _sni_pool_sections "$Z2R_SNI_ZATOR_FILE" | awk -F '\t' -v n="$n" '$1==n {found=1} END{exit !found}'; then
+    printf 'zator'
+  fi
+  return 0
+}
+
+# Домены набора (порядок файла): пользовательский файл выигрывает у проектного.
+sni_pool_set_read() {
+  local n rows
+  n="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  rows="$(_sni_pool_sections "$Z2R_SNI_USER_FILE" | awk -F '\t' -v n="$n" '$1==n {print $2}')"
+  if [ -n "$rows" ]; then
+    printf '%s\n' "$rows"
+    return 0
+  fi
+  _sni_pool_sections "$Z2R_SNI_ZATOR_FILE" | awk -F '\t' -v n="$n" '$1==n {print $2}'
+}
+
+# Создать/заменить секцию набора в ПОЛЬЗОВАТЕЛЬСКОМ файле: валидация доменов
+# как sni_override_valid, нижний регистр, дедуп с сохранением порядка, лимит
+# Z2R_SNI_POOL_MAX. Существующая секция заменяется на месте (заголовок файла
+# и другие секции не трогаются), новой — дописывается в конец. Атомарно.
 sni_pool_set_write() {
   local name="$1"; shift
   sni_pool_set_name_valid "$name" || return 2
@@ -830,7 +857,7 @@ sni_pool_set_write() {
   [ "$#" -le "$Z2R_SNI_POOL_MAX" ] || return 2
   local -a items=()
   local -A seen=()
-  local d f tmp
+  local d dir f sec tmp
   for d in "$@"; do
     d="$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')"
     sni_override_valid "$d" || return 2
@@ -838,33 +865,85 @@ sni_pool_set_write() {
     seen[$d]=1
     items+=("$d")
   done
-  mkdir -p "$Z2R_SNI_POOL_SETS_DIR" || return 1
-  f="$(sni_pool_set_file "$name")"
+  dir="$(dirname "$Z2R_SNI_USER_FILE")"
+  mkdir -p "$dir" || return 1
+  [ -f "$Z2R_SNI_USER_FILE" ] || : > "$Z2R_SNI_USER_FILE"
+  f="$Z2R_SNI_USER_FILE"
+  sec="${f}.sec.$$"
   tmp="${f}.tmp.$$"
   {
-    printf '%s\n' "# SNI-набор ${name} (zator): одна строка — один домен."
+    printf '# set: %s\n' "$name"
     for d in "${items[@]}"; do
       printf '%s\n' "$d"
     done
-  } > "$tmp" && mv -f "$tmp" "$f" || {
-    rm -f "$tmp"
+  } > "$sec" || { rm -f "$sec"; return 1; }
+  awk -v secfile="$sec" -v want="# set: ${name}" '
+    BEGIN { skip = 0; replaced = 0 }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line ~ /^# set: /) {
+        if (skip) skip = 0
+        if (line == want) {
+          skip = 1
+          replaced = 1
+          while ((getline l < secfile) > 0) print l
+          close(secfile)
+          next
+        }
+      }
+      if (!skip) print line
+    }
+    END {
+      if (!replaced) {
+        print ""
+        while ((getline l < secfile) > 0) print l
+        close(secfile)
+      }
+    }
+  ' "$f" > "$tmp" && mv -f "$tmp" "$f" || {
+    rm -f "$tmp" "$sec"
     echo "Unable to update sni set file" >&2
     return 1
   }
+  rm -f "$sec"
   return 0
 }
 
-# Удалить набор-файл; отказ (rc=3), если на @имя ссылается sni_pool.tsv.
+# Удалить секцию набора из пользовательского файла; отказ (rc=3), если на
+# @имя ссылается sni_pool.tsv. Проектные наборы удалять нельзя — только
+# перекрыть одноимённым пользовательским.
 sni_pool_set_delete() {
-  local name="$1" f
+  local name="$1" dir f tmp
   sni_pool_set_name_valid "$name" || return 2
-  f="$(sni_pool_set_file "$name")"
+  f="$Z2R_SNI_USER_FILE"
   [ -f "$f" ] || return 0
   if [ -f "$ORCH_SNI_POOL_FILE" ] && grep -qF "@${name}" "$ORCH_SNI_POOL_FILE"; then
     echo "Set @${name} is referenced by sni_pool.tsv" >&2
     return 3
   fi
-  rm -f "$f" || return 1
+  if [ "$(sni_pool_set_origin "$name")" != "user" ]; then
+    echo "Set @${name} is not a user set" >&2
+    return 3
+  fi
+  dir="$(dirname "$f")"
+  mkdir -p "$dir" || return 1
+  tmp="${f}.tmp.$$"
+  awk -v want="# set: ${name}" '
+    BEGIN { skip = 0 }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line ~ /^# set: /) {
+        if (skip) skip = 0
+        if (line == want) { skip = 1; next }
+      }
+      if (!skip) print line
+    }
+  ' "$f" > "$tmp" && mv -f "$tmp" "$f" || {
+    rm -f "$tmp"
+    return 1
+  }
   return 0
 }
 
@@ -874,7 +953,7 @@ sni_pool_list() {
   awk -F '\t' -v pr="$1" '$1==pr {print $2}' "$ORCH_SNI_POOL_FILE"
 }
 
-# Эффективный пул профиля: @ссылки разворачиваются в домены файлов наборов,
+# Эффективный пул профиля: @ссылки разворачиваются в домены наборов,
 # простые строки идут как есть (порядок сохранён). Регистр имени набора
 # приводится к нижнему — как в lua/sni-pool.lua.
 sni_pool_effective() {
@@ -896,7 +975,7 @@ sni_pool_assign_set() {
   local profile="$1" name="$2" tmp
   printf '%s' "$profile" | grep -Eq '^[0-9]+$' || return 2
   sni_pool_set_name_valid "$name" || return 2
-  [ -f "$(sni_pool_set_file "$name")" ] || return 2
+  [ -n "$(sni_pool_set_read "$name")" ] || return 2
   mkdir -p "$ORCH_DIR" || return 1
   [ -f "$ORCH_SNI_POOL_FILE" ] || : > "$ORCH_SNI_POOL_FILE"
   tmp="${ORCH_SNI_POOL_FILE}.tmp.$$"

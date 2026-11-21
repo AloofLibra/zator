@@ -28,13 +28,15 @@
 
 local POOL_TSV = "/opt/zator/extra_strats/cache/orchestra/sni_pool.tsv"
 local POOL_PIN = "/opt/zator/extra_strats/cache/orchestra/sni_pool.pin"
-local SETS_DIR = "/opt/zator/extra_strats/sni_sets/"
+local SETS_PROJECT = "/opt/zator/extra_strats/sni_zator.txt"
+local SETS_USER = "/opt/zator/extra_strats/sni_user.txt"
 local TTL = 2
 local MAX = 32
 local PIN_AGE = 900
 
 local last_load = 0
 local pools = nil
+local sets_map = nil
 local pinned = false
 local rr = {}
 
@@ -62,19 +64,34 @@ local function read_lines(path)
   return t
 end
 
-local function load_set(name, test_sets)
-  if type(test_sets) == "table" then return test_sets[name] or {} end
-  local out = {}
-  for _, l in ipairs(read_lines(SETS_DIR .. name .. ".txt") or {}) do
-    l = trim((l:gsub("\r$", ""))):lower()
-    if l ~= "" and l:sub(1, 1) ~= "#" and ok_sni(l) then
-      push_unique(out, l)
+local function parse_sets(path, out)
+  local cur = nil
+  for _, l in ipairs(read_lines(path) or {}) do
+    l = l:gsub("\r$", "")
+    local name = l:match("^#%s*set:%s*([%w_]+)")
+    if name then
+      cur = name:lower()
+      out[cur] = {}
+    elseif cur then
+      local d = trim(l):lower()
+      if d ~= "" and d:sub(1, 1) ~= "#" and ok_sni(d) then
+        push_unique(out[cur], d)
+      end
     end
   end
-  return out
 end
 
-local function load_pools(test_lines, test_sets)
+local function load_sets_map(test_sets)
+  if type(test_sets) == "table" then return test_sets end
+  local map = {}
+  parse_sets(SETS_PROJECT, map)
+  local user = {}
+  parse_sets(SETS_USER, user)
+  for k, v in pairs(user) do map[k] = v end
+  return map
+end
+
+local function load_pools(test_lines, sets)
   local map = {}
   for _, l in ipairs(test_lines or read_lines(POOL_TSV) or {}) do
     l = l:gsub("\r$", "")
@@ -84,7 +101,7 @@ local function load_pools(test_lines, test_sets)
       if #f == 2 and f[1]:match("^%d+$") then
         local ref = f[2]:match("^@([%w_]+)$")
         if ref then
-          map[f[1]] = load_set(ref:lower(), test_sets)
+          map[f[1]] = sets[ref:lower()] or {}
         elseif ok_sni(f[2]) then
           if type(map[f[1]]) ~= "table" then map[f[1]] = {} end
           push_unique(map[f[1]], f[2]:lower())
@@ -104,19 +121,22 @@ function z2r_sni_pool_for_tests(lines, sets, pin)
   test_sets = sets
   test_pinned = pin and true or false
   pools = nil
+  sets_map = nil
   last_load = 0
 end
 
 local function refresh()
   if test_lines ~= nil then
-    pools = load_pools(test_lines, test_sets)
+    sets_map = load_sets_map(test_sets)
+    pools = load_pools(test_lines, sets_map)
     pinned = test_pinned
     return
   end
   local now = os.time() or 0
   if pools ~= nil and (now - last_load) < TTL then return end
   last_load = now
-  pools = load_pools()
+  sets_map = load_sets_map(nil)
+  pools = load_pools(nil, sets_map)
   pinned = false
   local p = io.open(POOL_PIN, "r")
   if p then

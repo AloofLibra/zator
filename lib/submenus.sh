@@ -1784,15 +1784,16 @@ sni_submenu() {
   done
 }
 
-# --- SNI-пул: наборы невинных имён с автосменой (sni_pool.tsv + sni_sets/) ---
+# --- SNI-пул: наборы невинных имён с автосменой (sni_pool.tsv + sni_zator/user) ---
 # На каждое НОВОЕ соединение клон берёт следующий SNI набора (lua/sni-pool.lua,
-# ~2с, без рестарта); внутри соединения имя не меняется. Наборы — файлы
-# extra_strats/sni_sets/<имя>.txt (стандартный google + свои), назначение —
-# строка «profile<TAB>@имя» в sni_pool.tsv. Пин одного SNI (меню «SNI
+# ~2с, без рестарта); внутри соединения имя не меняется. Наборы — секции
+# «# set: имя» в sni_zator.txt (проектные: google, rkn, …) и sni_user.txt
+# (пользовательские, в бэкапах; одноимённый перекрывает проектный). Назначение
+# — строка «profile<TAB>@имя» в sni_pool.tsv. Пин одного SNI (меню «SNI
 # клон-стратегий» выше) побеждает пул.
 
 sni_pool_profile_pick() {
-  local profile="$1" title="$2" choice name i n domain
+  local profile="$1" title="$2" choice name i n origin
   local -a sets=() cur=() items=()
 
   while true; do
@@ -1828,7 +1829,11 @@ sni_pool_profile_pick() {
     for name in "${sets[@]}"; do
       n="$(sni_pool_set_read "$name" | grep -c . || true)"
       [ -n "$n" ] || n=0
-      submenu_item "$i" "Набор: $name ($n имён)"
+      if [ "$(sni_pool_set_origin "$name")" = "user" ]; then
+        submenu_item "$i" "Набор: $name ($n имён) — ваш"
+      else
+        submenu_item "$i" "Набор: $name ($n имён) — zator"
+      fi
       i=$((i+1))
     done
     local sets_cnt="${#sets[@]}"
@@ -1891,13 +1896,11 @@ sni_pool_profile_pick() {
   done
 }
 
-sni_pool_sets_edit() {
-  local name="$1" domain
+sni_pool_domains_dialog() {
+  local prompt_prefix="$1" domain
   local -a items=()
-  echo -e "${yellow}Набор «${name}», текущие имена:${plain}"
-  sni_pool_set_read "$name" | sed 's/^/  /'
-  echo ""
-  echo -e "${yellow}Введите новые имена по одному, Enter после каждого. Пустая строка — закончить, 0 — отмена.${plain}"
+  echo -e "${yellow}${prompt_prefix}${plain}"
+  echo -e "${yellow}Вводите домены по одному, Enter после каждого. Пустая строка — закончить, 0 — отмена.${plain}"
   while true; do
     read -re -p "Домен: " domain || domain=""
     [ -z "$domain" ] && break
@@ -1912,12 +1915,28 @@ sni_pool_sets_edit() {
     fi
   done
   if [ "${#items[@]}" -eq 0 ]; then
+    return 1
+  fi
+  printf '%s\n' "${items[@]}"
+}
+
+sni_pool_sets_edit() {
+  local name="$1" origin
+  origin="$(sni_pool_set_origin "$name")"
+  echo -e "${yellow}Набор «${name}», текущие имена:${plain}"
+  sni_pool_set_read "$name" | sed 's/^/  /'
+  echo ""
+  if [ "$origin" = "zator" ]; then
+    echo -e "${yellow}Это проектный набор (sni_zator.txt): ваш список перекроет его для всех профилей.${plain}"
+  fi
+  local -a items=()
+  if items=($(sni_pool_domains_dialog "Новые имена набора «${name}»:")); then :; else
     echo -e "${yellow}Список пуст — набор не изменён.${plain}"
     pause_enter
     return
   fi
   if sni_pool_set_write "$name" "${items[@]}"; then
-    echo -e "${green}Набор «${name}» сохранён (${#items[@]} имён).${plain}"
+    echo -e "${green}Набор «${name}» сохранён (${#items[@]} имён) в sni_user.txt.${plain}"
     echo -e "${yellow}Профили с этим набором подхватят изменения в течение ~2 секунд.${plain}"
     telemetry_notify
   else
@@ -1926,8 +1945,17 @@ sni_pool_sets_edit() {
   pause_enter
 }
 
+sni_pool_sets_view() {
+  local name="$1"
+  echo -e "${yellow}Проектный набор «${name}» (sni_zator.txt, обновляется zator):${plain}"
+  sni_pool_set_read "$name" | sed 's/^/  /'
+  echo ""
+  echo -e "${yellow}Изменить нельзя; свой вариант с тем же именем создайте в «Создать/заменить набор…».${plain}"
+  pause_enter
+}
+
 sni_pool_sets_submenu() {
-  local ans i idx name n
+  local ans i idx name n origin
   local -a sets=()
   while true; do
     clear -x
@@ -1936,23 +1964,28 @@ sni_pool_sets_submenu() {
       [ -n "$name" ] && sets+=("$name")
     done < <(sni_pool_sets_list)
 
-    echo -e "${cyan}--- Наборы SNI (файлы extra_strats/sni_sets) ---${plain}"
+    echo -e "${cyan}--- Наборы SNI (секции «# set: имя» в файлах) ---${plain}"
     echo ""
-    echo -e "${yellow}Файлы наборов — пользовательские: правятся здесь или вручную,${plain}"
-    echo -e "${yellow}едут в бэкапах, обновления их не перезаписывают. google — стандартный.${plain}"
+    echo -e "${yellow}Проектные живут в sni_zator.txt (только просмотр), ваши — в${plain}"
+    echo -e "${yellow}sni_user.txt: создаются/правятся здесь, едут в бэкапах, обновления${plain}"
+    echo -e "${yellow}не трогают; одноимённый ваш набор перекрывает проектный.${plain}"
     echo ""
     i=1
     for name in "${sets[@]}"; do
       n="$(sni_pool_set_read "$name" | grep -c . || true)"
       [ -n "$n" ] || n=0
-      submenu_status_item "$i" "Набор ${name}" "${n} имён" green
+      if [ "$(sni_pool_set_origin "$name")" = "user" ]; then
+        submenu_status_item "$i" "Набор ${name}" "${n} имён, ваш" green
+      else
+        submenu_status_item "$i" "Набор ${name}" "${n} имён, zator" yellow
+      fi
       i=$((i+1))
     done
     local sets_cnt="${#sets[@]}"
     local create_idx=$(( sets_cnt + 1 ))
     local delete_idx=$(( sets_cnt + 2 ))
-    submenu_item "$create_idx" "Создать/заменить набор…"
-    submenu_item "$delete_idx" "Удалить набор…"
+    submenu_item "$create_idx" "Создать/заменить набор… (в sni_user.txt)"
+    submenu_item "$delete_idx" "Удалить свой набор…"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1961,7 +1994,12 @@ sni_pool_sets_submenu() {
       return
     elif ui_is_number_in_range "$ans" 1 "$sets_cnt"; then
       idx=$((ans-1))
-      sni_pool_sets_edit "${sets[$idx]}"
+      name="${sets[$idx]}"
+      if [ "$(sni_pool_set_origin "$name")" = "user" ]; then
+        sni_pool_sets_edit "$name"
+      else
+        sni_pool_sets_view "$name"
+      fi
     elif [ "$ans" = "$create_idx" ]; then
       read -re -p "Имя набора (латиница/цифры/подчёркивание, 0 - отмена): " name || name=""
       if [ "$name" = "0" ] || [ -z "$name" ]; then
@@ -1973,7 +2011,7 @@ sni_pool_sets_submenu() {
         sni_pool_sets_edit "$name"
       fi
     elif [ "$ans" = "$delete_idx" ]; then
-      read -re -p "Имя набора для удаления (0 - отмена): " name || name=""
+      read -re -p "Имя своего набора для удаления (0 - отмена): " name || name=""
       if [ "$name" = "0" ] || [ -z "$name" ]; then
         :
       elif ! sni_pool_set_name_valid "$name"; then
@@ -1982,8 +2020,8 @@ sni_pool_sets_submenu() {
       else
         sni_pool_set_delete "$name"
         case $? in
-          0) echo -e "${green}Набор «${name}» удалён.${plain}" ;;
-          3) echo -e "${yellow}Набор «${name}» используется в sni_pool.tsv — сначала уберите пул у профилей.${plain}" ;;
+          0) echo -e "${green}Набор «${name}» удалён из sni_user.txt.${plain}" ;;
+          3) echo -e "${yellow}Нельзя: набор занят в sni_pool.tsv или не является вашим.${plain}" ;;
           *) echo -e "${red}Не удалось удалить набор «${name}».${plain}" ;;
         esac
         pause_enter
@@ -2022,7 +2060,7 @@ sni_pool_submenu() {
       fi
       i=$((i+1))
     done
-    submenu_item "$sets_idx" "Наборы SNI — создание/правка/удаление файлов"
+    submenu_item "$sets_idx" "Наборы SNI — создание/правка/удаление"
     submenu_item "0" "Назад"
     echo ""
 
