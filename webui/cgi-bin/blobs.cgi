@@ -39,40 +39,125 @@ _blobs_sni_domains() {
   printf '%s' "$1" | tr '\r\n' '  '
 }
 
+# Весь sni-блок ОДНИМ awk по пяти файлам: на слабых роутерах каждый $()/
+# sed/awk-вызов стоит десятки мс, шелл-сборка json стоила ~3 с. Формат
+# полностью повторяет прежний (см. API_CONTRACT.md): профили 1/2/3/4/8 с
+# pin/pool/policy/set/effective и наборы с origin. Отсутствующие файлы awk
+# просто не получает (их собирает шелл-фильтр ниже).
 _blobs_sni_json() {
-  local profiles="" p title pin pool pol cur_set eff="" sets="" name origin doms="" d
-  while read -r p; do
-    [ -n "$p" ] || continue
-    title="$(config_profile_title "$p")"
-    pin="$(sni_override_get "$p")"
-    pool="$(sni_pool_display "$p")"
-    pol="$(sni_pool_policy_get "$p")"
-    [ -n "$pol" ] || pol="rr"
-    cur_set="$(sni_pool_list "$p" | head -n1)"
-    case "$cur_set" in
-      @*) cur_set="$(printf '%s' "${cur_set#@}" | tr '[:upper:]' '[:lower:]')" ;;
-      *) cur_set="" ;;
-    esac
-    eff=""
-    while IFS= read -r d; do
-      [ -n "$d" ] || continue
-      eff="${eff}${eff:+,}\"$(json_escape "$d")\""
-    done < <(sni_pool_effective "$p")
-    profiles="${profiles}${profiles:+,}{\"id\":\"$p\",\"title\":\"$(json_escape "$title")\",\"pin\":\"$(json_escape "$pin")\",\"pool\":\"$(json_escape "$pool")\",\"policy\":\"$pol\",\"set\":\"$(json_escape "$cur_set")\",\"effective\":[${eff}]}"
-  done < <(sni_pool_supported_profiles)
-  sets=""
-  while read -r name; do
-    [ -n "$name" ] || continue
-    origin="$(sni_pool_set_origin "$name")"
-    [ "$origin" = "user" ] || origin="zator"
-    doms=""
-    while IFS= read -r d; do
-      [ -n "$d" ] || continue
-      doms="${doms}${doms:+,}\"$(json_escape "$d")\""
-    done < <(sni_pool_set_read "$name")
-    sets="${sets}${sets:+,}{\"name\":\"$(json_escape "$name")\",\"origin\":\"$origin\",\"domains\":[${doms}]}"
-  done < <(sni_pool_sets_list)
-  printf '{"profiles":[%s],"sets":[%s]}' "$profiles" "$sets"
+  local files=""
+  local f
+  for f in "$ORCH_SNI_FILE" "$ORCH_SNI_POOL_FILE" "$ORCH_SNI_POOL_POLICY_FILE" \
+    "$Z2R_SNI_USER_FILE" "$Z2R_SNI_ZATOR_FILE"; do
+    [ -f "$f" ] && files="$files $f"
+  done
+  [ -n "$files" ] || files=" /dev/null"
+  # shellcheck disable=SC2086
+  awk '
+    FNR == 1 {
+      mode = ""
+      if (FILENAME ~ /sni_user\.txt$/) mode = "uset"
+      else if (FILENAME ~ /sni_zator\.txt$/) mode = "zset"
+      else if (FILENAME ~ /sni_override\.tsv$/) mode = "pin"
+      else if (FILENAME ~ /sni_pool_policy\.tsv$/) mode = "pol"
+      else if (FILENAME ~ /sni_pool\.tsv$/) mode = "pool"
+    }
+    {
+      sub(/\r$/, "")
+      if (mode == "uset" || mode == "zset") {
+        if ($0 ~ /^# set: /) { cur = tolower($3); next }
+        if (cur == "") next
+        line = $0
+        sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+        if (line == "" || line ~ /^#/) next
+        line = tolower(line)
+        key = mode SUBSEP cur
+        if (setdom[key] == "") setnames[mode] = setnames[mode] " " cur
+        setdom[key] = setdom[key] "\"" line "\","
+        setcnt[key]++
+        next
+      }
+      if (NF < 2) next
+      if (mode == "pin") { pins[$1] = tolower($2); next }
+      if (mode == "pol") { pol[$1] = $2; next }
+      if (mode == "pool") { poolrows[$1] = poolrows[$1] $2 "\n" }
+    }
+    function set_domains(name,   k, out, w) {
+      # пользовательский файл выигрывает целиком
+      k = "uset" SUBSEP name
+      if (setcnt[k] > 0) return setdom[k]
+      k = "zset" SUBSEP name
+      return setdom[k]
+    }
+    function set_origin(name) {
+      if (setcnt["uset" SUBSEP name] > 0) return "user"
+      if (setcnt["zset" SUBSEP name] > 0) return "zator"
+      return ""
+    }
+    END {
+      nprofs = split("1 2 3 4 8", P, " ")
+      titles["1"] = "TCP 443 (YouTube)"
+      titles["2"] = "TCP 443 (Googlevideo)"
+      titles["3"] = "TCP 443 (RKN)"
+      titles["4"] = "TCP 443 (Discord)"
+      titles["8"] = "Fallback TLS"
+      prof_json = ""
+      for (i = 1; i <= nprofs; i++) {
+        p = P[i]
+        pin = (p in pins) ? pins[p] : ""
+        rows = (p in poolrows) ? poolrows[p] : ""
+        polv = (p in pol && pol[p] == "rand") ? "rand" : "rr"
+        pollabel = (polv == "rand") ? "случайно" : "по кругу"
+        # разворот строк пула: @имя -> домены набора
+        eff = ""; n_eff = 0; n_rows = 0; first = ""; cur_set = ""
+        n = split(rows, R, "\n")
+        for (j = 1; j <= n; j++) {
+          r = R[j]
+          if (r == "") continue
+          n_rows++
+          if (first == "") first = r
+          if (r ~ /^@/) {
+            nm = tolower(substr(r, 2))
+            d = set_domains(nm)
+            m = split(d, D, ",")
+            for (q = 1; q <= m; q++) if (D[q] != "") { eff = eff D[q] ","; n_eff++ }
+          } else {
+            eff = eff "\"" tolower(r) "\","; n_eff++
+          }
+        }
+        sub(/,$/, "", eff)
+        if (first ~ /^@/) {
+          cur_set = tolower(substr(first, 2))
+          kind = "набор " cur_set
+          if (n_rows > 1) kind = kind " + свои"
+        } else if (n_rows > 0) kind = "свой список"
+        else kind = ""
+        if (kind == "") pool_str = "нет пула (один SNI)"
+        else pool_str = kind " (" n_eff " имён, " pollabel ", автосмена)"
+        prof_json = prof_json (prof_json ? "," : "") \
+          "{\"id\":\"" p "\",\"title\":\"" titles[p] "\",\"pin\":\"" pin "\"," \
+          "\"pool\":\"" pool_str "\",\"policy\":\"" polv "\",\"set\":\"" cur_set "\"," \
+          "\"effective\":[" eff "]}"
+      }
+      sets_json = ""
+      seen = " "
+      # сначала пользовательские, затем проектные (без повторов имён)
+      for (s = 1; s <= 2; s++) {
+        which = (s == 1) ? "uset" : "zset"
+        m = split(setnames[which], N, " ")
+        for (j = 1; j <= m; j++) {
+          nm = N[j]
+          if (nm == "" || index(seen, " " nm " ") > 0) continue
+          seen = seen nm " "
+          d = set_domains(nm)
+          sub(/,$/, "", d)
+          sets_json = sets_json (sets_json ? "," : "") \
+            "{\"name\":\"" nm "\",\"origin\":\"" set_origin(nm) "\",\"domains\":[" d "]}"
+        }
+      }
+      printf "{\"profiles\":[%s],\"sets\":[%s]}", prof_json, sets_json
+    }
+  ' $files
 }
 
 _blobs_config_path() {

@@ -801,50 +801,162 @@ sni_pool_set_name_valid() {
 }
 
 # Секции файла наборов -> строки «имя<TAB>домен» (порядок сохранён).
+# Кеш на процесс: на слабых роутерах каждый fork sed/awk стоит десятки мс,
+# а один рендер п.16/ответ blobs.cgi читал эти файлы ~20 раз. Парсинг —
+# один раз (сюда), дальше читатели идут по кеш-переменным чистым bash
+# (printf/while — без fork). Сброс — sni_pool_cache_reset (писатели и
+# каждая итерация циклов меню).
+_Z2R_SNI_SECT_USER=""
+_Z2R_SNI_SECT_USER_SET=""
+_Z2R_SNI_SECT_ZATOR=""
+_Z2R_SNI_SECT_ZATOR_SET=""
+_Z2R_SNI_POOL_ROWS=""
+_Z2R_SNI_POOL_ROWS_SET=""
+_Z2R_SNI_POLICY_ROWS=""
+_Z2R_SNI_POLICY_ROWS_SET=""
+_Z2R_SNI_PIN_ROWS=""
+_Z2R_SNI_PIN_SET=""
+_Z2R_MODE_ROWS=""
+_Z2R_MODE_SET=""
+
+sni_pool_cache_reset() {
+  _Z2R_SNI_SECT_USER_SET=""
+  _Z2R_SNI_SECT_ZATOR_SET=""
+  _Z2R_SNI_POOL_ROWS_SET=""
+  _Z2R_SNI_POLICY_ROWS_SET=""
+  _Z2R_SNI_PIN_SET=""
+  _Z2R_MODE_SET=""
+}
+
+# Кеш-читалки пина (sni_override.tsv) и режима фейков (mode_override.tsv)
+# для экранов п.16: на слабых роутерах awk-форк на вызов × профили съедал
+# заметную долю секунды на каждый рендер меню.
+sni_pool_pin_of() {
+  local row out=""
+  if [ -z "$_Z2R_SNI_PIN_SET" ]; then
+    _Z2R_SNI_PIN_ROWS=""
+    [ -f "$ORCH_SNI_FILE" ] && _Z2R_SNI_PIN_ROWS="$(cat "$ORCH_SNI_FILE")"
+    _Z2R_SNI_PIN_SET=1
+  fi
+  while IFS= read -r row; do
+    case "${row%%$'\t'*}" in "$1") out="${row#*$'\t'}"; break ;; esac
+  done <<< "$_Z2R_SNI_PIN_ROWS"
+  [ -n "$out" ] && printf '%s\n' "$out"
+  return 0
+}
+
+sni_pool_mode_of() {
+  local row out=""
+  if [ -z "$_Z2R_MODE_SET" ]; then
+    _Z2R_MODE_ROWS=""
+    [ -f "$ORCH_MODE_FILE" ] && _Z2R_MODE_ROWS="$(cat "$ORCH_MODE_FILE")"
+    _Z2R_MODE_SET=1
+  fi
+  while IFS= read -r row; do
+    case "${row%%$'\t'*}" in "$1") out="${row#*$'\t'}"; break ;; esac
+  done <<< "$_Z2R_MODE_ROWS"
+  [ -n "$out" ] && printf '%s\n' "$out"
+  return 0
+}
+
+# Разовый парсинг одного файла секций в кеш-переменную (выход подавлен).
+_z2r_sni_sect_load() {
+  local which="$1" f out=""
+  if [ "$which" = user ]; then
+    [ -n "$_Z2R_SNI_SECT_USER_SET" ] && return 0
+    f="$Z2R_SNI_USER_FILE"
+  else
+    [ -n "$_Z2R_SNI_SECT_ZATOR_SET" ] && return 0
+    f="$Z2R_SNI_ZATOR_FILE"
+  fi
+  if [ -f "$f" ]; then
+    out="$(sed -e 's/\r$//' "$f" | awk '
+      /^# set: / { name = tolower($3); next }
+      !name { next }
+      /^[[:space:]]*#/ { next }
+      {
+        sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
+        if ($0 == "") next
+        print name "\t" tolower($0)
+      }
+    ')"
+  fi
+  if [ "$which" = user ]; then
+    _Z2R_SNI_SECT_USER="$out"
+    _Z2R_SNI_SECT_USER_SET=1
+  else
+    _Z2R_SNI_SECT_ZATOR="$out"
+    _Z2R_SNI_SECT_ZATOR_SET=1
+  fi
+  return 0
+}
+
+_z2r_sni_ensure() {
+  _z2r_sni_sect_load user
+  _z2r_sni_sect_load zator
+}
+
+# Совместимый помощник: содержимое секций файла (из кеша).
 _sni_pool_sections() {
-  [ -f "$1" ] || return 0
-  sed -e 's/\r$//' "$1" | awk '
-    /^# set: / { name = tolower($3); next }
-    !name { next }
-    /^[[:space:]]*#/ { next }
-    {
-      sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
-      if ($0 == "") next
-      print name "\t" tolower($0)
-    }
-  '
+  _z2r_sni_ensure
+  if [ "$1" = "$Z2R_SNI_USER_FILE" ]; then
+    printf '%s' "$_Z2R_SNI_SECT_USER"
+  else
+    printf '%s' "$_Z2R_SNI_SECT_ZATOR"
+  fi
 }
 
 # Имена наборов: сначала пользовательские, затем проектные (без повторов).
 sni_pool_sets_list() {
-  {
-    _sni_pool_sections "$Z2R_SNI_USER_FILE"
-    _sni_pool_sections "$Z2R_SNI_ZATOR_FILE"
-  } | awk -F '\t' '!seen[$1]++ {print $1}'
+  local nm d seen=" " out=""
+  _z2r_sni_ensure
+  while IFS=$'\t' read -r nm d; do
+    [ -n "$nm" ] || continue
+    case "$seen" in *" $nm "*) continue ;; esac
+    seen="${seen}${nm} "
+    out="${out}${nm}"$'\n'
+  done <<< "$_Z2R_SNI_SECT_USER"
+  while IFS=$'\t' read -r nm d; do
+    [ -n "$nm" ] || continue
+    case "$seen" in *" $nm "*) continue ;; esac
+    seen="${seen}${nm} "
+    out="${out}${nm}"$'\n'
+  done <<< "$_Z2R_SNI_SECT_ZATOR"
+  # один write на выход: читатель с ранним выходом (grep -q) не должен
+  # ловить нас SIGPIPE посреди записи (rc 141 под pipefail)
+  [ -n "$out" ] && printf '%s' "$out"
+  return 0
 }
 
 # Откуда набор: user | zator | пусто (нет нигде).
 sni_pool_set_origin() {
-  local n
-  n="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  if _sni_pool_sections "$Z2R_SNI_USER_FILE" | awk -F '\t' -v n="$n" '$1==n {found=1} END{exit !found}'; then
-    printf 'user'
-  elif _sni_pool_sections "$Z2R_SNI_ZATOR_FILE" | awk -F '\t' -v n="$n" '$1==n {found=1} END{exit !found}'; then
-    printf 'zator'
-  fi
+  local n="${1,,}" nm d
+  _z2r_sni_ensure
+  while IFS=$'\t' read -r nm d; do
+    [ "$nm" = "$n" ] && { printf 'user'; return 0; }
+  done <<< "$_Z2R_SNI_SECT_USER"
+  while IFS=$'\t' read -r nm d; do
+    [ "$nm" = "$n" ] && { printf 'zator'; return 0; }
+  done <<< "$_Z2R_SNI_SECT_ZATOR"
   return 0
 }
 
 # Домены набора (порядок файла): пользовательский файл выигрывает у проектного.
 sni_pool_set_read() {
-  local n rows
-  n="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  rows="$(_sni_pool_sections "$Z2R_SNI_USER_FILE" | awk -F '\t' -v n="$n" '$1==n {print $2}')"
-  if [ -n "$rows" ]; then
-    printf '%s\n' "$rows"
-    return 0
+  local n="${1,,}" nm d found=0 out=""
+  _z2r_sni_ensure
+  while IFS=$'\t' read -r nm d; do
+    [ "$nm" = "$n" ] || continue
+    out="${out}${d}"$'\n'
+    found=1
+  done <<< "$_Z2R_SNI_SECT_USER"
+  if [ "$found" != 1 ]; then
+    while IFS=$'\t' read -r nm d; do
+      [ "$nm" = "$n" ] && out="${out}${d}"$'\n'
+    done <<< "$_Z2R_SNI_SECT_ZATOR"
   fi
-  _sni_pool_sections "$Z2R_SNI_ZATOR_FILE" | awk -F '\t' -v n="$n" '$1==n {print $2}'
+  [ -n "$out" ] && printf '%s' "$out"
+  return 0
 }
 
 # Создать/заменить секцию набора в ПОЛЬЗОВАТЕЛЬСКОМ файле: валидация доменов
@@ -908,6 +1020,7 @@ sni_pool_set_write() {
     return 1
   }
   rm -f "$sec"
+  sni_pool_cache_reset
   return 0
 }
 
@@ -945,30 +1058,45 @@ sni_pool_set_delete() {
     rm -f "$tmp"
     return 1
   }
+  sni_pool_cache_reset
   return 0
 }
 
 # Сырые строки пула профиля из sni_pool.tsv (могут быть @ссылками).
+# Файл читается в кеш один раз на процесс, фильтрация — чистым bash.
 sni_pool_list() {
-  [ -f "$ORCH_SNI_POOL_FILE" ] || return 0
-  awk -F '\t' -v pr="$1" '$1==pr {print $2}' "$ORCH_SNI_POOL_FILE"
+  local row out=""
+  if [ -z "$_Z2R_SNI_POOL_ROWS_SET" ]; then
+    _Z2R_SNI_POOL_ROWS=""
+    [ -f "$ORCH_SNI_POOL_FILE" ] && _Z2R_SNI_POOL_ROWS="$(cat "$ORCH_SNI_POOL_FILE")"
+    _Z2R_SNI_POOL_ROWS_SET=1
+  fi
+  while IFS= read -r row; do
+    case "${row%%$'\t'*}" in "$1") out="${out}${row#*$'\t'}"$'\n' ;; esac
+  done <<< "$_Z2R_SNI_POOL_ROWS"
+  [ -n "$out" ] && printf '%s' "$out"
+  return 0
 }
 
 # Эффективный пул профиля: @ссылки разворачиваются в домены наборов,
 # простые строки идут как есть (порядок сохранён). Регистр имени набора
 # приводится к нижнему — как в lua/sni-pool.lua.
 sni_pool_effective() {
-  local row name
+  local rows row name chunk out=""
+  rows="$(sni_pool_list "$1")"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     case "$row" in
       @*)
-        name="$(printf '%s' "${row#@}" | tr '[:upper:]' '[:lower:]')"
-        sni_pool_set_read "$name"
+        name="${row#@}"; name="${name,,}"
+        chunk="$(sni_pool_set_read "$name")"
+        [ -n "$chunk" ] && out="${out}${chunk}"$'\n'
         ;;
-      *) printf '%s\n' "$row" ;;
+      *) out="${out}${row}"$'\n' ;;
     esac
-  done < <(sni_pool_list "$1")
+  done <<< "$rows"
+  [ -n "$out" ] && printf '%s' "$out"
+  return 0
 }
 
 # Назначить набор профилю: одна строка-ссылка «profile<TAB>@имя».
@@ -987,6 +1115,7 @@ sni_pool_assign_set() {
     echo "Unable to update sni pool file" >&2
     return 1
   }
+  sni_pool_cache_reset
   return 0
 }
 
@@ -1023,6 +1152,7 @@ sni_pool_set_list() {
     echo "Unable to update sni pool file" >&2
     return 1
   }
+  sni_pool_cache_reset
   return 0
 }
 
@@ -1034,6 +1164,7 @@ sni_pool_clear() {
   tmp="${ORCH_SNI_POOL_FILE}.tmp.$$"
   awk -F '\t' -v pr="$profile" '$1!=pr' "$ORCH_SNI_POOL_FILE" > "$tmp" \
     && mv -f "$tmp" "$ORCH_SNI_POOL_FILE" || { rm -f "$tmp"; return 1; }
+  sni_pool_cache_reset
   return 0
 }
 
@@ -1063,8 +1194,17 @@ sni_pool_pinned() {
 # (случайно, без двух одинаковых подряд; осмысленно при >3 имён). Читает
 # lua/sni-pool.lua тем же TTL-кэшом, применяется без рестарта.
 sni_pool_policy_get() {
-  [ -f "$ORCH_SNI_POOL_POLICY_FILE" ] || return 0
-  awk -F '\t' -v pr="$1" '$1==pr {print $2; exit}' "$ORCH_SNI_POOL_POLICY_FILE"
+  local row out=""
+  if [ -z "$_Z2R_SNI_POLICY_ROWS_SET" ]; then
+    _Z2R_SNI_POLICY_ROWS=""
+    [ -f "$ORCH_SNI_POOL_POLICY_FILE" ] && _Z2R_SNI_POLICY_ROWS="$(cat "$ORCH_SNI_POOL_POLICY_FILE")"
+    _Z2R_SNI_POLICY_ROWS_SET=1
+  fi
+  while IFS= read -r row; do
+    case "${row%%$'\t'*}" in "$1") out="${row#*$'\t'}"; break ;; esac
+  done <<< "$_Z2R_SNI_POLICY_ROWS"
+  [ -n "$out" ] && printf '%s\n' "$out"
+  return 0
 }
 
 sni_pool_policy_valid() {
@@ -1087,6 +1227,7 @@ sni_pool_policy_set() {
     echo "Unable to update sni pool policy file" >&2
     return 1
   }
+  sni_pool_cache_reset
   return 0
 }
 
@@ -1099,21 +1240,30 @@ sni_pool_policy_label() {
 
 # Человекочитаемый статус для меню: единственная @строка -> «набор имя (N)»,
 # иначе «свой список (N)» / «нет пула (один SNI)».
+# Число непустых строк без fork (для display).
+_z2r_sni_count_nonempty() {
+  local cnt=0 l
+  while IFS= read -r l; do
+    [ -n "$l" ] && cnt=$((cnt + 1))
+  done <<< "$1"
+  printf '%s' "$cnt"
+}
+
 sni_pool_display() {
-  local profile="$1" rows first name n pol
+  local profile="$1" rows first name n pol raw_n
   rows="$(sni_pool_list "$profile")"
   if [ -z "$rows" ]; then
     printf 'нет пула (один SNI)'
     return 0
   fi
-  n="$(sni_pool_effective "$profile" | grep -c . || true)"
-  [ -n "$n" ] || n=0
+  n="$(_z2r_sni_count_nonempty "$(sni_pool_effective "$profile")")"
   pol="$(sni_pool_policy_label "$(sni_pool_policy_get "$profile")")"
-  first="$(printf '%s\n' "$rows" | head -n1)"
+  first="${rows%%$'\n'*}"
   case "$first" in
     @*)
-      name="$(printf '%s' "${first#@}" | tr '[:upper:]' '[:lower:]')"
-      if [ "$(printf '%s\n' "$rows" | grep -c . || true)" = "1" ]; then
+      name="${first#@}"; name="${name,,}"
+      raw_n="$(_z2r_sni_count_nonempty "$rows")"
+      if [ "$raw_n" = "1" ]; then
         printf 'набор %s (%s имён, %s, автосмена)' "$name" "$n" "$pol"
       else
         printf 'набор %s + свои (%s имён, %s, автосмена)' "$name" "$n" "$pol"

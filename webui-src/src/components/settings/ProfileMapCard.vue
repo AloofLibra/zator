@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { fetchCustomBlobs } from '../../api/endpoints'
+import { computed } from 'vue'
 import type { SniProfileInfo } from '../../api/types'
-import { refreshTlsBlobSettings, tlsBlobSettings } from '../../stores/settings'
+import { sniProfiles, sniUnavailable } from '../../stores/sni'
+import { tlsBlobSettings } from '../../stores/settings'
 
 // Карта профилей — верхняя карточка вкладки «Блобы и SNI»: с первого взгляда
 // видно режим ([blob]/[clone-solo]/[clone-pool]), блоб и SNI каждого профиля.
-// Данные: sni-блок blobs.cgi + режимы/блобы из стора tls_blob (его же
-// обновляет панель блобов ниже). Синхронно с CLI-тегами lib/submenus.sh
-// (fake_mode_profile_tag); у классики без пина/пула SNI-часть не выводится.
-const profiles = ref<SniProfileInfo[]>([])
-const unavailable = ref(false)
+// Данные — общие сторы: sni (один blobs.cgi на вкладку) и tls_blob (панель
+// блобов ниже). Синхронно с CLI-тегами lib/submenus.sh (fake_mode_profile_tag);
+// у классики без пина/пула SNI-часть не выводится.
+const profiles = sniProfiles
+const unavailable = sniUnavailable
 const tls = computed(() => tlsBlobSettings.value)
 
 const LEGEND = [
@@ -18,23 +18,6 @@ const LEGEND = [
   { tag: '[clone-solo]', text: 'клон, один SNI', clone: true },
   { tag: '[clone-pool]', text: 'клон, пул', clone: true },
 ]
-
-async function load() {
-  const data = await fetchCustomBlobs()
-  if (!data.sni) {
-    unavailable.value = true
-    profiles.value = []
-  } else {
-    unavailable.value = false
-    profiles.value = Array.isArray(data.sni.profiles) ? data.sni.profiles : []
-  }
-}
-
-onMounted(async () => {
-  // цель сборки es2018 — allSettled нет; гасим отказы: карта деградирует
-  // (unavailable-заглушка), не роняя вкладку
-  await Promise.all([load(), refreshTlsBlobSettings()].map(p => p.catch(() => undefined)))
-})
 
 function isClone(p: SniProfileInfo): boolean {
   return (tls.value?.profile_modes?.[p.id] || 'classic') === 'clone'

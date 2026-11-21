@@ -1,20 +1,21 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { fetchCustomBlobs, sni } from '../../api/endpoints'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { sni } from '../../api/endpoints'
 import type { SniProfileInfo, SniSetInfo } from '../../api/types'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
 import { confirmDialog } from '../../stores/confirm'
+import { refreshSniState, sniProfiles, sniSets, sniUnavailable } from '../../stores/sni'
 import { refreshTlsBlobSettings, tlsBlobSettings } from '../../stores/settings'
 import { showToast } from '../../stores/toast'
 
 // SNI-пула вкладки «Блобы и SNI»: пин одного SNI, набор/свой список по
 // профилю, политика чередования, управление секциями sni_user.txt. Данные —
-// поле sni в payload blobs.cgi (null на старом Core → заглушка). Всё
-// применяется на лету (TTL ~2 с), рестарт не нужен; приоритет: пин → пул →
-// прежнее поведение (дефолт/конфиг).
-const profiles = ref<SniProfileInfo[]>([])
-const sets = ref<SniSetInfo[]>([])
-const unavailable = ref(false)
+// ОБЩИЙ стор вкладки (один blobs.cgi на всех — раньше каждый блок качал
+// свой экземпляр и вкладка открывалась полминуты). Всё применяется на лету
+// (TTL ~2 с), рестарт не нужен; приоритет: пин → пул → дефолт/конфиг.
+const profiles = sniProfiles
+const sets = sniSets
+const unavailable = sniUnavailable
 const loaded = ref(false)
 
 const pinDraft = reactive<Record<string, string>>({})
@@ -30,8 +31,8 @@ const PIN_CUSTOM = '__custom__'
 // Выбор в селекте пина: '' (не задан) | пресет | __custom__ (свой домен)
 const pinPick = reactive<Record<string, string>>({})
 
-const userSets = computed(() => sets.value.filter(s => s.origin === 'user'))
-const zatorSets = computed(() => sets.value.filter(s => s.origin !== 'user'))
+const userSets = computed(() => sets.value.filter((s: SniSetInfo) => s.origin === 'user'))
+const zatorSets = computed(() => sets.value.filter((s: SniSetInfo) => s.origin !== 'user'))
 
 // Тег режима для заголовков карточек ([blob]/[clone-solo]/[clone-pool]);
 // сама карта профилей — отдельной карточкой сверху вкладки (ProfileMapCard).
@@ -56,19 +57,14 @@ function syncDrafts() {
 }
 
 async function load() {
-  const data = await fetchCustomBlobs()
-  if (!data.sni) {
-    unavailable.value = true
-    profiles.value = []
-    sets.value = []
-  } else {
-    unavailable.value = false
-    profiles.value = Array.isArray(data.sni.profiles) ? data.sni.profiles : []
-    sets.value = Array.isArray(data.sni.sets) ? data.sni.sets : []
-  }
+  await refreshSniState()
   syncDrafts()
   loaded.value = true
 }
+
+// стор может обновиться извне (кнопка «Обновить» списка блобов) — держим
+// черновики форм в синхроне
+watch(profiles, () => { syncDrafts() })
 
 async function refresh() {
   try {

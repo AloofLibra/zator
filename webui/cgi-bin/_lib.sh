@@ -12,15 +12,16 @@ CONFIG_FILE="$ZAPRET_ROOT/config"
 ORCH_DIR="$ZATOR_ROOT/extra_strats/cache/orchestra"
 LIB_DIR=""
 
+# Чистый bash без fork: прежний вариант гнал awk на КАЖДЫЙ вызов (~55 мс
+# на слабых роутерах), а GET-ответы зовут его десятки раз — только на
+# json_escape tls_blob/blobs отвечали по 2-4 лишних секунды.
 json_escape() {
-  printf '%s' "$1" | awk 'BEGIN{ORS=""}
-  {
-    gsub(/\\/, "\\\\")
-    gsub(/"/, "\\\"")
-    gsub(/\r/, "")
-    if (NR>1) printf "\\n"
-    printf "%s", $0
-  }'
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\r'/}"
+  s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
 }
 
 send_json() {
@@ -906,7 +907,8 @@ api_quic_blobs_json() {
   [ -d "$fake_dir" ] || { printf ''; return 0; }
   if sort -z </dev/null >/dev/null 2>&1; then
     while IFS= read -r -d '' f; do
-      f="$(basename "$f")"
+      # ${f##*/} вместо basename: форк на файл × ~100 файлов = секунды
+      f="${f##*/}"
       case "$f" in
         quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
           out="${out}${out:+,}\"$(json_escape "$f")\""
@@ -915,7 +917,7 @@ api_quic_blobs_json() {
     done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
   else
     while IFS= read -r f; do
-      f="$(basename "$f")"
+      f="${f##*/}"
       case "$f" in
         quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
           out="${out}${out:+,}\"$(json_escape "$f")\""
@@ -941,7 +943,9 @@ api_tls_blob_get() {
   available_blobs=""
   if sort -z </dev/null >/dev/null 2>&1; then
     while IFS= read -r -d '' f; do
-      f="$(basename "$f")"
+      # ${f##*/} вместо basename: на слабых роутерах форк на каждый из
+      # сотни файлов блобов стоил секунды (живой кейс: tls_blob GET ~7 с)
+      f="${f##*/}"
       case "$f" in
         tls_*.bin|custom_tls.bin)
           available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
@@ -950,7 +954,7 @@ api_tls_blob_get() {
     done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
   else
     while IFS= read -r f; do
-      f="$(basename "$f")"
+      f="${f##*/}"
       case "$f" in
         tls_*.bin|custom_tls.bin)
           available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
@@ -972,10 +976,35 @@ api_tls_blob_get() {
 }
 
 # JSON-объект «профиль -> текущее переопределение» ("" = глобальный) для GET-ответов.
+# Один проход по конфигу вместо sed'а на каждый профиль: на слабых MIPS
+# каждый полный скан 37-КБ конфига — сотни миллисекунд (живой кейс: tls_blob
+# GET ~7 с). Здесь собираются ВСЕ декларации --blob=ИМЯ:@.../files/fake/…,
+# дальше значения берутся из карты чистым bash.
 api_tls_blob_profile_blobs_json() {
-  local out="" p
+  local out="" p name val decl nm f
+  decl="$(awk '
+    {
+      l = $0
+      while (match(l, /--blob=[A-Za-z0-9_]+:@\/opt\/(zapret2|zator)\/files\/fake\/[^ \t]+/)) {
+        tok = substr(l, RSTART + 8, RLENGTH - 8)
+        ci = index(tok, ":@/")
+        if (ci > 0) print substr(tok, 1, ci - 1) "\t" substr(tok, ci + 2)
+        l = substr(l, RSTART + RLENGTH)
+      }
+    }
+  ' "$cfg")"
   while read -r p; do
-    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(blob_override_get "$p" "$cfg")")\""
+    name="$(blob_override_name "$p")"
+    val=""
+    if [ "$name" = fake_default_tls ]; then
+      val="fake_default_tls"
+    elif [ -n "$name" ]; then
+      while IFS=$'\t' read -r nm f; do
+        [ "$nm" = "$name" ] && { val="$f"; break; }
+      done <<< "$decl"
+      [ -n "$val" ] || val="$name"
+    fi
+    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$val")\""
   done < <(blob_override_supported_profiles)
   printf '%s' "$out"
 }
@@ -1070,7 +1099,7 @@ api_tls_blob_profile_set() {
 api_fake_mode_modes_json() {
   local out="" p v
   while read -r p; do
-    v="$(mode_override_get "$p")"
+    v="$(sni_pool_mode_of "$p")"
     [ -n "$v" ] || v=classic
     out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$v")\""
   done < <(mode_override_supported_profiles)
@@ -1081,7 +1110,7 @@ api_fake_mode_modes_json() {
 api_fake_mode_snis_json() {
   local out="" p
   while read -r p; do
-    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(sni_override_get "$p")")\""
+    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(sni_pool_pin_of "$p")")\""
   done < <(sni_override_supported_profiles)
   printf '%s' "$out"
 }

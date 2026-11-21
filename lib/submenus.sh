@@ -1593,6 +1593,7 @@ tls_blob_submenu() {
   done < <(blob_override_supported_profiles)
 
   while true; do
+    sni_pool_cache_reset
     clear -x
     echo -e "${cyan}--- Блобы, клоны и SNI профилей ---${plain}"
     echo ""
@@ -1811,6 +1812,7 @@ sni_pool_profile_pick() {
   local -a sets=() cur=() items=()
 
   while true; do
+    sni_pool_cache_reset
     clear -x
     sets=()
     while IFS= read -r name; do
@@ -2030,6 +2032,7 @@ sni_pool_sets_submenu() {
   local ans i idx name n origin
   local -a sets=()
   while true; do
+    sni_pool_cache_reset
     clear -x
     sets=()
     while IFS= read -r name; do
@@ -2114,6 +2117,7 @@ sni_pool_submenu() {
   local sets_idx=$(( ${#profiles[@]} + 1 ))
 
   while true; do
+    sni_pool_cache_reset
     clear -x
     echo -e "${cyan}--- SNI-пул: наборы невинных имён с автосменой ---${plain}"
     echo ""
@@ -2161,11 +2165,11 @@ sni_pool_submenu() {
 # www.google.com), [clone-pool] — клон с пулом (автосмена набора).
 fake_mode_profile_tag() {
   local profile="$1"
-  if [ "$(mode_override_get "$profile")" != "clone" ]; then
+  if [ "$(sni_pool_mode_of "$profile")" != "clone" ]; then
     printf '[blob]'
     return 0
   fi
-  if [ -n "$(sni_override_get "$profile")" ] || [ -z "$(sni_pool_list "$profile")" ]; then
+  if [ -n "$(sni_pool_pin_of "$profile")" ] || [ -z "$(sni_pool_list "$profile")" ]; then
     printf '[clone-solo]'
   else
     printf '[clone-pool]'
@@ -2197,7 +2201,7 @@ fake_mode_sni_summary() {
 # пина / «свой список») — зелёным.
 fake_mode_sni_summary_colored() {
   local profile="$1" pin d name mid rest
-  pin="$(sni_override_get "$profile")"
+  pin="$(sni_pool_pin_of "$profile")"
   if [ -n "$pin" ]; then
     echo -e "${yellow}SNI: ${plain}${green}${pin}${plain}${yellow} (пин)${plain}"
     return 0
@@ -2225,7 +2229,7 @@ fake_mode_sni_summary_colored() {
     esac
     return 0
   fi
-  if [ "$(mode_override_get "$profile")" = "clone" ]; then
+  if [ "$(sni_pool_mode_of "$profile")" = "clone" ]; then
     echo -e "${yellow}SNI: www.google.com (дефолт)${plain}"
   fi
   return 0

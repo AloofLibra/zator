@@ -346,6 +346,8 @@ if sni_pool_set_list 3 "@my"; then fail "sni_pool_set_list принял @ссы�
 {
   printf '4\t@my\n4\tzz.example.org\n'
 } >> "$ORCH_SNI_POOL_FILE"
+# прямой допис мимо писателей — сбросить кеш чтений
+sni_pool_cache_reset
 [ "$(sni_pool_effective 4 | tr '\n' ' ')" = "x.example.org y.example.org z.example.org zz.example.org " ] \
   || fail "комбинированный пул (набор+свои) не собирается"
 sni_pool_display 4 | grep -q 'набор my + свои (4' || fail "display не показывает набор+свои"
