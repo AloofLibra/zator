@@ -1065,6 +1065,8 @@ extra_strats/cache/orchestra/auto_locked.tsv
 extra_strats/cache/orchestra/blob_override.tsv
 extra_strats/cache/orchestra/blob_files.tsv
 extra_strats/cache/orchestra/sni_override.tsv
+extra_strats/cache/orchestra/sni_pool.tsv
+extra_strats/sni_sets
 extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv
 extra_strats/cache/orchestra/custom_strategies.tsv

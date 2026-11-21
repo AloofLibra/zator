@@ -149,6 +149,8 @@ const EXTRA_STRAT_OVERRIDES = new Map([
   ['extra_strats/TCP/RKN/Custom.txt', 'extra_strats/TCP_Custom.txt'],
   ['extra_strats/TCP/RKN/Discord.txt', 'extra_strats/TCP_Discord.txt'],
   ['extra_strats/TCP/RKN/Domains_By_Substring.txt', 'extra_strats/TCP_RKN_domains_by_substring.txt'],
+  // SNI-наборы — каталог как есть (не плющить в sni_sets_Google.txt)
+  ['extra_strats/sni_sets/google.txt', 'extra_strats/sni_sets/google.txt'],
 ])
 function extraStratFlat(repoPath) {
   if (EXTRA_STRAT_OVERRIDES.has(repoPath)) return EXTRA_STRAT_OVERRIDES.get(repoPath)
@@ -165,6 +167,7 @@ const KEEP_IF_EXISTS = new Set([
   'lists/googlevideo-ipv4.txt', // runtime feed, retain the router's current list
   'extra_strats/TCP_Custom.txt',
   'extra_strats/TCP_RKN_domains_by_substring.txt',
+  'extra_strats/sni_sets/google.txt', // пользовательский SNI-набор, правится на устройстве
   'files/fake/custom_tls.bin',
 ])
 

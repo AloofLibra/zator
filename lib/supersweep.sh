@@ -1244,6 +1244,9 @@ _supersweep_estimate_total() {
 # supersweep_run <tls_pref> <pause> <ds_pause> <rkn_pause> <rkn_par> <domain...>
 # Без диалогов; rc=0 завершён, rc=1 отменён/откат.
 _supersweep_cleanup() {
+    # Пин SNI-пула прогонa снимаем первым и безусловно: дальше возможен ранний
+    # return (не убранные правила firewall), ротация не должна зависнуть.
+    type sni_pool_unpin >/dev/null 2>&1 && sni_pool_unpin
     if [ -n "${Z2R_SUPERSWEEP_WORKER_PID:-}" ]; then
         touch "$Z2R_SUPERSWEEP_DIR/cancel"
         kill "$Z2R_SUPERSWEEP_WORKER_PID" 2>/dev/null || true
@@ -1282,6 +1285,9 @@ _supersweep_run() {
     Z2R_MEDIA_DIR=""; Z2R_MEDIA_READY=0
     local tls_pref="$1" pause_sec="$2" ds_pause="$3" rkn_pause="$4" rkn_par="$5"
     printf '%s\n' "${BASHPID:-$$}" > "$Z2R_SUPERSWEEP_DIR.lock/pid" || return 1
+    # Пин SNI-пула на время суперавтопрогона: round-robin раздал бы разным
+    # стратегиям разные SNI; снимает _supersweep_cleanup (EXIT-ловушка).
+    type sni_pool_pin >/dev/null 2>&1 && sni_pool_pin
     shift 5
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
@@ -1515,6 +1521,9 @@ _supersweep_run() {
                 _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_names" "$domains"
                 last_alive="$alive_names"
                 last_st=$SECONDS
+                # заодно обновляем пин SNI-пула прогонa (rkn-фаза идёт часами,
+                # одиночный пин истёк бы по TTL)
+                type sni_pool_pin >/dev/null 2>&1 && sni_pool_pin
             fi
             sleep "$poll"
         done

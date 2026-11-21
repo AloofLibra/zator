@@ -105,6 +105,7 @@ NFQWS2_OPT="
 
 --lua-init=@/opt/zator/lua/client-scope-config.lua
 --lua-init=@/opt/zator/lua/locked.lua
+--lua-init=@/opt/zator/lua/sni-pool.lua
 --lua-init=@/opt/zator/lua/rst-guard.lua
 --lua-init=@/opt/zator/lua/strategy-lock-manager.lua
 --lua-init=@/opt/zator/lua/combined-detector.lua
