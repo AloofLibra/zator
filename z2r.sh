@@ -2613,7 +2613,7 @@ ${Fcyan}12.${yellow} Режим фильтра hostlist/autohostlist. Сейча
 ${Fcyan}13.${yellow} Безразборный режим (fallback). Сейчас: ${plain}[${MENU_FALLBACK}]${yellow}
 ${Fcyan}14.${yellow} Web-панель управления (установка/переустановка; обновление - п.5)
 ${Fcyan}15.${yellow} Провайдер
-${Fcyan}16.${yellow} TLS blob (--blob=maxru): глобальный и по профилям. Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
+${Fcyan}16.${yellow} Блобы, клоны и SNI профилей (--blob=maxru / clone / пулы SNI). Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
 ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас: ${plain}[${MENU_RST_GUARD}]${yellow}
 ${Fcyan}19.${yellow} Доп. настройки (reasm, WG, QUIC-fakes, keenetic)
 ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}

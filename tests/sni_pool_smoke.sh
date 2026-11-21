@@ -204,6 +204,18 @@ assert_contains "$SWEEP_SRC" 'sni_pool_pin' "суперавтопрогон не
 assert_contains "$SWEEP_SRC" 'type sni_pool_unpin' \
   "cleanup суперавтопрогона не снимает пин безусловно"
 
+# 1i-2. Карта режимов в п.16: теги [blob]/[clone-solo]/[clone-pool] + SNI-сводка
+for fn in fake_mode_profile_tag fake_mode_sni_summary; do
+  assert_contains "$SUBMENUS_SRC" "^${fn}\(\)" "submenus.sh нет функции $fn"
+done
+assert_contains "$SUBMENUS_SRC" '\[clone-pool\]' "нет тега clone-pool в карте п.16"
+assert_contains "$SUBMENUS_SRC" 'Блобы, клоны и SNI профилей' "заголовок п.16 не переименован"
+assert_contains "$Z2R_SRC" 'Блобы, клоны и SNI профилей' "пункт главного меню 16 не переименован"
+assert_contains "$(tr -d '\r' < "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue")" \
+  'sni-profile-map' "SniPanel: нет сводной карты профилей"
+grep -q 'clone-pool' "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue" \
+  || fail "SniPanel: карта не считает тег clone-pool"
+
 # 1i. WebUI: вкладка «Блобы и SNI» (blobs.cgi + фронт + мок-сервер)
 assert_contains "$BLOBS_CGI_SRC" '_blobs_sni_json' "blobs.cgi не собирает sni-стейт"
 assert_contains "$BLOBS_CGI_SRC" 'sni\\":\$sni' "GET blobs.cgi не отдаёт поле sni"

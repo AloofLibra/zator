@@ -1585,7 +1585,7 @@ tls_blob_profile_pick() {
 tls_blob_submenu() {
   local cfg="/opt/zapret2/config"
   [ ! -f "$cfg" ] && cfg="/opt/zapret2/config.default"
-  local p t ans i idx
+  local p t ans i idx tag v vcol
   local profiles=() titles=()
   while read -r p; do
     profiles+=("$p")
@@ -1594,19 +1594,29 @@ tls_blob_submenu() {
 
   while true; do
     clear -x
-    echo -e "${cyan}--- Blob профилей: TLS ClientHello / QUIC Initial ---${plain}"
+    echo -e "${cyan}--- Блобы, клоны и SNI профилей ---${plain}"
+    echo ""
+    echo -e "${yellow}[blob] — штатные блобы конфига · [clone-solo] — клон CH с одним SNI · [clone-pool] — клон с пулом (автосмена)${plain}"
     echo ""
     submenu_status_item "1" "Глобальный TLS блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
     echo ""
-    echo -e "${yellow}Переопределения по профилям (TLS: blob=maxru|fake_default_tls; профиль 5 QUIC: quic/stun/discord-блобы):${plain}"
+    echo -e "${yellow}Профили (TLS: blob=maxru|fake_default_tls; профиль 5 QUIC: quic/stun/discord-блобы):${plain}"
     i=2
     for idx in "${!profiles[@]}"; do
       p="$(blob_override_get "${profiles[$idx]}" "$cfg")"
+      tag="$(fake_mode_profile_tag "${profiles[$idx]}")"
       if [ -n "$p" ]; then
-        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "$p" green
+        v="$p"
+        vcol=green
       else
-        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "глобальный" yellow
+        v="глобальный"
+        vcol=yellow
       fi
+      # профиль 5 (QUIC) — без SNI-части (клоны/SNI не про UDP)
+      if [ "${profiles[$idx]}" != "5" ]; then
+        v="${v} · $(fake_mode_sni_summary "${profiles[$idx]}")"
+      fi
+      submenu_status_item "$i" "${tag} Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v" "$vcol"
       i=$((i+1))
     done
     submenu_item "$i" "SNI клон-стратегий — по профилям"
@@ -2107,6 +2117,38 @@ sni_pool_submenu() {
 # clone — блоб стратегии (maxru|fake_default_tls) строится в рантайме из
 # ClientHello пользователя, SNI клона — из меню SNI, SNI-пула или невинный
 # дефолт; classic — штатные блобы конфига (текущее поведение). Меняется на лету.
+
+# Ярлык режима профиля для списков меню: [blob] — штатные блобы конфига
+# (классика; профиль 5 QUIC — всегда он, клоны/SNI не про UDP),
+# [clone-solo] — клон ClientHello с одним SNI (пин sni_override или дефолт
+# www.google.com), [clone-pool] — клон с пулом (автосмена набора).
+fake_mode_profile_tag() {
+  local profile="$1"
+  if [ "$(mode_override_get "$profile")" != "clone" ]; then
+    printf '[blob]'
+    return 0
+  fi
+  if [ -n "$(sni_override_get "$profile")" ] || [ -z "$(sni_pool_list "$profile")" ]; then
+    printf '[clone-solo]'
+  else
+    printf '[clone-pool]'
+  fi
+}
+
+# Короткая SNI-сводка профиля для строки «Сейчас:» списков меню.
+fake_mode_sni_summary() {
+  local profile="$1" pin
+  pin="$(sni_override_get "$profile")"
+  if [ -n "$pin" ]; then
+    printf 'SNI: %s (пин)' "$pin"
+    return 0
+  fi
+  if [ -n "$(sni_pool_list "$profile")" ]; then
+    printf 'SNI: %s' "$(sni_pool_display "$profile")"
+    return 0
+  fi
+  printf 'SNI: www.google.com (дефолт)'
+}
 
 fake_mode_sni_display() {
   local sni
