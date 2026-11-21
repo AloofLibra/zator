@@ -194,6 +194,11 @@ assert_contains "$SUBMENUS_SRC" 'sni_pool_item' "меню 16 не диспатч
 assert_contains "$SUBMENUS_SRC" '^sni_pool_profile_pick\(\)' "нет экрана профиля SNI-пула"
 assert_contains "$SUBMENUS_SRC" '^sni_pool_sets_submenu\(\)' "нет экрана управления наборами"
 assert_contains "$SUBMENUS_SRC" '^sni_pool_sets_view\(\)' "нет экрана просмотра проектного набора"
+# контракт orch_ask_* для диалога наборов: весь рендер в stderr — stdout
+# захватывается $(...) и подсказки не должны попадать в список доменов
+dialog_body="$(sed -n '/^sni_pool_domains_dialog()/,/^}/p' "$REPO_DIR/lib/submenus.sh")"
+bad_echoes="$(printf '%s\n' "$dialog_body" | grep -E 'echo -e' | grep -cv '>&2' || true)"
+[ "${bad_echoes:-0}" = "0" ] || fail "sni_pool_domains_dialog: echo без >&2 (подсказки утекут в stdout)"
 assert_contains "$SUBMENUS_SRC" 'Наборы SNI — создание/правка/удаление' \
   "список профилей пула не ведёт в управление наборами"
 assert_contains "$SUBMENUS_SRC" 'sni_pool_effective "\$1"' \

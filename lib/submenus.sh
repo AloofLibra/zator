@@ -1935,20 +1935,24 @@ sni_pool_profile_pick() {
   done
 }
 
+# Контракт orch_ask_*: stdout — ТОЛЬКО домены (по строке), весь рендер — в
+# stderr: вызывающий захватывает вывод $(...) и подсказки не должны попадать
+# в список (живой кейс: «Не удалось сохранить набор» из-за слов подсказки).
+# Пустая строка — закончить ввод и СОХРАНИТЬ, 0 — отмена без сохранения.
 sni_pool_domains_dialog() {
   local prompt_prefix="$1" domain
   local -a items=()
-  echo -e "${yellow}${prompt_prefix}${plain}"
-  echo -e "${yellow}Вводите домены по одному, Enter после каждого. Пустая строка — закончить, 0 — отмена.${plain}"
+  echo -e "${yellow}${prompt_prefix}${plain}" >&2
+  echo -e "${yellow}Вводите домены по одному, Enter после каждого. Пустая строка — закончить и сохранить, 0 — отмена.${plain}" >&2
   while true; do
     read -re -p "Домен: " domain || domain=""
     [ -z "$domain" ] && break
     [ "$domain" = "0" ] && { items=(); break; }
     domain="$(z2r_normalize_domain "$domain" 2>/dev/null)" || domain=""
     if [ -z "$domain" ]; then
-      echo -e "${red}Не удалось распознать домен. Пример: www.example.com${plain}"
+      echo -e "${red}Не удалось распознать домен. Пример: www.example.com${plain}" >&2
     elif ! sni_override_valid "$domain"; then
-      echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}"
+      echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}" >&2
     else
       items+=("$domain")
     fi
