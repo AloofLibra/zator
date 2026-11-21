@@ -10,6 +10,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import os
+from statistics import median
 import threading
 import time
 from urllib.parse import urlparse
@@ -22,6 +23,7 @@ SECRET = "adaptive-v2-capacity-test-secret-32chars"
 PROVIDER = "Adaptive Capacity Test ISP"
 BASE_PROVIDER = "Adaptive Capacity Baseline ISP"
 WORKERS = 32
+REFRESH_RUNS = 10
 
 
 def _payload(provider: str, label: str, observed: int, fingerprint_label: str | None = None,
@@ -154,17 +156,20 @@ def main() -> None:
             raise RuntimeError("an over-budget dimension was accepted")
         if int(db.scard("z4r:adaptive:v2:dimensions:active")) != MAX_DIMENSIONS:
             raise RuntimeError("overflow changed the bounded dimension set")
-        refresh_started = time.perf_counter()
-        refreshed = refresh_rankings(db, now=observed, min_sources=10)
-        refresh_seconds = time.perf_counter() - refresh_started
-        if refreshed != 1:
-            raise RuntimeError(f"full mixed-dimension refresh published {refreshed} groups, expected baseline TLS only")
+        refresh_times = []
+        for _ in range(REFRESH_RUNS):
+            refresh_started = time.perf_counter()
+            refreshed = refresh_rankings(db, now=observed, min_sources=10)
+            refresh_times.append(time.perf_counter() - refresh_started)
+            if refreshed != 1:
+                raise RuntimeError(f"full mixed-dimension refresh published {refreshed} groups, expected baseline TLS only")
+        refresh_p95 = sorted(refresh_times)[int((len(refresh_times) - 1) * 0.95)]
         baseline_after = get_rankings(db, BASE_PROVIDER, 1, now=observed)
         if baseline_after != baseline:
             raise RuntimeError("a published ranking changed when the dimension budget filled")
 
-        print("dimensions=%d tls_tcp_media_quic=covered overflow=rejected refresh_seconds=%.3f baseline_ranking=preserved redis_used_before=%d redis_used_full=%d delta=%d" % (
-            dimension_count, refresh_seconds,
+        print("dimensions=%d tls_tcp_media_quic=covered overflow=rejected refresh_runs=%d refresh_p50=%.3f refresh_p95=%.3f baseline_ranking=preserved redis_used_before=%d redis_used_full=%d delta=%d" % (
+            dimension_count, len(refresh_times), median(refresh_times), refresh_p95,
             memory_before, int(db.info("memory")["used_memory"]),
             int(db.info("memory")["used_memory"]) - memory_before))
     finally:
