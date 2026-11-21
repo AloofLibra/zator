@@ -106,6 +106,10 @@ function Send-AdaptiveAgentStatus {
     if ($null -eq $script:AdaptiveRevalidationMetrics) {
         $script:AdaptiveRevalidationMetrics = @{ RevalidationRecoveries = 0; RevalidationFailures = 0 }
     }
+    if ($null -eq $script:AdaptiveFailureRetryCooldownTargets) { $script:AdaptiveFailureRetryCooldownTargets = 0 }
+    if ($null -ne $script:AdaptiveFailureRetryState) {
+        $script:AdaptiveFailureRetryCooldownTargets = Get-AdaptiveFailureRetryCooldownCount -State $script:AdaptiveFailureRetryState
+    }
     if ($CpuPercent -ge 0) { $script:AdaptiveRuntimeMetrics.Cpu = $CpuPercent }
     if ($FreeMemoryBytes -ge 0) { $script:AdaptiveRuntimeMetrics.PcMemory = $FreeMemoryBytes }
     if ($NetworkBytesPerSecond -ge 0) { $script:AdaptiveRuntimeMetrics.PcNetwork = $NetworkBytesPerSecond }
@@ -125,6 +129,7 @@ function Send-AdaptiveAgentStatus {
             router_memory_available_kib = [long]$runtime.RouterMemory; router_active_probes = [int]$runtime.RouterActive
             revalidation_recoveries = [int]$script:AdaptiveRevalidationMetrics.RevalidationRecoveries
             revalidation_failures = [int]$script:AdaptiveRevalidationMetrics.RevalidationFailures
+            cooldown_targets = [int]$script:AdaptiveFailureRetryCooldownTargets
         } | Out-Null
     } catch { [Console]::Error.WriteLine("Adaptive status update: $($_.Exception.Message)") }
 }
@@ -378,6 +383,8 @@ if ($Watch) {
     }
     $processed = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $failureRetryState = Read-AdaptiveFailureRetryState
+    $script:AdaptiveFailureRetryState = $failureRetryState
+    $script:AdaptiveFailureRetryCooldownTargets = Get-AdaptiveFailureRetryCooldownCount -State $failureRetryState
     try { $script:AdaptiveRevalidationMetrics = Read-AdaptiveAgentMetrics }
     catch {
         [Console]::Error.WriteLine("Adaptive revalidation metrics were reset after a state read error: $($_.Exception.Message)")
@@ -712,9 +719,13 @@ if ($Watch) {
                                 if ($eventAckEligible) {
                                     Clear-AdaptiveFailureRetry -State $failureRetryState -Key (Get-AdaptiveFailureRetryKey -Event $event)
                                     $failureRetryState = Read-AdaptiveFailureRetryState
+                                    $script:AdaptiveFailureRetryState = $failureRetryState
+                                    $script:AdaptiveFailureRetryCooldownTargets = Get-AdaptiveFailureRetryCooldownCount -State $failureRetryState
                                 } else {
                                     Save-AdaptiveFailureRetry -State $failureRetryState -Event $event -DelayBaseSeconds $eventRetryDelay
                                     $failureRetryState = Read-AdaptiveFailureRetryState
+                                    $script:AdaptiveFailureRetryState = $failureRetryState
+                                    $script:AdaptiveFailureRetryCooldownTargets = Get-AdaptiveFailureRetryCooldownCount -State $failureRetryState
                                 }
                             } catch {
                                 $eventAckEligible = $false

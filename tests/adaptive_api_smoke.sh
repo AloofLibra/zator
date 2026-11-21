@@ -552,13 +552,17 @@ ramp_revoke_unsupported="$(call_api "$revoke_body")"
 [[ "$ramp_revoke_unsupported" == *'403 Forbidden'* && "$ramp_revoke_unsupported" == *'late-ACK gate'* ]] || {
   echo "Keenetic Ramp exemption revoke was not blocked: $ramp_revoke_unsupported" >&2; exit 1;
 }
-agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=23&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1')"
-[[ "$agent_status" == *'"ok":true'* && "$(cat "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" == *$'\tdeep_search\ttrue\tfalse\tdeep_scheduled\t12\t10\t2\t123456\t0\t23\t8589934592\t4096\t320\t65536\t0\t4\t1'* &&
+agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=23&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1&cooldown_targets=2')"
+[[ "$agent_status" == *'"ok":true'* && "$(cat "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" == *$'\tdeep_search\ttrue\tfalse\tdeep_scheduled\t12\t10\t2\t123456\t0\t23\t8589934592\t4096\t320\t65536\t0\t4\t1\t2'* &&
    "$(stat -c '%a' "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" = 600 ]] || {
   echo 'authenticated bounded search status was not persisted privately' >&2; exit 1;
 }
+legacy_agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=23&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1')"
+[[ "$legacy_agent_status" == *'"ok":true'* && "$(tail -n 1 "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" == *$'\t4\t1\t0' ]] || {
+  echo 'legacy watcher status without cooldown count was not accepted' >&2; exit 1;
+}
 status_before_bad_update="$(cat "$Z2R_ADAPTIVE_DIR/agent.status.tsv")"
-bad_agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=101&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1')"
+bad_agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=101&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1&cooldown_targets=2')"
 [[ "$bad_agent_status" == *'400 Bad Request'* && "$(cat "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" = "$status_before_bad_update" ]] || {
   echo 'out-of-range runtime metric replaced the last valid watcher snapshot' >&2; exit 1;
 }

@@ -117,6 +117,7 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
       <span>Общая статистика: {{ status.agent_status.statistics_enabled ? 'включена по opt-in агента' : 'выключена' }} · общие rankings: {{ status.agent_status.rankings_enabled ? 'включены по opt-in агента' : 'выключены' }}</span>
       <span>Последний поиск: {{ adaptiveSearchOutcome(status.agent_status.search_outcome) }} · проверено {{ status.agent_status.candidates_checked }} кандидатов (Fast {{ status.agent_status.fast_candidates }} / Deep {{ status.agent_status.deep_candidates }}) · {{ (status.agent_status.search_duration_ms / 1000).toFixed(1) }} с</span>
       <span>Revalidation (накопительно): восстановлено поиском {{ status.agent_status.revalidation_recoveries }} · исчерпано без решения {{ status.agent_status.revalidation_failures }}</span>
+      <span>Цели на cooldown: {{ status.agent_status.cooldown_targets }} · показывается только число, адреса остаются на компьютере агента</span>
       <span>Восстановление означает найденный DIRECT/стратегию; «исчерпано» — полный каталог без решения. Это не подтверждение успеха последующего пользовательского трафика.</span>
       <span v-if="status.agent_status.time_to_first_success_ms > 0">Время до первого успеха: {{ (status.agent_status.time_to_first_success_ms / 1000).toFixed(1) }} с · обновлено {{ eventTime(status.agent_status.updated_at) }}</span>
       <span v-else>Время до первого успеха: нет подтверждённого успеха · обновлено {{ eventTime(status.agent_status.updated_at) }}</span>

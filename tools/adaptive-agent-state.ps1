@@ -81,6 +81,12 @@ function Test-AdaptiveFailureRetryDue {
     return $row.Count -eq 0 -or [long]$row[0].NextAt -le $Now
 }
 
+function Get-AdaptiveFailureRetryCooldownCount {
+    param([Parameter(Mandatory = $true)][hashtable]$State,
+        [long]$Now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    return [Math]::Min(128, @($State.Rows | Where-Object { [long]$_.NextAt -gt $Now }).Count)
+}
+
 function Save-AdaptiveFailureRetry {
     param([Parameter(Mandatory = $true)][hashtable]$State, [Parameter(Mandatory = $true)]$Event,
         [ValidateRange(60, 86400)][int]$DelayBaseSeconds = 60,

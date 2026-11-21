@@ -569,7 +569,7 @@ for pair in "${pairs[@]}"; do
   decode "$key" || fail '400 Bad Request' 'invalid form encoding'; key="$REPLY"
   decode "$value" || fail '400 Bad Request' 'invalid form encoding'; value="$REPLY"
   case "$key" in
-    action|hostname|destination_ip|profile_id|local_strategy_number|source_port|probe_owner|scope|offset|limit|order|candidate_set_version|ranked_fingerprints|force_revalidate|schema_version|test_id|route_verified|overall|observed_at|transport|application|reason|ip_family|protocol|port|strategy_fingerprint|catalog_version|recipe_id|treatment_variant|client_profile|media_bytes|media_speed_bps|media_duration_ms|request_id|test_ids|stage|statistics_enabled|rankings_enabled|search_outcome|candidates_checked|fast_candidates|deep_candidates|search_duration_ms|time_to_first_success_ms|pc_cpu_percent|pc_free_memory_bytes|pc_network_bytes_per_second|router_load_milli|router_memory_available_kib|router_active_probes|revalidation_recoveries|revalidation_failures) ;;
+    action|hostname|destination_ip|profile_id|local_strategy_number|source_port|probe_owner|scope|offset|limit|order|candidate_set_version|ranked_fingerprints|force_revalidate|schema_version|test_id|route_verified|overall|observed_at|transport|application|reason|ip_family|protocol|port|strategy_fingerprint|catalog_version|recipe_id|treatment_variant|client_profile|media_bytes|media_speed_bps|media_duration_ms|request_id|test_ids|stage|statistics_enabled|rankings_enabled|search_outcome|candidates_checked|fast_candidates|deep_candidates|search_duration_ms|time_to_first_success_ms|pc_cpu_percent|pc_free_memory_bytes|pc_network_bytes_per_second|router_load_milli|router_memory_available_kib|router_active_probes|revalidation_recoveries|revalidation_failures|cooldown_targets) ;;
     *) fail '400 Bad Request' 'unknown form field' ;;
   esac
   [[ -n "$key" && ! ${fields[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
@@ -591,14 +591,15 @@ case "$action" in
     send_json '200 OK' "$(json_events)"
     ;;
   agent_status)
-    [[ "${#fields[@]}" -eq 18 ]] || fail '400 Bad Request' 'agent_status requires a bounded status snapshot'
-    adaptive_queue_agent_status "${fields[stage]:-}" "${fields[statistics_enabled]:-}" "${fields[rankings_enabled]:-}" \
+    [[ "${#fields[@]}" -eq 18 || "${#fields[@]}" -eq 19 ]] || fail '400 Bad Request' 'agent_status requires a bounded status snapshot'
+    status_args=("${fields[stage]:-}" "${fields[statistics_enabled]:-}" "${fields[rankings_enabled]:-}" \
       "${fields[search_outcome]:-}" "${fields[candidates_checked]:-}" "${fields[fast_candidates]:-}" \
       "${fields[deep_candidates]:-}" "${fields[search_duration_ms]:-}" "${fields[time_to_first_success_ms]:-}" \
       "${fields[pc_cpu_percent]:-}" "${fields[pc_free_memory_bytes]:-}" "${fields[pc_network_bytes_per_second]:-}" \
       "${fields[router_load_milli]:-}" "${fields[router_memory_available_kib]:-}" "${fields[router_active_probes]:-}" \
-      "${fields[revalidation_recoveries]:-}" "${fields[revalidation_failures]:-}" || \
-      fail '400 Bad Request' 'invalid agent status snapshot'
+      "${fields[revalidation_recoveries]:-}" "${fields[revalidation_failures]:-}")
+    [[ ${fields[cooldown_targets]+present} ]] && status_args+=("${fields[cooldown_targets]}")
+    adaptive_queue_agent_status "${status_args[@]}" || fail '400 Bad Request' 'invalid agent status snapshot'
     send_json '200 OK' '{"schema_version":1,"ok":true}'
     ;;
   ramp_targets)

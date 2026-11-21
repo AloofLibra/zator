@@ -22,10 +22,10 @@ adaptive_queue_agent_heartbeat() {
 }
 
 adaptive_queue_agent_status() {
-  [[ $# = 17 ]] || return 2
+  [[ $# = 17 || $# = 18 ]] || return 2
   local stage="$1" stats="$2" rankings="$3" outcome="$4" checked="$5" fast="$6" deep="$7" duration="$8" first="$9"
   local cpu="${10}" pc_mem="${11}" pc_net="${12}" router_load="${13}" router_mem="${14}" router_active="${15}"
-  local revalidation_recoveries="${16}" revalidation_failures="${17}" now
+  local revalidation_recoveries="${16}" revalidation_failures="${17}" cooldown_targets="${18:-0}" now
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file tmp
   [[ "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit)$ &&
      "$stats" =~ ^(true|false)$ && "$rankings" =~ ^(true|false)$ &&
@@ -42,7 +42,8 @@ adaptive_queue_agent_status() {
      "$router_mem" =~ ^(-1|[0-9]{1,13})$ && "$router_mem" -le 8796093022208 &&
      "$router_active" =~ ^(-1|[0-9]{1,3})$ && "$router_active" -le 999 &&
      "$revalidation_recoveries" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_recoveries" -le 999999 &&
-     "$revalidation_failures" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_failures" -le 999999 ]] || return 2
+     "$revalidation_failures" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_failures" -le 999999 &&
+     "$cooldown_targets" =~ ^(0|[1-9][0-9]{0,2})$ && "$cooldown_targets" -le 128 ]] || return 2
   [[ "$cpu" = -1 ]] || (( cpu <= 100 )) || return 2
   now="$(date +%s)" || return 1
   [[ "$now" =~ ^[0-9]{1,10}$ ]] || return 1
@@ -52,9 +53,9 @@ adaptive_queue_agent_status() {
   file="$base/agent.status.tsv"
   [[ ! -L "$file" ]] || return 1
   tmp="$(mktemp "$base/.agent-status.XXXXXX")" || return 1
-  (umask 077; printf '3\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  (umask 077; printf '4\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$now" "$stage" "$stats" "$rankings" "$outcome" "$checked" "$fast" "$deep" "$duration" "$first" \
-    "$cpu" "$pc_mem" "$pc_net" "$router_load" "$router_mem" "$router_active" "$revalidation_recoveries" "$revalidation_failures" > "$tmp") &&
+    "$cpu" "$pc_mem" "$pc_net" "$router_load" "$router_mem" "$router_active" "$revalidation_recoveries" "$revalidation_failures" "$cooldown_targets" > "$tmp") &&
     chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
 }
 

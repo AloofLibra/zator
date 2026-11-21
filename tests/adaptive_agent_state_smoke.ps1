@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $temp = Join-Path $env:TEMP ('zator-adaptive-state-' + [guid]::NewGuid().ToString('N'))
 $ExploreStatePath = Join-Path $temp 'adaptive-explore.tsv'
 $AdaptiveAgentMetricsStatePath = Join-Path $temp 'adaptive-agent-metrics.tsv'
+$AdaptiveRetryStatePath = Join-Path $temp 'adaptive-retries.tsv'
 $DeepSearchStatePath = Join-Path $temp 'adaptive-deepsearch.tsv'
 $AdaptiveRampAuditStatePath = Join-Path $temp 'adaptive-ramp-audit.tsv'
 try {
@@ -51,6 +52,16 @@ try {
     $otherIpKey = Get-ExploreTargetKey -TargetHost 'cdn.example.org' -TargetIp '93.184.216.35' -TargetProfile 1 -TargetScope 'default'
     if ($key -notmatch '^[0-9a-f]{64}$' -or $key -ne $sameKey -or $key -eq $otherIpKey) {
         throw 'Exploration tuple key is not stable and IP-specific.'
+    }
+    $retryState = Read-AdaptiveFailureRetryState
+    $retryEvent = [pscustomobject]@{ hostname = 'cdn.example.org'; destination_ip = '93.184.216.34'; profile_id = 1; scope = 'default' }
+    $retryNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    Save-AdaptiveFailureRetry -State $retryState -Event $retryEvent -DelayBaseSeconds 60 -Now $retryNow
+    $retryState = Read-AdaptiveFailureRetryState
+    if ((Get-AdaptiveFailureRetryCooldownCount -State $retryState -Now ($retryNow + 1)) -ne 1 -or
+        (Get-AdaptiveFailureRetryCooldownCount -State $retryState -Now ($retryNow + 60)) -ne 0 -or
+        (Get-Content -LiteralPath $AdaptiveRetryStatePath -Raw).Contains('cdn.example.org')) {
+        throw 'Target-free retry cooldown count did not track active cooldown state.'
     }
 
     $state = Read-ExploreState
