@@ -82,6 +82,7 @@ config_set_var() {
   else
     printf '%s=%s\n' "$var" "$val" >> "$cfg"
   fi
+  type adaptive_rules_invalidate >/dev/null 2>&1 && adaptive_rules_invalidate || true
 }
 
 config_ipv4_valid() {
@@ -1493,6 +1494,10 @@ profile_apply_all() {
 z2r_service_action() {
   local action="$1"
   [ -n "${ZAPRET2_INIT:-}" ] || return 1
+  case "$action" in start|restart)
+    type adaptive_rules_runtime_reset >/dev/null 2>&1 && adaptive_rules_runtime_reset || true
+    ;;
+  esac
   # </dev/null: инит и порождённые им фоновые демоны не должны наследовать
   # stdin вызывающего (в CGI это сокет/пайп uhttpd — его удержание висит
   # ответом панели)

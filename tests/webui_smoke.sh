@@ -413,7 +413,10 @@ printf '%s\n' "$out" | grep -q 'apk update && apk add uhttpd coreutils-nohup' \
   || fail "лечение для apk (OpenWrt 24.10+) должно использовать apk add"
 rm -f "$TMP_DIR/bin/apk"
 OSystem="VPS"
-out="$(webui_status_human 'stopped:none:17682')"
+REAL_CUT="$(command -v cut)"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_CUT" > "$TMP_DIR/bin/cut"
+chmod +x "$TMP_DIR/bin/cut"
+out="$(PATH="$TMP_DIR/bin" webui_status_human 'stopped:none:17682')"
 printf '%s\n' "$out" | grep -q 'пакетным менеджером системы' \
   || fail "нет нейтрального лечения при неизвестном менеджере"
 out="$(webui_status_human 'stopped:no-runner:17682')"

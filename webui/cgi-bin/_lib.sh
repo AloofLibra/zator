@@ -48,6 +48,134 @@ api_supersweep_get() {
   send_json '200 OK' "$body"
 }
 
+api_adaptive_get() {
+  local mode_file="$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+  local token_file="$ZATOR_ROOT/extra_strats/cache/adaptive/token"
+  local token_expiry_file="$ZATOR_ROOT/extra_strats/cache/adaptive/token.expires"
+  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
+  local events_file="${Z2R_ADAPTIVE_EVENTS_FILE:-$base/events.tsv}"
+  local requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$base/requests.tsv}"
+  local mode=OFF paired=false pairing_expired=false agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now
+  mode="$(cat "$mode_file" 2>/dev/null || printf OFF)"
+  case "$mode" in OBSERVE|TEST_ONLY) ;; *) mode=OFF ;; esac
+  token_expiry="$(cat "$token_expiry_file" 2>/dev/null)"
+  now="$(date +%s)"
+  if [ -s "$token_file" ] && [ ! -L "$token_file" ]; then
+    if [[ "$token_expiry" =~ ^[0-9]{1,10}$ ]] && (( token_expiry > now )); then paired=true
+    else pairing_expired=true; fi
+  fi
+  if type adaptive_queue_resources_json >/dev/null 2>&1; then
+    resources_json="$(adaptive_queue_resources_json 2>/dev/null)" || resources_json=null
+  fi
+  agent_file="$base/agent.last"
+  if [ -f "$agent_file" ] && [ ! -L "$agent_file" ]; then
+    heartbeat_value="$(cat "$agent_file" 2>/dev/null)"
+    if [[ "$heartbeat_value" =~ ^[0-9]{1,10}$ ]] && (( heartbeat_value <= now + 60 )); then
+      agent_last_seen="$heartbeat_value"
+      heartbeat_age=$((now - heartbeat_value))
+      (( heartbeat_age < 0 )) && heartbeat_age=0
+      (( heartbeat_age <= 90 )) && agent_online=true
+    fi
+  fi
+  if [ -r "$events_file" ] && [ ! -L "$events_file" ]; then
+    event_data="$(awk -F '\t' '
+      BEGIN { printf "[" }
+      NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure") &&
+        length($3)<=253 && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ &&
+        $5 ~ /^[1-4]$/ && $6=="tls" && ($7=="default" || ($7 ~ /^mark:[1-9][0-9]*$/ && length($7)<=10 && substr($7,6)+0<=65535)) &&
+        $8 ~ /^[0-9]+$/ {
+          split($4,o,"."); valid=($4 ~ /^[0-9.]+$/ && length($4)<=15 && o[1]<=255 && o[2]<=255 && o[3]<=255 && o[4]<=255 &&
+            o[1]>0 && o[1]!=10 && o[1]!=127 && o[1]<224 && !(o[1]==100 && o[2]>=64 && o[2]<=127) &&
+            !(o[1]==169 && o[2]==254) && !(o[1]==172 && o[2]>=16 && o[2]<=31) &&
+            !(o[1]==192 && (o[2]==168 || (o[2]==0 && (o[3]==0 || o[3]==2)) || (o[2]==88 && o[3]==99))) &&
+            !(o[1]==198 && (o[2]==18 || o[2]==19 || (o[2]==51 && o[3]==100))) && !(o[1]==203 && o[2]==0 && o[3]==113))
+          if (!valid) next
+          if (n++) printf ","
+          printf "{\"status\":\"%s\",\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"observed_at\":%s}", $2,$3,$4,$5,$6,$7,$8
+        }
+      END { printf "]\n%d", n+0 }
+    ' "$events_file")"
+    events_json="${event_data%$'\n'*}"
+    event_count="${event_data##*$'\n'}"
+  fi
+  if [ -r "$requests_file" ] && [ ! -L "$requests_file" ]; then
+    pending_requests="$(awk -F '\t' -v now="$(date +%s)" 'NR<=32 && NF==7 && $1==1 && $2 ~ /^[a-f0-9]{32}$/ && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && $5 ~ /^[1-4]$/ && ($6=="default" || ($6 ~ /^mark:[1-9][0-9]*$/ && length($6)<=10 && substr($6,6)+0<=65535)) && $7 ~ /^[0-9]+$/ && $7<=now+60 && $7>=now-1800 {n++} END {print n+0}' "$requests_file")"
+  fi
+  rule_file="${Z2R_ADAPTIVE_RULES_FILE:-$base/rules.tsv}"
+  [ -r "$rule_file" ] && [ ! -L "$rule_file" ] || rule_file="$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv"
+  if [ -r "$rule_file" ] && [ ! -L "$rule_file" ]; then
+    rules_json="$(awk -F '\t' -v now="$(date +%s)" '
+      BEGIN { printf "[" }
+      NR<=256 && NF==11 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
+        $3 ~ /^[0-9.]+$/ && $4 ~ /^[1-4]$/ && $5=="tls" && ($6=="default" || $6 ~ /^mark:[1-9][0-9]*$/) &&
+        $7 ~ /^[1-9][0-9]*$/ && $8 ~ /^sha256:[a-f0-9]{64}$/ && $9 ~ /^sha256:[a-f0-9]{64}$/ &&
+        $11 ~ /^[0-9]+$/ && $11>now {
+          if (n++) printf ","
+          printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"scope\":\"%s\",\"strategy_number\":%s,\"expires\":%s}", $2,$3,$4,$6,$7,$11
+        }
+      END { printf "]" }
+    ' "$rule_file")"
+  fi
+  if [ -d "$base" ] && [ ! -L "$base" ]; then
+    for run in "$base"/*; do
+      [ -d "$run" ] && [ ! -L "$run" ] || continue
+      run_id="${run##*/}"
+      case "$run_id" in *[!a-f0-9]*|'') continue ;; esac
+      [ "${#run_id}" = 32 ] || continue
+      state="$(cat "$run/state" 2>/dev/null || true)"
+      case "$state" in cleanup_failed) cleanup_failed=$((cleanup_failed + 1)) ;; complete|failed) ;; *) active=$((active + 1)) ;; esac
+    done
+  fi
+  printf 'Cache-Control: no-store\r\n'
+  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"mode\":\"$mode\",\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":false}"
+}
+
+api_adaptive_action() {
+  local action="${PARAM_ACTION:-}" output="" status=200 restarted=false
+  if [ "$action" = request-probe ]; then
+    local request_host="${PARAM_HOSTNAME:-}" request_ip="${PARAM_DESTINATION_IP:-}" request_profile="${PARAM_PROFILE_ID:-}" request_scope="${PARAM_SCOPE:-}"
+    local request_origin="${HTTP_ORIGIN:-}" host_header="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}" request_id request_rc
+    [[ -n "$host_header" && ( "$request_origin" = "http://$host_header" || "$request_origin" = "https://$host_header" ) ]] || send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'
+    awk -v ip="$client" 'BEGIN {split(ip,o,"."); if (!(o[1]==10 || (o[1]==172 && o[2]>=16 && o[2]<=31) || (o[1]==192 && o[2]==168) || ip=="127.0.0.1")) exit 1}' || send_error '403 Forbidden' 'Управление adaptive разрешено только из локальной сети'
+    type adaptive_queue_request >/dev/null 2>&1 || send_error '503 Service Unavailable' 'Adaptive queue недоступна'
+    if request_id="$(adaptive_queue_request "$request_host" "$request_ip" "$request_profile" "$request_scope")"; then
+      send_json '200 OK' "{\"ok\":true,\"action\":\"request-probe\",\"request_id\":\"$request_id\",\"restarted\":false,\"message\":\"Запрос поставлен в очередь; запустите Windows watcher\"}"
+    else
+      request_rc=$?
+      case "$request_rc" in
+        2) send_error '400 Bad Request' 'Некорректная цель проверки' ;;
+        3) send_error '409 Conflict' 'Для постановки проверки включите TEST_ONLY' ;;
+        4) send_error '404 Not Found' 'Цель отсутствует в свежих наблюдениях' ;;
+        5) send_error '429 Too Many Requests' 'Очередь проверок заполнена' ;;
+        6) send_error '429 Too Many Requests' 'Для этой цели недавно уже запрашивали проверку' ;;
+        *) send_error '500 Internal Server Error' 'Не удалось поставить проверку в очередь' ;;
+      esac
+    fi
+  fi
+  if [ "$action" = reset-rule ]; then
+    local host="${PARAM_HOSTNAME:-}" ip="${PARAM_DESTINATION_IP:-}" profile="${PARAM_PROFILE_ID:-}" scope="${PARAM_SCOPE:-}"
+    local origin="${HTTP_ORIGIN:-}" host_header="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}"
+    [[ -n "$host_header" && ( "$origin" = "http://$host_header" || "$origin" = "https://$host_header" ) ]] || send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'
+    awk -v ip="$client" 'BEGIN {split(ip,o,"."); if (!(o[1]==10 || (o[1]==172 && o[2]>=16 && o[2]<=31) || (o[1]==192 && o[2]==168) || ip=="127.0.0.1")) exit 1}' || send_error '403 Forbidden' 'Управление adaptive разрешено только из локальной сети'
+    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ && ${#host} -le 253 && "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || send_error '400 Bad Request' 'Некорректное adaptive-правило'
+    type adaptive_rule_remove >/dev/null 2>&1 || send_error '503 Service Unavailable' 'Adaptive rule store недоступен'
+    adaptive_rule_remove "$host" "$ip" "$profile" "$scope" || send_error '404 Not Found' 'Adaptive-правило уже удалено или недоступно'
+    send_json '200 OK' '{"ok":true,"action":"reset-rule","restarted":false,"message":"Правило удалено"}'
+  fi
+  case "$action" in observe|test-only|pause|clear-events|disable) ;; *) send_error '400 Bad Request' 'Некорректное действие adaptive rotation' ;; esac
+  local origin="${HTTP_ORIGIN:-}" host="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}"
+  [[ -n "$host" && ( "$origin" = "http://$host" || "$origin" = "https://$host" ) ]] || \
+    send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'
+  awk -v ip="$client" 'BEGIN {split(ip,o,"."); if (!(o[1]==10 || (o[1]==172 && o[2]>=16 && o[2]<=31) || (o[1]==192 && o[2]==168) || ip=="127.0.0.1")) exit 1}' || \
+    send_error '403 Forbidden' 'Управление adaptive разрешено только из локальной сети'
+  [ -x "$ZATOR_ROOT/tools/adaptive-pair.sh" ] || send_error '503 Service Unavailable' 'Adaptive CLI не установлен'
+  if ! output="$("$ZATOR_ROOT/tools/adaptive-pair.sh" "$action" 2>&1)"; then status=409; fi
+  if [ "$status" != 200 ]; then send_error '409 Conflict' "$output"; fi
+  _service_apply_restart
+  restarted="$_SERVICE_RESTARTED"
+  send_json '200 OK' "{\"ok\":true,\"action\":\"$action\",\"restarted\":$restarted,\"message\":\"$(json_escape "$output")\"}"
+}
+
 # --- h3-curl: статус тестового curl с HTTP/3 (карточка профиля 5 QUIC) -------
 # Только чтение (детект из quic_media.sh). Установка/удаление остаются в CLI
 # (п.5 -> п.11): сетевые инсталляции из CGI не выполняются по дизайну.
@@ -108,6 +236,8 @@ fi
 
 find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{"error":"missing z2r runtime libs"}'; exit 0; }
 . "$LIB_DIR/config.sh"
+[ -f "$LIB_DIR/adaptive_rules.sh" ] && . "$LIB_DIR/adaptive_rules.sh"
+[ -f "$LIB_DIR/adaptive_queue.sh" ] && . "$LIB_DIR/adaptive_queue.sh"
 . "$LIB_DIR/orchestra_state.sh"
 . "$LIB_DIR/strategies.sh"
 . "$LIB_DIR/netcheck.sh"
@@ -151,6 +281,9 @@ parse_params() {
   PARAM_COMMENT=""
   PARAM_TEXT=""
   PARAM_ID=""
+  PARAM_HOSTNAME=""
+  PARAM_DESTINATION_IP=""
+  PARAM_PROFILE_ID=""
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
@@ -182,6 +315,9 @@ parse_params() {
       comment) PARAM_COMMENT="$value" ;;
       text) PARAM_TEXT="$value" ;;
       id) PARAM_ID="$value" ;;
+      hostname) PARAM_HOSTNAME="$value" ;;
+      destination_ip) PARAM_DESTINATION_IP="$value" ;;
+      profile_id) PARAM_PROFILE_ID="$value" ;;
     esac
   done
 }

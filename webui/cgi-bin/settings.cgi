@@ -53,6 +53,9 @@ case "${REQUEST_METHOD:-GET}" in
       h3_curl)
         api_h3_curl_get
         ;;
+      adaptive)
+        api_adaptive_get
+        ;;
       update_check)
         api_update_check
         ;;
@@ -123,6 +126,9 @@ case "${REQUEST_METHOD:-GET}" in
         ;;
       provider_redetect)
         api_provider_redetect
+        ;;
+      adaptive_action)
+        api_adaptive_action
         ;;
       *)
         send_error "400 Bad Request" "Неизвестная настройка"

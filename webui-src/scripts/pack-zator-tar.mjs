@@ -210,8 +210,16 @@ add('_root/z2r.sh', 'z2r.sh', { executable: true })
 add('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')
 add('tools/googlevideo-dns-listener.sh', 'tools/googlevideo-dns-listener.sh', { executable: true })
 add('tools/wssize-ramp-firewall.sh', 'tools/wssize-ramp-firewall.sh', { executable: true })
+for (const name of [
+  'adaptive-agent-port.ps1', 'adaptive-agent-state.ps1', 'adaptive-agent-stats.ps1',
+  'adaptive-agent-verdict.ps1', 'adaptive-agent.ps1', 'adaptive-controller.sh',
+  'adaptive-pair.sh', 'adaptive-lan-reconcile.sh',
+]) {
+  add(`tools/${name}`, `tools/${name}`, { executable: name.endsWith('.sh') })
+}
 add('_payload/config.default', 'config.default', { cls: 'payload' })
 add('_payload/fake_files.tar.gz', 'fake_files.tar.gz', { cls: 'payload' })
+add('_payload/Entware/000-zapret2.sh', 'Entware/000-zapret2.sh', { cls: 'payload', executable: true })
 add('_payload/Entware/keenetic-policy.sh', 'Entware/keenetic-policy.sh', { cls: 'payload', executable: true })
 add('_payload/Entware/z2r-strategy-validator', 'Entware/z2r-strategy-validator', { cls: 'payload', executable: true })
 add('_payload/init.d/openwrt/z2r-strategy-validator', 'init.d/openwrt/z2r-strategy-validator', { cls: 'payload', executable: true })

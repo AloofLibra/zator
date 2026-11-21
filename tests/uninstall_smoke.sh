@@ -118,8 +118,8 @@ printf '%s\n' "$FOUR_BLOCK" | grep -q 'remove_zapret' \
   || fail "обработчик 4 не удаляет zapret2"
 printf '%s\n' "$FOUR_BLOCK" | grep -q 'zator_remove' \
   || fail "обработчик 4 не удаляет zator"
-printf '%s\n' "$FOUR_BLOCK" | grep -qF 'remove_zapret || echo' \
-  || fail "в обработчике 4 вызов remove_zapret не защищён (|| echo)"
+printf '%s\n' "$FOUR_BLOCK" | grep -qF 'if remove_zapret; then' \
+  || fail "в обработчике 4 удаление не останавливается при ошибке cleanup"
 printf '%s\n' "$FOUR_BLOCK" | grep -qF 'zator_remove || echo' \
   || fail "в обработчике 4 вызов zator_remove не защищён (|| echo)"
 
@@ -131,8 +131,8 @@ printf '%s\n' "$FORTYFOUR_BLOCK" | grep -q 'remove_zapret' \
 if printf '%s\n' "$FORTYFOUR_BLOCK" | grep -q 'zator_remove'; then
   fail "обработчик 44 не должен трогать zator"
 fi
-printf '%s\n' "$FORTYFOUR_BLOCK" | grep -qF 'remove_zapret || echo' \
-  || fail "в обработчике 44 вызов remove_zapret не защищён (|| echo)"
+printf '%s\n' "$FORTYFOUR_BLOCK" | grep -qF 'if remove_zapret; then' \
+  || fail "в обработчике 44 удаление не останавливается при ошибке cleanup"
 
 # Watchdog: удаление (4/44) снимает его полностью, тело установщика
 # (переустановка zapret2) — не удаляет, но поднимает после установки.
@@ -147,6 +147,13 @@ printf '%s\n' "$INSTALL_BODY" | grep -q 'watchdog_ensure_running' \
 if printf '%s\n' "$INSTALL_BODY" | grep -q 'watchdog_uninstall'; then
   fail "тело установщика (переустановка) не должно удалять watchdog"
 fi
+REMOVE_BLOCK="$(sed -n '/^remove_zapret()/,/^}/p' "$REPO_DIR/z2r.sh")"
+printf '%s\n' "$REMOVE_BLOCK" | grep -q 'adaptive-pair.sh.*disable' \
+  || fail "remove_zapret не отключает адаптивный агент перед удалением runtime"
+DISABLE_LINE="$(printf '%s\n' "$REMOVE_BLOCK" | grep -n 'adaptive-pair.sh.*disable' | head -n1 | cut -d: -f1)"
+DELETE_LINE="$(printf '%s\n' "$REMOVE_BLOCK" | grep -n 'rm -rf "\$ZAPRET2_ROOT"' | head -n1 | cut -d: -f1)"
+[ -n "$DISABLE_LINE" ] && [ -n "$DELETE_LINE" ] && [ "$DISABLE_LINE" -lt "$DELETE_LINE" ] \
+  || fail "remove_zapret удаляет zapret2 до отключения адаптивного агента"
 
 # Внутри zator_remove сервисы остановлены безопасно.
 ZR_BLOCK="$(cat "$TMP_DIR/zator_remove.fn")"

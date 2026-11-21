@@ -25,6 +25,13 @@ assert(type(G.hostlist_has_host) == "function")
 assert(type(G.substring_hostlist_matches_desync) == "function")
 dofile("lua/combined-detector.lua")
 
+local adaptive_failure_calls = 0
+G.z2r_adaptive_suspected_failure = function(_, crec)
+    if crec.adaptive_failure_reported then return end
+    adaptive_failure_calls = adaptive_failure_calls + 1
+    crec.adaptive_failure_reported = true
+end
+
 local combined_failure_detector = assert(G.combined_failure_detector)
 local combined_success_detector = assert(G.combined_success_detector)
 local circular_quality = assert(G.circular_quality)
@@ -50,6 +57,9 @@ for i = 1, 4 do
 end
 G.standard_failure_detector = function() return true end
 assert(combined_failure_detector(tcp, tcp_crec), "soft TCP success must not suppress a hard failure")
+assert(adaptive_failure_calls == 1, "hard failure should report one bounded adaptive suspicion")
+assert(combined_failure_detector(tcp, tcp_crec) and adaptive_failure_calls == 1,
+    "repeated packets in one connection must not report duplicate adaptive suspicions")
 G.standard_failure_detector = function() return false end
 
 -- A browser may emit further TLS/data frames after a successful HEAD/no-body
@@ -110,6 +120,19 @@ local http = {
 assert(not combined_failure_detector(http, http_crec), "HTTP 400 must not rotate strategy")
 assert(combined_success_detector(http, http_crec), "HTTP 400 must validate transport success")
 assert(http_crec.validated_success, "HTTP 400 must set validated success")
+
+local content_failure_calls = adaptive_failure_calls
+local stub_crec = {}
+local stub = {
+    outgoing = false,
+    dis = { tcp = { th_flags = 0 }, payload = "HTTP/1.1 200 OK\r\nServer: ov.google.com\r\nContent-Length: 10\r\n\r\nblocked body" },
+    track = {},
+    arg = {},
+}
+assert(combined_failure_detector(stub, stub_crec), "DPI content marker must remain a failure")
+assert(adaptive_failure_calls == content_failure_calls + 1, "content-based failure must report adaptive suspicion")
+assert(not combined_failure_detector(stub, stub_crec) and adaptive_failure_calls == content_failure_calls + 1,
+    "content failure must report only once per connection")
 
 local abort_crec = { tcp_in_count = 1 }
 local abort = {

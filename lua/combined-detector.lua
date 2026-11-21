@@ -691,18 +691,30 @@ function combined_failure_detector(desync, crec)
 
     -- First, call standard failure detector for RST/retrans/redirect
     if standard_failure_detector(desync, crec) then
+        if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
+            z2r_adaptive_suspected_failure(desync, crec)
+        end
         return true
     end
 
     if check_early_client_tls_abort(desync, crec) then
+        if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
+            z2r_adaptive_suspected_failure(desync, crec)
+        end
         return true
     end
 
     if check_connection_stall(desync, crec) then
+        if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
+            z2r_adaptive_suspected_failure(desync, crec)
+        end
         return true
     end
 
     if check_extended_rst(desync, crec) then
+        if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
+            z2r_adaptive_suspected_failure(desync, crec)
+        end
         return true
     end
 
@@ -722,7 +734,14 @@ function combined_failure_detector(desync, crec)
         return false
     end
 
-    return check_tcp_response_content_failure(payload, crec)
+    local content_failure = check_tcp_response_content_failure(payload, crec)
+    if content_failure then
+        if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
+            z2r_adaptive_suspected_failure(desync, crec)
+        end
+        return true
+    end
+    return content_failure
 end
 
 -- ==================== TCP success/failure content checks ====================
@@ -1540,6 +1559,9 @@ function circular_quality(ctx, desync)
     -- Normalize hostkey for slm_* functions
     hostkey = slm_normalize_hostkey(hostkey) or hostkey
     local scope = type(desync_client_scope) == "function" and desync_client_scope(desync) or "default"
+    if type(z2r_adaptive_observe_connection) == "function" then
+        z2r_adaptive_observe_connection(desync, desync_profile_key(desync), observed_hostname, scope, true)
+    end
 
     -- Count strategies from desync.plan (already populated by orchestrate() at function start)
     count_strategies(hrec, desync.plan)

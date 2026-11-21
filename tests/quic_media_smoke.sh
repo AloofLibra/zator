@@ -149,6 +149,10 @@ run_install() { # $1=фикстура, $2=режим мока, $3=явный и�
         MOCK_DL_SRC="${3:-$TMP_DIR/dl/$1}" MOCK_DL="${2:-}" PATH="$TMP_DIR/dlbin:$PATH" \
         z2r_quic_curl_install
 }
+run_install_existing() {
+    ZATOR_ROOT="$INSTALL_ROOT" MOCK_UNAME=i686 Z2R_CURL_H3_RELEASE_BASE="https://mock.invalid/rel" \
+        MOCK_DL_SRC="$1" PATH="$TMP_DIR/dlbin:$PATH" z2r_quic_curl_install
+}
 run_install good.gz 2>/dev/null || fail "установка: годный артефакт не установлен"
 test -s "$INSTALL_ROOT/tools/bin/curl-h3-i686" || fail "установка: бинарник не записан"
 if can_x; then
@@ -156,7 +160,7 @@ if can_x; then
 fi
 : > "$MOCK_DL_CALLS"
 if can_x; then
-    run_install good.gz "" "$TMP_DIR/dl/absent.gz" 2>/dev/null \
+    run_install_existing "$TMP_DIR/dl/absent.gz" 2>/dev/null \
       || fail "установка: существующий бинарник должен вернуть 0 без скачивания"
     test ! -s "$MOCK_DL_CALLS" || fail "установка: существующий бинарник должен пропускать скачивание"
 fi

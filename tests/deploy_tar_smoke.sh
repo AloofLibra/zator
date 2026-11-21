@@ -148,6 +148,8 @@ grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fa
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"
 grep -q '^_root/z2r.sh|/opt/z2r.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без _root/z2r.sh"
 grep -q '^_payload/config.default|/opt/zator/.deploy-payload/config.default|payload|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без payload"
+grep -q '^_payload/Entware/000-zapret2.sh|/opt/zator/.deploy-payload/Entware/000-zapret2.sh|payload|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без payload Keenetic NDM hook"
+cmp -s "$STAGE/_payload/Entware/000-zapret2.sh" "$REPO_DIR/Entware/000-zapret2.sh" || fail "payload Keenetic NDM hook отличается от исходника"
 grep -q '^tools/wssize-ramp-firewall.sh|/opt/zator/tools/wssize-ramp-firewall.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без startup hook для Ramp"
 if grep -q '^tools/bin/googlevideo-dns-sniffer-' "$STAGE/extra_strats/cache/deploy/manifest.tsv"; then fail "архив содержит архитектурные DNS-сборщики"; fi
 grep -q '^lists/netrogat.txt|.*|keep-if-exists|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без keep-if-exists у netrogat"
@@ -382,6 +384,26 @@ ok "deploy_from_tar A: файлы, payload, z2r.sh, symlink"
 # Standalone z2r --version path executes deploy.sh without loading z2r.sh
 # functions. The deployed archive must still install its matching arch asset.
 mkdir -p "$WORK/sniffer-bin"
+sniffer_arch="$(googlevideo_sniffer_arch)" || fail "не удалось определить архитектуру test sniffer"
+python3 - "$sniffer_arch" > "$WORK/sniffer-fixture" <<'PY'
+import sys
+
+formats = {
+    "arm": (1, 1, 40), "arm64": (2, 1, 183),
+    "lexra": (1, 1, 8), "mipselsf": (1, 1, 8),
+    "mipssf": (1, 2, 8), "mips64": (2, 2, 8),
+    "ppc": (1, 2, 20), "x86": (1, 1, 3),
+    "x86_64": (2, 1, 62), "riscv64": (2, 1, 243),
+}
+elf_class, encoding, machine = formats[sys.argv[1]]
+header = bytearray(20)
+header[:4] = b"\x7fELF"
+header[4:7] = bytes((elf_class, encoding, 1))
+header[18:20] = machine.to_bytes(2, "little" if encoding == 1 else "big")
+sys.stdout.buffer.write(header)
+PY
+SNIF_FIXTURE="$WORK/sniffer-fixture"
+export SNIF_FIXTURE
 cat > "$WORK/sniffer-bin/curl" <<'EOF'
 #!/bin/sh
 out=""
@@ -389,7 +411,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac
 done
 [ -n "$out" ] || exit 2
-printf 'standalone sniffer fixture\n' | gzip -c > "$out"
+gzip -c "$SNIF_FIXTURE" > "$out"
 EOF
 chmod +x "$WORK/sniffer-bin/curl"
 SNIF_STANDALONE_ROOT="$WORK/standalone-zator"
@@ -402,7 +424,8 @@ PATH="$WORK/sniffer-bin:$PATH" ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="
   bash "$REPO_DIR/lib/deploy.sh" from-tar "$DIST/zator-full.tar.gz" full googlevideo-fix-beta.smoke \
   >/dev/null 2>&1 || fail "standalone deploy failed"
 [ -x "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" ] || fail "standalone deploy did not install platform sniffer"
-[ "$(cat "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer")" = 'standalone sniffer fixture' ] || fail "standalone sniffer asset content mismatch"
+googlevideo_sniffer_binary_matches_arch "$sniffer_arch" "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" || fail "standalone sniffer asset ABI mismatch"
+cmp -s "$WORK/sniffer-fixture" "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" || fail "standalone sniffer asset content mismatch"
 [ -x "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ] || fail "standalone deploy did not restore SysV collector hook"
 ok "standalone tar deploy installs sniffer and SysV hook despite both init trees"
 
@@ -678,6 +701,7 @@ grep -q 'OFFLINE_READY version=1.0.5.1-reasm-fix' "$OFFLINE_DIR/install.out" || 
 [ -f "$OFFLINE_DIR/optroot/zator/z2r_lib/deploy.sh" ] || fail "офлайн: нет z2r_lib"
 [ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/config.default" ] || fail "офлайн: нет payload config.default"
 [ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/fake_files.tar.gz" ] || fail "офлайн: нет payload fake_files.tar.gz"
+[ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/Entware/000-zapret2.sh" ] || fail "офлайн: нет payload Keenetic NDM hook"
 [ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/Entware/z2r-strategy-validator" ] || fail "офлайн: нет payload validator"
 grep -q '^TRACKING="offline-1.0.5.1-reasm-fix"$' "$OFFLINE_DIR/optroot/zator/extra_strats/cache/deploy/version.env" || fail "офлайн: TRACKING не закреплён"
 grep -q '^AUTOUPDATE=off$' "$OFFLINE_DIR/optroot/z2r.conf" || fail "офлайн: AUTOUPDATE не выключен"

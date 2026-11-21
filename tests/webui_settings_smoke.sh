@@ -74,6 +74,10 @@ command -v python >/dev/null 2>&1 && python -c "import ast,sys; ast.parse(open(s
 mkdir -p "$TMP_DIR/panel/cgi-bin" "$TMP_DIR/runtime/z2r_lib"
 sed "s#/opt/zator#$TMP_DIR/runtime#g; s#/opt/zapret2#$TMP_DIR/zapret2#g" \
   "$REPO_DIR/webui/cgi-bin/_lib.sh" > "$TMP_DIR/panel/cgi-bin/_lib.sh"
+cat >> "$TMP_DIR/panel/cgi-bin/_lib.sh" <<'ADAPTIVE_RESTART_MOCK'
+zapret2_running() { return 0; }
+service_zapret2() { printf '%s\n' "$1" >> "$ADAPTIVE_RESTART_LOG"; }
+ADAPTIVE_RESTART_MOCK
 sed "s#/opt/zator/webui/cgi-bin/_lib.sh#$TMP_DIR/panel/cgi-bin/_lib.sh#" \
   "$REPO_DIR/webui/cgi-bin/settings.cgi" > "$TMP_DIR/panel/cgi-bin/settings.cgi"
 printf 'exit 97\n' > "$TMP_DIR/runtime/z2r_lib/config.sh"
@@ -110,6 +114,71 @@ grep -q 'Status: 503 Service Unavailable' <<< "$report" || fail 'h3_curl old cor
 normal_rc=0
 REQUEST_METHOD=GET QUERY_STRING=setting=ports bash "$TMP_DIR/panel/cgi-bin/settings.cgi" || normal_rc=$?
 [ "$normal_rc" = 97 ] || fail 'ordinary settings skipped the runtime loader'
+
+# Adaptive panel status and same-origin/LAN-only controls.
+printf ':\n' > "$TMP_DIR/runtime/z2r_lib/config.sh"
+mkdir -p "$TMP_DIR/runtime/extra_strats/cache/adaptive" "$TMP_DIR/runtime/tools" "$TMP_DIR/adaptive"
+printf 'TEST_ONLY\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode"
+printf 'paired-token\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
+printf '1\tseen\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/events.tsv"
+printf '1\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t7\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
+printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.last"
+printf '%s\n' 'adaptive_rule_remove() { printf "%s|%s|%s|%s\\n" "$@" >> "$ADAPTIVE_RULE_RESET_LOG"; }' > "$TMP_DIR/runtime/z2r_lib/adaptive_rules.sh"
+cp "$REPO_DIR/lib/adaptive_queue.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_queue.base.sh"
+cat > "$TMP_DIR/runtime/z2r_lib/adaptive_queue.sh" <<'ADAPTIVE_QUEUE'
+. "$LIB_DIR/adaptive_queue.base.sh"
+adaptive_queue_request() { printf '%s|%s|%s|%s\n' "$@" >> "$ADAPTIVE_REQUEST_LOG"; printf '%032d\n' 1; }
+ADAPTIVE_QUEUE
+cat > "$TMP_DIR/runtime/tools/adaptive-pair.sh" <<'ADAPTIVE_CLI'
+#!/bin/sh
+printf '%s\n' "$1" >> "$ADAPTIVE_ACTION_LOG"
+ADAPTIVE_CLI
+chmod +x "$TMP_DIR/runtime/tools/adaptive-pair.sh"
+adaptive_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"paired":true' <<< "$adaptive_status" || fail 'adaptive pairing status missing'
+grep -Fq '"mode":"TEST_ONLY"' <<< "$adaptive_status" || fail 'adaptive mode missing'
+grep -Fq '"event_count":1' <<< "$adaptive_status" || fail 'adaptive event count missing'
+grep -Fq '"pending_requests":0' <<< "$adaptive_status" || fail 'adaptive request count missing'
+grep -Fq '"hostname":"cdn.example.org"' <<< "$adaptive_status" || fail 'adaptive queue details missing'
+grep -Fq '"strategy_number":7' <<< "$adaptive_status" || fail 'adaptive exact rule details missing'
+grep -Fq '"resources":{' <<< "$adaptive_status" || fail 'adaptive router capacity metrics missing'
+grep -Fq '"agent_online":true' <<< "$adaptive_status" || fail 'adaptive status did not report a recent Windows agent heartbeat'
+assert_not_contains "$adaptive_status" 'sha256:' 'adaptive GET exposed internal fingerprints'
+assert_not_contains "$adaptive_status" paired-token 'adaptive GET exposed bearer token'
+printf '1\n' > "$TMP_DIR/adaptive/agent.last"
+offline_agent_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"agent_online":false' <<< "$offline_agent_status" || fail 'adaptive status reported a stale Windows agent heartbeat as online'
+printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.last"
+printf '1\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
+expired_adaptive_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"paired":false' <<< "$expired_adaptive_status" || fail 'adaptive panel reported an expired token as paired'
+grep -Fq '"pairing_expired":true' <<< "$expired_adaptive_status" || fail 'adaptive panel did not distinguish an expired pairing token'
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
+export ADAPTIVE_ACTION_LOG="$TMP_DIR/adaptive-actions.log"
+export ADAPTIVE_RESTART_LOG="$TMP_DIR/adaptive-restarts.log"
+body='setting=adaptive_action&action=test-only'
+adaptive_action="$(printf '%s' "$body" | Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=192.168.1.7 bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq 'Status: 200 OK' <<< "$adaptive_action" || fail 'same-origin adaptive control failed'
+grep -Fq '"action":"test-only"' <<< "$adaptive_action" || fail 'adaptive control response missing action'
+grep -Fq '"restarted":true' <<< "$adaptive_action" || fail 'adaptive control did not reload the mode'
+grep -Fxq 'test-only' "$ADAPTIVE_ACTION_LOG" || fail 'adaptive control did not delegate to CLI'
+grep -Fxq 'restart' "$ADAPTIVE_RESTART_LOG" || fail 'adaptive mode change did not restart zapret2'
+export ADAPTIVE_RULE_RESET_LOG="$TMP_DIR/adaptive-rule-reset.log"
+reset_body='setting=adaptive_action&action=reset-rule&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=default'
+reset_result="$(printf '%s' "$reset_body" | Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#reset_body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=192.168.1.7 bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"action":"reset-rule"' <<< "$reset_result" || fail 'exact adaptive rule reset failed'
+grep -Fxq 'cdn.example.org|93.184.216.34|1|default' "$ADAPTIVE_RULE_RESET_LOG" || fail 'adaptive rule reset tuple changed'
+export ADAPTIVE_REQUEST_LOG="$TMP_DIR/adaptive-request.log"
+request_body='setting=adaptive_action&action=request-probe&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=default'
+request_result="$(printf '%s' "$request_body" | Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#request_body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=192.168.1.7 bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"action":"request-probe"' <<< "$request_result" || fail 'manual adaptive probe request failed'
+grep -Fq '"request_id":"00000000000000000000000000000001"' <<< "$request_result" || fail 'manual request id missing'
+grep -Fxq 'cdn.example.org|93.184.216.34|1|default' "$ADAPTIVE_REQUEST_LOG" || fail 'manual request tuple changed'
+cross_origin="$(printf '%s' "$body" | Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://evil.example REMOTE_ADDR=192.168.1.7 bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq 'Status: 403 Forbidden' <<< "$cross_origin" || fail 'cross-origin adaptive control accepted'
+non_lan="$(printf '%s' "$body" | Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=8.8.8.8 bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq 'Status: 403 Forbidden' <<< "$non_lan" || fail 'non-LAN adaptive control accepted'
 
 # == 0b. custom.cgi: кастомные стратегии (CRUD поверх lib/custom_strategies.sh) ==
 CUSTOM_DIR="$TMP_DIR/custom"

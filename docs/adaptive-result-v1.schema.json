@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alooflibra.fun/schemas/zator/adaptive-result-v1.schema.json",
+  "title": "Zator adaptive probe result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "test_id",
+    "route_verified",
+    "transport",
+    "application",
+    "overall",
+    "reason",
+    "observed_at",
+    "target",
+    "strategy",
+    "recipe_id",
+    "client_profile"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "test_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "route_verified": { "type": "boolean" },
+    "transport": { "enum": ["OK", "FAIL", "UNKNOWN"] },
+    "application": { "enum": ["OK", "FAIL", "NOT_TESTED", "UNKNOWN"] },
+    "overall": { "enum": ["SUCCESS", "FAIL", "INCONCLUSIVE"] },
+    "reason": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "observed_at": { "type": "integer", "minimum": 0 },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostname", "destination_ip", "ip_family", "protocol", "port", "profile_id", "scope"],
+      "properties": {
+        "hostname": { "type": "string", "minLength": 1, "maxLength": 253 },
+        "destination_ip": { "type": "string", "minLength": 2, "maxLength": 45 },
+        "ip_family": { "enum": ["ipv4", "ipv6"] },
+        "protocol": { "const": "tcp" },
+        "port": { "const": 443 },
+        "profile_id": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "scope": { "type": "string", "pattern": "^(default|mark:[1-9][0-9]{0,4})$", "maxLength": 10 }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "local_number", "catalog_version"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "local_number": { "type": "integer", "minimum": 0 },
+        "catalog_version": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "recipe_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "client_profile": { "type": "string", "minLength": 1, "maxLength": 64 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "overall": { "const": "SUCCESS" } } },
+      "then": {
+        "properties": {
+          "route_verified": { "const": true },
+          "transport": { "const": "OK" },
+          "application": { "const": "OK" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "overall": { "const": "FAIL" } } },
+      "then": {
+        "properties": {
+          "route_verified": { "const": true }
+        },
+        "anyOf": [
+          { "properties": { "transport": { "const": "FAIL" } } },
+          { "properties": { "application": { "const": "FAIL" } } }
+        ]
+      }
+    }
+  ]
+}

@@ -11,7 +11,9 @@ grep -q 'lock_source' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'effective sourc
 grep -q ' Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || grep -q 'Некорректный scope' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'invalid scope response'
 grep -q 'scopes' "$REPO_DIR/webui/dev/fake_router_server.py" || fail 'fake router scopes'
 bash -n "$REPO_DIR/webui/cgi-bin/_lib.sh" "$REPO_DIR/webui/cgi-bin/scopes.cgi"
-PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
+PYTHON_BIN="$(command -v python || command -v python3 || true)"
+[ -n "$PYTHON_BIN" ] || fail 'python or python3 is required'
+PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - <<'PY'
 import ast, importlib.util, json, pathlib, threading
 from http.server import ThreadingHTTPServer
 from urllib.request import urlopen
@@ -66,7 +68,7 @@ grep -q 'client_scope_diagnostics' "$REPO_DIR/webui/dev/fake_router_server.py" |
 grep -q 'client_scope_diagnostics_json' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'scope diagnostics API'
 grep -q 'fallback_reason' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail 'fallback reason API'
 grep -rq 'last_seen_scope' "$REPO_DIR/webui-src/src" || fail 'scope diagnostics UI'
-PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" - <<'PY'
 from pathlib import Path
 text = Path('webui/cgi-bin/_lib.sh').read_text(encoding='utf-8')
 body = text.split('client_scope_diagnostics_json() {', 1)[1].split('\n}\n\nclient_scopes_json()', 1)[0]

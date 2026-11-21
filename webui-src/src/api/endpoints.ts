@@ -1,6 +1,7 @@
 import { api, formBody } from './client'
 import type {
   ApplyResult, BackupsPayload, CheckPayload, CustomImportResult, CustomListPayload,
+  AdaptiveActionResult, AdaptiveStatus,
   DomainsImportResult, DomainsListPayload, FallbackSettings, H3CurlStatus, ModeSettingData,
   PortInfo, PortsSettings, ProfileInfo, ProviderSettings, ScopesPayload, StatePayload,
   StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult, WgBlobSettings,
@@ -21,6 +22,12 @@ export const fetchSupersweep = (signal?: AbortSignal) =>
 
 export const fetchH3Curl = (signal?: AbortSignal) =>
   api<H3CurlStatus>('/cgi-bin/settings.cgi?setting=h3_curl', { signal })
+
+export const fetchAdaptiveStatus = (signal?: AbortSignal) =>
+  api<AdaptiveStatus>('/cgi-bin/settings.cgi?setting=adaptive', { signal })
+
+export const adaptiveAction = (action: string, rule?: { hostname: string; destination_ip: string; profile_id: number; scope: string }) =>
+  api<AdaptiveActionResult>('/cgi-bin/settings.cgi', formBody({ setting: 'adaptive_action', action, ...(rule ? { hostname: rule.hostname, destination_ip: rule.destination_ip, profile_id: String(rule.profile_id), scope: rule.scope } : {}) }))
 
 export const fetchCustomStrats = (block: string, signal?: AbortSignal) =>
   api<CustomListPayload>(

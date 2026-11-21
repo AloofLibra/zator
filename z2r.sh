@@ -61,7 +61,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh adaptive_lan_transport.sh adaptive_rules.sh adaptive_queue.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh"
 
 # Release assets are separate from the deploy tar so each router stores only
 # its own static binary. This is optional: the central Googlevideo feed works
@@ -690,6 +690,15 @@ circular_runtime_update_from_repo() {
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
 }
 
+adaptive_runtime_update_from_repo() {
+  local tool
+  mkdir -p "$ZATOR_ROOT/tools" || return 1
+  for tool in adaptive-agent-verdict.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-port.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh; do
+    z2r_download_project_file "$ZATOR_ROOT/tools/$tool" "tools/$tool" || return 1
+    chmod 700 "$ZATOR_ROOT/tools/$tool" || return 1
+  done
+}
+
 # client-scope-config.lua is a persistent generated state file. Download the
 # default only for a fresh install; updates must not overwrite user settings.
 client_scope_lua_config_install_default() {
@@ -1113,6 +1122,7 @@ get_repo() {
   mkdir -p "$ZATOR_ROOT/lists" "$ZATOR_ROOT/extra_strats" "$ZATOR_ROOT/extra_strats/cache" "$ZATOR_ROOT/files/fake"
   mkdir -p "$ORCH_DIR"
   z2r_install_runtime_libs_from_archive || return 1
+  adaptive_runtime_update_from_repo || return 1
   client_scope_lua_config_install_default || return 1
   chmod 777 "$ORCH_DIR" 2>/dev/null || true
   # При повторной установке lua-модули и сервисы валидаторов уже на месте:
@@ -1269,6 +1279,14 @@ client_scope_firewall_apply_active_config() {
 }
 
 remove_zapret() {
+ # Revoke the adaptive agent and wait for isolated probe firewall cleanup
+ # before removing the binaries or libraries its controller still uses.
+ if [ -x "$ZATOR_ROOT/tools/adaptive-pair.sh" ]; then
+  "$ZATOR_ROOT/tools/adaptive-pair.sh" disable || {
+   echo -e "${red}Адаптивная проба ещё не очистила временный транспорт; удаление остановлено.${plain}" >&2
+   return 1
+  }
+ fi
  # Cleanup is independent of the feature flag. Prefer the active config's
  # backend; when config is already absent, clean both isolated backends.
  if [ -f "$ZAPRET2_ROOT/config" ]; then
@@ -1985,6 +2003,7 @@ webui_install_files() {
   webui_repo_fetch "cgi-bin/settings.cgi" "$WEBUI_CGI/settings.cgi" || return 1
   webui_repo_fetch "cgi-bin/backups.cgi" "$WEBUI_CGI/backups.cgi" || return 1
   webui_repo_fetch "cgi-bin/custom.cgi" "$WEBUI_CGI/custom.cgi" || return 1
+  webui_repo_fetch "cgi-bin/adaptive.cgi" "$WEBUI_CGI/adaptive.cgi" || return 1
 
   chmod +x "$WEBUI_RUNNER" "$WEBUI_CGI"/*.sh "$WEBUI_CGI"/*.cgi
   webui_fix_interpreters
@@ -2594,6 +2613,7 @@ ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас
 ${Fcyan}19.${yellow} Доп. настройки (reasm, WG, QUIC-fakes, keenetic)
 ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}
 ${Fcyan}21.${yellow} Управление бэкапами (создание/восстановление/удаление архивов)
+${Fcyan}24.${yellow} Адаптивный подбор (наблюдение, TEST_ONLY, статус и диагностика)
 ${Fcyan}23.${yellow} Client scopes (Beta): разные стратегии разным устройствам по IP. Сейчас: ${plain}[${MENU_CLIENT_SCOPE}]${yellow}
 ${Fcyan}666.${yellow} Ошибки nfqws2 — журнал последнего запуска${MENU_ERR_STATE}
 ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать только Valery ProD, avg97, Xoz, GeGunT, blagodarenya, mikhyan, Xoz, andric62, Whoze, Necronicle, Andrei_5288515371, Nomand, Dina_turat, Nergalss, Александру, АлександруП, vecheromholodno, ЕвгениюГ, Dyadyabo, skuwakin, izzzgoy, Grigaraz, Reconnaissance, comandante1928, umad, rudnev2028, rutakote, railwayfx, vtokarev1604, Grigaraz, a40letbezurojaya и subzeero452 и остальным поддержавшим проект. Но если очень хочется - можно нажать и другим)${plain}"
@@ -2640,6 +2660,10 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     pause_enter
     ;;
 
+  "24")
+    adaptive_submenu
+    ;;
+
   "3")
     blockcheck2_run_summary || true
     pause_enter
@@ -2653,9 +2677,12 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
         backup_helper_ask_and_create
         # zapret2 уходит насовсем — watchdog больше нечего сторожить.
         watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
-        remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
-        zator_remove || echo -e "${red}Удаление zator завершилось с ошибкой.${plain}"
-        echo -e "${yellow}Удаление zator и zapret2 завершено${plain}"
+        if remove_zapret; then
+          zator_remove || echo -e "${red}Удаление zator завершилось с ошибкой.${plain}"
+          echo -e "${yellow}Удаление zator и zapret2 завершено${plain}"
+        else
+          echo -e "${red}Удаление отменено: сначала требуется очистить адаптивную пробу.${plain}"
+        fi
         ;;
       *)
         echo -e "${green}Удаление отменено.${plain}"
@@ -2674,11 +2701,14 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
         watchdog_uninstall || echo -e "${red}Остановка/удаление watchdog завершились с ошибкой.${plain}"
         WEBUI_WAS_RUNNING=0
         webui_status_text 2>/dev/null | grep -q '^running' && WEBUI_WAS_RUNNING=1
-        remove_zapret || echo -e "${red}Удаление zapret2 завершилось с ошибкой.${plain}"
-        if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
-          webui_start_service >/dev/null 2>&1 || true
+        if remove_zapret; then
+          if [ "$WEBUI_WAS_RUNNING" = "1" ]; then
+            webui_start_service >/dev/null 2>&1 || true
+          fi
+          echo -e "${yellow}zapret2 удалён${plain}"
+        else
+          echo -e "${red}Удаление отменено: сначала требуется очистить адаптивную пробу.${plain}"
         fi
-        echo -e "${yellow}zapret2 удалён${plain}"
         ;;
       *)
         echo -e "${green}Удаление отменено.${plain}"

@@ -1665,6 +1665,20 @@ class FakeRouterState:
         self.simulate_error = set(simulate_error or [])
         self.provider = provider
         self.recommendations_status = "ready"
+        self.adaptive_status = {
+            "paired": True, "pairing_expired": False, "agent_online": True,
+            "agent_last_seen": int(time.time()), "mode": "OBSERVE", "event_count": 2,
+            "events": [
+                {"status": "seen", "hostname": "cdn.example.org", "destination_ip": "93.184.216.34",
+                 "profile_id": 1, "protocol": "tls", "scope": "default", "observed_at": 1730000000},
+                {"status": "needs_verify", "hostname": "media.example.net", "destination_ip": "93.184.216.35",
+                 "profile_id": 2, "protocol": "tls", "scope": "mark:4", "observed_at": 1730000300},
+            ],
+            "event_capacity": 128, "pending_requests": 0, "rules": [], "active_probes": 0,
+            "cleanup_failures": 0,
+            "resources": {"load1_per_core": 0.12, "cores": 4, "mem_available_kib": 524288, "active_probes": 0},
+            "automatic_apply": False,
+        }
         # api_h3_curl_get (settings.cgi?setting=h3_curl): только чтение, установка в CLI.
         self.h3_curl = {"found": True, "path": "/opt/zator/tools/bin/curl-h3-i686", "arch": "i686"}
         # Кастомные стратегии (custom.cgi): одна демо-запись для dev-просмотра.
@@ -3284,6 +3298,9 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     self._send_json(self.state.supersweep_report)
                 elif setting == "h3_curl":
                     self._send_json(dict(self.state.h3_curl))
+                elif setting == "adaptive":
+                    self._log("GET {0} | adaptive status".format(parsed.path))
+                    self._send_json(dict(self.state.adaptive_status))
                 elif setting == "wg_blob":
                     self._log("GET {0} | wg_blob settings".format(parsed.path))
                     self._send_json(self.state.build_wg_blob_settings())
@@ -3325,6 +3342,50 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
 
         if self.command == "POST":
+            if setting == "adaptive_action":
+                action = params.get("action", "")
+                if action == "request-probe":
+                    with self.state.lock:
+                        status = self.state.adaptive_status
+                        event = {"hostname": params.get("hostname", ""), "destination_ip": params.get("destination_ip", ""), "profile_id": int(params.get("profile_id", "0") or "0"), "scope": params.get("scope", "")}
+                        if status.get("mode") != "TEST_ONLY" or not any(all(row.get(k) == v for k, v in event.items()) for row in status.get("events", [])):
+                            self._send_error_json(409, "Observation is not available for verification")
+                            return
+                        self._log("POST {0} | adaptive manual probe requested".format(parsed.path))
+                        self._send_json({"ok": True, "action": action, "request_id": "0" * 32, "restarted": False, "message": "Запрос поставлен в очередь"})
+                    return
+                if action == "reset-rule":
+                    with self.state.lock:
+                        status = self.state.adaptive_status
+                        rule = {"hostname": params.get("hostname", ""), "destination_ip": params.get("destination_ip", ""), "profile_id": int(params.get("profile_id", "0") or "0"), "scope": params.get("scope", "")}
+                        rules = status.setdefault("rules", [])
+                        before = len(rules)
+                        rules[:] = [item for item in rules if any(item.get(key) != value for key, value in rule.items())]
+                        if len(rules) == before:
+                            self._send_error_json(404, "Adaptive rule not found")
+                            return
+                        self._send_json({"ok": True, "action": action, "restarted": False, "message": "Правило удалено"})
+                    return
+                if action not in ("observe", "test-only", "pause", "clear-events", "disable"):
+                    self._send_error_json(400, "Некорректное действие adaptive rotation")
+                    return
+                with self.state.lock:
+                    status = self.state.adaptive_status
+                    if action == "observe":
+                        status["mode"] = "OBSERVE"
+                    elif action == "test-only":
+                        status["mode"] = "TEST_ONLY"
+                    elif action in ("pause", "clear-events"):
+                        status["mode"] = "OFF"
+                        if action == "clear-events":
+                            status["event_count"] = 0
+                            status["events"] = []
+                    elif action == "disable":
+                        status.update(paired=False, mode="OFF", event_count=0, events=[], active_probes=0)
+                    self._log("POST {0} | adaptive_action={1}".format(parsed.path, action))
+                    self._send_json({"ok": True, "action": action, "restarted": False,
+                                     "message": "fake adaptive action"})
+                return
             if setting == "wssize_ramp":
                 try:
                     with self.state.lock:

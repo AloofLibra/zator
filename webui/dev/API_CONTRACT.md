@@ -611,6 +611,32 @@ curl с HTTP/3 из `lib/quic_media.sh` (env `Z2R_QUIC_CURL` → `/opt/bin/curl`
 **Dev:** fake-router возвращает `FakeRouterState.h3_curl`
 (по умолчанию `found: true`, `curl-h3-i686`).
 
+### Adaptive rotation — локальное управление
+
+`GET /cgi-bin/settings.cgi?setting=adaptive` возвращает состояние сопряжения (включая отдельный флаг истёкшего токена), online/last-seen heartbeat Windows watcher, режим,
+ограниченную очередь последних 128 событий (hostname, публичный destination IP,
+profile, protocol, scope и время), подтверждённые действующие локальные правила
+(точный hostname/IP/profile/scope, локальный номер стратегии и срок действия),
+число ожидающих ручных запросов, активные пробы и число ошибок очистки. Fingerprint и токен сопряжения GET не возвращает.
+Поле `resources` содержит только load average на ядро, число ядер, оценку доступной памяти и активные adaptive-пробы; если метрики недоступны, оно равно `null` и низкоприоритетный подбор прекращается.
+Токен сопряжения GET никогда не возвращает. `POST settings.cgi` с
+`setting=adaptive_action&action=observe|test-only|pause|clear-events|disable`
+делегирует разрешённые действия существующему `tools/adaptive-pair.sh`.
+Ответ содержит `restarted`, выставленный общим хелпером настроек, если
+zapret2 был запущен.
+Управляющий POST требует same-origin `Origin` и IPv4 LAN-клиента; эти проверки
+дополняют, а не заменяют защиту самого агентского API bearer-токеном. Создание и
+ротация токена остаются CLI-действиями, чтобы не выдавать bearer-токен через
+браузер. `action=reset-rule` принимает hostname, destination_ip, profile_id и
+scope и удаляет только совпадающую точную запись runtime store; рестарт не нужен.
+`action=request-probe` ставит наблюдённый за последние 24 часа tuple в ограниченную очередь
+(максимум 32, TTL 30 минут, cooldown 5 минут); запрос доступен агенту только в
+TEST_ONLY. Windows watcher отдаёт `ack_request` после обработки задания и
+`ack_event` для фиксации часового tmpfs cooldown по обработанному passive tuple.
+
+**Dev:** fake-router эмулирует режим и действия в
+`FakeRouterState.adaptive_status`; это не доказывает реальную очистку NFQUEUE.
+
 ### Кастомные стратегии пользователя — `custom.cgi`
 
 Эквивалент CLI (п.1 -> 14): просмотр/добавление/редактирование/включение/
@@ -1019,6 +1045,16 @@ url-encoded: `parse_params` в этом случае не вызывается. 
 | [`api('/cgi-bin/domains.cgi', POST)`](../app.js:991) | POST | `list=<n>&action=add\|remove\|import\|clear\|set_strategy\|clear_strategy\|check&domain=<...>&strategy=<n>` |
 
 Статика: `index.html`, `styles.css`, `app.js` (отдаются как есть).
+
+## Adaptive probe API
+
+`POST /cgi-bin/adaptive.cgi` is LAN-only and requires the paired Bearer token. The `candidates` action accepts `hostname`, `destination_ip`, `profile_id`, optional `scope`, `offset`, `limit` (maximum 10), optional `order=ranked|exploration`, and (for ranked continuation pages) `candidate_set_version`. Responses include `profile_strategy_count` (numeric catalog size), `candidate_count` (pageable list size), and `candidate_set_version`. A nonzero ranked offset must echo the version from the first page; the router rejects stale or missing versions so concurrent confirmations cannot silently reorder a deep search. `ranked` removes duplicate semantic fingerprints and puts locally confirmed representatives first when their runtime stamp and strategy catalog agree; `exploration` preserves stable numeric order for the opt-in low-priority Windows watcher. Candidate order only prioritizes tests: each strategy still requires an exact local probe, and the endpoint never applies a production lock.
+
+The `lease` action optionally accepts `source_port` in `62000–62999`. The Windows agent selects a currently bindable port and submits it so the router can match the exact LAN 5-tuple. The router rejects malformed or out-of-range values and binds the lease to the authenticated caller's observed IPv4 address. Omitting this field preserves server-side random allocation for older clients.
+
+The `cancel_probes` action accepts no extra fields. It atomically marks active, unexpired leases for cancellation only when their router-observed source IPv4 matches the authenticated LAN caller. The Windows `-Watch -Explore` loop polls for `needs_verify` while a passive probe is active, requests cancellation, waits for the probe child to drain, and handles the urgent item on its next iteration. It cannot cancel another LAN client's lease.
+
+The `resources` action accepts no extra fields and returns only `load1_per_core`, logical core count, estimated available memory in KiB, and the number of active adaptive probes. It reads `/proc` locally and contains no client, hostname, or destination fields. Exploration requires load below the configured per-core limit, at least the configured free-memory budget, and zero active probes; missing or malformed counters stop exploration.
 
 > Провайдер теперь реально читается из `cache/provider.txt` (`_provider_cache_text`)
 > и отображается в статусе и панели «Провайдер». Флаг `--provider` фейк-сервера

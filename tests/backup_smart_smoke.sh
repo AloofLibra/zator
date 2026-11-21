@@ -65,9 +65,10 @@ done
 # ===========================================================================
 TMP_DIR="$(mktemp -d /tmp/zator-backup-smoke.XXXXXX 2>/dev/null || fail "mktemp failed")"
 
-# Хардкод путей в backup_smart_apply_blobs / backup_check_blobs требует реальных
-# файлов в /opt/zator/files/fake/. Создаём УНИКАЛЬНЫЕ имена и удаляем только их.
-FAKE_DIR="/opt/zator/files/fake"
+# Блоб-проверки используют тот же ZATOR_ROOT, что и runtime. Файлы полностью
+# изолированы во временном каталоге, /opt тест не затрагивает.
+export ZATOR_ROOT="$TMP_DIR/zator"
+FAKE_DIR="$ZATOR_ROOT/files/fake"
 BLOB_MAXRU="z2r_smoke_maxru.bin"
 BLOB_TLS4="z2r_smoke_tls4.bin"
 BLOB_MISSING="z2r_smoke_missing.bin"   # намеренно НЕ создаётся (negative path)
@@ -81,9 +82,9 @@ trap cleanup EXIT
 ENV="$TMP_DIR/env"
 mkdir -p "$ENV"
 
-# Создаём тестовые blob-файлы по хардкод-пути (только уникальные имена).
+# Создаём тестовые blob-файлы только внутри временного runtime root.
 if ! mkdir -p "$FAKE_DIR" 2>/dev/null; then
-  fail "невозможно создать $FAKE_DIR — тесту нужен доступ на запись в /opt/zator/files/fake (хардкод исходников)"
+  fail "невозможно создать временный fake-файл: $FAKE_DIR"
 fi
 printf 'Z2R_SMOKE_MAXRU_PAYLOAD_V1' > "$FAKE_DIR/$BLOB_MAXRU" || fail "cannot write $BLOB_MAXRU"
 printf 'Z2R_SMOKE_TLS4_PAYLOAD_V1'   > "$FAKE_DIR/$BLOB_TLS4" || fail "cannot write $BLOB_TLS4"

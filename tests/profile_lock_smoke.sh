@@ -602,7 +602,8 @@ awk '/^z2r_repo_get\(\) \{/,/^\}/' "$REPO_DIR/z2r.sh" | grep -q 'ZATOR_ROOT"/\*'
 
 # Googlevideo collector assets may be present on reinstall-skip while the
 # zapret2 custom callback is missing; get_repo must restore that callback.
-awk '/^get_repo\(\) \{/,/^\}/' "$REPO_DIR/z2r.sh" | grep -q 'WSSIZE_RAMP_FIREWALL' \
+get_repo_body="$(awk '/^get_repo\(\) \{/,/^\}/' "$REPO_DIR/z2r.sh")"
+printf '%s\n' "$get_repo_body" | grep -q 'WSSIZE_RAMP_FIREWALL' \
   || fail "get_repo reinstall-skip does not restore the wssize firewall/listener hook"
 
 echo "profile_lock smoke ok"

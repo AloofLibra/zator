@@ -8,6 +8,7 @@ import PortsPanel from './PortsPanel.vue'
 import ProviderPanel from './ProviderPanel.vue'
 import BackupsPanel from './BackupsPanel.vue'
 import WssizeRampPanel from './WssizeRampPanel.vue'
+import AdaptivePanel from './AdaptivePanel.vue'
 
 export interface SettingsPanelEntry {
   id: string
@@ -29,5 +30,6 @@ export const settingsPanels: SettingsPanelEntry[] = [
   { id: 'quic443', component: ModeTogglePanel, props: { setting: 'quic443' } },
   { id: 'ports', component: PortsPanel },
   { id: 'provider', component: ProviderPanel },
+  { id: 'adaptive', component: AdaptivePanel },
   { id: 'backups', component: BackupsPanel },
 ]

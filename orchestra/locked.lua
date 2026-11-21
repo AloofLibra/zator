@@ -28,6 +28,125 @@ local MODE_OVERRIDES = {}
 -- clonesize.tsv: «profile<TAB>байты» — максимальный размер клон-пакета профиля.
 local CLONESIZE_PATH = LOCKED_DIR .. "/clonesize.tsv"
 local CLONE_SIZES = {}
+local ADAPTIVE_RULES_PATH = os.getenv("Z2R_ADAPTIVE_RULES_FILE") or "/tmp/z2r-adaptive/rules.tsv"
+local ADAPTIVE_RULES_SNAPSHOT_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/rules.tsv"
+local ADAPTIVE_MODE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/mode"
+local ADAPTIVE_MODE = "OFF"
+do
+  local f = io.open(ADAPTIVE_MODE_PATH, "r")
+  if f then
+    local mode = f:read("*l")
+    if mode == "OBSERVE" or mode == "TEST_ONLY" or mode == "AUTO" then ADAPTIVE_MODE = mode end
+    f:close()
+  end
+end
+-- Environment opt-in alone is insufficient: TEST_ONLY must never select a
+-- stored rule, even if a stale daemon environment still carries the flag.
+local ADAPTIVE_RULES_APPLY = os.getenv("Z2R_ADAPTIVE_RULES_APPLY") == "1" and ADAPTIVE_MODE == "AUTO"
+local ADAPTIVE_EVENTS_PATH = os.getenv("Z2R_ADAPTIVE_EVENTS_FILE") or "/tmp/z2r-adaptive/events.tsv"
+local ADAPTIVE_OBSERVE_ENABLED = ADAPTIVE_MODE == "OBSERVE" or ADAPTIVE_MODE == "TEST_ONLY"
+local ADAPTIVE_OBSERVE_EVENTS = {}
+local ADAPTIVE_OBSERVE_ORDER = {}
+local ADAPTIVE_OBSERVE_COUNT = 0
+if ADAPTIVE_OBSERVE_ENABLED then
+  local f = io.open(ADAPTIVE_EVENTS_PATH, "r")
+  if f then
+    local count = 0
+    for line in f:lines() do
+      count = count + 1
+      if count > 128 then break end
+      local ver, status, host, ip, profile, proto, scope, seen = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)$")
+      if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure") and #host <= 253
+        and host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") and profile:match("^[1-4]$")
+        and proto == "tls" and (scope == "default" or scope:match("^mark:%d+$")) then
+        local key = table.concat({host, ip, profile, proto, scope}, "\0")
+        if not ADAPTIVE_OBSERVE_EVENTS[key] then
+          local event = {key = key, host = host, ip = ip, profile = profile, proto = proto,
+            scope = scope, status = status, seen = tonumber(seen) or 0,
+            failure_count = status == "suspected_failure" and 2 or 0}
+          ADAPTIVE_OBSERVE_EVENTS[key] = event
+          ADAPTIVE_OBSERVE_ORDER[#ADAPTIVE_OBSERVE_ORDER + 1] = event
+          ADAPTIVE_OBSERVE_COUNT = ADAPTIVE_OBSERVE_COUNT + 1
+        end
+      end
+    end
+    f:close()
+  end
+end
+local ADAPTIVE_RULES = {}
+local ADAPTIVE_RULE_CONFLICTS = {}
+local ADAPTIVE_TEST_LINES = nil
+local ADAPTIVE_TEST_RUNTIME_STAMP = nil
+local function adaptive_runtime_stat_stamp(path)
+  if type(stat) ~= "function" then return nil end
+  local info = stat(path)
+  if type(info) ~= "table" or info.mtime == nil or info.size == nil then return "0:0" end
+  local mtime, size = tonumber(info.mtime), tonumber(info.size)
+  if not mtime or not size then return "0:0" end
+  return tostring(math.floor(mtime)) .. ":" .. tostring(math.floor(size))
+end
+local ADAPTIVE_RUNTIME_STAMP
+do
+  local zapret_root = os.getenv("ZAPRET2_ROOT") or "/opt/zapret2"
+  local zator_root = os.getenv("ZATOR_ROOT") or "/opt/zator"
+  local paths = {
+    zapret_root .. "/config", zapret_root .. "/nfq2/nfqws2",
+    zapret_root .. "/lua/zapret-lib.lua", zapret_root .. "/lua/zapret-antidpi.lua",
+    zapret_root .. "/lua/zapret-auto.lua",
+    LOCKED_DIR .. "/blob_override.tsv", LOCKED_DIR .. "/sni_override.tsv",
+    LOCKED_DIR .. "/mode_override.tsv", LOCKED_DIR .. "/clonesize.tsv",
+    LOCKED_DIR .. "/custom_strategies.tsv",
+    zator_root .. "/lua/client-scope-config.lua",
+    zator_root .. "/lua/locked.lua",
+    zator_root .. "/lua/rst-guard.lua",
+    zator_root .. "/lua/strategy-lock-manager.lua",
+    zator_root .. "/lua/combined-detector.lua",
+    zator_root .. "/lua/silent-drop-detector.lua",
+    zator_root .. "/lua/dns-clone.lua",
+    zator_root .. "/lua/fake-adapt.lua",
+    zator_root .. "/lua/wssize-ramp.lua",
+    zator_root .. "/z2r_lib/adaptive_rules.sh",
+    zator_root .. "/z2r_lib/supersweep_probe.sh",
+    zator_root .. "/tools/adaptive-controller.sh",
+  }
+  local path_seen = {}
+  for _, path in ipairs(paths) do path_seen[path] = true end
+  local config = io.open(zapret_root .. "/config", "r")
+  if config then
+    local in_options = false
+    for line in config:lines() do
+      if line:match('^NFQWS2_OPT="%s*$') then
+        in_options = true
+      elseif in_options and line:match('^"%s*$') then
+        in_options = false
+      elseif in_options then
+        for token in line:gmatch("%-%-[^%s]+") do
+          local path = token:match("^%-%-blob=[^:]+:@(.+)$") or token:match("^%-%-lua%-init=@(.+)$")
+          if path then
+            if path:match("^/opt/zator/") then path = zator_root .. path:sub(11)
+            elseif path:match("^/opt/zapret2/") then path = zapret_root .. path:sub(13) end
+            if not path_seen[path] then paths[#paths + 1] = path; path_seen[path] = true end
+          end
+        end
+      end
+    end
+    config:close()
+  end
+  local stamps = {}
+  for _, path in ipairs(paths) do
+    stamps[#stamps + 1] = adaptive_runtime_stat_stamp(path)
+    if not stamps[#stamps] then break end
+  end
+  if #stamps == #paths then ADAPTIVE_RUNTIME_STAMP = table.concat(stamps, "|") end
+end
+-- Isolated adaptive probes opt into one connection-level strategy ACK; normal
+-- nfqws2 processes pay only the environment check and never touch the filesystem.
+local ADAPTIVE_ACK_PATH = os.getenv("Z2R_ADAPTIVE_ACK_PATH")
+local ADAPTIVE_ACK_HOST = os.getenv("Z2R_ADAPTIVE_ACK_HOST")
+local ADAPTIVE_ACK_PROFILE = os.getenv("Z2R_ADAPTIVE_ACK_PROFILE")
+local ADAPTIVE_ACK_STRATEGY = tonumber(os.getenv("Z2R_ADAPTIVE_ACK_STRATEGY"))
+local ADAPTIVE_ACK_TEST_ID = os.getenv("Z2R_ADAPTIVE_TEST_ID")
+local ADAPTIVE_ACKED = false
 
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -230,6 +349,86 @@ local function load_clone_size_file(path)
   f:close()
 end
 
+local function adaptive_rule_parse_line(line, now)
+  if type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  local f = {}
+  for value in (line .. "\t"):gmatch("(.-)\t") do f[#f + 1] = trim(value) end
+  if #f ~= 11 or f[1] ~= "1" then return nil end
+  local host, ip, profile, proto, scope = f[2], f[3], f[4], f[5], f[6]
+  local strategy, fingerprint, catalog, runtime_stamp, expires = tonumber(f[7]), f[8], f[9], f[10], tonumber(f[11])
+  if #host > 253 or not host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") or not host:find(".", 1, true) then return nil end
+  local labels_ok = true
+  for label in host:gmatch("[^%.]+") do
+    if #label > 63 or label:sub(1, 1) == "-" or label:sub(-1) == "-" then labels_ok = false; break end
+  end
+  if not labels_ok or host:find("%.%.") or host:sub(1, 1) == "." or host:sub(-1) == "." then return nil end
+  local octets = {}
+  for part in (ip .. "."):gmatch("(.-)%." ) do octets[#octets + 1] = part end
+  if #octets ~= 4 then return nil end
+  for _, octet in ipairs(octets) do
+    local n = tonumber(octet)
+    if not octet:match("^%d%d?%d?$") or (#octet > 1 and octet:sub(1, 1) == "0") or not n or n > 255 then return nil end
+  end
+  local a, b, c = tonumber(octets[1]), tonumber(octets[2]), tonumber(octets[3])
+  if a == 0 or a == 10 or a == 127 or a >= 224 or
+    (a == 100 and b >= 64 and b <= 127) or (a == 169 and b == 254) or
+    (a == 172 and b >= 16 and b <= 31) or
+    (a == 192 and (b == 168 or (b == 0 and (c == 0 or c == 2)) or (b == 88 and c == 99))) or
+    (a == 198 and (b == 18 or b == 19 or (b == 51 and c == 100))) or
+    (a == 203 and b == 0 and c == 113) then return nil end
+  if not profile:match("^[1-4]$") or proto ~= "tls" then return nil end
+  if scope ~= "default" and not scope:match("^mark:%d%d?%d?%d?%d?$") then
+    if not scope:match("^mark:%d+$") or #scope > 10 then return nil end
+  end
+  if not strategy or strategy < 1 or strategy > 999 or strategy % 1 ~= 0 then return nil end
+  if not fingerprint:match("^sha256:[0-9a-f]+$") or #fingerprint ~= 71 then return nil end
+  if not catalog:match("^sha256:[0-9a-f]+$") or #catalog ~= 71 then return nil end
+  if #runtime_stamp > 2048 or not runtime_stamp:match("^[0-9:|]+$") then return nil end
+  if not expires or expires % 1 ~= 0 or expires <= now then return nil end
+  return {host = host, ip = ip, profile = profile, proto = proto, scope = scope,
+    strategy = strategy, fingerprint = fingerprint, catalog = catalog,
+    runtime_stamp = runtime_stamp, expires = expires}
+end
+
+local function adaptive_rule_key(rule)
+  return table.concat({rule.host, rule.ip, rule.profile, rule.proto, rule.scope}, "\0")
+end
+
+local function adaptive_rules_load(lines, now)
+  ADAPTIVE_RULES, ADAPTIVE_RULE_CONFLICTS = {}, {}
+  now = now or os.time()
+  local count = 0
+  for _, line in ipairs(lines) do
+    count = count + 1
+    if count > 256 then break end
+    local rule = adaptive_rule_parse_line(line, now)
+    if rule then
+      local key = adaptive_rule_key(rule)
+      if ADAPTIVE_RULES[key] then
+        ADAPTIVE_RULES[key] = nil
+        ADAPTIVE_RULE_CONFLICTS[key] = true
+      elseif not ADAPTIVE_RULE_CONFLICTS[key] then
+        ADAPTIVE_RULES[key] = rule
+      end
+    end
+  end
+end
+
+local function load_adaptive_rules_file(path)
+  local f = io.open(path, "r")
+  if not f then f = io.open(ADAPTIVE_RULES_SNAPSHOT_PATH, "r") end
+  local lines = {}
+  if f then
+    for line in f:lines() do
+      lines[#lines + 1] = line
+      if #lines >= 256 then break end
+    end
+    f:close()
+  end
+  adaptive_rules_load(lines)
+end
+
 local function load_locked_tables()
   local now = os.time()
   if now and (now - last_load) < cache_ttl then return end
@@ -243,6 +442,7 @@ local function load_locked_tables()
 
   if LOCKED_TEST_LINES then
     load_locked_lines(LOCKED_TEST_LINES)
+    adaptive_rules_load(ADAPTIVE_TEST_LINES or {}, now)
   else
     load_locked_file(LOCKED_PATH)
     load_locked_file(LOCKED_MANUAL_PATH)
@@ -255,6 +455,7 @@ local function load_locked_tables()
     load_mode_override_file(MODE_OVERRIDE_PATH)
     CLONE_SIZES = {}
     load_clone_size_file(CLONESIZE_PATH)
+    load_adaptive_rules_file(ADAPTIVE_RULES_PATH)
   end
 end
 
@@ -286,8 +487,35 @@ end
 
 function locked_load_lines_for_tests(lines)
   LOCKED_TEST_LINES = lines or {}
+  ADAPTIVE_TEST_LINES = {}
   last_load = 0
   load_locked_tables()
+end
+
+function locked_load_adaptive_lines_for_tests(lines, now, runtime_stamp)
+  ADAPTIVE_TEST_LINES = lines or {}
+  ADAPTIVE_TEST_RUNTIME_STAMP = runtime_stamp
+  adaptive_rules_load(lines or {}, now)
+end
+
+function locked_adaptive_runtime_stamp_for_tests()
+  return ADAPTIVE_RUNTIME_STAMP
+end
+
+function locked_adaptive_strategy_for_tuple(host, ip, profile, proto, scope, now)
+  if not host or not ip or not profile then return nil end
+  if not ADAPTIVE_TEST_LINES then load_locked_tables() end
+  host = string.lower(tostring(host):gsub("%.$", ""))
+  ip = tostring(ip)
+  profile = tostring(profile)
+  proto = string.lower(tostring(proto or "tcp"))
+  scope = string.lower(tostring(scope or "default"))
+  local key = table.concat({host, ip, profile, proto, scope}, "\0")
+  local rule = ADAPTIVE_RULES[key]
+  if not rule or ADAPTIVE_RULE_CONFLICTS[key] or rule.expires <= (now or os.time()) then return nil end
+  local runtime_stamp = ADAPTIVE_TEST_RUNTIME_STAMP or ADAPTIVE_RUNTIME_STAMP
+  if not runtime_stamp or rule.runtime_stamp ~= runtime_stamp then return nil end
+  return rule.strategy, rule.fingerprint, rule.catalog, rule.expires
 end
 
 -- Тестовый загрузчик per-mark файла: чистые таблицы + один файл под своим скоупом.
@@ -1050,6 +1278,131 @@ function circular_locked_passthrough(ctx, desync)
   return VERDICT_PASS
 end
 
+local function adaptive_probe_ack(host, profile, strategy)
+  if ADAPTIVE_ACKED or not ADAPTIVE_ACK_PATH or not ADAPTIVE_ACK_HOST
+    or host ~= ADAPTIVE_ACK_HOST or tostring(profile) ~= ADAPTIVE_ACK_PROFILE
+    or strategy ~= ADAPTIVE_ACK_STRATEGY or not ADAPTIVE_ACK_TEST_ID
+    or not string.match(ADAPTIVE_ACK_TEST_ID, "^[%w_-]+$") then return end
+  local f = io.open(ADAPTIVE_ACK_PATH, "w")
+  if not f then return end
+  f:write(ADAPTIVE_ACK_TEST_ID, "\t", host, "\t", tostring(profile), "\t", tostring(strategy), "\n")
+  f:close()
+  ADAPTIVE_ACKED = true
+end
+
+local function adaptive_observe_ip_valid(ip)
+  if type(ip) ~= "string" then return false end
+  local octets = {}
+  for part in (ip .. "."):gmatch("(.-)%.") do
+    local n = tonumber(part)
+    if not part:match("^%d%d?%d?$") or (#part > 1 and part:sub(1, 1) == "0") or not n or n > 255 then return false end
+    octets[#octets + 1] = n
+  end
+  if #octets ~= 4 then return false end
+  local a, b, c = octets[1], octets[2], octets[3]
+  return not (a == 0 or a == 10 or a == 127 or a >= 224 or
+    (a == 100 and b >= 64 and b <= 127) or (a == 169 and b == 254) or
+    (a == 172 and b >= 16 and b <= 31) or (a == 192 and (b == 168 or (b == 0 and (c == 0 or c == 2)) or (b == 88 and c == 99))) or
+    (a == 198 and (b == 18 or b == 19 or (b == 51 and c == 100))) or (a == 203 and b == 0 and c == 113))
+end
+
+local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
+  if not ADAPTIVE_OBSERVE_ENABLED or not host or host == "" or not ip or proto ~= "tls"
+    or not track or type(track.lua_state) ~= "table" then return end
+  if not host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") or #host > 253
+    or not adaptive_observe_ip_valid(ip) or not tostring(profile):match("^[1-4]$") then return end
+  scope = tostring(scope or "default")
+  if scope ~= "default" and not scope:match("^mark:%d%d?%d?%d?%d?$" ) then return end
+  local state = track.lua_state
+  local key = table.concat({host, ip, tostring(profile), proto, scope}, "\0")
+  if state.adaptive_observe_key == key then return end
+  local now = os.time()
+  local old = ADAPTIVE_OBSERVE_EVENTS[key]
+  if old then
+    state.adaptive_observe_context = {key = key, host = host, ip = ip, profile = tostring(profile),
+      proto = proto, scope = scope}
+    state.adaptive_observe_key = key
+    return
+  end
+  local event = {key = key, host = host, ip = ip, profile = tostring(profile), proto = proto,
+    scope = scope, status = "seen", seen = now}
+  local f = io.open(ADAPTIVE_EVENTS_PATH, "r+")
+  if not f then return end
+  local ok
+  if ADAPTIVE_OBSERVE_COUNT < 128 then
+    f:seek("end")
+    ok = f:write("1\tseen\t", host, "\t", ip, "\t", tostring(profile), "\t", proto,
+      "\t", scope, "\t", tostring(now), "\n")
+  else
+    local next_order, lines = {}, {}
+    for i = 2, #ADAPTIVE_OBSERVE_ORDER do next_order[#next_order + 1] = ADAPTIVE_OBSERVE_ORDER[i] end
+    next_order[#next_order + 1] = event
+    for i, item in ipairs(next_order) do
+      lines[i] = table.concat({"1", item.status, item.host, item.ip, item.profile,
+        item.proto, item.scope, tostring(item.seen)}, "\t")
+    end
+    for i = #lines + 1, 128 do lines[i] = "" end
+    f:seek("set", 0)
+    ok = f:write(table.concat(lines, "\n"), "\n")
+    if ok then
+      -- Rewrite the existing private inode so its owner and mode stay unchanged.
+      ADAPTIVE_OBSERVE_EVENTS[ADAPTIVE_OBSERVE_ORDER[1].key] = nil
+      ADAPTIVE_OBSERVE_ORDER = next_order
+    end
+  end
+  f:close()
+  if not ok then return end
+  ADAPTIVE_OBSERVE_EVENTS[key] = event
+  if ADAPTIVE_OBSERVE_COUNT < 128 then
+    ADAPTIVE_OBSERVE_ORDER[#ADAPTIVE_OBSERVE_ORDER + 1] = event
+    ADAPTIVE_OBSERVE_COUNT = ADAPTIVE_OBSERVE_COUNT + 1
+  end
+  state.adaptive_observe_key = key
+  state.adaptive_observe_context = {key = key, host = host, ip = ip, profile = tostring(profile),
+    proto = proto, scope = scope}
+end
+
+local function adaptive_observe_rewrite()
+  local f = io.open(ADAPTIVE_EVENTS_PATH, "r+")
+  if not f then return false end
+  local lines = {}
+  for i, event in ipairs(ADAPTIVE_OBSERVE_ORDER) do
+    lines[i] = table.concat({"1", event.status, event.host, event.ip, event.profile,
+      event.proto, event.scope, tostring(event.seen)}, "\t")
+  end
+  f:seek("set", 0)
+  local ok = f:write(table.concat(lines, "\n"), "\n")
+  f:close()
+  return ok ~= nil
+end
+
+-- A packet-level detector is only a suspicion signal. Require two distinct
+-- failed connections for this exact tuple before asking the agent to probe it.
+function z2r_adaptive_suspected_failure(desync, crec)
+  if not ADAPTIVE_OBSERVE_ENABLED or type(crec) ~= "table" or crec.adaptive_failure_reported
+    or type(desync) ~= "table" or type(desync.track) ~= "table"
+    or type(desync.track.lua_state) ~= "table" then return end
+  crec.adaptive_failure_reported = true
+  local context = desync.track.lua_state.adaptive_observe_context
+  if type(context) ~= "table" then return end
+  local event = ADAPTIVE_OBSERVE_EVENTS[context.key]
+  if not event or event.status == "suspected_failure" then return end
+  event.failure_count = (event.failure_count or 0) + 1
+  if event.failure_count < 2 then return end
+  event.status = "suspected_failure"
+  event.seen = os.time()
+  adaptive_observe_rewrite()
+end
+
+function z2r_adaptive_observe_connection(desync, profile, host, scope, require_outgoing)
+  if type(desync) ~= "table" or (require_outgoing and desync.outgoing ~= true) or not desync.dis or not desync.dis.tcp
+    or tonumber(desync.dis.tcp.th_dport) ~= 443 or not desync.track then return end
+  if type(dis_ipdst) ~= "function" or type(ntop) ~= "function" then return end
+  local dst = dis_ipdst(desync.dis)
+  local ip = dst and ntop(dst) or nil
+  if ip and ip ~= "" then adaptive_observe_seen(host, ip, profile, desync_proto(desync), scope, desync.track) end
+end
+
 function circular_locked(ctx, desync)
   if desync.arg and desync.arg.payload and not payload_check(desync) then
     return circular_locked_passthrough(ctx, desync)
@@ -1140,7 +1493,36 @@ function circular_locked(ctx, desync)
   end
   if locked == 0 then
     DLOG("circular_locked: profile disabled by lock 0 profile="..profile)
+    if ADAPTIVE_ACK_STRATEGY == 0 then adaptive_probe_ack(host or "", base_profile, 0) end
     return circular_locked_passthrough(ctx, desync)
+  end
+
+  local adaptive_strategy
+  if ADAPTIVE_RULES_APPLY and locked == nil and host and host ~= "" and desync.track
+    and type(desync.track.lua_state) == "table" and desync.dis and desync.dis.ip
+    and desync.dis.tcp and tonumber(desync.dis.tcp.th_dport) == 443
+    and type(dis_ipdst) == "function" and type(ntop) == "function" then
+    local dst = dis_ipdst(desync.dis)
+    local dst_ip = dst and ntop(dst) or nil
+    if dst_ip and dst_ip ~= "" then
+      local tuple_key = table.concat({host, dst_ip, "443", base_profile, proto, scope}, "\0")
+      local state = desync.track.lua_state
+      if state.adaptive_rule_checked and state.adaptive_rule_key == tuple_key then
+        adaptive_strategy = state.adaptive_rule_strategy or nil
+      else
+        adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, proto, scope)
+        state.adaptive_rule_key = tuple_key
+        state.adaptive_rule_strategy = adaptive_strategy or false
+        state.adaptive_rule_checked = true
+      end
+    end
+  end
+
+  if locked == nil and not adaptive_strategy and host and host ~= "" and desync.track
+    and desync.dis and desync.dis.ip and desync.dis.tcp
+    and tonumber(desync.dis.tcp.th_dport) == 443 and proto == "tls"
+    and type(dis_ipdst) == "function" and type(ntop) == "function" then
+    z2r_adaptive_observe_connection(desync, base_profile, host, scope)
   end
 
   orchestrate(ctx, desync)
@@ -1173,24 +1555,32 @@ function circular_locked(ctx, desync)
     error("circular_locked: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
   end
 
+  local selected_strategy
   if locked and locked >= 1 and locked <= hrec.ctstrategy then
+    selected_strategy = locked
     hrec.nstrategy = locked
     if scope ~= "default" then
       DLOG("circular_locked: locked strategy "..hrec.nstrategy.." scope="..scope.." profile="..profile)
     else
       DLOG("circular_locked: locked strategy "..hrec.nstrategy.." profile="..profile)
     end
+  elseif adaptive_strategy and adaptive_strategy >= 1 and adaptive_strategy <= hrec.ctstrategy then
+    selected_strategy = adaptive_strategy
+    hrec.nstrategy = adaptive_strategy
+    DLOG("circular_locked: exact adaptive rule strategy "..selected_strategy.." host="..host)
   else
     hrec.nstrategy = 1
+    selected_strategy = 1
     DLOG("circular_locked: start from strategy 1 profile="..profile)
   end
 
   local verdict = VERDICT_PASS
-  DLOG("circular_locked: current strategy "..hrec.nstrategy.." profile="..profile)
+  DLOG("circular_locked: current strategy "..selected_strategy.." profile="..profile)
+  adaptive_probe_ack(host or "", base_profile, selected_strategy)
   while true do
     local instance = plan_instance_pop(desync)
     if not instance then break end
-    if instance.arg.strategy and tonumber(instance.arg.strategy) == hrec.nstrategy then
+    if instance.arg.strategy and tonumber(instance.arg.strategy) == selected_strategy then
       verdict = blob_override_execute(desync, verdict, instance, base_profile)
     end
   end

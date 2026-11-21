@@ -7,6 +7,67 @@ client_scopes_cfg() {
   printf '%s\n' "${ZAPRET2_ROOT:-/opt/zapret2}/config"
 }
 
+# --- Adaptive probe management ---
+adaptive_submenu() {
+  local tool="$ZATOR_ROOT/tools/adaptive-pair.sh" answer action
+  if [ ! -x "$tool" ] || [ -L "$tool" ]; then
+    echo -e "${yellow}Adaptive CLI не установлен. Обновите zator через п.5.${plain}"
+    pause_enter
+    return 0
+  fi
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Адаптивный подбор ---${plain}"
+    "$tool" status || echo -e "${yellow}Не удалось прочитать состояние.${plain}"
+    echo ""
+    submenu_item "1" "Диагностика (только чтение)"
+    submenu_item "2" "Создать сопряжение и показать токен"
+    submenu_item "3" "Обновить токен сопряжения"
+    submenu_item "4" "Наблюдение (без тестов и применения)"
+    submenu_item "5" "TEST_ONLY (пробы без изменения рабочих локов)"
+    submenu_item "6" "Пауза / OFF"
+    submenu_item "7" "Показать недавние события"
+    submenu_item "8" "Очистить события и поставить на паузу"
+    submenu_item "9" "Отключить агент и удалить adaptive-правила"
+    submenu_item "0" "Назад"
+    read -re -p "Ваш выбор: " answer || answer=""
+    case "$answer" in
+      1) action=doctor ;;
+      2) action=create ;;
+      3) action=rotate ;;
+      4) action=observe ;;
+      5) action=test-only ;;
+      6) action=pause ;;
+      7) action=events ;;
+      8) action=clear-events ;;
+      9) action=disable ;;
+      0|"") return 0 ;;
+      *) echo -e "${yellow}Неверный ввод.${plain}"; sleep 1; continue ;;
+    esac
+    if [ "$action" = disable ]; then
+      read -re -p "Отключить сопряжение и удалить локальные adaptive-правила? (y/N): " answer || answer=""
+      case "$answer" in y|Y|yes|YES|д|Д|да|ДА) ;; *) continue ;; esac
+    fi
+    if ! "$tool" "$action"; then
+      echo -e "${red}Операция '$action' завершилась ошибкой.${plain}"
+      pause_enter
+      continue
+    fi
+    case "$action" in
+      observe|test-only|pause|clear-events|disable)
+        if pidof nfqws2 >/dev/null 2>&1; then
+          if z2r_service_action restart; then
+            echo -e "${green}zapret2 перезапущен и применил новое adaptive-состояние.${plain}"
+          else
+            echo -e "${red}Состояние сохранено, но zapret2 не перезапущен; проверьте его запуск (п.2).${plain}"
+          fi
+        fi
+        ;;
+    esac
+    pause_enter
+  done
+}
+
 # --- Client scopes: вывод состояния (общий для меню и будущих вызовов) ---
 
 client_scopes_print_header() {

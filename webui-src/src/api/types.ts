@@ -74,6 +74,51 @@ export interface H3CurlStatus {
   arch?: string
 }
 
+export interface AdaptiveStatus {
+  paired: boolean
+  pairing_expired?: boolean
+  agent_online: boolean
+  agent_last_seen: number | null
+  mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY'
+  event_count: number
+  event_capacity: number
+    pending_requests: number
+  events: Array<{
+    status: 'seen' | 'needs_verify' | 'suspected_failure'
+      request_id?: string
+    hostname: string
+    destination_ip: string
+    profile_id: number
+    protocol: 'tls'
+    scope: string
+    observed_at: number
+  }>
+    rules: Array<{
+      hostname: string
+      destination_ip: string
+      profile_id: number
+      scope: string
+      strategy_number: number
+      expires: number
+    }>
+  active_probes: number
+  cleanup_failures: number
+  resources?: {
+    load1_per_core: number
+    cores: number
+    mem_available_kib: number
+    active_probes: number
+  } | null
+  automatic_apply: false
+}
+
+export interface AdaptiveActionResult {
+  ok: boolean
+  action: string
+  restarted: boolean
+  message: string
+}
+
 // Кастомные стратегии пользователя (custom.cgi, CLI п.1 -> 14).
 export interface CustomBlockInfo {
   block: string

@@ -94,6 +94,7 @@ config_apply_from_default() {
   fi
 
   cp -f "$root/config.default" "$root/config"
+  type adaptive_rules_invalidate >/dev/null 2>&1 && adaptive_rules_invalidate || true
   if [ -f "$old_scope_cfg" ]; then
     config_client_scope_apply "$old_scope_cfg" "$root/config" || true
     [ "$hardware" = "keenetic" ] && { config_keenetic_policy_apply "$old_scope_cfg" "$root/config" || true; }
@@ -136,6 +137,16 @@ menu_action_update_config_reset() {
   local old_scope_cfg="/tmp/z2r_client_scope_config_$$"
   cp -f /opt/zapret2/config "$old_scope_cfg" 2>/dev/null || true
   echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
+
+  # Reset removes extra_strats, including the adaptive token and run state.
+  # Cancel and reap any isolated probe before deleting that state.
+  if [ -x "${ZATOR_ROOT:-/opt/zator}/tools/adaptive-pair.sh" ]; then
+    "${ZATOR_ROOT:-/opt/zator}/tools/adaptive-pair.sh" disable || {
+      echo -e "${red}Не удалось завершить adaptive-пробы; сброс конфига отменён.${plain}" >&2
+      rm -f "$old_scope_cfg"
+      return 1
+    }
+  fi
 
   z2r_service_action stop
 
@@ -1070,6 +1081,7 @@ extra_strats/cache/orchestra/sni_override.tsv
 extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv
 extra_strats/cache/orchestra/custom_strategies.tsv
+extra_strats/cache/adaptive/rules.tsv
 EOF
   # самый свежий архив результатов суперавтопрогона едет в бэкапе вместе с
   # locked.tsv (только последний — историю ротация хранит в cache/supersweep)
@@ -1347,7 +1359,7 @@ backup_update_offer_restore() {
 # Если хотя бы один файл отсутствует — печатает его и возвращает 1 (импорт недопустим).
 # Если все на месте — возвращает 0.
 backup_check_blobs() {
-  local cfg="$1"
+  local cfg="$1" zator_root="${ZATOR_ROOT:-/opt/zator}"
   local tmp_pairs name file missing
   [ -f "$cfg" ] || return 0
 
@@ -1361,7 +1373,7 @@ backup_check_blobs() {
   while read -r name file; do
     [ -n "$name" ] || continue
     [ -n "$file" ] || continue
-    if [ ! -f "/opt/zator/files/fake/$file" ]; then
+    if [ ! -f "$zator_root/files/fake/$file" ]; then
       echo -e "${red}Blob ${name}: файл ${file} отсутствует на устройстве.${plain}"
       missing=1
     fi
@@ -1415,7 +1427,7 @@ backup_smart_apply_ports() {
 # Шаг 2: если режим maxru в старом конфиге отличается от нового — переключаем
 #   теми же sed, что и menu_action_set_tls_blob() (кроме strategy=26).
 backup_smart_apply_blobs() {
-  local old_cfg="$1" new_cfg="$2"
+  local old_cfg="$1" new_cfg="$2" zator_root="${ZATOR_ROOT:-/opt/zator}"
   local tmp_old tmp_new name oldfile newfile ereg
   local old_mode new_mode
 
@@ -1436,7 +1448,7 @@ backup_smart_apply_blobs() {
     # Только имена, присутствующие в новом конфиге.
     grep -q "^${name} " "$tmp_new" || continue
     # Не ломаем конфиг: переносим только существующие на устройстве файлы.
-    [ -f "/opt/zator/files/fake/$oldfile" ] || continue
+    [ -f "$zator_root/files/fake/$oldfile" ] || continue
     # Текущий файл этого блоба в новом конфиге.
     newfile="$(sed -n "s#.*--blob=${name}:@/opt/[^/][^/]*/files/fake/\([^[:space:]]*\).*#\1#p" "$new_cfg" | head -n1)"
     [ "$newfile" = "$oldfile" ] && continue

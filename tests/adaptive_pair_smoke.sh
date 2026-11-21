@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+for tool in adaptive-agent.ps1 adaptive-agent-state.ps1 adaptive-agent-port.ps1 adaptive-agent-verdict.ps1 adaptive-agent-stats.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh; do
+  grep -Eq "for tool in .*${tool}" "$ROOT/z2r.sh" || {
+    echo "adaptive Windows client dependency is missing from runtime deployment: $tool" >&2; exit 1;
+  }
+done
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/zator/tools" "$tmp/zator/z2r_lib" "$tmp/zator/extra_strats/cache/adaptive" \
+  "$tmp/runs/0123456789abcdef0123456789abcdef"
+cat > "$tmp/bin/id" <<'ID'
+#!/bin/sh
+echo 0
+ID
+cat > "$tmp/bin/chown" <<'CHOWN'
+#!/bin/sh
+exit 0
+CHOWN
+cat > "$tmp/bin/sleep" <<'SLEEP'
+#!/bin/sh
+exit 0
+SLEEP
+chmod +x "$tmp/bin/id"
+chmod +x "$tmp/bin/chown"
+chmod +x "$tmp/bin/sleep"
+cp "$ROOT/tools/adaptive-pair.sh" "$tmp/zator/tools/adaptive-pair.sh"
+cp "$ROOT/lib/adaptive_rules.sh" "$tmp/zator/z2r_lib/adaptive_rules.sh"
+cp "$ROOT/lib/adaptive_lan_transport.sh" "$tmp/zator/z2r_lib/adaptive_lan_transport.sh"
+cp "$ROOT/lib/supersweep_transport.sh" "$ROOT/lib/config.sh" "$tmp/zator/z2r_lib/"
+cp "$ROOT/tools/adaptive-controller.sh" "$tmp/zator/tools/adaptive-controller.sh"
+chmod +x "$tmp/zator/tools/adaptive-controller.sh"
+mkdir -p "$tmp/zapret2/nfq2"
+printf 'FWTYPE=iptables\nNFQWS2_ENABLE=1\n' > "$tmp/zapret2/config"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/zapret2/nfq2/nfqws2"
+chmod +x "$tmp/zapret2/nfq2/nfqws2"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/iptables"
+chmod +x "$tmp/bin/iptables"
+now="$(date +%s)"
+printf '1\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t7\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$((now + 3600))" > "$tmp/zator/extra_strats/cache/adaptive/rules.tsv"
+printf '65535 4321 0 0 0 0 0 0\n' > "$tmp/queue"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" create > "$tmp/create.out"
+token="$(cat "$tmp/zator/extra_strats/cache/adaptive/token")"
+expiry="$(cat "$tmp/zator/extra_strats/cache/adaptive/token.expires")"
+now="$(date +%s)"
+[[ "$token" =~ ^[a-f0-9]{64}$ && "$expiry" =~ ^[0-9]{10}$ && $expiry -gt $now && $expiry -le $((now + 2592000)) &&
+   "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/token")" = 600 &&
+   "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/token.expires")" = 600 ]] || {
+  echo 'pair token invalid or over-permissive' >&2; exit 1;
+}
+status="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  Z2R_ADAPTIVE_QUEUE_FILE="$tmp/queue" bash "$tmp/zator/tools/adaptive-pair.sh" status)"
+[[ "$status" == *'pairing: paired'* && "$status" == *'Automatic strategy application: disabled'* &&
+   "$status" == *'Active probes: 1'* && "$status" == *'Test NFQUEUE 65535: registered (PID 4321)'* &&
+   "$status" == *'Stored exact rules: 1'* && "$status" != *'0123456789abcdef'* ]] || {
+  echo "status diagnostic incomplete or leaked run id: $status" >&2; exit 1;
+}
+printf '1\n' > "$tmp/zator/extra_strats/cache/adaptive/token.expires"
+expired_status="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  Z2R_ADAPTIVE_QUEUE_FILE="$tmp/queue" bash "$tmp/zator/tools/adaptive-pair.sh" status)"
+[[ "$expired_status" == *'expired or invalid'* ]] || { echo 'status did not report an expired pairing token' >&2; exit 1; }
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" rotate > "$tmp/rotate.out"
+token="$(cat "$tmp/zator/extra_strats/cache/adaptive/token")"
+expiry="$(cat "$tmp/zator/extra_strats/cache/adaptive/token.expires")"
+[[ "$token" =~ ^[a-f0-9]{64}$ && "$expiry" -gt "$(date +%s)" ]] || { echo 'rotate did not renew an expired token' >&2; exit 1; }
+: > "$tmp/queue"
+doctor="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" \
+  Z2R_ADAPTIVE_QUEUE_FILE="$tmp/queue" bash "$tmp/zator/tools/adaptive-pair.sh" doctor)"
+[[ "$doctor" == *'zapret2 config'*' OK'* && "$doctor" == *'adaptive controller'*' OK'* &&
+   "$doctor" == *'test NFQUEUE 65535'*' OK'* && "$doctor" == *'AUTO mode: unavailable'* ]] || {
+  echo "doctor omitted local checks or overstated AUTO readiness: $doctor" >&2; exit 1;
+}
+printf '65535 4321 0 0 0 0 0 0\n' > "$tmp/queue"
+if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" \
+  Z2R_ADAPTIVE_QUEUE_FILE="$tmp/queue" bash "$tmp/zator/tools/adaptive-pair.sh" doctor >/dev/null 2>&1; then
+  echo 'doctor reported a busy probe queue as ready' >&2; exit 1
+fi
+printf 'complete\n' > "$tmp/runs/0123456789abcdef0123456789abcdef/state"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" test-only >/dev/null
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = TEST_ONLY ]] || { echo 'test-only mode was not persisted' >&2; exit 1; }
+mkdir -p "$tmp/zapret"
+printf 'WS_USER=nobody\n' > "$tmp/zapret/config"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" observe > "$tmp/observe.out"
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OBSERVE &&
+   "$(stat -c '%a' "$tmp/runs/events.tsv")" = 600 &&
+   "$(cat "$tmp/observe.out")" == *'strategy selection remains unchanged'* ]] || {
+  echo 'observe mode did not create a private queue and explicit mode file' >&2; exit 1;
+}
+printf '1\tseen\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n' "$now" > "$tmp/runs/events.tsv"
+events="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" events)"
+[[ "$events" == *'cdn.example.org'* && "$events" == *'93.184.216.34'* ]] || { echo 'events command omitted a valid observation' >&2; exit 1; }
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" clear-events >/dev/null
+[[ ! -s "$tmp/runs/events.tsv" && "$(stat -c '%a' "$tmp/runs/events.tsv")" = 400 &&
+   "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF ]] || { echo 'clear-events did not empty and pause the queue' >&2; exit 1; }
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" pause >/dev/null
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF && "$(stat -c '%a' "$tmp/runs/events.tsv")" = 400 &&
+   -e "$tmp/runs/0123456789abcdef0123456789abcdef/cancel" ]] || {
+  echo 'pause did not stop event writes' >&2; exit 1;
+}
+if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" create >/dev/null 2>&1; then
+  echo 'create replaced an existing pairing' >&2; exit 1
+fi
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" rotate > "$tmp/rotate.out"
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/token")" != "$token" ]] || { echo 'rotate retained the old token' >&2; exit 1; }
+printf 'failed\n' > "$tmp/runs/0123456789abcdef0123456789abcdef/state"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" disable >/dev/null
+[[ ! -e "$tmp/zator/extra_strats/cache/adaptive/token" && ! -e "$tmp/zator/extra_strats/cache/adaptive/token.expires" && "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF && ! -e "$tmp/runs/events.tsv" &&
+   -e "$tmp/runs/0123456789abcdef0123456789abcdef/cancel" &&
+   ! -s "$tmp/runs/rules.tsv" ]] || { echo 'disable did not revoke/cancel/clear state' >&2; exit 1; }
+
+crash_id=abcdef0123456789abcdef0123456789
+mkdir -p "$tmp/runs/$crash_id/leases" "$tmp/runs/$crash_id/probe" "$tmp/shared.lock" "$tmp/proc"
+touch "$tmp/runs/$crash_id/probe/locked.lua"
+printf 'probing\n' > "$tmp/runs/$crash_id/state"
+printf '%s\t192.168.1.20\t62000\t142.250.72.14\t443\t2000000000\ttls-http1-v1\n' "$crash_id" \
+  > "$tmp/runs/$crash_id/leases/$crash_id.tsv"
+printf 'adaptive-lan\t2147483000\tboot-test\n' > "$tmp/shared.lock/owner"
+: > "$tmp/queue"
+printf 'boot-test\n' > "$tmp/boot_id"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  Z2R_ADAPTIVE_LOCK_DIR="$tmp/shared.lock" Z2R_ADAPTIVE_QUEUE_FILE="$tmp/queue" \
+  Z2R_ADAPTIVE_PROC_ROOT="$tmp/proc" Z2R_ADAPTIVE_BOOT_ID_FILE="$tmp/boot_id" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" disable > "$tmp/recover.out"
+[[ "$(cat "$tmp/runs/$crash_id/state")" = failed &&
+   "$(cat "$tmp/runs/$crash_id/error")" = controller_crash_recovered &&
+   ! -e "$tmp/shared.lock" && "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF ]] || {
+  echo 'disable did not recover a stale adaptive controller' >&2; exit 1;
+}
+echo 'adaptive pairing smoke: ok'

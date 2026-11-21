@@ -571,6 +571,9 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
 
   rm -rf "$COUNTER_DIR"; mkdir -p "$COUNTER_DIR"
   orch_locked_set example.org tls 7
+  # Удерживаем sweep в первой межстратегийной паузе: мок без паузы может
+  # закончить 200 быстрых циклов до первого SIGINT и дать ложный отказ.
+  export Z2R_SWEEP_PAUSE=5
   case "$(uname -s)" in
     *MINGW*|*MSYS*)
       # На Windows/MSYS kill -INT фоновому subshell не доставляется вовсе:
@@ -580,25 +583,37 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
       echo "(14c: kill -INT на MSYS не доставляется, блок прерывания пропущен)"
       ;;
     *)
-      printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 200 0 >"$TMP_DIR/sweep_int.log" 2>&1 &
-      swpid=$!
-      sleep 2
-      # На Windows/MSYS эмуляция SIGINT иногда теряется: шлём повторно, пока
-      # прогон не прервётся (на Linux срабатывает первый же сигнал).
-      int_i=0
-      while kill -0 "$swpid" 2>/dev/null && [ "$int_i" -lt 10 ]; do
-        kill -INT "$swpid" 2>/dev/null || true
-        sleep 1
-        int_i=$((int_i + 1))
-        grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" 2>/dev/null && break
-      done
-      swrc=0
-      wait "$swpid" 2>/dev/null || swrc=$?
-      [ "$swrc" = "0" ] || fail "сценарий 14c: Ctrl+C не должен ронять автопрогон (rc=$swrc)"
-      [ "$(orch_locked_get example.org tls)" = "7" ] \
-        || fail "сценарий 14c: после Ctrl+C лок не восстановлен"
-      grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" \
-        || fail "сценарий 14c: нет сообщения о прерывании"
+      case "$(trap -p INT)" in
+        *"'' SIGINT"*)
+          # tests/run.sh launches smoke scripts asynchronously; Bash then
+          # inherits SIGINT=ignored, which cannot be reset by the child.
+          # Scenario 14d checks interruption deterministically through the
+          # pause hook; run this signal test only in a foreground shell.
+          echo "(14c: унаследован SIGINT=ignored, signal-проверка пропущена)"
+          export Z2R_SWEEP_PAUSE=0
+          ;;
+        *)
+          printf '0\n' | orch_auto_sweep domain example.org tls https://example.org/ 1 200 0 >"$TMP_DIR/sweep_int.log" 2>&1 &
+          swpid=$!
+          sleep 2
+          # Повторяем сигнал: некоторые shell/runtime доставляют его с задержкой.
+          int_i=0
+          while kill -0 "$swpid" 2>/dev/null && [ "$int_i" -lt 10 ]; do
+            kill -INT "$swpid" 2>/dev/null || true
+            sleep 1
+            int_i=$((int_i + 1))
+            grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" 2>/dev/null && break
+          done
+          swrc=0
+          wait "$swpid" 2>/dev/null || swrc=$?
+          export Z2R_SWEEP_PAUSE=0
+          [ "$swrc" = "0" ] || fail "сценарий 14c: Ctrl+C не должен ронять автопрогон (rc=$swrc)"
+          [ "$(orch_locked_get example.org tls)" = "7" ] \
+            || fail "сценарий 14c: после Ctrl+C лок не восстановлен"
+          grep -q "Прервано пользователем" "$TMP_DIR/sweep_int.log" \
+            || fail "сценарий 14c: нет сообщения о прерывании"
+          ;;
+      esac
       ;;
   esac
 )
@@ -773,7 +788,7 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   json="$(check_one_target_json "Test" "https://example.org/")"
   printf '%s' "$json" | grep -q '"verdict":"fail"' || fail "сценарий 15: в JSON нет verdict fail"
   printf '%s' "$json" | grep -q '"download":null' || fail "сценарий 15: download должен быть null"
-  printf '{"results":[%s]}' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+  printf '{"results":[%s]}' "$json" | python3 -c "import sys, json; json.load(sys.stdin)" \
     || fail "сценарий 15: JSON невалиден (например code с ведущими нулями): $json"
 
   rm -f "$COUNTER_DIR"/*
@@ -783,7 +798,7 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   printf '%s' "$json" | grep -q '"label":"example.org"' || fail "сценарий 15: label должен быть доменом"
   printf '%s' "$json" | grep -q '"verdict":"ok"' || fail "сценарий 15: _domains_check_json без verdict ok: $json"
   printf '%s' "$json" | grep -q 'Проверьте доступность вручную\|проверьте вручную' || fail "сценарий 15: в тексте TLS 1.2 нет подсказки проверить вручную"
-  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+  printf '%s' "$json" | python3 -c "import sys, json; json.load(sys.stdin)" \
     || fail "сценарий 15: JSON доменной проверки невалиден: $json"
 )
 
@@ -903,7 +918,7 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   json="$(check_one_dns_json)"
   printf '%s' "$json" | grep -q '"verdict":"ok"' || fail "сценарий 18: JSON серии без ok: $json"
   printf '%s' "$json" | grep -q '2 из 3' || fail "сценарий 18: JSON серии без счётчика: $json"
-  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+  printf '%s' "$json" | python3 -c "import sys, json; json.load(sys.stdin)" \
     || fail "сценарий 18: JSON серии невалиден: $json"
 
   # WebUI: JSON-обёртка (check.cgi?profile=10)
@@ -911,7 +926,7 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   json="$(check_one_dns_json)"
   printf '%s' "$json" | grep -q '"verdict":"fail"' || fail "сценарий 18: JSON без verdict fail: $json"
   printf '%s' "$json" | grep -q 'во всех 3' || fail "сценарий 18: JSON fail без счётчика серии"
-  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+  printf '%s' "$json" | python3 -c "import sys, json; json.load(sys.stdin)" \
     || fail "сценарий 18: JSON невалиден: $json"
   export MOCK_DNS_MODE=ok
   json="$(profile_check_json 10)"
@@ -964,7 +979,7 @@ grep -q 'action == "check"' "$fake" || fail "сценарий 16: fake_router_se
 grep -q 'import random' "$fake" || fail "сценарий 16: fake_router_server без import random"
 grep -q '`check` | `list=custom_rkn&domain`' "$REPO_DIR/webui/dev/API_CONTRACT.md" \
   || fail "сценарий 16: API_CONTRACT без действия check"
-cat "$fake" | python -c "import sys, ast; ast.parse(sys.stdin.read())" \
+cat "$fake" | python3 -c "import sys, ast; ast.parse(sys.stdin.read())" \
   || fail "сценарий 16: синтаксис fake_router_server.py"
 
 
