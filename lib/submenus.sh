@@ -1596,7 +1596,7 @@ tls_blob_submenu() {
     clear -x
     echo -e "${cyan}--- Блобы, клоны и SNI профилей ---${plain}"
     echo ""
-    echo -e "${yellow}[blob] — штатные блобы конфига · [clone-solo] — клон CH с одним SNI · [clone-pool] — клон с пулом (автосмена)${plain}"
+    echo -e "${green}[blob]${plain}${yellow} — штатные блобы конфига · ${plain}${green}[clone-solo]${plain}${yellow} — клон CH с одним SNI · ${plain}${green}[clone-pool]${plain}${yellow} — клон с пулом (автосмена)${plain}"
     echo ""
     submenu_status_item "1" "Глобальный TLS блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
     echo ""
@@ -1605,20 +1605,28 @@ tls_blob_submenu() {
     for idx in "${!profiles[@]}"; do
       p="$(blob_override_get "${profiles[$idx]}" "$cfg")"
       tag="$(fake_mode_profile_tag "${profiles[$idx]}")"
+      # каждая часть своим цветом: тег-ярлык зелёный, блоб зелёный только
+      # при переопределении (глобальный — жёлтый), SNI-часть зелёная при
+      # пине/пуле (дефолт — жёлтый). Цвет блоба не тянется на SNI-хвост.
       if [ -n "$p" ]; then
-        v="$p"
-        vcol=green
+        v="${green}${p}${plain}"
       else
-        v="глобальный"
-        vcol=yellow
+        v="${yellow}глобальный${plain}"
       fi
       # профиль 5 (QUIC) — без SNI-части (клоны/SNI не про UDP); у классики
-      # сводка пуста, пока не задан пин/пул
+      # сводка пуста, пока не задан ни пин, ни пул
       if [ "${profiles[$idx]}" != "5" ]; then
         t="$(fake_mode_sni_summary "${profiles[$idx]}")"
-        [ -n "$t" ] && v="${v} · ${t}"
+        if [ -n "$t" ]; then
+          if [ -n "$(sni_override_get "${profiles[$idx]}")" ] \
+            || [ -n "$(sni_pool_list "${profiles[$idx]}")" ]; then
+            v="${v}${yellow} · ${plain}${green}${t}${plain}"
+          else
+            v="${v}${yellow} · ${plain}${yellow}${t}${plain}"
+          fi
+        fi
       fi
-      submenu_status_item "$i" "${tag} Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v" "$vcol"
+      submenu_status_item_raw "$i" "${green}${tag}${plain} Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v"
       i=$((i+1))
     done
     submenu_item "$i" "SNI клон-стратегий — по профилям"
