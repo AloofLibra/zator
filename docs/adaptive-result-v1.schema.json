@@ -8,6 +8,10 @@
     "schema_version",
     "test_id",
     "route_verified",
+    "queue_seen",
+    "strategy_ack_seen",
+    "syn_stage_confirmed",
+    "late_ack_stage_confirmed",
     "transport",
     "application",
     "overall",
@@ -16,12 +20,21 @@
     "target",
     "strategy",
     "recipe_id",
-    "client_profile"
+    "treatment_variant",
+    "client_profile",
+    "media_url_sha256",
+    "media_bytes",
+    "media_speed_bps",
+    "media_duration_ms"
   ],
   "properties": {
     "schema_version": { "const": 1 },
     "test_id": { "type": "string", "minLength": 1, "maxLength": 128 },
     "route_verified": { "type": "boolean" },
+    "queue_seen": { "type": "boolean" },
+    "strategy_ack_seen": { "type": "boolean" },
+    "syn_stage_confirmed": { "type": "boolean" },
+    "late_ack_stage_confirmed": { "type": "boolean" },
     "transport": { "enum": ["OK", "FAIL", "UNKNOWN"] },
     "application": { "enum": ["OK", "FAIL", "NOT_TESTED", "UNKNOWN"] },
     "overall": { "enum": ["SUCCESS", "FAIL", "INCONCLUSIVE"] },
@@ -35,7 +48,7 @@
         "hostname": { "type": "string", "minLength": 1, "maxLength": 253 },
         "destination_ip": { "type": "string", "minLength": 2, "maxLength": 45 },
         "ip_family": { "enum": ["ipv4", "ipv6"] },
-        "protocol": { "const": "tcp" },
+        "protocol": { "enum": ["tcp", "udp"] },
         "port": { "const": 443 },
         "profile_id": { "type": "integer", "minimum": 1, "maximum": 9 },
         "scope": { "type": "string", "pattern": "^(default|mark:[1-9][0-9]{0,4})$", "maxLength": 10 }
@@ -51,10 +64,82 @@
         "catalog_version": { "type": "string", "minLength": 1, "maxLength": 128 }
       }
     },
-    "recipe_id": { "type": "string", "minLength": 1, "maxLength": 64 },
-    "client_profile": { "type": "string", "minLength": 1, "maxLength": 64 }
+    "recipe_id": { "enum": ["tls-http1-v1", "googlevideo-tcp-media-v1", "googlevideo-quic-h3-media-v1"] },
+    "treatment_variant": { "enum": ["standard", "gv_tcp_plain", "gv_tcp_ramp", "gv_tcp_ramp_syndata"] },
+    "client_profile": { "enum": ["curl-windows-v1", "curl-windows-media-v1", "curl-windows-quic-media-v1"] },
+    "media_url_sha256": { "type": "string", "pattern": "^([a-f0-9]{64})?$" },
+    "media_bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+    "media_speed_bps": { "type": "integer", "minimum": 0, "maximum": 1073741824 },
+    "media_duration_ms": { "type": "integer", "minimum": 0, "maximum": 60000 }
   },
   "allOf": [
+    {
+      "if": { "properties": { "route_verified": { "const": true } } },
+      "then": {
+        "properties": {
+          "queue_seen": { "const": true },
+          "strategy_ack_seen": { "const": true }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "treatment_variant": { "enum": ["gv_tcp_ramp", "gv_tcp_ramp_syndata"] } } },
+          { "properties": { "route_verified": { "const": true } } }
+        ]
+      },
+      "then": {
+        "properties": {
+          "syn_stage_confirmed": { "const": true },
+          "late_ack_stage_confirmed": { "const": true }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "recipe_id": { "const": "tls-http1-v1" } } },
+      "then": {
+        "properties": {
+          "target": { "properties": { "profile_id": { "minimum": 1, "maximum": 4 }, "protocol": { "const": "tcp" } } },
+          "treatment_variant": { "const": "standard" },
+          "client_profile": { "const": "curl-windows-v1" },
+          "media_bytes": { "const": 0 },
+          "media_speed_bps": { "const": 0 },
+          "media_duration_ms": { "const": 0 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "recipe_id": { "const": "googlevideo-tcp-media-v1" } } },
+      "then": {
+        "properties": {
+          "target": {
+            "properties": {
+              "hostname": { "pattern": "(^|\\.)googlevideo\\.com$" },
+              "protocol": { "const": "tcp" },
+              "profile_id": { "const": 2 }
+            }
+          },
+          "client_profile": { "const": "curl-windows-media-v1" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "recipe_id": { "const": "googlevideo-quic-h3-media-v1" } } },
+      "then": {
+        "properties": {
+          "target": {
+            "properties": {
+              "hostname": { "pattern": "(^|\\.)googlevideo\\.com$" },
+              "protocol": { "const": "udp" },
+              "profile_id": { "const": 5 }
+            }
+          },
+          "treatment_variant": { "const": "standard" },
+          "client_profile": { "const": "curl-windows-quic-media-v1" }
+        }
+      }
+    },
     {
       "if": { "properties": { "overall": { "const": "SUCCESS" } } },
       "then": {

@@ -13,8 +13,13 @@ import time
 from recommendations import canonical, load_aliases, validate_provider
 
 SCHEMA_VERSION = 2
-PROTOCOLS = {"tls"}
-RECIPES = {"tls-http1-v1": "curl-windows-v1"}
+PROTOCOLS = {"tls", "tcp-media", "quic"}
+RECIPES = {
+    "tls-http1-v1": ("curl-windows-v1", 1, 4, "tls", {"standard"}),
+    "googlevideo-tcp-media-v1": ("curl-windows-media-v1", 2, 2, "tcp-media",
+                                  {"standard", "gv_tcp_plain", "gv_tcp_ramp", "gv_tcp_ramp_syndata"}),
+    "googlevideo-quic-h3-media-v1": ("curl-windows-quic-media-v1", 5, 5, "quic", {"standard"}),
+}
 MAX_BATCH_BYTES = 32768
 MAX_BATCH_RESULTS = 50
 MAX_FAILURE_CONFIRMATIONS = 5
@@ -121,7 +126,7 @@ def validate_batch(payload, secret, aliases=None, now=None, source_digest=None):
     if observed < now - 7 * 86400 or observed > now + 300:
         raise ValueError("timestamp outside retention window")
     recipe = payload.get("recipe_id")
-    if not isinstance(recipe, str) or recipe not in RECIPES or payload.get("client_profile") != RECIPES[recipe]:
+    if not isinstance(recipe, str) or recipe not in RECIPES or payload.get("client_profile") != RECIPES[recipe][0]:
         raise ValueError("unsupported probe recipe")
     results = payload.get("results")
     if not isinstance(results, list) or not 1 <= len(results) <= MAX_BATCH_RESULTS:
@@ -142,11 +147,25 @@ def validate_batch(payload, secret, aliases=None, now=None, source_digest=None):
         transport = row.get("transport")
         application = row.get("application")
         failure_confirmations = row.get("failure_confirmations", 0)
-        if (isinstance(profile, bool) or not isinstance(profile, int) or not 1 <= profile <= 4
-                or not isinstance(protocol, str) or protocol not in PROTOCOLS or not isinstance(fingerprint, str)
+        treatment = row.get("treatment_variant", "standard")
+        media_bytes = row.get("media_bytes", 0)
+        media_speed_bps = row.get("media_speed_bps", 0)
+        media_duration_ms = row.get("media_duration_ms", 0)
+        client_profile, min_profile, max_profile, expected_protocol, treatments = RECIPES[recipe]
+        if (isinstance(profile, bool) or not isinstance(profile, int)
+                or profile < min_profile or profile > max_profile
+                or not isinstance(protocol, str) or protocol != expected_protocol or not isinstance(fingerprint, str)
+                or not isinstance(treatment, str) or treatment not in treatments
+                or any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+                       for value in (media_bytes, media_speed_bps, media_duration_ms))
+                or media_bytes > 16777216 or media_speed_bps > 1073741824 or media_duration_ms > 60000
                 or not fingerprint.startswith("sha256:") or not _HEX64.fullmatch(fingerprint[7:])
                 or verdict not in ("SUCCESS", "FAIL") or row.get("route_verified") is not True):
             raise ValueError("result lacks exact verified evidence")
+        is_media = recipe != "tls-http1-v1"
+        if (is_media and (media_bytes < 65536 or media_speed_bps <= 0 or media_duration_ms <= 0)
+                or not is_media and any((media_bytes, media_speed_bps, media_duration_ms))):
+            raise ValueError("media recipe lacks bounded transfer evidence")
         if ((verdict == "SUCCESS" and (transport != "OK" or application != "OK"))
                 or (verdict == "FAIL" and transport != "FAIL" and application != "FAIL")):
             raise ValueError("verdict conflicts with probe evidence")
@@ -154,12 +173,15 @@ def validate_batch(payload, secret, aliases=None, now=None, source_digest=None):
                 or (verdict == "FAIL" and not 2 <= failure_confirmations <= MAX_FAILURE_CONFIRMATIONS)
                 or (verdict == "SUCCESS" and failure_confirmations != 0)):
             raise ValueError("failure requires repeated confirmation")
-        dim = f"{phash}|{profile}|{protocol}|{fingerprint[7:]}"
+        dim = f"{phash}|{profile}|{protocol}|{fingerprint[7:]}|{recipe}|{treatment}"
         if dim in seen:
             raise ValueError("duplicate result dimension")
         seen.add(dim)
         rows.append({"dimension": dim, "provider": provider, "profile_id": profile,
                      "protocol": protocol, "fingerprint": fingerprint,
+                     "recipe_id": recipe, "treatment_variant": treatment,
+                     "media_bytes": media_bytes, "media_speed_bps": media_speed_bps,
+                     "media_duration_ms": media_duration_ms,
                      "verdict": verdict, "day": day})
     return {"request_id": request_id, "request_hash": hashlib.sha256(_json_bytes(payload)).hexdigest(),
             "source": source, "provider_hash": phash, "day": day, "rows": rows}
@@ -206,11 +228,16 @@ for i = 1, count do
     redis.call('SADD', sourcekey, dimension)
     redis.call('SADD', dimset, dimension)
     redis.call('HINCRBY', aggkey, verdict, 1)
+    redis.call('HINCRBY', aggkey, 'MEDIA_BYTES', ARGV[5 + count * 9 + i])
+    redis.call('HINCRBY', aggkey, 'MEDIA_SPEED_BPS', ARGV[5 + count * 10 + i])
+    redis.call('HINCRBY', aggkey, 'MEDIA_DURATION_MS', ARGV[5 + count * 11 + i])
     redis.call('PFADD', hllkey, ARGV[5 + count * 2 + i])
     redis.call('HSET', metakey, 'provider', ARGV[5 + count * 3 + i],
       'profile_id', ARGV[5 + count * 4 + i],
       'protocol', ARGV[5 + count * 5 + i],
-      'fingerprint', ARGV[5 + count * 6 + i])
+      'fingerprint', ARGV[5 + count * 6 + i],
+      'recipe_id', ARGV[5 + count * 7 + i],
+      'treatment_variant', ARGV[5 + count * 8 + i])
     redis.call('EXPIRE', aggkey, ttl)
     redis.call('EXPIRE', hllkey, ttl)
     redis.call('EXPIRE', metakey, ttl)
@@ -219,7 +246,7 @@ for i = 1, count do
 end
 redis.call('EXPIRE', sourcekey, 172800)
 redis.call('EXPIRE', dimset, ttl)
-redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[6 + count * 7]))
+redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[6 + count * 12]))
 return accepted_count
 """
 
@@ -253,6 +280,11 @@ def ingest_batch(rdb, payload, secret, aliases=None, now=None, max_dimensions=MA
     args.extend(str(row["profile_id"]) for row in batch["rows"])
     args.extend(row["protocol"] for row in batch["rows"])
     args.extend(row["fingerprint"] for row in batch["rows"])
+    args.extend(row["recipe_id"] for row in batch["rows"])
+    args.extend(row["treatment_variant"] for row in batch["rows"])
+    args.extend(str(row["media_bytes"]) for row in batch["rows"])
+    args.extend(str(row["media_speed_bps"]) for row in batch["rows"])
+    args.extend(str(row["media_duration_ms"]) for row in batch["rows"])
     args.append(str(REQUEST_TTL))
     result = int(rdb.eval(_INGEST_SCRIPT, len(keys), *keys, *args))
     if result == -1:
@@ -295,16 +327,23 @@ def _refresh_rankings_locked(rdb, now=None, min_sources=MIN_SOURCES, limit=10):
             stale_dimensions.append(dim)
             continue
         meta = {_decode(k): _decode(v) for k, v in meta.items()}
-        phash, profile, protocol, fingerprint = dim.split("|", 3)
-        group_key = (phash, profile, protocol)
+        parts = dim.split("|", 5)
+        phash, profile, protocol, fingerprint = parts[:4]
+        recipe = parts[4] if len(parts) > 4 else "tls-http1-v1"
+        treatment = parts[5] if len(parts) > 5 else "standard"
+        group_key = (phash, profile, protocol, recipe, treatment)
         successes = failures = sources = 0
         weighted_successes = weighted_failures = 0.0
+        media_bytes = media_speed_bps = media_duration_ms = 0
         start = index * stride
         for day_delta, agg in enumerate(metric_rows[start:start + len(days)]):
             if agg:
                 values = {_decode(k): int(v) for k, v in agg.items()}
                 day_successes = values.get("SUCCESS", 0)
                 day_failures = values.get("FAIL", 0)
+                media_bytes += values.get("MEDIA_BYTES", 0)
+                media_speed_bps += values.get("MEDIA_SPEED_BPS", 0)
+                media_duration_ms += values.get("MEDIA_DURATION_MS", 0)
                 successes += day_successes
                 failures += day_failures
                 freshness_weight = 0.5 ** day_delta
@@ -314,13 +353,20 @@ def _refresh_rankings_locked(rdb, now=None, min_sources=MIN_SOURCES, limit=10):
         total = successes + failures
         if sources < min_sources or total < min_sources:
             continue
+        if recipe != "tls-http1-v1" and successes:
+            media_bytes = round(media_bytes / successes)
+            media_speed_bps = round(media_speed_bps / successes)
+            media_duration_ms = round(media_duration_ms / successes)
         # Beta(2,2) prior; enough evidence matters as well as raw success share.
         score = (weighted_successes + 2) / (weighted_successes + weighted_failures + 4)
         grouped[group_key].append({"fingerprint": "sha256:" + fingerprint, "successes": successes,
                                    "failures": failures, "samples": sources,
                                    "weighted_successes": round(weighted_successes, 3),
                                    "weighted_failures": round(weighted_failures, 3),
-                                   "score": round(score, 6)})
+                                   "score": round(score, 6), "recipe_id": recipe,
+                                   "treatment_variant": treatment,
+                                   "media_bytes": media_bytes, "media_speed_bps": media_speed_bps,
+                                   "media_duration_ms": media_duration_ms})
     if stale_dimensions:
         prune = rdb.pipeline(transaction=False)
         for dim in stale_dimensions:
@@ -333,11 +379,15 @@ def _refresh_rankings_locked(rdb, now=None, min_sources=MIN_SOURCES, limit=10):
             meta = {_decode(k): _decode(v) for k, v in meta.items()}
             phash = dim.split("|", 1)[0]
             providers[phash] = meta.get("provider", "")
-    for (phash, profile, protocol), rows in grouped.items():
-        rows.sort(key=lambda x: (-x["score"], -x["samples"], x["fingerprint"]))
+    for (phash, profile, protocol, recipe, treatment), rows in grouped.items():
+        rows.sort(key=lambda x: (-x["score"],
+                                 -(x["media_speed_bps"] if recipe != "tls-http1-v1" else 0),
+                                 -x["samples"], x["fingerprint"]))
         payload = {"schema_version": 2, "generated_at": now, "provider": providers.get(phash, ""),
-                   "profile_id": int(profile), "protocol": protocol, "rankings": rows[:limit]}
-        key = f"z4r:adaptive:v2:ranking:{phash}:{profile}:{protocol}"
+                   "profile_id": int(profile), "protocol": protocol, "recipe_id": recipe,
+                   "treatment_variant": treatment, "rankings": rows[:limit]}
+        suffix = "" if recipe == "tls-http1-v1" and treatment == "standard" else f":{recipe}:{treatment}"
+        key = f"z4r:adaptive:v2:ranking:{phash}:{profile}:{protocol}{suffix}"
         rdb.setex(key, RANKING_TTL, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         published += 1
     return published
@@ -356,18 +406,30 @@ def refresh_rankings(rdb, now=None, min_sources=MIN_SOURCES, limit=10):
                  1, lock_key, lock_token)
 
 
-def get_rankings(rdb, provider, profile, protocol="tls", aliases=None, now=None):
+def get_rankings(rdb, provider, profile, protocol="tls", aliases=None, now=None,
+                 recipe="tls-http1-v1", treatment="standard"):
     """Read only a precomputed ranking key; never aggregate or scan in request path."""
     provider = canonical(validate_provider(provider), aliases)
-    if (isinstance(profile, bool) or str(profile) not in {"1", "2", "3", "4"}
-            or not isinstance(protocol, str) or protocol not in PROTOCOLS):
+    try:
+        profile_number = int(profile)
+    except (TypeError, ValueError):
+        raise ValueError("invalid ranking dimension")
+    if (isinstance(profile, bool) or not isinstance(protocol, str) or protocol not in PROTOCOLS
+            or recipe not in RECIPES or treatment not in RECIPES[recipe][4]
+            or profile_number < RECIPES[recipe][1] or profile_number > RECIPES[recipe][2]
+            or protocol != RECIPES[recipe][3]):
         raise ValueError("invalid ranking dimension")
     phash = hashlib.sha256(provider.casefold().encode("utf-8")).hexdigest()[:24]
-    raw = rdb.get(f"z4r:adaptive:v2:ranking:{phash}:{profile}:{protocol}")
+    suffix = "" if recipe == "tls-http1-v1" and treatment == "standard" else f":{recipe}:{treatment}"
+    raw = rdb.get(f"z4r:adaptive:v2:ranking:{phash}:{profile}:{protocol}{suffix}")
     if raw is None:
-        return {"schema_version": 2, "status": "not_ready", "rankings": []}
+        return {"schema_version": 2, "status": "not_ready", "provider": provider,
+                "profile_id": profile_number, "protocol": protocol, "recipe_id": recipe,
+                "treatment_variant": treatment, "rankings": []}
     data = json.loads(_decode(raw))
-    if data.get("provider") != provider or data.get("profile_id") != int(profile) or data.get("protocol") != protocol:
+    if (data.get("provider") != provider or data.get("profile_id") != profile_number
+            or data.get("protocol") != protocol or data.get("recipe_id", "tls-http1-v1") != recipe
+            or data.get("treatment_variant", "standard") != treatment):
         return {"schema_version": 2, "status": "not_ready", "rankings": []}
     now = int(time.time()) if now is None else int(now)
     age = now - int(data.get("generated_at", 0))
@@ -387,10 +449,13 @@ def render_rankings_tsv(data):
     protocol = data.get("protocol")
     rows = data.get("rankings")
     if (isinstance(generated, bool) or not isinstance(generated, int) or generated < 0
-            or profile not in (1, 2, 3, 4) or not isinstance(protocol, str) or protocol not in PROTOCOLS
+            or not isinstance(profile, int) or not isinstance(protocol, str) or protocol not in PROTOCOLS
+            or data.get("recipe_id", "tls-http1-v1") not in RECIPES
             or not isinstance(rows, list) or len(rows) > 20):
         raise ValueError("invalid ranking document")
     lines.extend((f"generated_at={generated}", f"profile_id={profile}", f"protocol={protocol}"))
+    if data.get("recipe_id", "tls-http1-v1") != "tls-http1-v1":
+        lines.extend((f"recipe_id={data['recipe_id']}", f"treatment_variant={data.get('treatment_variant', 'standard')}"))
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("invalid ranking row")

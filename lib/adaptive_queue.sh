@@ -21,6 +21,43 @@ adaptive_queue_agent_heartbeat() {
   }
 }
 
+adaptive_queue_agent_status() {
+  [[ $# = 17 ]] || return 2
+  local stage="$1" stats="$2" rankings="$3" outcome="$4" checked="$5" fast="$6" deep="$7" duration="$8" first="$9"
+  local cpu="${10}" pc_mem="${11}" pc_net="${12}" router_load="${13}" router_mem="${14}" router_active="${15}"
+  local revalidation_recoveries="${16}" revalidation_failures="${17}" now
+  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file tmp
+  [[ "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit)$ &&
+     "$stats" =~ ^(true|false)$ && "$rankings" =~ ^(true|false)$ &&
+     "$outcome" =~ ^(none|found|direct|deep_scheduled|all_exhausted|limit_reached|inconclusive|stopped_rate_limit|stopped_infra|cancelled)$ &&
+     "$checked" =~ ^[0-9]{1,3}$ && "$checked" -le 999 &&
+     "$fast" =~ ^[0-9]{1,3}$ && "$fast" -le 999 &&
+     "$deep" =~ ^[0-9]{1,3}$ && "$deep" -le 999 &&
+     "$duration" =~ ^[0-9]{1,8}$ && "$duration" -le 86400000 &&
+     "$first" =~ ^[0-9]{1,8}$ && "$first" -le 86400000 &&
+     "$cpu" =~ ^(-1|[0-9]{1,3})$ &&
+     "$pc_mem" =~ ^(-1|[0-9]{1,13})$ && "$pc_mem" -le 8796093022208 &&
+     "$pc_net" =~ ^(-1|[0-9]{1,13})$ && "$pc_net" -le 1099511627776 &&
+     "$router_load" =~ ^(-1|[0-9]{1,7})$ && "$router_load" -le 1024000 &&
+     "$router_mem" =~ ^(-1|[0-9]{1,13})$ && "$router_mem" -le 8796093022208 &&
+     "$router_active" =~ ^(-1|[0-9]{1,3})$ && "$router_active" -le 999 &&
+     "$revalidation_recoveries" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_recoveries" -le 999999 &&
+     "$revalidation_failures" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_failures" -le 999999 ]] || return 2
+  [[ "$cpu" = -1 ]] || (( cpu <= 100 )) || return 2
+  now="$(date +%s)" || return 1
+  [[ "$now" =~ ^[0-9]{1,10}$ ]] || return 1
+  [[ ! -L "$base" ]] || return 1
+  mkdir -p "$base" || return 1
+  [[ -d "$base" && ! -L "$base" ]] || return 1
+  file="$base/agent.status.tsv"
+  [[ ! -L "$file" ]] || return 1
+  tmp="$(mktemp "$base/.agent-status.XXXXXX")" || return 1
+  (umask 077; printf '3\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$now" "$stage" "$stats" "$rankings" "$outcome" "$checked" "$fast" "$deep" "$duration" "$first" \
+    "$cpu" "$pc_mem" "$pc_net" "$router_load" "$router_mem" "$router_active" "$revalidation_recoveries" "$revalidation_failures" > "$tmp") &&
+    chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
 adaptive_queue_resources_json() {
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" load1 cores mem_available load_per_core active=0 dir id state
   load1="$(awk 'NR==1 {print $1; exit}' /proc/loadavg 2>/dev/null)"
@@ -53,7 +90,8 @@ adaptive_queue_request() {
   [[ $# = 4 ]] || return 2
   local host="${1,,}" ip="$2" profile="$3" scope="$4" base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   local file lock tmp now id row ver old_id old_host old_ip old_profile old_scope created count=0 cooldown=0 tries=0 owner events
-  [[ "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)" = TEST_ONLY ]] || return 3
+  mode="$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)"
+  [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || return 3
   [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
   if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 2; fi
@@ -69,7 +107,7 @@ adaptive_queue_request() {
      !(octets[0] == 203 && octets[1] == 0 && octets[2] == 113) )) || return 2
   events="${Z2R_ADAPTIVE_EVENTS_FILE:-$base/events.tsv}"
   awk -F '\t' -v h="$host" -v ip="$ip" -v p="$profile" -v s="$scope" -v now="$(date +%s)" \
-    '$1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure") && $3==h && $4==ip && $5==p && $7==s && $8 ~ /^[0-9]+$/ && $8<=now+60 && $8>=now-86400 {found=1} END {exit !found}' "$events" 2>/dev/null || return 4
+    '$1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded") && $3==h && $4==ip && $5==p && $7==s && $8 ~ /^[0-9]+$/ && $8<=now+60 && $8>=now-86400 {found=1} END {exit !found}' "$events" 2>/dev/null || return 4
   file="$(adaptive_queue_file)"; lock="$file.lock"; now="$(date +%s)"
   mkdir -p "$(dirname "$file")" || return 1
   while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries+1)); ((tries<30)) || return 1; sleep 0.1; done

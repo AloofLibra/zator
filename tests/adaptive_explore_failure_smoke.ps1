@@ -31,6 +31,7 @@ if ($StrategyNumber -eq 0) {
     $functionAst = $agentAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-AdaptiveExplorationProbe' }, $true)
     if (-not $functionAst) { throw 'Exploration runner function was not found.' }
     . ([scriptblock]::Create($functionAst.Extent.Text))
+    function Get-AdaptiveAvailableSourcePort { 62017 }
 
     $Router = [uri]'http://192.168.1.1'; $Token = 'a' * 64; $ApiPath = '/cgi-bin/adaptive.cgi'
     $UploadStatistics = $true; $StatisticsToken = 'test-client-token'

@@ -16,13 +16,26 @@ function Read-AdaptiveStatsState {
     }
     $pending = [System.Collections.Generic.List[object]]::new()
     foreach ($row in $saved.pending) {
+        if (-not $row.PSObject.Properties['recipe_id']) { $row | Add-Member -NotePropertyName recipe_id -NotePropertyValue 'tls-http1-v1' }
+        if (-not $row.PSObject.Properties['client_profile']) { $row | Add-Member -NotePropertyName client_profile -NotePropertyValue 'curl-windows-v1' }
+        if (-not $row.PSObject.Properties['treatment_variant']) { $row | Add-Member -NotePropertyName treatment_variant -NotePropertyValue 'standard' }
+        foreach ($metric in @('media_bytes', 'media_speed_bps', 'media_duration_ms')) {
+            if (-not $row.PSObject.Properties[$metric]) { $row | Add-Member -NotePropertyName $metric -NotePropertyValue 0 }
+        }
         $success = $row.verdict -eq 'SUCCESS' -and $row.route_verified -eq $true -and
             $row.transport -eq 'OK' -and $row.application -eq 'OK' -and $row.failure_confirmations -eq 0
         $failure = $row.verdict -eq 'FAIL' -and $row.route_verified -eq $true -and
             ($row.transport -eq 'FAIL' -or $row.application -eq 'FAIL') -and
             $row.failure_confirmations -in @(2, 3, 4, 5)
+        $recipeOk = ($row.recipe_id -eq 'tls-http1-v1' -and $row.client_profile -eq 'curl-windows-v1' -and
+            $row.profile_id -in @(1, 2, 3, 4) -and $row.protocol -eq 'tls' -and $row.treatment_variant -eq 'standard') -or
+            ($row.recipe_id -eq 'googlevideo-tcp-media-v1' -and $row.client_profile -eq 'curl-windows-media-v1' -and
+            $row.profile_id -eq 2 -and $row.protocol -eq 'tcp-media' -and
+            $row.treatment_variant -in @('standard', 'gv_tcp_plain', 'gv_tcp_ramp', 'gv_tcp_ramp_syndata')) -or
+            ($row.recipe_id -eq 'googlevideo-quic-h3-media-v1' -and $row.client_profile -eq 'curl-windows-quic-media-v1' -and
+            $row.profile_id -eq 5 -and $row.protocol -eq 'quic' -and $row.treatment_variant -eq 'standard')
         if ($row.provider -isnot [string] -or [string]::IsNullOrWhiteSpace($row.provider) -or
-            $row.profile_id -notin @(1, 2, 3, 4) -or $row.protocol -ne 'tls' -or
+            -not $recipeOk -or
             $row.fingerprint -notmatch '^sha256:[a-f0-9]{64}$' -or (-not $success -and -not $failure)) {
             throw 'Adaptive statistics spool contains an invalid row.'
         }
@@ -91,6 +104,9 @@ function Test-AdaptiveFailureEvidence {
         application = if ($reason -eq 'http_rejected') { 'FAIL' } else { 'UNKNOWN' }
         failure_confirmations = $CandidateResults.Count
         failure_evidence_verified = $true
+        recipe_id = 'tls-http1-v1'
+        client_profile = 'curl-windows-v1'
+        treatment_variant = 'standard'
         target = $target
         strategy = $first.strategy
     }
@@ -98,32 +114,69 @@ function Test-AdaptiveFailureEvidence {
 
 function Add-AdaptiveStatsResult {
     param([hashtable]$State, [object]$Result, [string]$Provider)
+    $recipe = [string]$Result.recipe_id
+    $media = $recipe -in @('googlevideo-tcp-media-v1', 'googlevideo-quic-h3-media-v1')
+    $expectedProtocol = switch ($recipe) {
+        'tls-http1-v1' { 'tcp' }
+        'googlevideo-tcp-media-v1' { 'tcp' }
+        'googlevideo-quic-h3-media-v1' { 'udp' }
+        default { '' }
+    }
+    $expectedClient = switch ($recipe) {
+        'tls-http1-v1' { 'curl-windows-v1' }
+        'googlevideo-tcp-media-v1' { 'curl-windows-media-v1' }
+        'googlevideo-quic-h3-media-v1' { 'curl-windows-quic-media-v1' }
+        default { '' }
+    }
+    $treatment = if ($Result.treatment_variant) { [string]$Result.treatment_variant } else { 'standard' }
+    $mediaShape = if ($recipe -eq 'googlevideo-tcp-media-v1') {
+        $Result.target.profile_id -eq 2 -and $Result.target.protocol -eq 'tcp' -and
+            $Result.target.hostname -match '(?i)^(?:[a-z0-9-]+\.)+googlevideo\.com$' -and
+            $treatment -in @('standard', 'gv_tcp_plain', 'gv_tcp_ramp', 'gv_tcp_ramp_syndata')
+    } elseif ($recipe -eq 'googlevideo-quic-h3-media-v1') {
+        $Result.target.profile_id -eq 5 -and $Result.target.protocol -eq 'udp' -and
+            $Result.target.hostname -match '(?i)^(?:[a-z0-9-]+\.)+googlevideo\.com$' -and $treatment -eq 'standard'
+    } else { $false }
     $commonValid = $Result.route_verified -eq $true -and
-        $Result.target.profile_id -in @(1, 2, 3, 4) -and $Result.target.protocol -eq 'tcp' -and $Result.target.port -eq 443 -and
+        (($recipe -eq 'tls-http1-v1' -and $Result.target.profile_id -in @(1, 2, 3, 4) -and
+            $Result.target.protocol -eq 'tcp' -and $treatment -eq 'standard') -or $mediaShape) -and
+        $Result.target.port -eq 443 -and $Result.client_profile -eq $expectedClient -and
         $Result.strategy.local_number -ge 1 -and $Result.strategy.fingerprint -match '^sha256:[a-f0-9]{64}$'
+    if ($media) {
+        $commonValid = $commonValid -and $Result.media_bytes -ge 65536 -and $Result.media_duration_ms -gt 0 -and
+            $Result.media_speed_bps -gt 0
+    }
     $success = $Result.overall -eq 'SUCCESS' -and $commonValid -and $Result.transport -eq 'OK' -and
         $Result.application -eq 'OK'
-    $failure = $Result.overall -eq 'FAIL' -and $commonValid -and $Result.failure_evidence_verified -eq $true -and
+    $failure = -not $media -and $Result.overall -eq 'FAIL' -and $commonValid -and $Result.failure_evidence_verified -eq $true -and
         $Result.failure_confirmations -in @(2, 3, 4, 5) -and
         ($Result.transport -eq 'FAIL' -or $Result.application -eq 'FAIL')
     if ([string]::IsNullOrWhiteSpace($Provider) -or $Provider.Length -gt 120 -or (-not $success -and -not $failure)) { return $false }
     $fingerprint = [string]$Result.strategy.fingerprint
     $profile = [int]$Result.target.profile_id
-    $key = "$Provider|$profile|tls|$fingerprint"
+    $protocol = if ($recipe -eq 'tls-http1-v1') { 'tls' } elseif ($recipe -eq 'googlevideo-quic-h3-media-v1') { 'quic' } else { 'tcp-media' }
+    $clientProfile = $expectedClient
+    $key = "$Provider|$profile|$protocol|$recipe|$treatment|$fingerprint"
     for ($i = $State.Pending.Count - 1; $i -ge 0; $i--) {
-        $rowKey = "$($State.Pending[$i].provider)|$($State.Pending[$i].profile_id)|$($State.Pending[$i].protocol)|$($State.Pending[$i].fingerprint)"
+        $rowKey = "$($State.Pending[$i].provider)|$($State.Pending[$i].profile_id)|$($State.Pending[$i].protocol)|$($State.Pending[$i].recipe_id)|$($State.Pending[$i].treatment_variant)|$($State.Pending[$i].fingerprint)"
         if ($rowKey -eq $key) { $State.Pending.RemoveAt($i) }
     }
     $State.Pending.Add([pscustomobject]@{
         provider = $Provider
         profile_id = $profile
-        protocol = 'tls'
+        protocol = $protocol
+        recipe_id = $recipe
+        treatment_variant = $treatment
+        client_profile = $clientProfile
         fingerprint = $fingerprint
         verdict = $Result.overall
         route_verified = $true
         transport = [string]$Result.transport
         application = [string]$Result.application
         failure_confirmations = if ($success) { 0 } else { [int]$Result.failure_confirmations }
+        media_bytes = if ($media) { [long]$Result.media_bytes } else { 0 }
+        media_speed_bps = if ($media) { [long]$Result.media_speed_bps } else { 0 }
+        media_duration_ms = if ($media) { [long]$Result.media_duration_ms } else { 0 }
     })
     while ($State.Pending.Count -gt 50) { $State.Pending.RemoveAt(0) }
     if ($State.Due -le 0) { $State.Due = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + (Get-Random -Minimum 900 -Maximum 1801) }
@@ -160,25 +213,31 @@ function Invoke-AdaptiveStatsUpload {
     if ($State.Due -gt $now) { return $false }
     if (-not $State.Inflight) {
         if ($State.Pending.Count -eq 0) { return $false }
-        $provider = [string]$State.Pending[0].provider
-        $rows = @($State.Pending | Where-Object provider -eq $provider | Select-Object -First 12)
+        $first = $State.Pending[0]
+        $rows = @($State.Pending | Where-Object {
+            $_.provider -eq $first.provider -and $_.recipe_id -eq $first.recipe_id -and
+                $_.treatment_variant -eq $first.treatment_variant -and $_.client_profile -eq $first.client_profile
+        } | Select-Object -First 12)
         $requestId = [guid]::NewGuid().ToString('N')
         $body = [ordered]@{
             schema_version = 2
             request_id = $requestId
-            provider = $provider
+            provider = [string]$first.provider
             observed_at = $now
-            recipe_id = 'tls-http1-v1'
-            client_profile = 'curl-windows-v1'
+            recipe_id = [string]$first.recipe_id
+            client_profile = [string]$first.client_profile
             results = @($rows | ForEach-Object {
                 [ordered]@{ profile_id = $_.profile_id; protocol = $_.protocol; fingerprint = $_.fingerprint
+                    treatment_variant = $_.treatment_variant
                     verdict = $_.verdict; route_verified = $_.route_verified; transport = $_.transport
-                    application = $_.application; failure_confirmations = $_.failure_confirmations }
+                    application = $_.application; failure_confirmations = $_.failure_confirmations
+                    media_bytes = $_.media_bytes; media_speed_bps = $_.media_speed_bps
+                    media_duration_ms = $_.media_duration_ms }
             })
         }
         $json = $body | ConvertTo-Json -Depth 8 -Compress
         if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 32768) { throw 'Adaptive statistics batch exceeds 32 KiB.' }
-        $keys = @($rows | ForEach-Object { "$($_.provider)|$($_.profile_id)|$($_.protocol)|$($_.fingerprint)" })
+        $keys = @($rows | ForEach-Object { "$($_.provider)|$($_.profile_id)|$($_.protocol)|$($_.recipe_id)|$($_.treatment_variant)|$($_.fingerprint)" })
         $State.Inflight = [pscustomobject]@{ request_id = $requestId; body = $json; row_keys = $keys }
         Save-AdaptiveStatsState $State
     }
@@ -191,7 +250,7 @@ function Invoke-AdaptiveStatsUpload {
     $keys = @($State.Inflight.row_keys)
     for ($i = $State.Pending.Count - 1; $i -ge 0; $i--) {
         $row = $State.Pending[$i]
-        $rowKey = "$($row.provider)|$($row.profile_id)|$($row.protocol)|$($row.fingerprint)"
+        $rowKey = "$($row.provider)|$($row.profile_id)|$($row.protocol)|$($row.recipe_id)|$($row.treatment_variant)|$($row.fingerprint)"
         if ($keys -contains $rowKey) { $State.Pending.RemoveAt($i) }
     }
     $State.Inflight = $null
@@ -218,8 +277,15 @@ function Read-AdaptiveRankingCache {
     }
     $entries = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in $saved.entries) {
+        if (-not $entry.PSObject.Properties['recipe_id']) { $entry | Add-Member -NotePropertyName recipe_id -NotePropertyValue 'tls-http1-v1' }
+        if (-not $entry.PSObject.Properties['protocol']) { $entry | Add-Member -NotePropertyName protocol -NotePropertyValue 'tls' }
+        if (-not $entry.PSObject.Properties['treatment_variant']) { $entry | Add-Member -NotePropertyName treatment_variant -NotePropertyValue 'standard' }
+        $entryDimensionOk = ($entry.recipe_id -eq 'tls-http1-v1' -and $entry.treatment_variant -eq 'standard' -and $entry.protocol -eq 'tls' -and $entry.profile_id -in @(1, 2, 3, 4)) -or
+            ($entry.recipe_id -eq 'googlevideo-tcp-media-v1' -and $entry.protocol -eq 'tcp-media' -and $entry.profile_id -eq 2) -or
+            ($entry.recipe_id -eq 'googlevideo-quic-h3-media-v1' -and $entry.protocol -eq 'quic' -and $entry.profile_id -eq 5)
         if ($entry.provider -isnot [string] -or [string]::IsNullOrWhiteSpace($entry.provider) -or
-            $entry.profile_id -notin @(1, 2, 3, 4) -or $entry.expires -notmatch '^[0-9]{1,12}$' -or
+            -not $entryDimensionOk -or $entry.treatment_variant -notin @('standard', 'gv_tcp_plain', 'gv_tcp_ramp', 'gv_tcp_ramp_syndata') -or
+            $entry.expires -notmatch '^[0-9]{1,12}$' -or
             $entry.status -notin @('fresh', 'stale', 'not_ready', 'stale-cache') -or
             $entry.fingerprints.Count -gt 10 -or
             @($entry.fingerprints | Where-Object { $_ -notmatch '^sha256:[a-f0-9]{64}$' }).Count -gt 0 -or
@@ -262,21 +328,27 @@ function Invoke-AdaptiveRankingHttp {
 }
 
 function Get-AdaptiveRankedFingerprints {
-    param([string]$Provider, [int]$ProfileId, [uri]$Endpoint)
+    param([string]$Provider, [int]$ProfileId, [uri]$Endpoint,
+          [ValidateSet('tls-http1-v1', 'googlevideo-tcp-media-v1', 'googlevideo-quic-h3-media-v1')][string]$RecipeId = 'tls-http1-v1',
+          [ValidateSet('standard', 'gv_tcp_plain', 'gv_tcp_ramp', 'gv_tcp_ramp_syndata')][string]$TreatmentVariant = 'standard')
+    $expectedProfile = switch ($RecipeId) { 'tls-http1-v1' { $ProfileId -in @(1, 2, 3, 4) -and $TreatmentVariant -eq 'standard' }; 'googlevideo-tcp-media-v1' { $ProfileId -eq 2 }; 'googlevideo-quic-h3-media-v1' { $ProfileId -eq 5 -and $TreatmentVariant -eq 'standard' } }
     if ([string]::IsNullOrWhiteSpace($Provider) -or $Provider.Length -gt 120 -or
-        $ProfileId -notin @(1, 2, 3, 4) -or $Endpoint.Scheme -ne 'https') {
+        -not $expectedProfile -or $Endpoint.Scheme -ne 'https') {
         throw 'Invalid adaptive ranking request.'
     }
     $cache = Read-AdaptiveRankingCache
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $entry = @($cache.Entries | Where-Object { $_.provider -eq $Provider -and $_.profile_id -eq $ProfileId } | Select-Object -First 1)
+    $protocol = switch ($RecipeId) { 'tls-http1-v1' { 'tls' }; 'googlevideo-tcp-media-v1' { 'tcp-media' }; 'googlevideo-quic-h3-media-v1' { 'quic' } }
+    $entry = @($cache.Entries | Where-Object { $_.provider -eq $Provider -and $_.profile_id -eq $ProfileId -and $_.recipe_id -eq $RecipeId -and $_.treatment_variant -eq $TreatmentVariant } | Select-Object -First 1)
     if ($entry.Count -gt 0 -and [long]$entry[0].expires -gt $now) { return $entry[0] }
     $url = [UriBuilder]$Endpoint
-    $url.Query = 'provider=' + [uri]::EscapeDataString($Provider) + '&profile=' + $ProfileId + '&protocol=tls'
+    $url.Query = 'provider=' + [uri]::EscapeDataString($Provider) + '&profile=' + $ProfileId + '&protocol=' + $protocol +
+        '&recipe=' + [uri]::EscapeDataString($RecipeId) + '&treatment=' + [uri]::EscapeDataString($TreatmentVariant)
     try {
         $document = Invoke-AdaptiveRankingHttp -Uri $url.Uri
         if ($document.schema_version -ne 2 -or $document.status -notin @('fresh', 'stale', 'not_ready') -or
-            $document.provider -ne $Provider -or $document.profile_id -ne $ProfileId -or $document.protocol -ne 'tls') {
+            $document.provider -ne $Provider -or $document.profile_id -ne $ProfileId -or $document.protocol -ne $protocol -or
+            $document.recipe_id -ne $RecipeId -or $document.treatment_variant -ne $TreatmentVariant) {
             throw 'Adaptive ranking server returned an invalid document.'
         }
         $fingerprints = @()
@@ -311,7 +383,8 @@ function Get-AdaptiveRankedFingerprints {
         $fingerprints = @($cached.fingerprints)
     }
     $newEntry = [pscustomobject]@{
-        provider = $Provider; profile_id = $ProfileId; status = $status; generated_at = $generated
+        provider = $Provider; profile_id = $ProfileId; protocol = $protocol; recipe_id = $RecipeId
+        treatment_variant = $TreatmentVariant; status = $status; generated_at = $generated
         expires = $now + (Get-Random -Minimum 600 -Maximum 1801); fingerprints = @($fingerprints)
     }
     if ($entry.Count -gt 0) { $cache.Entries.Remove($entry[0]) }
@@ -322,13 +395,15 @@ function Get-AdaptiveRankedFingerprints {
 }
 
 function Get-AdaptiveRankingHint {
-    param([switch]$Enabled, [int]$ProfileId, [uri]$Endpoint, [scriptblock]$IdentityRequest)
+    param([switch]$Enabled, [int]$ProfileId, [uri]$Endpoint, [scriptblock]$IdentityRequest,
+          [string]$RecipeId = 'tls-http1-v1', [string]$TreatmentVariant = 'standard')
     if (-not $Enabled) { return }
     try {
         $identity = & $IdentityRequest
         if ($identity.schema_version -ne 1 -or $identity.provider -isnot [string] -or
             [string]::IsNullOrWhiteSpace($identity.provider)) { return }
-        $rankings = Get-AdaptiveRankedFingerprints -Provider $identity.provider -ProfileId $ProfileId -Endpoint $Endpoint
+        $rankings = Get-AdaptiveRankedFingerprints -Provider $identity.provider -ProfileId $ProfileId -Endpoint $Endpoint `
+            -RecipeId $RecipeId -TreatmentVariant $TreatmentVariant
         @($rankings.fingerprints)
     } catch {
         [Console]::Error.WriteLine('Adaptive rankings unavailable; using the local candidate order.')

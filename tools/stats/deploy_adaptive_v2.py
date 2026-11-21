@@ -14,13 +14,17 @@ GET_ROUTE = '''        if parsed.path in ("/adaptive-v2/rankings", "/adaptive-v2
             providers = parse_qs(parsed.query, keep_blank_values=True).get("provider", [])
             profiles = parse_qs(parsed.query, keep_blank_values=True).get("profile", [])
             protocols = parse_qs(parsed.query, keep_blank_values=True).get("protocol", ["tls"])
+            recipes = parse_qs(parsed.query, keep_blank_values=True).get("recipe", ["tls-http1-v1"])
+            treatments = parse_qs(parsed.query, keep_blank_values=True).get("treatment", ["standard"])
             try:
-                if len(providers) != 1 or len(profiles) != 1 or len(protocols) != 1:
+                if (len(providers) != 1 or len(profiles) != 1 or len(protocols) != 1
+                        or len(recipes) != 1 or len(treatments) != 1):
                     raise ValueError("invalid ranking request")
                 global ADAPTIVE_V2_ALIASES
                 if ADAPTIVE_V2_ALIASES is None:
                     ADAPTIVE_V2_ALIASES = load_aliases(ADAPTIVE_V2_ALIASES_PATH)
-                result = get_adaptive_rankings(rdb, providers[0], profiles[0], protocols[0], ADAPTIVE_V2_ALIASES)
+                result = get_adaptive_rankings(rdb, providers[0], profiles[0], protocols[0], ADAPTIVE_V2_ALIASES,
+                                               recipe=recipes[0], treatment=treatments[0])
             except ValueError:
                 self.send_json(400, {"ok": False, "error": "invalid ranking request"})
                 return
@@ -116,7 +120,13 @@ def adaptive_aliases():
         if server.count(anchor) != 1:
             raise RuntimeError("cannot find Redis URL insertion point")
         server = server.replace(anchor, helper + anchor, 1)
-    if '"/adaptive-v2/rankings.tsv"' not in server:
+    route_start = server.find('        if parsed.path in ("/adaptive-v2/rankings", "/adaptive-v2/rankings.tsv"):\n')
+    legacy_route = server.find('        if parsed.path == "/googlevideo-ips.txt":', route_start + 1)
+    if route_start >= 0 and legacy_route > route_start:
+        # V2 may already be installed. Replace its whole ranking block on
+        # upgrades so new recipe dimensions do not get masked by the old code.
+        server = server[:route_start] + GET_ROUTE + server[legacy_route:]
+    elif '"/adaptive-v2/rankings.tsv"' not in server:
         anchor = "    def do_GET(self):\n        parsed = urlparse(self.path)\n        params = parse_qs(parsed.query)\n"
         if server.count(anchor) != 1:
             raise RuntimeError("cannot find unique GET insertion point")

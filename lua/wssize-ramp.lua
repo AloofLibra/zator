@@ -1,6 +1,90 @@
 -- This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
 -- Reduce the advertised receive window until the client ACKs server data,
 -- then compensate for the reduced Window Scale on every later outbound packet.
+local function adaptive_ramp_audit(stage)
+	local path = os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH")
+	if type(path) ~= "string" or #path > 512
+		or not (path:match("^%a:/[A-Za-z0-9_./-]+$") or path:match("^/[A-Za-z0-9_./-]+$"))
+		or path:find("/%.%./") then return end
+	local f = io.open(path, "r")
+	local syn, ack = "0", "0"
+	if f then
+		local line = f:read("*l")
+		f:close()
+		if line then
+			local s, a = line:match("^1\t([01])\t([01])$")
+			if s and a then syn, ack = s, a end
+		end
+	end
+	if stage == "syn" then syn = "1" elseif stage == "ack" then ack = "1" end
+	f = io.open(path, "w")
+	if f then f:write("1\t", syn, "\t", ack, "\n"); f:close() end
+end
+
+function z2r_wssize_ramp_hostname_valid(host)
+	if type(host) ~= "string" or #host > 253 or not host:match("%.googlevideo%.com$") then return false end
+	local suffix = ".googlevideo.com"
+	local prefix = host:sub(1, #host - #suffix)
+	for label in (prefix .. "."):gmatch("(.-)%.") do
+		if #label < 1 or #label > 63 or
+			(not label:match("^[a-z0-9]$") and not label:match("^[a-z0-9][a-z0-9%-]*[a-z0-9]$")) then return false end
+	end
+	return true
+end
+
+function z2r_wssize_ramp_exempt_for_new_flow(ip)
+	local root = os.getenv("ZATOR_ROOT") or "/opt/zator"
+	local mode = io.open(root .. "/extra_strats/cache/adaptive/mode", "r")
+	if not mode then return false end
+	local active = mode:read("*l") == "AGENT_BETA"
+	mode:close()
+	if not active then return false end
+	local consent = io.open(root .. "/extra_strats/cache/adaptive/apply-default-scope", "r")
+	if not consent then return false end
+	active = consent:read("*l") == "1"
+	consent:close()
+	if not active then return false end
+	local path = os.getenv("Z2R_ADAPTIVE_RAMP_EXEMPT_FILE") or "/tmp/z2r-adaptive/ramp-exempt.tsv"
+	if #path > 512 or not (path:match("^/[A-Za-z0-9_./-]+$") or path:match("^%a:/[A-Za-z0-9_./-]+$")) or path:find("/%.%./") then return false end
+	local now = os.time()
+	local file = io.open(path, "r")
+	if not file then return false end
+	local candidate_host, candidate_scope
+	local count = 0
+	for line in file:lines() do
+		count = count + 1
+		if count > 128 then file:close(); return false end
+		local ver, host, dst, scope, expires, fingerprint = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)$")
+		if ver == "1" and dst == ip and z2r_wssize_ramp_hostname_valid(host)
+			and (scope == "default" or scope:match("^mark:[1-9]%d?%d?%d?%d?$"))
+			and expires:match("^[1-9]%d*$") and tonumber(expires) > now
+			and fingerprint:match("^[a-f0-9]+$") and #fingerprint == 64 then
+			candidate_host, candidate_scope = host, scope
+			break
+		end
+	end
+	file:close()
+	if not candidate_host then return false end
+	local targets = io.open(os.getenv("Z2R_ADAPTIVE_RAMP_TARGETS_FILE") or "/tmp/z2r-adaptive/ramp-targets.tsv", "r")
+	if not targets then return false end
+	local exact, conflict = false, false
+	count = 0
+	for line in targets:lines() do
+		count = count + 1
+		if count > 128 then targets:close(); return false end
+		local ver, host, dst, scope, seen, provenance, group, status = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)")
+		if ver == "1" and seen and seen:match("^%d+$") and tonumber(seen) >= now - 604800 and provenance == "tls-observed" then
+			if host == candidate_host and dst == ip and scope == candidate_scope then
+				exact = true
+				if status == "conflict" or status == "uncertain" then conflict = true end
+			end
+			if (dst == ip and host ~= candidate_host) or (host == candidate_host and dst ~= ip) then conflict = true end
+		end
+	end
+	targets:close()
+	return exact and not conflict
+end
+
 function wssize_ramp(ctx, desync)
 	local dis = desync.dis
 	if not dis.tcp then
@@ -21,6 +105,18 @@ function wssize_ramp(ctx, desync)
 	local tcp, state = dis.tcp, track.lua_state
 	local flags = tcp.th_flags
 	if bitand(flags, TH_FIN + TH_RST) ~= 0 then return end
+	if state.wssize_ramp_exempt then
+		instance_cutoff_shim(ctx, desync, true)
+		return
+	end
+	if bitand(flags, TH_SYN) ~= 0 and type(dis_ipdst) == "function" and type(ntop) == "function" then
+		local dst = dis_ipdst(dis)
+		if dst and z2r_wssize_ramp_exempt_for_new_flow(ntop(dst)) then
+			state.wssize_ramp_exempt = true
+			instance_cutoff_shim(ctx, desync, true)
+			return
+		end
+	end
 	if not state.wssize_ramp_cutoff then
 		direction_cutoff_opposite(ctx, desync)
 		state.wssize_ramp_cutoff = true
@@ -54,7 +150,10 @@ function wssize_ramp(ctx, desync)
 		local changed = false
 		if original > scale then tcp.options[i].data = bu8(scale); changed = true end
 		if tcp.th_win ~= state.wssize_ramp_wsize then tcp.th_win = state.wssize_ramp_wsize; changed = true end
-		if changed then return VERDICT_MODIFY end
+		if changed then
+			adaptive_ramp_audit("syn")
+			return VERDICT_MODIFY
+		end
 		return
 	end
 	local shift = state.wssize_ramp_shift
@@ -70,7 +169,10 @@ function wssize_ramp(ctx, desync)
 			state.wssize_ramp_opened = true
 		else
 			local acked = (tcp.th_ack - server.seq0 - 1) % 4294967296
-			if acked < 2147483648 and acked >= state.wssize_ramp_open then state.wssize_ramp_opened = true end
+			if acked < 2147483648 and acked >= state.wssize_ramp_open then
+				state.wssize_ramp_opened = true
+				adaptive_ramp_audit("ack")
+			end
 		end
 	end
 	if not state.wssize_ramp_opened then

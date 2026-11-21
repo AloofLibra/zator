@@ -69,6 +69,7 @@ nft() {
 }
 
 # Model a fw4 reload that erased this private lease chain while nfqws2 stayed up.
+mkdir -p "$Z2R_ADAPTIVE_DIR/ramp-media-cache"
 rm -f "$NFT_ACTIVE"
 adaptive_lan_transport_reconcile
 [[ -e "$NFT_ACTIVE" ]] || { echo 'nft lease chain was not restored after rebuild' >&2; exit 1; }

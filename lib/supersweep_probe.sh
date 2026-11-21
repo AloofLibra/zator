@@ -3,15 +3,92 @@
 # Из develop: отдельная NFQUEUE, зарезервированные curl-порты и минимальный
 # план nfqws2. Без adaptive-controller, телеметрийных патчей и фонового обучения.
 
+_supersweep_probe_config_quic() {
+    local cfg="$1" target_ip="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+    local cache_autoexclude=${Z2R_SUPERSWEEP_AUTOEXCLUDE:-} blob_names plan="$Z2R_SUPERSWEEP_DIR/probe/udp-plan.args" f
+    [ -n "$target_ip" ] || return 1
+    awk -F. 'BEGIN { ok=1 } { if (NF != 4) exit 1; for (i=1;i<=4;i++) if ($i !~ /^[0-9]+$/ || length($i)>3 || ($i+0)>255 || (length($i)>1 && substr($i,1,1)=="0")) exit 1 }' <<< "$target_ip" || return 1
+    case "$dir" in /*) ;; *) return 1 ;; esac
+    case "$dir" in *[!a-zA-Z0-9_./-]*) return 1 ;; esac
+    mkdir -p "$dir" || return 1
+    chmod 755 "$Z2R_SUPERSWEEP_DIR" "$dir" || return 1
+    sed -e "s#^local LOCKED_PATH = .*#local LOCKED_PATH = \"$dir/locked.tsv\"#" \
+        -e "s#^local LOCKED_MANUAL_PATH = .*#local LOCKED_MANUAL_PATH = \"$dir/locked.manual.tsv\"#" \
+        "${ZATOR_ROOT:-/opt/zator}/lua/locked.lua" > "$dir/locked.lua" || return 1
+    : > "$dir/locked.tsv"
+    : > "$dir/locked.manual.tsv"
+    for f in blob_override.tsv mode_override.tsv sni_override.tsv clonesize.tsv; do
+        [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
+    done
+    awk '
+        /^#Стратегии для UDP_YT/ { in_profile=1; next }
+        in_profile && /^--new([[:space:]]|$)/ { exit }
+        in_profile && /^--lua-desync=/ && /:strategy=[0-9]+/ {
+            n=split($0, piece, / --lua-desync=/)
+            for (i=1;i<=n;i++) print (i>1 ? "--lua-desync=" : "") piece[i]
+            found=1
+        }
+        END { if (!found) exit 1 }
+    ' "$cfg" > "$plan" || { rm -f "$plan"; return 1; }
+    blob_names="$(grep -oE ':blob=[A-Za-z0-9_.-]+' "$plan" | cut -d= -f2 | sort -u | tr '\n' '|')z2r_prof_5|"
+    case "$cache_autoexclude" in
+        0|1) ;;
+        *)
+            if [ -x "$binary" ] && "$binary" --help 2>&1 | grep -q -- '--autoexclude'; then cache_autoexclude=1; else cache_autoexclude=0; fi
+            ;;
+    esac
+    Z2R_SUPERSWEEP_AUTOEXCLUDE="$cache_autoexclude"
+    export Z2R_SUPERSWEEP_AUTOEXCLUDE
+    {
+        printf '%s\n' "--qnum=${Z2R_SUPERSWEEP_QNUM:-65535}" "--fwmark=${DESYNC_MARK:-0x40000000}" '--uid=65533:65533'
+        [ "$cache_autoexclude" != 1 ] || printf '%s\n' '--autoexclude=0'
+        # Profile-5 zator Lua helpers depend on the upstream desync library,
+        # just like the production launcher. Keep these before config inits.
+        printf '%s\n' \
+            "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-lib.lua" \
+            "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
+            "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua"
+        # Reuse deployed init and blob declarations so profile-5 overrides have
+        # the same inputs as production, while replacing only the lock Lua.
+        awk -v probe_lock="$dir/locked.lua" -v blob_names="$blob_names" '
+            /^--lua-init=@/ {
+                if ($0 ~ /\/lua\/locked\.lua$/) print "--lua-init=@" probe_lock
+                else print
+                next
+            }
+            /^--blob=/ {
+                id=$0; sub(/^--blob=/,"",id); sub(/:.*/,"",id)
+                if (index(blob_names,"|" id "|")) print
+                next
+            }
+        ' probe_lock="$dir/locked.lua" "$cfg"
+        printf '%s\n' '--filter-udp=443' '--in-range=-d100' '--out-range=-d100' '--payload=quic_initial'
+        printf '%s\n' '--lua-desync=circular_locked:key=5:proto=udp' '--in-range=x'
+        cat "$plan"
+    } > "$dir/nfqws2.args" || { rm -f "$plan" "$dir/nfqws2.args"; return 1; }
+    rm -f "$plan"
+    chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.args"
+}
+
 supersweep_probe_config() {
-    local profile="$1" cfg="$2" dir="${Z2R_SUPERSWEEP_DIR}/probe" f
-    local ramp_enable ramp_mode ramp_wsize ramp_scale ramp_open ramp_args=
+    local profile="$1" cfg="$2" treatment="${3:-standard}" target_ip="${4:-}" recipe="${5:-tls-http1-v1}" dir="${Z2R_SUPERSWEEP_DIR}/probe" f ipset_path=/opt/zator/lists/googlevideo-ipv4.txt
+    local ramp_enable ramp_mode ramp_wsize ramp_scale ramp_open ramp_args= ramp_syndata=0 ramp_blob=
+    if [ "$recipe" = tls-http1-v1 ] && [ "$profile" = 2 ] && [ "$treatment" != standard ]; then
+        recipe=googlevideo-tcp-media-v1
+    fi
+    case "$recipe:$profile:$treatment" in
+        googlevideo-quic-h3-media-v1:5:standard) _supersweep_probe_config_quic "$cfg" "$target_ip"; return $? ;;
+        tls-http1-v1:1:standard|tls-http1-v1:2:standard|tls-http1-v1:3:standard|tls-http1-v1:4:standard|googlevideo-tcp-media-v1:2:*) ;;
+        *) return 1 ;;
+    esac
     case "$profile" in 1|2|3|4) ;; *) return 1 ;; esac
+    case "$treatment" in standard|gv_tcp_plain|gv_tcp_ramp|gv_tcp_ramp_syndata) ;; *) return 1 ;; esac
+    if [ "$treatment" != standard ] && [ "$profile" != 2 ]; then return 1; fi
     # config.default is shell-expanded by the production launcher, but this
     # probe builder reads its text directly. Resolve this one known argument
     # macro from config values so the isolated argv stays valid nfqws2 syntax.
-    ramp_enable=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null || echo 0)
-    if [ "$ramp_enable" = 1 ]; then
+    ramp_enable=0
+    if [ "$treatment" = gv_tcp_ramp ] || [ "$treatment" = gv_tcp_ramp_syndata ]; then
         ramp_mode=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_MODE 2>/dev/null) || return 1
         ramp_wsize=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_WSIZE 2>/dev/null) || return 1
         ramp_scale=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SCALE 2>/dev/null) || return 1
@@ -20,19 +97,35 @@ supersweep_probe_config() {
         case "$ramp_wsize:$ramp_scale:$ramp_open" in *[!0-9:]*|:*|*:) return 1 ;; esac
         [ "$ramp_wsize" -le 65535 ] && [ "$ramp_scale" -le 14 ] && [ "$ramp_open" -ge 1 ] || return 1
         ramp_args=":mode=$ramp_mode:wsize=$ramp_wsize:scale=$ramp_scale:open=$ramp_open"
-    else
-        ramp_enable=0
+        ramp_enable=1
     fi
-    # The isolated sweep queue is selected by transport marks, not the live
-    # Googlevideo kernel set. Keep its strategy measurements independent of Ramp.
-    ramp_enable=0
-    ramp_args=
+    if [ "$treatment" = gv_tcp_ramp_syndata ]; then
+        [ "$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SYNDATA 2>/dev/null)" = 1 ] || return 1
+        ramp_blob=$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_SYN_BLOB 2>/dev/null) || return 1
+        case "$ramp_blob" in ''|*[!a-zA-Z0-9_.-]*) return 1 ;; esac
+        grep -Fq -- "--blob=$ramp_blob:" "$cfg" || return 1
+        ramp_syndata=1
+    fi
+    if [ -n "$target_ip" ]; then
+        awk -F. 'BEGIN { ok=1 } {
+            if (NF != 4) exit 1
+            for (i=1; i<=4; i++) if ($i !~ /^[0-9]+$/ || length($i)>3 || ($i+0)>255 || (length($i)>1 && substr($i,1,1)=="0")) exit 1
+        }' <<< "$target_ip" || return 1
+    fi
+    # Legacy Supersweep and ordinary adaptive TLS stay Ramp-free. The explicit
+    # gv_tcp_ramp recipe is safe here because the transport admits only its
+    # leased source/destination tuple; it never edits production config/rules.
     # Пути попадут в Lua-строку и @config: не интерпретируем shell/Lua-код.
     case "$dir" in /*) ;; *) return 1 ;; esac
     case "$dir" in *[!a-zA-Z0-9_./-]*) return 1 ;; esac
     mkdir -p "$dir" || return 1
     # Lua после drop privileges читает только приватные локи/копии настроек.
     chmod 755 "$Z2R_SUPERSWEEP_DIR" "$dir" || return 1
+    if [ -n "$target_ip" ] && [ "$ramp_enable" = 1 ]; then
+        ipset_path="$dir/googlevideo-ipv4.txt"
+        printf '%s\n' "$target_ip" > "$dir/googlevideo-ipv4.txt" || return 1
+        chmod 644 "$dir/googlevideo-ipv4.txt" || return 1
+    fi
     sed -e "s#^local LOCKED_PATH = .*#local LOCKED_PATH = \"$dir/locked.tsv\"#" \
         -e "s#^local LOCKED_MANUAL_PATH = .*#local LOCKED_MANUAL_PATH = \"$dir/locked.manual.tsv\"#" \
         "${ZATOR_ROOT:-/opt/zator}/lua/locked.lua" > "$dir/locked.lua" || return 1
@@ -67,6 +160,9 @@ supersweep_probe_config() {
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
             "--lua-init=@$dir/locked.lua" \
             "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
+        if [ "$ramp_enable" = 1 ]; then
+            printf '%s\n' "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/wssize-ramp.lua"
+        fi
         awk -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" '
             /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
             opts && /^"[[:space:]]*$/ { opts=0 }
@@ -93,7 +189,8 @@ supersweep_probe_config() {
     # Только НУМЕРОВАННЫЕ стратегии нужного стандартного профиля. Исключения/
     # hostlists и детекторы не нужны: весь трафик очереди — явно выбранная проба.
     # Дописываем план после --new шаблона; каждый аргумент — отдельной строкой.
-    awk -v p="$profile" -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" '
+    awk -v p="$profile" -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" -v ipset_path="$ipset_path" \
+        -v ramp_syndata="$ramp_syndata" -v ramp_blob="$ramp_blob" '
         /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
         opts && /^"[[:space:]]*$/ { opts=0 }
         !opts { next }
@@ -103,14 +200,28 @@ supersweep_probe_config() {
         $0 == "#Z2R_AUTO_STANDARD_" p "_END" { block=0 }
         block {
             if (!header++) {
-                print "--filter-tcp=443\n--filter-l7=tls"
+                print "--filter-tcp=443"
+                if (!(ramp_enable == 1 && p == 2)) print "--filter-l7=tls"
                 print "--payload=tls_client_hello,http_req,http_reply,unknown,tls_server_hello"
                 print "--out-range=-s34228"
+                if (ramp_enable == 1 && p == 2) {
+                    # Mirror the production Googlevideo Ramp profile: its
+                    # all-packet ranges are required to see the initial SYN.
+                    # The transport already scopes this probe to one leased
+                    # source/destination tuple and the ipset below to one IP.
+                    print "--out-range=a\n--in-range=a\n--payload=all,empty"
+                }
+                if (ramp_syndata == 1 && p == 2) {
+                    print "--out-range=-n1"
+                    print "--in-range=x"
+                    print "--payload=empty"
+                    print "--lua-desync=z2r_googlevideo_syndata:blob=" ramp_blob
+                }
                 if (ramp_enable == 1 && p == 2) print "--lua-desync=wssize_ramp" ramp_args
                 print "--in-range=-s32768"
                 print "--lua-desync=circular_locked:key=" p
             }
-            if (p == 2 && ramp_enable == 1 && /--filter-tcp=443/) print "--ipset=/opt/zator/lists/googlevideo-ipv4.txt"
+            if (p == 2 && ramp_enable == 1 && /--filter-tcp=443/) print "--ipset=" ipset_path
             if (/^--import=/) { print; plan=1 }
             if (/^--lua-desync=/ && /:strategy=[0-9]+/) {
                 n = split($0, piece, / --lua-desync=/)

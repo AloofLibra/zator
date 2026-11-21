@@ -48,24 +48,106 @@ api_supersweep_get() {
   send_json '200 OK' "$body"
 }
 
+adaptive_last_probe_json() {
+  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" run status_file id row_ver completed observed outcome reason recipe treatment profile scope strategy route queue ack bytes speed media_ms duration extra now
+  local best_completed=0 best_json='null'
+  [[ -d "$base" && ! -L "$base" ]] || { printf 'null\n'; return 0; }
+  now="$(date +%s)" || { printf 'null\n'; return 0; }
+  for run in "$base"/*; do
+    [[ -d "$run" && ! -L "$run" ]] || continue
+    id="${run##*/}"
+    [[ "$id" =~ ^[a-f0-9]{32}$ ]] || continue
+    status_file="$run/status.tsv"
+    [[ -f "$status_file" && ! -L "$status_file" && -r "$status_file" ]] || continue
+    IFS=$'\t' read -r row_ver completed observed outcome reason recipe treatment profile scope strategy route queue ack bytes speed media_ms duration extra < "$status_file" || continue
+    [[ -z "$extra" && "$row_ver" = 1 && "$completed" =~ ^[0-9]{1,10}$ && "$observed" =~ ^[0-9]{1,10}$ && "$outcome" =~ ^(SUCCESS|FAIL|INCONCLUSIVE)$ &&
+       "$reason" =~ ^[a-z_]{1,48}$ && "$profile" =~ ^[1-5]$ && "$scope" =~ ^(default|mark:[1-9][0-9]{0,4})$ &&
+       "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && ( "$route" = true || "$route" = false ) &&
+       ( "$queue" = true || "$queue" = false ) && ( "$ack" = true || "$ack" = false ) &&
+       "$bytes" =~ ^[0-9]{1,8}$ && "$bytes" -le 16777216 && "$speed" =~ ^[0-9]{1,10}$ && "$speed" -le 1073741824 &&
+       "$media_ms" =~ ^[0-9]{1,8}$ && "$media_ms" -le 60000 && "$duration" =~ ^[0-9]{1,6}$ ]] || continue
+    case "$recipe:$profile:$treatment" in
+      tls-http1-v1:[1-4]:standard|googlevideo-tcp-media-v1:2:standard|googlevideo-tcp-media-v1:2:gv_tcp_plain|googlevideo-tcp-media-v1:2:gv_tcp_ramp|googlevideo-tcp-media-v1:2:gv_tcp_ramp_syndata|googlevideo-quic-h3-media-v1:5:standard) ;;
+      *) continue ;;
+    esac
+    if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || continue; fi
+    (( completed <= now + 60 && completed >= now - 86400 && observed <= now + 60 && observed >= now - 86400 && completed > best_completed )) || continue
+    best_completed="$completed"
+    best_json="{\"observed_at\":$observed,\"overall\":\"$outcome\",\"reason\":\"$reason\",\"recipe_id\":\"$recipe\",\"treatment_variant\":\"$treatment\",\"profile_id\":$profile,\"scope\":\"$scope\",\"strategy_number\":$strategy,\"route_verified\":$route,\"queue_seen\":$queue,\"strategy_ack_seen\":$ack,\"media_bytes\":$bytes,\"media_speed_bps\":$speed,\"media_duration_ms\":$media_ms,\"duration_seconds\":$duration}"
+  done
+  printf '%s\n' "$best_json"
+}
+
+adaptive_agent_status_json() {
+  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file
+  local version updated stage statistics rankings outcome checked fast deep duration first cpu pc_mem pc_net router_load router_mem router_active revalidation_recoveries revalidation_failures extra now size
+  local cpu_json pc_mem_json pc_net_json router_load_json router_mem_json router_active_json
+  file="$base/agent.status.tsv"
+  [[ -d "$base" && ! -L "$base" && -f "$file" && ! -L "$file" && -r "$file" ]] || { printf 'null\n'; return 0; }
+  size="$(wc -c < "$file" 2>/dev/null)"
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le 512 ]] || { printf 'null\n'; return 0; }
+  IFS=$'\t' read -r version updated stage statistics rankings outcome checked fast deep duration first cpu pc_mem pc_net router_load router_mem router_active revalidation_recoveries revalidation_failures extra < "$file" || { printf 'null\n'; return 0; }
+  now="$(date +%s)" || { printf 'null\n'; return 0; }
+  [[ -z "$extra" && "$version" = 3 && "$updated" =~ ^[1-9][0-9]{0,9}$ && "$updated" -le $((now + 60)) && "$updated" -ge $((now - 120)) &&
+     "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit)$ && ( "$statistics" = true || "$statistics" = false ) &&
+     ( "$rankings" = true || "$rankings" = false ) && "$outcome" =~ ^(none|found|direct|deep_scheduled|all_exhausted|limit_reached|inconclusive|stopped_rate_limit|stopped_infra|cancelled)$ &&
+     "$checked" =~ ^[0-9]{1,3}$ && "$checked" -le 999 && "$fast" =~ ^[0-9]{1,3}$ && "$fast" -le 999 &&
+     "$deep" =~ ^[0-9]{1,3}$ && "$deep" -le 999 && "$duration" =~ ^[0-9]{1,8}$ && "$duration" -le 86400000 &&
+     "$first" =~ ^[0-9]{1,8}$ && "$first" -le 86400000 && "$cpu" =~ ^(-1|[0-9]{1,3})$ && "$cpu" -le 100 &&
+     "$pc_mem" =~ ^(-1|[0-9]{1,13})$ && "$pc_mem" -le 8796093022208 && "$pc_net" =~ ^(-1|[0-9]{1,13})$ && "$pc_net" -le 1099511627776 &&
+     "$router_load" =~ ^(-1|[0-9]{1,7})$ && "$router_load" -le 1024000 && "$router_mem" =~ ^(-1|[0-9]{1,13})$ &&
+     "$router_mem" -le 8796093022208 && "$router_active" =~ ^(-1|[0-9]{1,3})$ && "$router_active" -le 999 &&
+     "$revalidation_recoveries" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_recoveries" -le 999999 &&
+     "$revalidation_failures" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_failures" -le 999999 ]] || { printf 'null\n'; return 0; }
+  cpu_json="$cpu"; pc_mem_json="$pc_mem"; pc_net_json="$pc_net"; router_mem_json="$router_mem"; router_active_json="$router_active"
+  router_load_json="$(awk -v value="$router_load" 'BEGIN { if (value < 0) print "null"; else printf "%.3f", value / 1000 }')"
+  [[ "$cpu" != -1 ]] || cpu_json=null
+  [[ "$pc_mem" != -1 ]] || pc_mem_json=null
+  [[ "$pc_net" != -1 ]] || pc_net_json=null
+  [[ "$router_mem" != -1 ]] || router_mem_json=null
+  [[ "$router_active" != -1 ]] || router_active_json=null
+  printf '{"updated_at":%s,"stage":"%s","statistics_enabled":%s,"rankings_enabled":%s,"search_outcome":"%s","candidates_checked":%s,"fast_candidates":%s,"deep_candidates":%s,"search_duration_ms":%s,"time_to_first_success_ms":%s,"pc_cpu_percent":%s,"pc_free_memory_bytes":%s,"pc_network_bytes_per_second":%s,"router_load1_per_core":%s,"router_memory_available_kib":%s,"router_active_probes":%s,"revalidation_recoveries":%s,"revalidation_failures":%s}\n' \
+    "$updated" "$stage" "$statistics" "$rankings" "$outcome" "$checked" "$fast" "$deep" "$duration" "$first" \
+    "$cpu_json" "$pc_mem_json" "$pc_net_json" "$router_load_json" "$router_mem_json" "$router_active_json" "$revalidation_recoveries" "$revalidation_failures"
+}
+
 api_adaptive_get() {
   local mode_file="$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+  local default_scope_file="$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
   local token_file="$ZATOR_ROOT/extra_strats/cache/adaptive/token"
   local token_expiry_file="$ZATOR_ROOT/extra_strats/cache/adaptive/token.expires"
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   local events_file="${Z2R_ADAPTIVE_EVENTS_FILE:-$base/events.tsv}"
   local requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$base/requests.tsv}"
-  local mode=OFF paired=false pairing_expired=false agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now
+  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null
   mode="$(cat "$mode_file" 2>/dev/null || printf OFF)"
-  case "$mode" in OBSERVE|TEST_ONLY) ;; *) mode=OFF ;; esac
+  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) ;; *) mode=OFF ;; esac
+  if [ "$mode" = AGENT_BETA ]; then
+    automatic_apply=true
+    [ "$(cat "$default_scope_file" 2>/dev/null || true)" != 1 ] || default_scope_apply=true
+  fi
+  if [ -d "${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}" ]; then
+    ramp_audit_supported=false
+    ramp_audit_unsupported_reason='"keenetic_late_ack_gate_unverified"'
+  fi
   token_expiry="$(cat "$token_expiry_file" 2>/dev/null)"
   now="$(date +%s)"
   if [ -s "$token_file" ] && [ ! -L "$token_file" ]; then
-    if [[ "$token_expiry" =~ ^[0-9]{1,10}$ ]] && (( token_expiry > now )); then paired=true
+    if [[ "$token_expiry" =~ ^[0-9]{1,10}$ ]]; then
+      token_expiry=$((10#$token_expiry))
+      pairing_expiry_json="$token_expiry"
+    fi
+    if [[ "$pairing_expiry_json" != null ]] && (( token_expiry > now )); then paired=true
     else pairing_expired=true; fi
   fi
   if type adaptive_queue_resources_json >/dev/null 2>&1; then
     resources_json="$(adaptive_queue_resources_json 2>/dev/null)" || resources_json=null
+  fi
+  last_probe_json="$(adaptive_last_probe_json)" || last_probe_json=null
+  agent_status_json="$(adaptive_agent_status_json)" || agent_status_json=null
+  if type adaptive_rules_flipflop_total >/dev/null 2>&1; then
+    adaptive_rule_flipflops="$(adaptive_rules_flipflop_total 2>/dev/null || printf 0)"
+    [[ "$adaptive_rule_flipflops" =~ ^[0-9]{1,9}$ ]] || adaptive_rule_flipflops=0
   fi
   agent_file="$base/agent.last"
   if [ -f "$agent_file" ] && [ ! -L "$agent_file" ]; then
@@ -80,7 +162,7 @@ api_adaptive_get() {
   if [ -r "$events_file" ] && [ ! -L "$events_file" ]; then
     event_data="$(awk -F '\t' '
       BEGIN { printf "[" }
-      NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure") &&
+      NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded") &&
         length($3)<=253 && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ &&
         $5 ~ /^[1-4]$/ && $6=="tls" && ($7=="default" || ($7 ~ /^mark:[1-9][0-9]*$/ && length($7)<=10 && substr($7,6)+0<=65535)) &&
         $8 ~ /^[0-9]+$/ {
@@ -107,11 +189,11 @@ api_adaptive_get() {
     rules_json="$(awk -F '\t' -v now="$(date +%s)" '
       BEGIN { printf "[" }
       NR<=256 && NF==11 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
-        $3 ~ /^[0-9.]+$/ && $4 ~ /^[1-4]$/ && $5=="tls" && ($6=="default" || $6 ~ /^mark:[1-9][0-9]*$/) &&
-        $7 ~ /^[1-9][0-9]*$/ && $8 ~ /^sha256:[a-f0-9]{64}$/ && $9 ~ /^sha256:[a-f0-9]{64}$/ &&
+        $3 ~ /^[0-9.]+$/ && $4 ~ /^[1-4]$/ && ($5=="tls" || ($5=="googlevideo-tcp" && $4==2 && $2 ~ /\.googlevideo\.com$/)) && ($6=="default" || $6 ~ /^mark:[1-9][0-9]*$/) &&
+        $7 ~ /^(0|[1-9][0-9]*)$/ && $8 ~ /^sha256:[a-f0-9]{64}$/ && $9 ~ /^sha256:[a-f0-9]{64}$/ &&
         $11 ~ /^[0-9]+$/ && $11>now {
           if (n++) printf ","
-          printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"scope\":\"%s\",\"strategy_number\":%s,\"expires\":%s}", $2,$3,$4,$6,$7,$11
+          printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"strategy_number\":%s,\"treatment_variant\":\"standard\",\"evidence\":\"route_verified\",\"expires\":%s,\"ttl_seconds\":%s}", $2,$3,$4,$5,$6,$7,$11,$11-now
         }
       END { printf "]" }
     ' "$rule_file")"
@@ -127,7 +209,7 @@ api_adaptive_get() {
     done
   fi
   printf 'Cache-Control: no-store\r\n'
-  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"mode\":\"$mode\",\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":false}"
+  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason}"
 }
 
 api_adaptive_action() {
@@ -144,7 +226,7 @@ api_adaptive_action() {
       request_rc=$?
       case "$request_rc" in
         2) send_error '400 Bad Request' 'Некорректная цель проверки' ;;
-        3) send_error '409 Conflict' 'Для постановки проверки включите TEST_ONLY' ;;
+        3) send_error '409 Conflict' 'Для постановки проверки включите TEST_ONLY или AGENT_BETA' ;;
         4) send_error '404 Not Found' 'Цель отсутствует в свежих наблюдениях' ;;
         5) send_error '429 Too Many Requests' 'Очередь проверок заполнена' ;;
         6) send_error '429 Too Many Requests' 'Для этой цели недавно уже запрашивали проверку' ;;
@@ -153,16 +235,16 @@ api_adaptive_action() {
     fi
   fi
   if [ "$action" = reset-rule ]; then
-    local host="${PARAM_HOSTNAME:-}" ip="${PARAM_DESTINATION_IP:-}" profile="${PARAM_PROFILE_ID:-}" scope="${PARAM_SCOPE:-}"
+    local host="${PARAM_HOSTNAME:-}" ip="${PARAM_DESTINATION_IP:-}" profile="${PARAM_PROFILE_ID:-}" scope="${PARAM_SCOPE:-}" proto="${PARAM_PROTO:-tls}"
     local origin="${HTTP_ORIGIN:-}" host_header="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}"
     [[ -n "$host_header" && ( "$origin" = "http://$host_header" || "$origin" = "https://$host_header" ) ]] || send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'
     awk -v ip="$client" 'BEGIN {split(ip,o,"."); if (!(o[1]==10 || (o[1]==172 && o[2]>=16 && o[2]<=31) || (o[1]==192 && o[2]==168) || ip=="127.0.0.1")) exit 1}' || send_error '403 Forbidden' 'Управление adaptive разрешено только из локальной сети'
-    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ && ${#host} -le 253 && "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || send_error '400 Bad Request' 'Некорректное adaptive-правило'
+    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ && ${#host} -le 253 && "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "${host,,}" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ]] || send_error '400 Bad Request' 'Некорректное adaptive-правило'
     type adaptive_rule_remove >/dev/null 2>&1 || send_error '503 Service Unavailable' 'Adaptive rule store недоступен'
-    adaptive_rule_remove "$host" "$ip" "$profile" "$scope" || send_error '404 Not Found' 'Adaptive-правило уже удалено или недоступно'
+    adaptive_rule_remove "$host" "$ip" "$profile" "$scope" "$proto" || send_error '404 Not Found' 'Adaptive-правило уже удалено или недоступно'
     send_json '200 OK' '{"ok":true,"action":"reset-rule","restarted":false,"message":"Правило удалено"}'
   fi
-  case "$action" in observe|test-only|pause|clear-events|disable) ;; *) send_error '400 Bad Request' 'Некорректное действие adaptive rotation' ;; esac
+  case "$action" in observe|test-only|beta|beta-lan|pause|clear-events|disable) ;; *) send_error '400 Bad Request' 'Некорректное действие adaptive rotation' ;; esac
   local origin="${HTTP_ORIGIN:-}" host="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}"
   [[ -n "$host" && ( "$origin" = "http://$host" || "$origin" = "https://$host" ) ]] || \
     send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'

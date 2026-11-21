@@ -292,6 +292,34 @@ config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE 1
 supersweep_probe_config 2 "$CONFIG_FILE"
 ! grep -q -- 'wssize_ramp' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 ! grep -q -- '--ipset=/opt/zator/lists/googlevideo-ipv4.txt' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+# Adaptive Googlevideo can request an explicit isolated Ramp treatment without
+# changing the legacy Supersweep behavior or consulting the global enable flag.
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_MODE full
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_WSIZE 1
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE 1
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_OPEN 1
+supersweep_probe_config 2 "$CONFIG_FILE" gv_tcp_ramp
+grep -qx -- '--lua-desync=wssize_ramp:mode=full:wsize=1:scale=1:open=1' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--ipset=/opt/zator/lists/googlevideo-ipv4.txt' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--out-range=a' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--in-range=a' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--payload=all,empty' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+! grep -qx -- '--filter-l7=tls' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+[[ "$(grep -c '^--lua-desync=wssize_ramp' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args")" = 1 ]]
+! supersweep_probe_config 1 "$CONFIG_FILE" gv_tcp_ramp
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE 15
+! supersweep_probe_config 2 "$CONFIG_FILE" gv_tcp_ramp
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE 1
+! supersweep_probe_config 2 "$CONFIG_FILE" gv_tcp_ramp_syndata
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SYNDATA 1
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SYN_BLOB tlsgoogle
+supersweep_probe_config 2 "$CONFIG_FILE" gv_tcp_ramp_syndata
+grep -qx -- '--lua-desync=z2r_googlevideo_syndata:blob=tlsgoogle' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+grep -qx -- '--lua-desync=wssize_ramp:mode=full:wsize=1:scale=1:open=1' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SYN_BLOB undeclared_blob
+! supersweep_probe_config 2 "$CONFIG_FILE" gv_tcp_ramp_syndata
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SYN_BLOB tlsgoogle
+config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SYNDATA 0
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 0
 # A build without the autoexclude option must not receive it.
 cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'MOCK2'

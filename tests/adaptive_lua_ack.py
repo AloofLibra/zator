@@ -23,6 +23,7 @@ def run_ack(expected_strategy):
             "Z2R_ADAPTIVE_RULES_FILE": "/nonexistent/adaptive-rules.tsv",
             "Z2R_ADAPTIVE_RULES_APPLY": "0",
             "Z2R_ADAPTIVE_EVENTS_FILE": "/nonexistent/adaptive-events.tsv",
+            "Z2R_ADAPTIVE_RAMP_TARGETS_FILE": "/nonexistent/ramp-targets.tsv",
             "ZAPRET2_ROOT": "/nonexistent/zapret2",
             "ZATOR_ROOT": "/nonexistent/zator",
         }
@@ -63,6 +64,7 @@ def run_direct_ack():
             "Z2R_ADAPTIVE_RULES_FILE": "/nonexistent/adaptive-rules.tsv",
             "Z2R_ADAPTIVE_RULES_APPLY": "0",
             "Z2R_ADAPTIVE_EVENTS_FILE": "/nonexistent/adaptive-events.tsv",
+            "Z2R_ADAPTIVE_RAMP_TARGETS_FILE": "/nonexistent/ramp-targets.tsv",
             "ZAPRET2_ROOT": "/nonexistent/zapret2",
             "ZATOR_ROOT": "/nonexistent/zator",
         }

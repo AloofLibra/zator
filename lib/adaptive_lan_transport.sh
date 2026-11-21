@@ -8,6 +8,14 @@ _adaptive_lan_uint_valid() {
   [ "$1" -le 2147483647 ] 2>/dev/null
 }
 
+_adaptive_lan_recipe_proto() {
+  case "${1:-}" in
+    googlevideo-quic-h3-media-v1) printf 'udp\n' ;;
+    tls-http1-v1|googlevideo-tcp-media-v1) printf 'tcp\n' ;;
+    *) return 1 ;;
+  esac
+}
+
 _adaptive_lan_ipv4_valid() {
   awk -v ip="$1" 'BEGIN {
     n = split(ip, octet, ".")
@@ -52,17 +60,21 @@ adaptive_lan_lease_valid() {
 
 # One controller owns the lease directory; temp+rename avoids partial records.
 adaptive_lan_lease_write() {
-  [ "$#" -eq 8 ] || return 1
+  [ "$#" -ge 8 ] && [ "$#" -le 9 ] || return 1
   local dir="$1" test_id="$2" source_ip="$3" source_port="$4"
-  local destination_ip="$5" expires="$6" now="$7" recipe="$8"
+  local destination_ip="$5" expires="$6" now="$7" recipe="$8" owner="${9:-}"
   case "$test_id" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
   [ "${#test_id}" -le 64 ] || return 1
-  [ "$recipe" = tls-http1-v1 ] || return 1
+  _adaptive_lan_recipe_proto "$recipe" >/dev/null || return 1
+  [ -z "$owner" ] || [[ "$owner" =~ ^[a-f0-9]{32}$ ]] || return 1
   adaptive_lan_lease_valid "$source_ip" "$source_port" "$destination_ip" 443 "$expires" "$now" || return 1
   mkdir -p "$dir" || return 1
   local tmp="$dir/.$test_id.tmp.$$"
-  (umask 077; printf '%s\t%s\t%s\t%s\t443\t%s\t%s\n' \
-    "$test_id" "$source_ip" "$source_port" "$destination_ip" "$expires" "$recipe" > "$tmp") || {
+  (umask 077; if [ -n "$owner" ]; then
+    printf '%s\t%s\t%s\t%s\t443\t%s\t%s\t%s\n' "$test_id" "$source_ip" "$source_port" "$destination_ip" "$expires" "$recipe" "$owner" > "$tmp"
+  else
+    printf '%s\t%s\t%s\t%s\t443\t%s\t%s\n' "$test_id" "$source_ip" "$source_port" "$destination_ip" "$expires" "$recipe" > "$tmp"
+  fi) || {
     rm -f "$tmp"
     return 1
   }
@@ -77,14 +89,18 @@ adaptive_lan_lease_read() {
   _adaptive_lan_uint_valid "$now" || return 1
   path="$dir/$test_id.tsv"
   [ -f "$path" ] || return 1
-  record="$(awk -F '\t' -v id="$test_id" 'NF == 7 && $1 == id { n++; if (n == 1) print } END { if (n != 1) exit 1 }' "$path")" || return 1
-  local id source_ip source_port destination_ip destination_port expires recipe
-  IFS="$(printf '\t')" read -r id source_ip source_port destination_ip destination_port expires recipe <<EOF
+  record="$(awk -F '\t' -v id="$test_id" '((NF == 7) || (NF == 8 && $8 ~ /^[a-f0-9]{32}$/)) && $1 == id { n++; if (n == 1) print } END { if (n != 1) exit 1 }' "$path")" || return 1
+  local id source_ip source_port destination_ip destination_port expires recipe owner
+  IFS="$(printf '\t')" read -r id source_ip source_port destination_ip destination_port expires recipe owner <<EOF
 $record
 EOF
-  [ "$recipe" = tls-http1-v1 ] || return 1
+  _adaptive_lan_recipe_proto "$recipe" >/dev/null || return 1
   adaptive_lan_lease_valid "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$expires" "$now" || return 1
-  printf '%s %s %s %s %s %s %s\n' "$id" "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$expires" "$recipe"
+  if [ -n "$owner" ]; then
+    printf '%s %s %s %s %s %s %s %s\n' "$id" "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$expires" "$recipe" "$owner"
+  else
+    printf '%s %s %s %s %s %s %s\n' "$id" "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$expires" "$recipe"
+  fi
 }
 
 adaptive_lan_lease_remove() {
@@ -293,6 +309,8 @@ _adaptive_lan_nft_handles() {
 }
 
 _adaptive_lan_nft_install() {
+  local proto="$1"
+  shift
   local table="${ZAPRET_NFT_TABLE:-zapret2}" source_ip="$1" source_port="$2"
   local destination_ip="$3" destination_port="$4" mark="$5" hook direction rule_pair listing tag handles
   local post=postnat_hook pre=prenat_hook
@@ -317,12 +335,12 @@ _adaptive_lan_nft_install() {
     for rule_pair in "$post:original" "$pre:reply"; do
       hook=${rule_pair%:*}
       direction=${rule_pair#*:}
-      printf 'add rule inet %s z2r_adaptive_lan meta l4proto tcp ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s meta mark set meta mark | %s comment "z2r_adaptive_lan"\n' \
-        "$table" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$mark"
-      printf 'add rule inet %s z2r_adaptive_lan meta l4proto tcp ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s queue flags bypass to 65535 comment "z2r_adaptive_lan"\n' \
-        "$table" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port"
-      printf 'add rule inet %s z2r_adaptive_lan meta l4proto tcp ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s accept comment "z2r_adaptive_lan"\n' \
-        "$table" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port"
+      printf 'add rule inet %s z2r_adaptive_lan meta l4proto %s ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s meta mark set meta mark | %s comment "z2r_adaptive_lan"\n' \
+        "$table" "$proto" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$mark"
+      printf 'add rule inet %s z2r_adaptive_lan meta l4proto %s ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s queue flags bypass to 65535 comment "z2r_adaptive_lan"\n' \
+        "$table" "$proto" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port"
+      printf 'add rule inet %s z2r_adaptive_lan meta l4proto %s ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s accept comment "z2r_adaptive_lan"\n' \
+        "$table" "$proto" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port"
     done
     printf 'insert rule inet %s %s jump z2r_adaptive_lan comment "z2r_adaptive_lan_post"\n' "$table" "$post"
     printf 'insert rule inet %s %s jump z2r_adaptive_lan comment "z2r_adaptive_lan_pre"\n' "$table" "$pre"
@@ -426,7 +444,7 @@ _adaptive_lan_write_transport_state() {
 _adaptive_lan_reconcile_one() {
   [ "$#" -eq 1 ] || return 1
   local run_dir="$1" run_id="${1##*/}" state="$1/probe/transport.tsv"
-  local ver backend state_id state_mark state_prod state_src state_sport state_dst state_dport state_expires state_recipe
+  local ver backend state_id state_mark state_prod state_src state_sport state_dst state_dport state_expires state_recipe state_proto
   local owner controller owner_boot boot_id lock_dir
   local lease now queue_file qpid arg private_lua found_binary=0 found_queue=0 found_uid=0 found_lua=0 uid_gid_pending=0
   local selected_mark rule_reply rule_original rule_post nft_post nft_pre nft_chain nft_post_listing nft_pre_listing nft_post_handles nft_pre_handles nft_chain_handles
@@ -438,9 +456,10 @@ _adaptive_lan_reconcile_one() {
   [[ "$ver" = 1 && "$backend" = "${FWTYPE:-}" && "$state_id" = "$run_id" &&
      "$state_mark" =~ ^0x[0-9a-fA-F]{1,8}$ && "$state_prod" =~ ^(0x[0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$ &&
      "$state_sport" =~ ^[0-9]{5}$ && "$state_dport" = 443 && "$state_expires" =~ ^[0-9]{1,10}$ &&
-     "$state_recipe" = tls-http1-v1 ]] || return 1
+     ( "$state_recipe" = tls-http1-v1 || "$state_recipe" = googlevideo-tcp-media-v1 || "$state_recipe" = googlevideo-quic-h3-media-v1 ) ]] || return 1
+  state_proto="$(_adaptive_lan_recipe_proto "$state_recipe")" || return 1
   [[ "$(cat "$run_dir/state" 2>/dev/null)" != complete && "$(cat "$run_dir/state" 2>/dev/null)" != failed ]] || return 0
-  [[ "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)" = TEST_ONLY ]] || return 0
+  case "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)" in TEST_ONLY|AGENT_BETA) ;; *) return 0 ;; esac
   now="$(date +%s)" || return 1
   lease="$(adaptive_lan_lease_read "$run_dir/leases" "$run_id" "$now")" || return 0
   set -- $lease
@@ -510,6 +529,7 @@ _adaptive_lan_reconcile_one() {
          [ "$(printf '%s\n' "$nft_chain" | grep -Fc "ct original proto-dst $state_dport")" = 6 ] &&
          [ "$(printf '%s\n' "$nft_chain" | grep -Fc 'ct direction original')" = 3 ] &&
          [ "$(printf '%s\n' "$nft_chain" | grep -Fc 'ct direction reply')" = 3 ] &&
+         [ "$(printf '%s\n' "$nft_chain" | grep -Fc "meta l4proto $state_proto")" = 6 ] &&
          [ "$(printf '%s\n' "$nft_chain" | grep -Fc 'queue flags bypass to 65535')" = 2 ] &&
          [ "$(printf '%s\n' "$nft_chain" | grep -Fc "meta mark set meta mark | $state_mark")" = 2 ] &&
          printf '%s\n' "$nft_post_listing" | grep -Fq 'jump z2r_adaptive_lan' &&
@@ -533,11 +553,13 @@ _adaptive_lan_reconcile_one() {
 }
 
 adaptive_lan_transport_reconcile() {
-  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" run result=0
+  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" run run_id result=0
   case "${FWTYPE:-}" in iptables|nft|nftables) ;; *) return 0 ;; esac
   [[ -d "$base" && ! -L "$base" ]] || return 0
   for run in "$base"/*; do
     [[ -d "$run" && ! -L "$run" ]] || continue
+    run_id="${run##*/}"
+    [[ "$run_id" =~ ^[a-f0-9]{32}$ ]] || continue
     _adaptive_lan_reconcile_one "$run" || result=1
   done
   return "$result"
@@ -627,11 +649,11 @@ adaptive_lan_transport_recover_stale() {
     fi
   else
     lease_file="$run/leases/$run_id.tsv"
-    record="$(awk -F '\t' -v expected_id="$run_id" 'NF==7 && $1==expected_id {n++; if(n==1) print} END {if(n!=1) exit 1}' "$lease_file")" || return 1
-    IFS="$(printf '\t')" read -r id src_ip src_port dst_ip dst_port expiry recipe <<EOF
+    record="$(awk -F '\t' -v expected_id="$run_id" '((NF==7) || (NF==8 && length($8)==32 && $8 !~ /[^a-f0-9]/)) && $1==expected_id {n++; if(n==1) print} END {if(n!=1) exit 1}' "$lease_file")" || return 1
+    IFS="$(printf '\t')" read -r id src_ip src_port dst_ip dst_port expiry recipe owner <<EOF
 $record
 EOF
-    [ "$recipe" = tls-http1-v1 ] && [ "$dst_port" = 443 ] && _adaptive_lan_ipv4_valid "$src_ip" && _adaptive_lan_ipv4_valid "$dst_ip" \
+    _adaptive_lan_recipe_proto "$recipe" >/dev/null && [ "$dst_port" = 443 ] && _adaptive_lan_ipv4_valid "$src_ip" && _adaptive_lan_ipv4_valid "$dst_ip" \
       && _adaptive_lan_uint_valid "$src_port" && [ "$src_port" -ge 62000 ] && [ "$src_port" -le 62999 ] || return 1
     _Z2R_ADAPTIVE_LAN_LOCKED=1
     _Z2R_ADAPTIVE_LAN_SRC_IP="$src_ip"; _Z2R_ADAPTIVE_LAN_SRC_PORT="$src_port"; _Z2R_ADAPTIVE_LAN_DST_IP="$dst_ip"
@@ -676,7 +698,8 @@ adaptive_lan_transport_start() {
   set -- $lease
   test_id="$1" source_ip="$2" source_port="$3" destination_ip="$4"
   destination_port="$5" expires="$6" recipe="$7"
-  [ "$recipe" = tls-http1-v1 ] || return 1
+  local proto
+  proto="$(_adaptive_lan_recipe_proto "$recipe")" || return 1
   [ -n "${DESYNC_MARK:-}" ] || return 1
   qpid="$(awk '$1 == 65535 { n++; pid=$2 } END { if (n == 1) print pid; else exit 1 }' "${Z2R_ADAPTIVE_QUEUE_FILE:-/proc/net/netfilter/nfnetlink_queue}" 2>/dev/null)" || return 1
   case "$qpid" in ''|*[!0-9]*) return 1 ;; esac
@@ -725,7 +748,7 @@ adaptive_lan_transport_start() {
   fi
   case "$FWTYPE" in
     nft|nftables)
-      if _adaptive_lan_nft_install "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$mark"; then return 0; fi
+      if _adaptive_lan_nft_install "$proto" "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$mark"; then return 0; fi
       adaptive_lan_transport_stop || :
       return 1 ;;
   esac
@@ -746,20 +769,20 @@ adaptive_lan_transport_start() {
     local terminal
     terminal=RETURN
     [ "$direction" != REPLY ] || terminal=ACCEPT
-    _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p tcp -m mark --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
+    _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p "$proto" -m mark --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
       --ctorigsrc "$source_ip" --ctorigsrcport "$source_port" \
       --ctorigdst "$destination_ip" --ctorigdstport "$destination_port" \
       -j "$terminal" || { adaptive_lan_transport_stop || :; return 1; }
-    _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p tcp -m mark ! --mark "$production_mark/$production_mark" -m mark ! --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
+    _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p "$proto" -m mark ! --mark "$production_mark/$production_mark" -m mark ! --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
       --ctorigsrc "$source_ip" --ctorigsrcport "$source_port" \
       --ctorigdst "$destination_ip" --ctorigdstport "$destination_port" \
       -j MARK --set-xmark "$mark/$mark" || { adaptive_lan_transport_stop || :; return 1; }
-    _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p tcp -m mark --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
+    _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p "$proto" -m mark --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
       --ctorigsrc "$source_ip" --ctorigsrcport "$source_port" \
       --ctorigdst "$destination_ip" --ctorigdstport "$destination_port" \
       -j NFQUEUE --queue-num 65535 || { adaptive_lan_transport_stop || :; return 1; }
     if [ "$direction" = REPLY ]; then
-      _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p tcp -m mark --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
+      _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN -p "$proto" -m mark --mark "$mark/$mark" -m conntrack --ctdir "$direction" \
         --ctorigsrc "$source_ip" --ctorigsrcport "$source_port" \
         --ctorigdst "$destination_ip" --ctorigdstport "$destination_port" \
         -j ACCEPT || { adaptive_lan_transport_stop || :; return 1; }
@@ -787,7 +810,7 @@ adaptive_lan_transport_start() {
   # FORWARD ACCEPT does not stop later POSTROUTING hooks. Mark only this exact
   # original tuple with the production nfqws2 bypass mark after the test queue
   # has processed it, so the production queue skips it and later NDM rules run.
-  _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN_POST -p tcp -m conntrack --ctdir ORIGINAL \
+  _adaptive_lan_iptables -A Z2R_ADAPTIVE_LAN_POST -p "$proto" -m conntrack --ctdir ORIGINAL \
     --ctorigsrc "$source_ip" --ctorigsrcport "$source_port" \
     --ctorigdst "$destination_ip" --ctorigdstport "$destination_port" \
     -j MARK --set-xmark "$production_mark/$production_mark" || {

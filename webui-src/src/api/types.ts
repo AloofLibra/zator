@@ -77,14 +77,37 @@ export interface H3CurlStatus {
 export interface AdaptiveStatus {
   paired: boolean
   pairing_expired?: boolean
+  pairing_expires_at?: number | null
   agent_online: boolean
   agent_last_seen: number | null
-  mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY'
+  adaptive_rule_flipflops: number
+  agent_status?: {
+    updated_at: number
+    stage: 'idle' | 'fast_search' | 'deep_search' | 'explore' | 'ramp_audit'
+    statistics_enabled: boolean
+    rankings_enabled: boolean
+    search_outcome: 'none' | 'found' | 'direct' | 'deep_scheduled' | 'all_exhausted' | 'limit_reached' | 'inconclusive' | 'stopped_rate_limit' | 'stopped_infra' | 'cancelled'
+    candidates_checked: number
+    fast_candidates: number
+    deep_candidates: number
+    search_duration_ms: number
+    time_to_first_success_ms: number
+    pc_cpu_percent: number | null
+    pc_free_memory_bytes: number | null
+    pc_network_bytes_per_second: number | null
+    router_load1_per_core: number | null
+    router_memory_available_kib: number | null
+    router_active_probes: number | null
+    revalidation_recoveries: number
+    revalidation_failures: number
+  } | null
+  mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY' | 'AGENT_BETA'
+  default_scope_apply: boolean
   event_count: number
   event_capacity: number
     pending_requests: number
   events: Array<{
-    status: 'seen' | 'needs_verify' | 'suspected_failure'
+    status: 'seen' | 'needs_verify' | 'suspected_failure' | 'active_rule_degraded'
       request_id?: string
     hostname: string
     destination_ip: string
@@ -97,19 +120,42 @@ export interface AdaptiveStatus {
       hostname: string
       destination_ip: string
       profile_id: number
+      protocol: 'tls' | 'googlevideo-tcp'
       scope: string
       strategy_number: number
+      treatment_variant: 'standard'
+      evidence: 'route_verified'
       expires: number
+      ttl_seconds: number
     }>
+  last_probe: {
+    observed_at: number
+    overall: 'SUCCESS' | 'FAIL' | 'INCONCLUSIVE'
+    reason: string
+    recipe_id: 'tls-http1-v1' | 'googlevideo-tcp-media-v1' | 'googlevideo-quic-h3-media-v1'
+    treatment_variant: 'standard' | 'gv_tcp_plain' | 'gv_tcp_ramp' | 'gv_tcp_ramp_syndata'
+    profile_id: number
+    scope: string
+    strategy_number: number
+    route_verified: boolean
+    queue_seen: boolean
+    strategy_ack_seen: boolean
+    media_bytes: number
+    media_speed_bps: number
+    media_duration_ms: number
+    duration_seconds: number
+  } | null
   active_probes: number
   cleanup_failures: number
+  ramp_audit_supported?: boolean
+  ramp_audit_unsupported_reason?: string | null
   resources?: {
     load1_per_core: number
     cores: number
     mem_available_kib: number
     active_probes: number
   } | null
-  automatic_apply: false
+  automatic_apply: boolean
 }
 
 export interface AdaptiveActionResult {

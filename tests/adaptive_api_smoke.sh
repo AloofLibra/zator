@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 grep -q 'cgi-bin/adaptive.cgi' "$ROOT/z2r.sh" || { echo 'adaptive API is not deployed with WebUI' >&2; exit 1; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-export ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs"
+export ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" Z2R_ADAPTIVE_NDM_ROOT="$tmp/no-ndm"
 mkdir -p "$ZATOR_ROOT/extra_strats/cache/adaptive" "$ZATOR_ROOT/extra_strats/cache/orchestra" "$ZATOR_ROOT/z2r_lib" "$ZATOR_ROOT/tools" "$ZATOR_ROOT/lua" "$tmp/zapret2/nfq2" "$Z2R_ADAPTIVE_DIR"
 mkdir -p "$ZATOR_ROOT/files/fake"
 printf 'blob-A' > "$ZATOR_ROOT/files/fake/tls_clienthello_max_ru.bin"
@@ -36,18 +36,22 @@ printf 'OFF\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
 cat > "$ZATOR_ROOT/tools/adaptive-controller.sh" <<'CONTROLLER'
 #!/usr/bin/env bash
 set -eu
-id="$1" ip="$2" port="$3" host="$4" dst="$5" profile="$6" strategy="$7" expiry="$8" scope="$9"
+id="$1" ip="$2" port="$3" host="$4" dst="$5" profile="$6" strategy="$7" expiry="$8" scope="$9" owner="${10:-}" recipe="${11:-tls-http1-v1}" treatment="${12:-standard}"
 run="$Z2R_ADAPTIVE_DIR/$id"
 mkdir -p "$run/leases"
 fingerprint=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 catalog=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$host" "$dst" "$profile" "$fingerprint" "$strategy" "$catalog" "$scope" > "$run/target.tsv"
-printf '%s\t%s\t%s\t%s\t443\t%s\ttls-http1-v1\n' "$id" "$ip" "$port" "$dst" "$expiry" > "$run/leases/$id.tsv"
-printf '{"schema_version":1,"test_id":"%s","source_ip":"%s","source_port":%s,"destination_ip":"%s","port":443,"expires":%s,"recipe_id":"tls-http1-v1","profile_id":%s,"scope":"%s","local_strategy_number":%s,"strategy_fingerprint":"%s","catalog_version":"%s"}\n' "$id" "$ip" "$port" "$dst" "$expiry" "$profile" "$scope" "$strategy" "$fingerprint" "$catalog" > "$run/lease.json"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$host" "$dst" "$profile" "$fingerprint" "$strategy" "$catalog" "$scope" "$treatment" > "$run/target.tsv"
+if [[ -n "$owner" ]]; then printf '%s\t%s\t%s\t%s\t443\t%s\t%s\t%s\n' "$id" "$ip" "$port" "$dst" "$expiry" "$recipe" "$owner" > "$run/leases/$id.tsv"; else printf '%s\t%s\t%s\t%s\t443\t%s\t%s\n' "$id" "$ip" "$port" "$dst" "$expiry" "$recipe" > "$run/leases/$id.tsv"; fi
+media_json=''
+if [[ "$recipe" = googlevideo-tcp-media-v1 || "$recipe" = googlevideo-quic-h3-media-v1 ]]; then media_json=",\"media\":{\"url\":\"https://rr1---sn-a5mekn6e.googlevideo.com/videoplayback?expire=$(( $(date +%s) + 600 ))&sig=smoke\",\"mime_type\":\"video/mp4\",\"content_length\":8388608}"; fi
+protocol=tcp
+[[ "$recipe" != googlevideo-quic-h3-media-v1 ]] || protocol=udp
+printf '{"schema_version":1,"test_id":"%s","source_ip":"%s","source_port":%s,"destination_ip":"%s","port":443,"protocol":"%s","expires":%s,"recipe_id":"%s","treatment_variant":"%s","profile_id":%s,"scope":"%s","local_strategy_number":%s,"strategy_fingerprint":"%s","catalog_version":"%s"%s}\n' "$id" "$ip" "$port" "$dst" "$protocol" "$expiry" "$recipe" "$treatment" "$profile" "$scope" "$strategy" "$fingerprint" "$catalog" "$media_json" > "$run/lease.json"
 (
   while [[ ! -s "$run/complete.tsv" ]]; do sleep .05; done
-  IFS=$'\t' read -r schema test_id observed transport application reason host dst profile fp strategy catalog recipe client result_scope < "$run/complete.tsv"
-  printf '{"schema_version":1,"test_id":"%s","route_verified":true,"transport":"%s","application":"%s","overall":"SUCCESS","reason":"%s"}\n' "$test_id" "$transport" "$application" "$reason" > "$run/result.json"
+  IFS=$'\t' read -r schema test_id observed transport application reason host dst profile fp strategy catalog recipe treatment client result_scope < "$run/complete.tsv"
+  printf '{"schema_version":1,"test_id":"%s","route_verified":true,"transport":"%s","application":"%s","overall":"SUCCESS","reason":"%s","treatment_variant":"%s"}\n' "$test_id" "$transport" "$application" "$reason" "$treatment" > "$run/result.json"
   printf 'complete\n' > "$run/state"
 ) >/dev/null 2>&1 &
 CONTROLLER
@@ -114,6 +118,42 @@ candidate_list="$(call_api 'action=candidates&hostname=cdn.example.org&destinati
 [[ "$candidate_list" == *'"candidate_numbers":[1,2,3,4,5,6,7,8,9,10]'* && "$candidate_list" == *'"scope":"mark:4"'* ]] || {
   echo "local candidate ordering is invalid: $candidate_list" >&2; exit 1;
 }
+printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+beta_candidates="$(call_api 'action=candidates&hostname=beta.example.org&destination_ip=93.184.216.34&profile_id=1&scope=mark%3A4')"
+[[ "$beta_candidates" == *'Status: 200 OK'* && "$beta_candidates" == *'"candidate_numbers":[1,2,3,4,5,6,7,8,9,10]'* ]] || {
+  echo "AGENT_BETA did not keep local verification available: $beta_candidates" >&2; exit 1;
+}
+beta_lease="$(call_api 'action=lease&hostname=beta.example.org&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&source_port=62030')"
+[[ "$beta_lease" == *'Status: 200 OK'* && "$beta_lease" == *'"recipe_id":"tls-http1-v1"'* ]] || {
+  echo "AGENT_BETA did not allow an isolated probe lease: $beta_lease" >&2; exit 1;
+}
+beta_lease_id="$(printf '%s' "$beta_lease" | sed -n 's/.*"test_id":"\([a-f0-9]*\)".*/\1/p')"
+[[ "$beta_lease_id" =~ ^[a-f0-9]{32}$ ]] || { echo 'AGENT_BETA lease has no valid test id' >&2; exit 1; }
+printf '1\t%s\t%s\tOK\tOK\tprobe_ok\tbeta.example.org\t93.184.216.34\t1\tsha256:%064d\t1\tsha256:%064d\ttls-http1-v1\tstandard\tcurl-windows-v1\tmark:4\n' \
+  "$beta_lease_id" "$(date +%s)" 0 0 > "$Z2R_ADAPTIVE_DIR/$beta_lease_id/complete.tsv"
+for _ in $(seq 1 30); do [[ "$(cat "$Z2R_ADAPTIVE_DIR/$beta_lease_id/state" 2>/dev/null)" = complete ]] && break; sleep 0.05; done
+[[ "$(cat "$Z2R_ADAPTIVE_DIR/$beta_lease_id/state" 2>/dev/null)" = complete ]] || {
+  echo 'AGENT_BETA fixture controller did not finish its lease' >&2; exit 1;
+}
+invalid_media_scope="$(call_api 'action=lease&hostname=beta.example.org&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&recipe_id=googlevideo-tcp-media-v1')"
+[[ "$invalid_media_scope" == *'400 Bad Request'* ]] || { echo 'media recipe was accepted outside profile-2 Googlevideo' >&2; exit 1; }
+invalid_tls_treatment="$(call_api 'action=lease&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&treatment_variant=gv_tcp_ramp')"
+[[ "$invalid_tls_treatment" == *'400 Bad Request'* ]] || { echo 'TLS recipe accepted a Googlevideo treatment' >&2; exit 1; }
+media_lease="$(call_api 'action=lease&hostname=rr1---sn-a5mekn6e.googlevideo.com&destination_ip=93.184.216.34&profile_id=2&local_strategy_number=1&scope=mark%3A4&source_port=62031&recipe_id=googlevideo-tcp-media-v1&treatment_variant=gv_tcp_ramp')"
+media_lease_json="${media_lease#*$'\r\n\r\n'}"
+media_lease_id="$(printf '%s' "$media_lease_json" | sed -n 's/.*"test_id":"\([a-f0-9]*\)".*/\1/p')"
+[[ "$media_lease" == *'Cache-Control: no-store'* && "$media_lease" == *'"recipe_id":"googlevideo-tcp-media-v1"'* && "$media_lease" == *'"treatment_variant":"gv_tcp_ramp"'* &&
+   "$media_lease" == *'"mime_type":"video/mp4"'* && "$media_lease" == *'/videoplayback?expire='* && "$media_lease_id" =~ ^[a-f0-9]{32}$ ]] || {
+  echo "profile-2 Googlevideo media lease missing its private recipe contract: $media_lease" >&2; exit 1;
+}
+bad_media_treatment="action=complete&test_id=$media_lease_id&schema_version=1&route_verified=false&overall=INCONCLUSIVE&ip_family=ipv4&protocol=tcp&port=443&observed_at=$(date +%s)&transport=OK&application=OK&reason=media_ok&hostname=rr1---sn-a5mekn6e.googlevideo.com&destination_ip=93.184.216.34&profile_id=2&scope=mark%3A4&strategy_fingerprint=sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&local_strategy_number=1&catalog_version=sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&recipe_id=googlevideo-tcp-media-v1&treatment_variant=gv_tcp_ramp_syndata&client_profile=curl-windows-media-v1&media_bytes=1048576&media_speed_bps=524288&media_duration_ms=2000"
+[[ "$(call_api "$bad_media_treatment")" == *'409 Conflict'* ]] || { echo 'API accepted completion for a different treatment variant' >&2; exit 1; }
+media_body="action=complete&test_id=$media_lease_id&schema_version=1&route_verified=false&overall=INCONCLUSIVE&ip_family=ipv4&protocol=tcp&port=443&observed_at=$(date +%s)&transport=OK&application=OK&reason=media_ok&hostname=rr1---sn-a5mekn6e.googlevideo.com&destination_ip=93.184.216.34&profile_id=2&scope=mark%3A4&strategy_fingerprint=sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&local_strategy_number=1&catalog_version=sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&recipe_id=googlevideo-tcp-media-v1&treatment_variant=gv_tcp_ramp&client_profile=curl-windows-media-v1&media_bytes=1048576&media_speed_bps=524288&media_duration_ms=2000"
+media_complete="$(call_api "$media_body")"
+[[ "$media_complete" == *'Status: 200 OK'* ]] || { echo "media completion metrics rejected: $media_complete" >&2; exit 1; }
+for _ in $(seq 1 30); do [[ "$(cat "$Z2R_ADAPTIVE_DIR/$media_lease_id/state" 2>/dev/null)" = complete ]] && break; sleep 0.05; done
+[[ "$(cat "$Z2R_ADAPTIVE_DIR/$media_lease_id/state" 2>/dev/null)" = complete ]] || { echo 'media lease did not complete in the fixture controller' >&2; exit 1; }
+printf 'TEST_ONLY\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
 candidate_total="$(printf '%s' "$candidate_list" | sed -n 's/.*"profile_strategy_count":\([0-9][0-9]*\).*/\1/p')"
 candidate_unique="$(printf '%s' "$candidate_list" | sed -n 's/.*"candidate_count":\([0-9][0-9]*\).*/\1/p')"
 candidate_set_version="$(printf '%s' "$candidate_list" | sed -n 's/.*"candidate_set_version":"\([^"]*\)".*/\1/p')"
@@ -122,8 +162,8 @@ candidate_numbers_json="$(printf '%s' "$candidate_list" | sed -n 's/.*"candidate
   echo "ranked candidates did not remove the duplicate semantic strategy: $candidate_list" >&2; exit 1;
 }
 exploration_candidates="$(call_api 'action=candidates&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=mark%3A4&order=exploration&offset=0&limit=3')"
-[[ "$exploration_candidates" == *'"candidate_count":45'* && "$exploration_candidates" == *'"candidate_set_version":"sha256:'* && "$exploration_candidates" == *'"candidate_numbers":[1,2,3]'* && "$exploration_candidates" == *'"source":"local-profile-order"'* ]] || {
-  echo "exploration order is not stable numeric order: $exploration_candidates" >&2; exit 1;
+[[ "$exploration_candidates" == *'"candidate_count":45'* && "$exploration_candidates" == *'"candidate_set_version":"sha256:'* && "$exploration_candidates" == *'"candidate_numbers":[31,11,2]'* && "$exploration_candidates" == *'"source":"family-diverse-local-order"'* ]] || {
+  echo "exploration order is not family-diverse: $exploration_candidates" >&2; exit 1;
 }
 invalid_order="$(call_api 'action=candidates&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&order=remote')"
 [[ "$invalid_order" == *'400 Bad Request'* ]] || { echo "unknown candidate order accepted: $invalid_order" >&2; exit 1; }
@@ -163,6 +203,25 @@ export Z2R_SUPERSWEEP_DIR DESYNC_MARK
 supersweep_probe_config 1 "$ZAPRET2_ROOT/config"
 ranked_fp="$(adaptive_strategy_fingerprint 1 12 "$ranking_catalog/probe/nfqws2.args" "$ZAPRET2_ROOT/nfq2/nfqws2")"
 rm -rf "$ranking_catalog"
+ranking_treatment="$(mktemp -d "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-catalog.XXXXXX")"
+Z2R_SUPERSWEEP_DIR="$ranking_treatment"
+export Z2R_SUPERSWEEP_DIR
+supersweep_probe_config 2 "$ZAPRET2_ROOT/config" gv_tcp_plain
+plain_treatment_fp="$(adaptive_strategy_fingerprint 2 1 "$ranking_treatment/probe/nfqws2.args" "$ZAPRET2_ROOT/nfq2/nfqws2" gv_tcp_plain)"
+! grep -Fq -- "--lua-init=@$ZATOR_ROOT/lua/wssize-ramp.lua" "$ranking_treatment/probe/nfqws2.args" || {
+  echo 'Plain media probe unexpectedly loaded the Ramp Lua implementation' >&2; exit 1;
+}
+supersweep_probe_config 2 "$ZAPRET2_ROOT/config" gv_tcp_ramp 93.184.216.34
+grep -Fxq -- "--lua-init=@$ZATOR_ROOT/lua/wssize-ramp.lua" "$ranking_treatment/probe/nfqws2.args" || {
+  echo 'Ramp probe did not load its Lua implementation' >&2; exit 1;
+}
+grep -Fxq -- "--ipset=$ranking_treatment/probe/googlevideo-ipv4.txt" "$ranking_treatment/probe/nfqws2.args" &&
+  [[ "$(cat "$ranking_treatment/probe/googlevideo-ipv4.txt")" = 93.184.216.34 ]] || {
+  echo 'Ramp probe did not constrain the isolated early-stage handler to the exact destination IP' >&2; exit 1;
+}
+ramp_treatment_fp="$(adaptive_strategy_fingerprint 2 1 "$ranking_treatment/probe/nfqws2.args" "$ZAPRET2_ROOT/nfq2/nfqws2" gv_tcp_ramp)"
+[[ "$plain_treatment_fp" != "$ramp_treatment_fp" ]] || { echo 'Ramp treatment did not change adaptive strategy identity' >&2; exit 1; }
+rm -rf "$ranking_treatment"
 remote_ranked_candidates="$(call_api "action=candidates&hostname=ranked.example.org&destination_ip=93.184.216.36&profile_id=1&scope=mark%3A4&ranked_fingerprints=$ranked_fp")"
 [[ "$remote_ranked_candidates" == *'"source":"remote-rankings-first"'* && "$remote_ranked_candidates" == *'"candidate_numbers":[12,'* ]] || {
   echo "remote fingerprint ranking did not reorder the local catalog: $remote_ranked_candidates" >&2; exit 1;
@@ -209,8 +268,78 @@ known_candidates="$(call_api 'action=candidates&hostname=cdn.example.org&destina
 [[ "$known_candidates" == *'"status":"already_confirmed"'* && "$known_candidates" == *'"strategy_number":7'* ]] || {
   echo "fresh exact rule was not reused: $known_candidates" >&2; exit 1;
 }
+revalidate_candidates="$(call_api 'action=candidates&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=mark%3A4&force_revalidate=1')"
+[[ "$revalidate_candidates" == *'"source":"active-rule-revalidation"'* && "$revalidate_candidates" == *'"candidate_numbers":[7,'* ]] || {
+  echo "suspected failure did not put the active strategy first for revalidation: $revalidate_candidates" >&2; exit 1;
+}
+invalid_revalidate="$(call_api 'action=candidates&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=mark%3A4&force_revalidate=2')"
+[[ "$invalid_revalidate" == *'400 Bad Request'* ]] || { echo 'candidate API accepted an invalid revalidation flag' >&2; exit 1; }
+printf '1\tdirect.example.org\t93.184.216.35\t1\ttls\tmark:4\t0\tsha256:%064d\tsha256:%064d\t%s\t%s\n' \
+  0 1 "$stamp" "$(( $(date +%s) + 3600 ))" >> "$Z2R_ADAPTIVE_DIR/rules.tsv"
+direct_candidates="$(call_api 'action=candidates&hostname=direct.example.org&destination_ip=93.184.216.35&profile_id=1&scope=mark%3A4')"
+[[ "$direct_candidates" == *'"status":"already_confirmed"'* && "$direct_candidates" == *'"strategy_number":0'* && "$direct_candidates" == *'"winner_kind":"DIRECT"'* ]] || {
+  echo "verified DIRECT rule was not represented as a separate winner: $direct_candidates" >&2; exit 1;
+}
 other_scope_candidates="$(call_api 'action=candidates&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=default')"
 [[ "$other_scope_candidates" == *'"status":"ready"'* ]] || { echo "confirmed rule leaked across client scope: $other_scope_candidates" >&2; exit 1; }
+printf '1\trr1-index.googlevideo.com\t93.184.216.41\t2\tgooglevideo-tcp\tmark:4\t7\tsha256:%064d\tsha256:%064d\t%s\t%s\n' \
+  2 3 "$stamp" "$(( $(date +%s) + 3600 ))" > "$Z2R_ADAPTIVE_DIR/rules.tsv"
+rr_group_candidates="$(call_api 'action=candidates&hostname=rr2-index.googlevideo.com&destination_ip=93.184.216.42&profile_id=2&scope=mark%3A4')"
+[[ "$rr_group_candidates" == *'"source":"local-confirmations-first"'* && "$rr_group_candidates" == *'"candidate_numbers":[7,'* && "$rr_group_candidates" != *'group_id'* ]] || {
+  echo "rrN group confirmation was not used as a local candidate hint: $rr_group_candidates" >&2; exit 1;
+}
+printf '1\trr3-index.googlevideo.com\t93.184.216.46\t2\tgooglevideo-tcp\tmark:4\t9\tsha256:%064d\tsha256:%064d\t%s\t%s\n' \
+  6 7 "$stamp" "$(( $(date +%s) + 3600 ))" >> "$Z2R_ADAPTIVE_DIR/rules.tsv"
+rr_conflict_candidates="$(call_api 'action=candidates&hostname=rr4-index.googlevideo.com&destination_ip=93.184.216.47&profile_id=2&scope=mark%3A4')"
+[[ "$rr_conflict_candidates" == *'"source":"local-profile-order"'* && "$rr_conflict_candidates" == *'"candidate_numbers":[1,'* ]] || {
+  echo "conflicting rrN group confirmations did not fall back to catalog order: $rr_conflict_candidates" >&2; exit 1;
+}
+rr_index2_candidates="$(call_api 'action=candidates&hostname=rr2-index2.googlevideo.com&destination_ip=93.184.216.42&profile_id=2&scope=mark%3A4')"
+[[ "$rr_index2_candidates" == *'"source":"local-profile-order"'* && "$rr_index2_candidates" == *'"candidate_numbers":[1,'* ]] || {
+  echo "rrN-index2 incorrectly inherited the rrN-index group: $rr_index2_candidates" >&2; exit 1;
+}
+printf '1\tr1---sn-abcd.googlevideo.com\t93.184.216.43\t2\tgooglevideo-tcp\tmark:4\t5\tsha256:%064d\tsha256:%064d\t%s\t%s\n' \
+  4 5 "$stamp" "$(( $(date +%s) + 3600 ))" >> "$Z2R_ADAPTIVE_DIR/rules.tsv"
+r_group_candidates="$(call_api 'action=candidates&hostname=r2---sn-abcd.googlevideo.com&destination_ip=93.184.216.44&profile_id=2&scope=mark%3A4')"
+[[ "$r_group_candidates" == *'"candidate_numbers":[5,'* ]] || {
+  echo "rN CDN suffix group did not prioritize its local confirmation: $r_group_candidates" >&2; exit 1;
+}
+quic_candidates="$(call_api 'action=candidates&hostname=rr1-index.googlevideo.com&destination_ip=93.184.216.45&profile_id=5&scope=mark%3A4')"
+[[ "$quic_candidates" == *'"protocol":"udp"'* && "$quic_candidates" == *'"recipe_id":"googlevideo-quic-h3-media-v1"'* && "$quic_candidates" == *'"candidate_numbers":[1,'* ]] || {
+  echo "profile-5 candidates were not isolated to the Googlevideo HTTP/3 recipe: $quic_candidates" >&2; exit 1;
+}
+quic_probe_catalog="$tmp/quic-probe-catalog"
+mkdir -p "$quic_probe_catalog"
+Z2R_SUPERSWEEP_DIR="$quic_probe_catalog"
+export Z2R_SUPERSWEEP_DIR
+supersweep_probe_config 5 "$ZAPRET2_ROOT/config" standard 93.184.216.45 googlevideo-quic-h3-media-v1
+for lua_init in zapret-lib zapret-antidpi zapret-auto; do
+  grep -Fxq -- "--lua-init=@$ZAPRET2_ROOT/lua/$lua_init.lua" "$quic_probe_catalog/probe/nfqws2.args" || {
+    echo "profile-5 probe omitted upstream Lua init $lua_init" >&2; exit 1;
+  }
+done
+quic_owner=33333333333333333333333333333333
+quic_lease="$(call_api "action=lease&hostname=rr1-index.googlevideo.com&destination_ip=93.184.216.45&profile_id=5&local_strategy_number=1&scope=mark%3A4&source_port=62032&probe_owner=$quic_owner&recipe_id=googlevideo-quic-h3-media-v1")"
+quic_lease_json="${quic_lease#*$'\r\n\r\n'}"
+quic_lease_id="$(printf '%s' "$quic_lease_json" | sed -n 's/.*"test_id":"\([a-f0-9]*\)".*/\1/p')"
+[[ "$quic_lease" == *'Status: 200 OK'* && "$quic_lease" == *'"protocol":"udp"'* &&
+   "$quic_lease" == *'"recipe_id":"googlevideo-quic-h3-media-v1"'* &&
+   "$quic_lease" == *'"media":{"url":"https://rr1---sn-a5mekn6e.googlevideo.com/videoplayback?'* &&
+   "$quic_lease_id" =~ ^[a-f0-9]{32}$ ]] || {
+  echo "profile-5 lease did not return a private HTTP/3 media target: $quic_lease" >&2; exit 1;
+}
+quic_complete="action=complete&test_id=$quic_lease_id&probe_owner=$quic_owner&schema_version=1&route_verified=false&overall=INCONCLUSIVE&ip_family=ipv4&protocol=tcp&port=443&observed_at=$(date +%s)&transport=OK&application=OK&reason=media_ok&hostname=rr1-index.googlevideo.com&destination_ip=93.184.216.45&profile_id=5&scope=mark%3A4&strategy_fingerprint=sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&local_strategy_number=1&catalog_version=sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&recipe_id=googlevideo-quic-h3-media-v1&client_profile=curl-windows-quic-media-v1&media_bytes=1048576&media_speed_bps=524288&media_duration_ms=2000"
+wrong_quic_protocol="$(call_api "$quic_complete")"
+[[ "$wrong_quic_protocol" == *'400 Bad Request'* ]] || { echo "QUIC lease accepted a TCP completion: $wrong_quic_protocol" >&2; exit 1; }
+quic_complete="${quic_complete/protocol=tcp/protocol=udp}"
+quic_complete_response="$(call_api "$quic_complete")"
+[[ "$quic_complete_response" == *'"overall":"SUCCESS"'* ]] || {
+  echo "profile-5 HTTP/3 completion was rejected: $quic_complete_response" >&2; exit 1;
+}
+r_other_suffix_candidates="$(call_api 'action=candidates&hostname=r2---sn-efgh.googlevideo.com&destination_ip=93.184.216.44&profile_id=2&scope=mark%3A4')"
+[[ "$r_other_suffix_candidates" == *'"source":"local-profile-order"'* ]] || {
+  echo "different rN CDN suffix inherited another group's confirmation: $r_other_suffix_candidates" >&2; exit 1;
+}
 rm -f "$Z2R_ADAPTIVE_DIR/rules.tsv"
 printf '1\ttls\t3\n' > "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.tsv"
 locked_candidates="$(call_api 'action=candidates&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=default')"
@@ -220,7 +349,8 @@ expired_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 mkdir -p "$Z2R_ADAPTIVE_DIR/$expired_id/leases" "$Z2R_ADAPTIVE_DIR/legacy"
 printf 'complete\n' > "$Z2R_ADAPTIVE_DIR/$expired_id/state"
 printf '%s\t192.168.1.44\t62000\t93.184.216.34\t443\t%s\ttls-http1-v1\n' "$expired_id" "$(( $(date +%s) - 700 ))" > "$Z2R_ADAPTIVE_DIR/$expired_id/leases/$expired_id.tsv"
-lease_response="$(call_api 'action=lease&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&source_port=62017')"
+lease_owner=11111111111111111111111111111111
+lease_response="$(call_api "action=lease&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&source_port=62017&probe_owner=$lease_owner")"
 [[ "$lease_response" == *'Content-Type: application/json'* && "$lease_response" == *'Status: 200 OK'* ]] || {
   echo "lease response is missing CGI headers: $lease_response" >&2; exit 1;
 }
@@ -230,10 +360,13 @@ id="$(printf '%s' "$lease_json" | sed -n 's/.*"test_id":"\([a-f0-9]*\)".*/\1/p')
 bad_source_port="$(call_api 'action=lease&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&source_port=63000')"
 [[ "$bad_source_port" == *'400 Bad Request'* ]] || { echo 'lease accepted an out-of-range client source port' >&2; exit 1; }
 [[ ! -e "$Z2R_ADAPTIVE_DIR/$expired_id" && -d "$Z2R_ADAPTIVE_DIR/legacy" ]] || { echo 'GC removed the wrong run directory' >&2; exit 1; }
-body="action=complete&test_id=$id&schema_version=1&route_verified=false&overall=INCONCLUSIVE&ip_family=ipv4&protocol=tcp&port=443&observed_at=$(date +%s)&transport=OK&application=OK&reason=probe_ok&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&scope=default&strategy_fingerprint=sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&local_strategy_number=1&catalog_version=sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&recipe_id=tls-http1-v1&client_profile=curl-windows-v1"
+body="action=complete&test_id=$id&probe_owner=$lease_owner&schema_version=1&route_verified=false&overall=INCONCLUSIVE&ip_family=ipv4&protocol=tcp&port=443&observed_at=$(date +%s)&transport=OK&application=OK&reason=probe_ok&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&scope=default&strategy_fingerprint=sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&local_strategy_number=1&catalog_version=sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&recipe_id=tls-http1-v1&client_profile=curl-windows-v1"
+wrong_owner_complete="$(call_api "${body/probe_owner=$lease_owner/probe_owner=22222222222222222222222222222222}")"
+[[ "$wrong_owner_complete" == *'403 Forbidden'* ]] || { echo 'completion accepted a mismatched probe owner' >&2; exit 1; }
 complete="$(call_api "$body")"
 [[ "$complete" == *'"overall":"SUCCESS"'* ]] || { echo "completion failed: $complete" >&2; exit 1; }
-scoped_lease_response="$(call_api 'action=lease&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&scope=mark%3A4')"
+scoped_owner=44444444444444444444444444444444
+scoped_lease_response="$(call_api "action=lease&hostname=example.com&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&scope=mark%3A4&probe_owner=$scoped_owner")"
 scoped_lease_json="${scoped_lease_response#*$'\r\n\r\n'}"
 scoped_id="$(printf '%s' "$scoped_lease_json" | sed -n 's/.*"test_id":"\([a-f0-9]*\)".*/\1/p')"
 [[ "$scoped_id" =~ ^[a-f0-9]{32}$ && "$scoped_lease_json" == *'"scope":"mark:4"'* ]] || {
@@ -241,6 +374,7 @@ scoped_id="$(printf '%s' "$scoped_lease_json" | sed -n 's/.*"test_id":"\([a-f0-9
 }
 scoped_body="${body/test_id=$id/test_id=$scoped_id}"
 scoped_body="${scoped_body/scope=default/scope=mark%3A4}"
+scoped_body="${scoped_body/probe_owner=$lease_owner/probe_owner=$scoped_owner}"
 scoped_complete="$(call_api "$scoped_body")"
 [[ "$scoped_complete" == *'"overall":"SUCCESS"'* ]] || { echo "scoped completion failed: $scoped_complete" >&2; exit 1; }
 own_probe=cccccccccccccccccccccccccccccccc
@@ -265,6 +399,29 @@ cancel_response="$(call_api 'action=cancel_probes')"
 }
 invalid_cancel="$(call_api 'action=cancel_probes&test_id=anything')"
 [[ "$invalid_cancel" == *'400 Bad Request'* ]] || { echo 'cancel_probes accepted caller-supplied selectors' >&2; exit 1; }
+exact_probe=abababababababababababababababab
+same_ip_probe=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+same_port_other_owner=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+owner_a=22222222222222222222222222222222
+owner_b=33333333333333333333333333333333
+mkdir -p "$Z2R_ADAPTIVE_DIR/$exact_probe/leases" "$Z2R_ADAPTIVE_DIR/$same_ip_probe/leases" "$Z2R_ADAPTIVE_DIR/$same_port_other_owner/leases"
+printf 'leased\n' > "$Z2R_ADAPTIVE_DIR/$exact_probe/state"
+printf 'leased\n' > "$Z2R_ADAPTIVE_DIR/$same_ip_probe/state"
+printf '%s\t192.168.1.44\t62020\t93.184.216.40\t443\t%s\ttls-http1-v1\n' "$exact_probe" "$(( $(date +%s) + 60 ))" > "$Z2R_ADAPTIVE_DIR/$exact_probe/leases/$exact_probe.tsv"
+printf '%s\t192.168.1.44\t62021\t93.184.216.41\t443\t%s\ttls-http1-v1\n' "$same_ip_probe" "$(( $(date +%s) + 60 ))" > "$Z2R_ADAPTIVE_DIR/$same_ip_probe/leases/$same_ip_probe.tsv"
+printf '%s\t192.168.1.44\t62020\t93.184.216.42\t443\t%s\ttls-http1-v1\t%s\n' "$same_port_other_owner" "$(( $(date +%s) + 60 ))" "$owner_b" > "$Z2R_ADAPTIVE_DIR/$same_port_other_owner/leases/$same_port_other_owner.tsv"
+printf '%s\t192.168.1.44\t62020\t93.184.216.40\t443\t%s\ttls-http1-v1\t%s\n' "$exact_probe" "$(( $(date +%s) + 60 ))" "$owner_a" > "$Z2R_ADAPTIVE_DIR/$exact_probe/leases/$exact_probe.tsv"
+wrong_owner_cancel="$(call_api "action=cancel_probes&source_port=62020&probe_owner=99999999999999999999999999999999")"
+[[ "$wrong_owner_cancel" == *'"cancelled":0'* && ! -e "$Z2R_ADAPTIVE_DIR/$exact_probe/cancel" && ! -e "$Z2R_ADAPTIVE_DIR/$same_port_other_owner/cancel" ]] || {
+  echo "cancellation accepted a non-matching probe owner: $wrong_owner_cancel" >&2; exit 1;
+}
+exact_cancel="$(call_api "action=cancel_probes&source_port=62020&probe_owner=$owner_a")"
+[[ "$exact_cancel" == *'"cancelled":1'* && "$(cat "$Z2R_ADAPTIVE_DIR/$exact_probe/cancel")" = urgent_request &&
+   ! -e "$Z2R_ADAPTIVE_DIR/$same_ip_probe/cancel" && ! -e "$Z2R_ADAPTIVE_DIR/$same_port_other_owner/cancel" ]] || {
+  echo "source-port cancellation affected another lease owned by the same LAN IP: $exact_cancel" >&2; exit 1;
+}
+bad_source_port_cancel="$(call_api 'action=cancel_probes&source_port=6200&probe_owner=22222222222222222222222222222222')"
+[[ "$bad_source_port_cancel" == *'400 Bad Request'* ]] || { echo 'cancel_probes accepted an invalid source port' >&2; exit 1; }
 for pair in 'route_verified=false:route_verified=true' 'overall=INCONCLUSIVE:overall=SUCCESS' 'ip_family=ipv4:ip_family=ipv6' 'protocol=tcp:protocol=udp' 'port=443:port=8443'; do
   original="${pair%%:*}"; replacement="${pair#*:}"
   rejected="$(call_api "${body/$original/$replacement}")"
@@ -277,10 +434,133 @@ conflict="$(call_api "${body/transport=OK/transport=FAIL}")"
 scope_conflict="$(call_api "${body/scope=default/scope=mark%3A4}")"
 [[ "$scope_conflict" == *'409 Conflict'* ]] || { echo "completion changed client scope: $scope_conflict" >&2; exit 1; }
 now="$(date +%s)"
-printf '1\tsuspected_failure\tcdn.example.org\t93.184.216.34\t2\ttls\tmark:4\t%s\n1\tseen\tbad host\t192.168.1.1\t1\ttls\tdefault\t%s\n' "$now" "$now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+printf '1\tsuspected_failure\tcdn.example.org\t93.184.216.34\t2\ttls\tmark:4\t%s\n1\tactive_rule_degraded\tcdn2.example.org\t93.184.216.35\t2\ttls\tmark:4\t%s\n1\tseen\tbad host\t192.168.1.1\t1\ttls\tdefault\t%s\n' "$now" "$now" "$now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
 events="$(call_api 'action=events')"
-[[ "$events" == *'Content-Type: application/json'* && "$events" == *'"status":"suspected_failure"'* && "$events" == *'"hostname":"cdn.example.org"'* && "$events" == *'"profile_id":2'* && "$events" == *'"scope":"mark:4"'* && "$events" != *'bad host'* ]] || {
+[[ "$events" == *'Content-Type: application/json'* && "$events" == *'"status":"suspected_failure"'* && "$events" == *'"status":"active_rule_degraded"'* && "$events" == *'"hostname":"cdn.example.org"'* && "$events" == *'"profile_id":2'* && "$events" == *'"scope":"mark:4"'* && "$events" != *'bad host'* ]] || {
   echo "events API returned invalid observation data: $events" >&2; exit 1;
+}
+printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+printf '1\trr2-index.googlevideo.com\t142.250.72.14\tmark:4\t%s\ttls-observed\tgv1:rr:index\tpending\t0\tunknown\n1\tbad.googlevideo.com.evil.org\t142.250.72.15\tdefault\t%s\ttls-observed\tgv1:exact:bad.googlevideo.com.evil.org\tpending\t0\tunknown\n1\tprivate.googlevideo.com\t192.168.1.1\tdefault\t%s\ttls-observed\tgv1:exact:private.googlevideo.com\tpending\t0\tunknown\n1\tstale.googlevideo.com\t142.250.72.16\tdefault\t%s\ttls-observed\tgv1:exact:stale.googlevideo.com\tpending\t0\tunknown\n' \
+  "$now" "$now" "$now" "$(( now - 604801 ))" > "$Z2R_ADAPTIVE_DIR/ramp-targets.tsv"
+mkdir -p "$ZATOR_ROOT/lists"
+printf '142.250.72.14\n' > "$ZATOR_ROOT/lists/googlevideo-ipv4.txt"
+sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=0$/Z2R_WSSIZE_RAMP_ENABLE=1/' "$ZAPRET2_ROOT/config"
+ramp_targets="$(call_api 'action=ramp_targets')"
+[[ "$ramp_targets" == *'Status: 200 OK'* && "$ramp_targets" == *'"hostname":"rr2-index.googlevideo.com"'* &&
+   "$ramp_targets" == *'"group_id":"gv1:rr:index"'* && "$ramp_targets" == *'"provenance":"tls-observed"'* &&
+   "$ramp_targets" == *'"ramp_state":"ramp_default"'* &&
+   "$ramp_targets" == *'"dns_expires_at":null'* && "$ramp_targets" != *'bad.googlevideo.com.evil.org'* &&
+   "$ramp_targets" != *'192.168.1.1'* && "$ramp_targets" != *'stale.googlevideo.com'* ]] || {
+  echo "ramp target API failed filtering or safe serialization: $ramp_targets" >&2; exit 1;
+}
+printf '1\trr3-index.googlevideo.com\t142.250.72.14\tmark:4\t%s\ttls-observed\tgv1:rr:index\tconflict\t0\tunknown\n' "$now" >> "$Z2R_ADAPTIVE_DIR/ramp-targets.tsv"
+ramp_conflict_targets="$(call_api 'action=ramp_targets')"
+[[ "$ramp_conflict_targets" == *'"hostname":"rr3-index.googlevideo.com"'* && "$ramp_conflict_targets" == *'"ramp_state":"conflict"'* ]] || {
+  echo "Ramp IP conflict was overwritten by the pool default: $ramp_conflict_targets" >&2; exit 1;
+}
+proof_host=rr4-index.googlevideo.com proof_ip=142.250.72.17 proof_scope=mark:4
+printf '1\t%s\t%s\t%s\t%s\ttls-observed\tgv1:rr:index\tpending\t0\tunknown\n' "$proof_host" "$proof_ip" "$proof_scope" "$now" >> "$Z2R_ADAPTIVE_DIR/ramp-targets.tsv"
+printf '%s\n%s\n' 142.250.72.14 "$proof_ip" > "$ZATOR_ROOT/lists/googlevideo-ipv4.txt"
+proof_ids=(00000000000000000000000000000001 00000000000000000000000000000002 00000000000000000000000000000003 00000000000000000000000000000004)
+proof_treatments=(gv_tcp_ramp gv_tcp_plain gv_tcp_plain gv_tcp_ramp)
+for i in 0 1 2 3; do
+  proof_id="${proof_ids[$i]}" treatment="${proof_treatments[$i]}" observed="$((now - 100 + i * 10))"
+  mkdir -p "$Z2R_ADAPTIVE_DIR/$proof_id"
+  ramp_stage=false
+  [[ "$treatment" != gv_tcp_ramp ]] || ramp_stage=true
+  printf '{"schema_version":1,"test_id":"%s","route_verified":true,"queue_seen":true,"strategy_ack_seen":true,"syn_stage_confirmed":%s,"late_ack_stage_confirmed":%s,"transport":"OK","application":"OK","overall":"SUCCESS","reason":"media_ok","observed_at":%s,"target":{"hostname":"%s","destination_ip":"%s","ip_family":"ipv4","protocol":"tcp","port":443,"profile_id":2,"scope":"%s"},"strategy":{"fingerprint":"sha256:%064d","local_number":7,"catalog_version":"sha256:%064d"},"recipe_id":"googlevideo-tcp-media-v1","treatment_variant":"%s","client_profile":"curl-windows-media-v1","media_url_sha256":"%064d","media_bytes":1048576,"media_speed_bps":524288,"media_duration_ms":2000}\n' \
+    "$proof_id" "$ramp_stage" "$ramp_stage" "$observed" "$proof_host" "$proof_ip" "$proof_scope" 1 2 "$treatment" 3 > "$Z2R_ADAPTIVE_DIR/$proof_id/result.json"
+done
+proof_id_csv="$(IFS=,; printf '%s' "${proof_ids[*]}")"
+proof_body="action=ramp_exempt_apply&hostname=$proof_host&destination_ip=$proof_ip&scope=mark%3A4&test_ids=$proof_id_csv"
+no_lan_consent="$(call_api "$proof_body")"
+[[ "$no_lan_consent" == *'403 Forbidden'* ]] || { echo "Ramp exemption applied without explicit LAN consent: $no_lan_consent" >&2; exit 1; }
+printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
+proof_applied="$(call_api "$proof_body")"
+[[ "$proof_applied" == *'"status":"ramp_exempt"'* && "$proof_applied" == *"$proof_ip"* ]] || {
+  echo "verified Ramp proof did not apply an exact exemption: $proof_applied" >&2; exit 1;
+}
+[[ "$(wc -l < "$Z2R_ADAPTIVE_DIR/ramp-exempt.tsv")" = 1 && "$(cat "$Z2R_ADAPTIVE_DIR/ramp-exempt.tsv")" != *'videoplayback'* ]] || {
+  echo 'Ramp exemption store was unbounded or persisted the signed URL' >&2; exit 1;
+}
+[[ "$(stat -c '%a' "$Z2R_ADAPTIVE_DIR/ramp-exempt.tsv")" = 644 ]] || {
+  echo 'Ramp exemption is not readable by the dropped-privilege nfqws2 worker' >&2; exit 1;
+}
+ramp_targets_exempt="$(call_api 'action=ramp_targets')"
+[[ "$ramp_targets_exempt" == *'"hostname":"rr4-index.googlevideo.com"'* && "$ramp_targets_exempt" == *'"ramp_state":"ramp_exempt"'* ]] || {
+  echo "Ramp target API did not expose the exact active exemption: $ramp_targets_exempt" >&2; exit 1;
+}
+revoke_ids=(00000000000000000000000000000005 00000000000000000000000000000006 00000000000000000000000000000007)
+revoke_treatments=(gv_tcp_ramp gv_tcp_plain gv_tcp_ramp)
+for i in 0 1 2; do
+  revoke_id="${revoke_ids[$i]}" treatment="${revoke_treatments[$i]}" observed="$((now - 30 + i * 10))"
+  ramp_stage=false overall=INCONCLUSIVE transport=UNKNOWN application=UNKNOWN reason=media_insufficient
+  if [[ "$treatment" = gv_tcp_ramp ]]; then ramp_stage=true overall=SUCCESS transport=OK application=OK reason=media_ok; fi
+  if [[ "$treatment" = gv_tcp_plain ]]; then transport=OK; fi
+  mkdir -p "$Z2R_ADAPTIVE_DIR/$revoke_id"
+  printf '{"schema_version":1,"test_id":"%s","route_verified":true,"queue_seen":true,"strategy_ack_seen":true,"syn_stage_confirmed":%s,"late_ack_stage_confirmed":%s,"transport":"%s","application":"%s","overall":"%s","reason":"%s","observed_at":%s,"target":{"hostname":"%s","destination_ip":"%s","ip_family":"ipv4","protocol":"tcp","port":443,"profile_id":2,"scope":"%s"},"strategy":{"fingerprint":"sha256:%064d","local_number":7,"catalog_version":"sha256:%064d"},"recipe_id":"googlevideo-tcp-media-v1","treatment_variant":"%s","client_profile":"curl-windows-media-v1","media_url_sha256":"%064d","media_bytes":0,"media_speed_bps":0,"media_duration_ms":2000}\n' \
+    "$revoke_id" "$ramp_stage" "$ramp_stage" "$transport" "$application" "$overall" "$reason" "$observed" \
+    "$proof_host" "$proof_ip" "$proof_scope" 1 2 "$treatment" 3 > "$Z2R_ADAPTIVE_DIR/$revoke_id/result.json"
+  if [[ "$treatment" = gv_tcp_ramp ]]; then sed -i 's/"media_bytes":0/"media_bytes":1048576/; s/"media_speed_bps":0/"media_speed_bps":524288/' "$Z2R_ADAPTIVE_DIR/$revoke_id/result.json"; fi
+done
+revoke_id_csv="$(IFS=,; printf '%s' "${revoke_ids[*]}")"
+revoke_body="action=ramp_exempt_revoke&hostname=$proof_host&destination_ip=$proof_ip&scope=mark%3A4&test_ids=$revoke_id_csv"
+revoke_control="$Z2R_ADAPTIVE_DIR/${revoke_ids[2]}/result.json"
+cp "$revoke_control" "$revoke_control.good"
+sed -i 's/"media_bytes":1048576/"media_bytes":1/' "$revoke_control"
+bad_revoke="$(call_api "$revoke_body")"
+[[ "$bad_revoke" == *'409 Conflict'* && "$(cat "$Z2R_ADAPTIVE_DIR/ramp-exempt.tsv")" == *"$proof_ip"* ]] || {
+  echo 'Ramp exemption was revoked without a successful return Ramp control' >&2; exit 1;
+}
+mv -f "$revoke_control.good" "$revoke_control"
+revoked="$(call_api "$revoke_body")"
+[[ "$revoked" == *'"status":"ramp_default"'* && "$(cat "$Z2R_ADAPTIVE_DIR/ramp-exempt.tsv")" != *"$proof_ip"* ]] || {
+  echo "verified Ramp/plain/Ramp degradation did not revoke the exact exception: $revoked" >&2; exit 1;
+}
+bad_revoke="$(call_api "$revoke_body")"
+[[ "$bad_revoke" == *'409 Conflict'* ]] || { echo 'Ramp exemption revocation accepted a second request after exact removal' >&2; exit 1; }
+printf '1\trr5-index.googlevideo.com\t%s\tdefault\t%s\ttls-observed\tgv1:rr:index\tpending\t0\tunknown\n' "$proof_ip" "$now" >> "$Z2R_ADAPTIVE_DIR/ramp-targets.tsv"
+ramp_conflict_after_apply="$(call_api 'action=ramp_targets')"
+[[ "$ramp_conflict_after_apply" == *'"hostname":"rr4-index.googlevideo.com"'* && "$ramp_conflict_after_apply" == *'"ramp_state":"conflict"'* ]] || {
+  echo "new shared-IP observation did not override the active Ramp exception: $ramp_conflict_after_apply" >&2; exit 1;
+}
+conflict_apply="$(call_api "$proof_body")"
+[[ "$conflict_apply" == *'409 Conflict'* ]] || { echo 'Ramp exception was renewed despite a shared-IP conflict' >&2; exit 1; }
+sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=1$/Z2R_WSSIZE_RAMP_ENABLE=0/' "$ZAPRET2_ROOT/config"
+ramp_disabled_targets="$(call_api 'action=ramp_targets')"
+[[ "$ramp_disabled_targets" != *'"ramp_state":"ramp_default"'* && "$ramp_disabled_targets" != *'"ramp_state":"ramp_exempt"'* ]] || {
+  echo 'disabled Ramp config was advertised as Ramp default or exemption' >&2; exit 1;
+}
+printf 'TEST_ONLY\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+ramp_targets_test_only="$(call_api 'action=ramp_targets')"
+[[ "$ramp_targets_test_only" == *'403 Forbidden'* ]] || { echo 'Ramp target API was available outside AGENT_BETA' >&2; exit 1; }
+mkdir -p "$Z2R_ADAPTIVE_NDM_ROOT"
+printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+ramp_targets_unsupported="$(call_api 'action=ramp_targets')"
+[[ "$ramp_targets_unsupported" == *'"supported":false'* && "$ramp_targets_unsupported" == *'keenetic_late_ack_gate_unverified'* && "$ramp_targets_unsupported" == *'"targets":[]'* ]] || {
+  echo "Keenetic Ramp audit was not reported unsupported: $ramp_targets_unsupported" >&2; exit 1;
+}
+ramp_lease_unsupported="$(call_api 'action=lease&hostname=rr4-index.googlevideo.com&destination_ip=142.250.72.17&profile_id=2&local_strategy_number=7&recipe_id=googlevideo-tcp-media-v1&treatment_variant=gv_tcp_ramp')"
+[[ "$ramp_lease_unsupported" == *'403 Forbidden'* && "$ramp_lease_unsupported" == *'late-ACK gate'* ]] || {
+  echo "Keenetic AGENT_BETA accepted a Ramp lease: $ramp_lease_unsupported" >&2; exit 1;
+}
+ramp_apply_unsupported="$(call_api "$proof_body")"
+[[ "$ramp_apply_unsupported" == *'403 Forbidden'* && "$ramp_apply_unsupported" == *'late-ACK gate'* ]] || {
+  echo "Keenetic Ramp exemption apply was not blocked: $ramp_apply_unsupported" >&2; exit 1;
+}
+ramp_revoke_unsupported="$(call_api "$revoke_body")"
+[[ "$ramp_revoke_unsupported" == *'403 Forbidden'* && "$ramp_revoke_unsupported" == *'late-ACK gate'* ]] || {
+  echo "Keenetic Ramp exemption revoke was not blocked: $ramp_revoke_unsupported" >&2; exit 1;
+}
+agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=23&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1')"
+[[ "$agent_status" == *'"ok":true'* && "$(cat "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" == *$'\tdeep_search\ttrue\tfalse\tdeep_scheduled\t12\t10\t2\t123456\t0\t23\t8589934592\t4096\t320\t65536\t0\t4\t1'* &&
+   "$(stat -c '%a' "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" = 600 ]] || {
+  echo 'authenticated bounded search status was not persisted privately' >&2; exit 1;
+}
+status_before_bad_update="$(cat "$Z2R_ADAPTIVE_DIR/agent.status.tsv")"
+bad_agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=101&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1')"
+[[ "$bad_agent_status" == *'400 Bad Request'* && "$(cat "$Z2R_ADAPTIVE_DIR/agent.status.tsv")" = "$status_before_bad_update" ]] || {
+  echo 'out-of-range runtime metric replaced the last valid watcher snapshot' >&2; exit 1;
 }
 heartbeat="$(cat "$Z2R_ADAPTIVE_DIR/agent.last")"
 [[ "$heartbeat" =~ ^[0-9]{10}$ && "$(stat -c '%a' "$Z2R_ADAPTIVE_DIR/agent.last")" = 600 && "$heartbeat" -ge "$(( $(date +%s) - 10 ))" ]] || {

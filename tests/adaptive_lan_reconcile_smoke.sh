@@ -60,6 +60,7 @@ _adaptive_lan_write_transport_state "$RUN" "$ID" "$_Z2R_ADAPTIVE_LAN_MARK" "$DES
 }
 
 # Model NDM replacing its firewall tables while the controller and q65535 owner live.
+mkdir -p "$Z2R_ADAPTIVE_DIR/ramp-media-cache"
 IPT_MAIN=0
 IPT_POST=0
 adaptive_lan_transport_reconcile

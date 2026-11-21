@@ -17,12 +17,17 @@ send_json() {
 
 fail() { send_json "$1" "{\"error\":\"$2\"}"; }
 
+adaptive_ramp_hardware_supported() {
+  local ndm_root="${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}"
+  [[ ! -d "$ndm_root" ]]
+}
+
 json_escape() {
   printf '%s' "$1" | awk 'BEGIN{ORS=""} {gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\r/, ""); if (NR>1) printf "\\n"; printf "%s", $0}'
 }
 
 adaptive_gc_runs() {
-  local now dir state expiry count=0
+  local now dir state expiry retention count=0 treatment
   [[ -d "$BASE" && ! -L "$BASE" ]] || return 1
   now="$(date +%s)" || return 1
   for dir in "$BASE"/*; do
@@ -31,7 +36,10 @@ adaptive_gc_runs() {
     state="$(cat "$dir/state" 2>/dev/null)"
     case "$state" in complete|failed)
       expiry="$(awk -F '\t' 'NR==1 {print $6}' "$dir/leases/$(basename "$dir").tsv" 2>/dev/null)"
-      if [[ "$expiry" =~ ^[0-9]{1,10}$ ]] && (( now > expiry + 600 )); then
+      retention=600
+      treatment="$(cat "$dir/treatment" 2>/dev/null)"
+      case "$treatment" in gv_tcp_plain|gv_tcp_ramp|gv_tcp_ramp_syndata) retention=1800 ;; esac
+      if [[ "$expiry" =~ ^[0-9]{1,10}$ ]] && (( now > expiry + retention )); then
         rm -rf "$dir" || return 1
         continue
       fi
@@ -65,6 +73,7 @@ provided_hash="$(printf '%s' "$provided" | sha256sum | awk '{print $1}')"
 client_ip="${REMOTE_ADDR:-}"
 . "${ROOT}/z2r_lib/adaptive_lan_transport.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive runtime unavailable'
 . "${ROOT}/z2r_lib/adaptive_queue.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive queue unavailable'
+. "${ROOT}/z2r_lib/config.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive config helpers are unavailable'
 _adaptive_lan_ipv4_valid "$client_ip" || fail '403 Forbidden' 'LAN IPv4 client required'
 awk -v ip="$client_ip" 'BEGIN {
   split(ip,o,".")
@@ -74,8 +83,8 @@ json_events() {
   local file="${Z2R_ADAPTIVE_EVENTS_FILE:-$BASE/events.tsv}" requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$BASE/requests.tsv}" processed_file="$(adaptive_queue_processed_file)" now line ver status host ip profile proto scope seen first=1 count=0 event_limit=128 mode req_ver req_id req_host req_ip req_profile req_scope req_created pver phost pip pprofile pscope pcompleted key
   local -A processed=()
   mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null || printf OFF)"
-  case "$mode" in OBSERVE|TEST_ONLY) ;; *) mode=OFF ;; esac
-  if [[ "$mode" = TEST_ONLY && -s "$requests_file" && ! -L "$requests_file" ]]; then event_limit=96; fi
+  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) ;; *) mode=OFF ;; esac
+  if [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] && [[ -s "$requests_file" && ! -L "$requests_file" ]]; then event_limit=96; fi
   [[ ( -r "$file" && ! -L "$file" ) || ( -r "$requests_file" && ! -L "$requests_file" ) ]] || { printf '{"schema_version":1,"mode":"%s","events":[]}' "$mode"; return; }
   now="$(date +%s)" || { printf '{"schema_version":1,"mode":"%s","events":[]}' "$mode"; return; }
   if [[ -r "$processed_file" && ! -L "$processed_file" ]]; then
@@ -90,14 +99,14 @@ json_events() {
   if [[ -r "$file" && ! -L "$file" ]]; then
   while IFS=$'\t' read -r ver status host ip profile proto scope seen || [[ -n "$ver$status$host$ip$profile$proto$scope$seen" ]]; do
     (( count < event_limit )) || break
-    [[ "$ver" = 1 && ( "$status" = seen || "$status" = needs_verify || "$status" = suspected_failure ) &&
+    [[ "$ver" = 1 && ( "$status" = seen || "$status" = needs_verify || "$status" = suspected_failure || "$status" = active_rule_degraded ) &&
        "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 &&
        "$profile" =~ ^[1-4]$ && "$proto" = tls &&
        ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,10}$ ) && "$seen" =~ ^[0-9]{1,10}$ ]] || continue
     _adaptive_lan_public_ipv4_valid "$ip" || continue
     (( seen <= now + 60 && seen >= now - 604800 )) || continue
       key="$host|$ip|$profile|$scope"
-      [[ ( "$status" != seen && "$status" != suspected_failure ) || ! ${processed[$key]+present} ]] || continue
+      [[ ( "$status" != seen && "$status" != suspected_failure && "$status" != active_rule_degraded ) || ! ${processed[$key]+present} ]] || continue
     (( first )) || printf ','
     first=0
     printf '{"status":"%s","hostname":"%s","destination_ip":"%s","profile_id":%s,"protocol":"%s","scope":"%s","observed_at":%s}' \
@@ -105,7 +114,7 @@ json_events() {
     count=$((count + 1))
   done < "$file"
   fi
-  if [[ "$mode" = TEST_ONLY && -r "$requests_file" && ! -L "$requests_file" ]]; then
+  if [[ ( "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ) && -r "$requests_file" && ! -L "$requests_file" ]]; then
     while IFS=$'\t' read -r req_ver req_id req_host req_ip req_profile req_scope req_created || [[ -n "$req_ver$req_id" ]]; do
       (( count < 128 )) || break
       [[ "$req_ver" = 1 && "$req_id" =~ ^[a-f0-9]{32}$ && "$req_host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ &&
@@ -121,17 +130,275 @@ json_events() {
   fi
   printf ']}'
 }
+json_ramp_targets() {
+  local file="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}" exempt_file="${Z2R_ADAPTIVE_RAMP_EXEMPT_FILE:-$BASE/ramp-exempt.tsv}"
+  local now ver host ip scope seen provenance group state dns_expiry media dns_json exempt_json first=1 count=0
+  local e_ver e_host e_ip e_scope e_expires e_hash
+  local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" ramp_enable ramp_ipset
+  local -A hosts_by_ip=() ips_by_host=() ramp_conflicts=()
+  [[ ! -L "$file" && -r "$file" ]] || { printf '{"schema_version":1,"targets":[]}'; return 0; }
+  [[ -r "$config" && ! -L "$config" ]] || config=""
+  if [[ -n "$config" ]]; then
+    ramp_enable="$(awk -F= '$1=="Z2R_WSSIZE_RAMP_ENABLE" {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$config")"
+    ramp_ipset="$(awk -F= '$1=="Z2R_WSSIZE_RAMP_IPSET" {sub(/^[^=]*=/, ""); gsub(/^[[:space:]"]+|[[:space:]"]+$/, ""); print; exit}' "$config")"
+    case "$ramp_ipset" in
+      /opt/zator/*) ramp_ipset="$ROOT/${ramp_ipset#/opt/zator/}" ;;
+      /opt/zapret2/*) ramp_ipset="${ZAPRET2_ROOT:-/opt/zapret2}/${ramp_ipset#/opt/zapret2/}" ;;
+    esac
+    [[ "$ramp_enable" = 1 && -r "$ramp_ipset" && ! -L "$ramp_ipset" ]] || ramp_ipset=""
+  else
+    ramp_ipset=""
+  fi
+  now="$(date +%s)" || return 1
+  [[ "$now" =~ ^[0-9]{1,10}$ ]] || return 1
+  while IFS=$'\t' read -r ver host ip scope seen provenance group state dns_expiry media || [[ -n "$ver$host$ip" ]]; do
+    [[ "$ver" = 1 && "$provenance" = tls-observed && "$seen" =~ ^[0-9]{1,10}$ ]] || continue
+    (( seen <= now + 60 && seen >= now - 604800 )) || continue
+    [[ -z "${hosts_by_ip[$ip]:-}" || "${hosts_by_ip[$ip]}" = "$host" ]] || ramp_conflicts["ip:$ip"]=1
+    [[ -z "${ips_by_host[$host]:-}" || "${ips_by_host[$host]}" = "$ip" ]] || ramp_conflicts["host:$host"]=1
+    hosts_by_ip["$ip"]="$host"; ips_by_host["$host"]="$ip"
+  done < "$file"
+  printf '{"schema_version":1,"supported":true,"targets":['
+  while IFS=$'\t' read -r ver host ip scope seen provenance group state dns_expiry media || [[ -n "$ver$host$ip" ]]; do
+    (( count < 128 )) || break
+    [[ "$ver" = 1 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ && ${#host} -le 253 &&
+       ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || continue
+    _adaptive_lan_public_ipv4_valid "$ip" || continue
+    [[ "$seen" =~ ^[0-9]{1,10}$ && "$provenance" = tls-observed &&
+       "$group" =~ ^gv1:(rr|r|exact):[a-z0-9.-]+$ &&
+       "$state" =~ ^(pending|ramp_default|ramp_exempt|conflict|uncertain)$ &&
+       "$dns_expiry" =~ ^[0-9]{1,10}$ && "$media" = unknown ]] || continue
+    (( seen <= now + 60 && seen >= now - 604800 )) || continue
+    if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || continue; fi
+    if [[ ${ramp_conflicts[ip:$ip]+yes} || ${ramp_conflicts[host:$host]+yes} ]]; then state=conflict; fi
+    # A target is eligible for an isolated Ramp audit only when the installed
+    # config explicitly enables Ramp and this exact destination belongs to
+    # its configured pool. A stale/absent pool or disabled setting stays pending.
+    if [[ "$state" != conflict ]]; then
+      if [[ -n "$ramp_ipset" ]] && grep -Fqx -- "$ip" "$ramp_ipset"; then state=ramp_default; else state=pending; fi
+    fi
+    exempt_json=null
+    if [[ "$state" != conflict && "$state" = ramp_default && -r "$exempt_file" && ! -L "$exempt_file" ]]; then
+      while IFS=$'\t' read -r e_ver e_host e_ip e_scope e_expires e_hash || [[ -n "$e_ver$e_ip" ]]; do
+        if [[ "$e_ver" = 1 && "$e_host" = "$host" && "$e_ip" = "$ip" && "$e_scope" = "$scope" &&
+              "$e_expires" =~ ^[1-9][0-9]{0,9}$ && "$e_hash" =~ ^[a-f0-9]{64}$ ]] && (( e_expires > now )); then
+          state=ramp_exempt
+          exempt_json="$e_expires"
+          break
+        fi
+      done < "$exempt_file"
+    fi
+    (( first )) || printf ','
+    first=0
+    if (( dns_expiry == 0 )); then dns_json=null; else dns_json="$dns_expiry"; fi
+    printf '{"hostname":"%s","destination_ip":"%s","scope":"%s","group_id":"%s","observed_at":%s,"provenance":"%s","ramp_state":"%s","dns_expires_at":%s,"ramp_expires_at":%s,"media_recipe_available":"%s"}' \
+      "$(json_escape "$host")" "$ip" "$scope" "$(json_escape "$group")" "$seen" "$provenance" "$state" "$dns_json" "$exempt_json" "$media"
+    count=$((count + 1))
+  done < "$file"
+  printf ']}'
+}
+
+adaptive_ramp_exemption_apply() {
+  local host="${fields[hostname]:-}" ip="${fields[destination_ip]:-}" scope="${fields[scope]:-}"
+  local ids="${fields[test_ids]:-}" now expires config ramp_enable ramp_ipset mode marker target_file exempt_file
+  local row ver row_host row_ip row_scope seen provenance group state dns_expiry media extra exact=0
+  local id expected_treatment json url_hash observed strategy bytes min_bytes=1048576 first_hash="" first_strategy="" first_seen=0 last_seen=0
+  local lock tmp count=0
+  adaptive_ramp_hardware_supported || fail '403 Forbidden' 'Ramp exemptions are unsupported on this Keenetic hardware until the late-ACK gate passes'
+  [[ "${#fields[@]}" -eq 5 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
+     ${#host} -le 253 ]] || fail '400 Bad Request' 'invalid Ramp exemption target'
+  _adaptive_lan_public_ipv4_valid "$ip" || fail '400 Bad Request' 'invalid Ramp exemption IP'
+  [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] || fail '400 Bad Request' 'invalid Ramp exemption scope'
+  if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || fail '400 Bad Request' 'invalid Ramp exemption scope'; fi
+  [[ "$ids" =~ ^[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid Ramp proof IDs'
+  IFS=, read -r -a test_ids <<< "$ids"
+  [[ "${test_ids[0]}" != "${test_ids[1]}" && "${test_ids[0]}" != "${test_ids[2]}" && "${test_ids[0]}" != "${test_ids[3]}" &&
+     "${test_ids[1]}" != "${test_ids[2]}" && "${test_ids[1]}" != "${test_ids[3]}" && "${test_ids[2]}" != "${test_ids[3]}" ]] || fail '400 Bad Request' 'Ramp proof IDs must be unique'
+  mode="$ROOT/extra_strats/cache/adaptive/mode"; marker="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
+  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$marker" 2>/dev/null)" = 1 ]] || fail '403 Forbidden' 'Ramp exemptions require AGENT_BETA LAN consent'
+  config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  ramp_enable="$(config_get_var "$config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
+  ramp_ipset="$(config_get_var "$config" Z2R_WSSIZE_RAMP_IPSET 2>/dev/null | tr -d '"\047')"
+  case "$ramp_ipset" in
+    /opt/zator/*) ramp_ipset="$ROOT/${ramp_ipset#/opt/zator/}" ;;
+    /opt/zapret2/*) ramp_ipset="${ZAPRET2_ROOT:-/opt/zapret2}/${ramp_ipset#/opt/zapret2/}" ;;
+  esac
+  [[ "$ramp_enable" = 1 && -r "$ramp_ipset" && ! -L "$ramp_ipset" ]] && grep -Fqx -- "$ip" "$ramp_ipset" || fail '409 Conflict' 'Ramp must be enabled and the exact IP must remain in the configured pool'
+  now="$(date +%s)" || fail '500 Internal Server Error' 'clock unavailable'
+  [[ "$now" =~ ^[0-9]{1,10}$ ]] || fail '500 Internal Server Error' 'clock unavailable'
+  target_file="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}"
+  [[ -r "$target_file" && ! -L "$target_file" ]] || fail '409 Conflict' 'observed Ramp target is unavailable'
+  while IFS=$'\t' read -r ver row_host row_ip row_scope seen provenance group state dns_expiry media extra || [[ -n "$ver$row_host$row_ip" ]]; do
+    [[ "$ver" = 1 && "$provenance" = tls-observed && "$seen" =~ ^[0-9]{1,10}$ ]] || continue
+    (( seen >= now - 86400 && seen <= now + 60 )) || continue
+    [[ "$dns_expiry" =~ ^[0-9]{1,10}$ ]] && (( dns_expiry == 0 || dns_expiry > now )) || continue
+    if [[ "$row_ip" = "$ip" && "$row_host" != "$host" ]] || [[ "$row_host" = "$host" && "$row_ip" != "$ip" ]] ||
+       [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$scope" && "$state" = conflict ]]; then
+      fail '409 Conflict' 'Ramp target has a shared-IP, DNS, or scope conflict'
+    fi
+    [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$scope" ]] && exact=1
+  done < "$target_file"
+  (( exact )) || fail '409 Conflict' 'Ramp target is no longer exactly observed'
+  expected_treatments=(gv_tcp_ramp gv_tcp_plain gv_tcp_plain gv_tcp_ramp)
+  for i in 0 1 2 3; do
+    id="${test_ids[$i]}"; expected_treatment="${expected_treatments[$i]}"
+    [[ -d "$BASE/$id" && ! -L "$BASE/$id" && -f "$BASE/$id/result.json" && ! -L "$BASE/$id/result.json" ]] || fail '409 Conflict' 'Ramp proof result is unavailable'
+    (( $(wc -c < "$BASE/$id/result.json") <= 8192 )) || fail '409 Conflict' 'Ramp proof result is oversized'
+    IFS= read -r json < "$BASE/$id/result.json" || fail '409 Conflict' 'Ramp proof result is unavailable'
+    [[ "$json" = *"\"test_id\":\"$id\""* && "$json" = *"\"route_verified\":true"* &&
+       "$json" = *"\"queue_seen\":true"* && "$json" = *"\"strategy_ack_seen\":true"* &&
+       "$json" = *"\"overall\":\"SUCCESS\""* && "$json" = *"\"transport\":\"OK\""* &&
+       "$json" = *"\"application\":\"OK\""* && "$json" = *"\"hostname\":\"$host\""* &&
+       "$json" = *"\"destination_ip\":\"$ip\""* && "$json" = *"\"profile_id\":2"* &&
+       "$json" = *"\"scope\":\"$scope\""* && "$json" = *"\"local_number\":"* &&
+       "$json" = *"\"recipe_id\":\"googlevideo-tcp-media-v1\""* &&
+       "$json" = *"\"treatment_variant\":\"$expected_treatment\""* ]] || fail '409 Conflict' 'Ramp proof does not match the completed media probe'
+    [[ "$json" =~ \"media_url_sha256\":\"([a-f0-9]{64})\" ]] || fail '409 Conflict' 'Ramp proof lacks a signed media URL fingerprint'
+    url_hash="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"observed_at\":([0-9]{1,10}) ]] || fail '409 Conflict' 'Ramp proof timestamp is invalid'
+    observed="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"local_number\":([1-9][0-9]{0,2}) ]] || fail '409 Conflict' 'Ramp proof strategy is invalid'
+    strategy="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"media_bytes\":([0-9]{1,8}) ]] || fail '409 Conflict' 'Ramp proof media byte count is invalid'
+    bytes="${BASH_REMATCH[1]}"
+    (( bytes >= min_bytes && observed >= now - 1200 && observed <= now + 60 )) || fail '409 Conflict' 'Ramp proof is stale or has insufficient media'
+    if [[ "$expected_treatment" = gv_tcp_ramp ]]; then
+      [[ "$json" = *"\"syn_stage_confirmed\":true"* && "$json" = *"\"late_ack_stage_confirmed\":true"* ]] || fail '409 Conflict' 'Ramp proof did not confirm SYN and late ACK stages'
+    else
+      [[ "$json" = *"\"syn_stage_confirmed\":false"* && "$json" = *"\"late_ack_stage_confirmed\":false"* ]] || fail '409 Conflict' 'plain proof unexpectedly applied Ramp'
+    fi
+    if (( i == 0 )); then first_hash="$url_hash"; first_strategy="$strategy"; first_seen="$observed"
+    else
+      [[ "$url_hash" = "$first_hash" && "$strategy" = "$first_strategy" ]] || fail '409 Conflict' 'Ramp comparison changed its media URL or strategy'
+      (( observed > last_seen )) || fail '409 Conflict' 'Ramp proof timestamps are not ordered'
+    fi
+    last_seen="$observed"
+  done
+  (( last_seen - first_seen <= 1200 )) || fail '409 Conflict' 'Ramp comparison exceeded the signed URL window'
+  expires=$((now + 21600))
+  exempt_file="${Z2R_ADAPTIVE_RAMP_EXEMPT_FILE:-$BASE/ramp-exempt.tsv}"
+  [[ ! -L "$exempt_file" ]] || fail '409 Conflict' 'Ramp exemption store is unsafe'
+  mkdir -p "$(dirname "$exempt_file")" || fail '500 Internal Server Error' 'cannot prepare Ramp exemption store'
+  lock="$exempt_file.lock"
+  (umask 077; mkdir "$lock") 2>/dev/null || fail '409 Conflict' 'Ramp exemption store is busy'
+  tmp="$exempt_file.tmp.$$"
+  : > "$tmp" || { rmdir "$lock"; fail '500 Internal Server Error' 'cannot update Ramp exemption store'; }
+  if [[ -r "$exempt_file" ]]; then
+    while IFS=$'\t' read -r ver row_host row_ip row_scope seen provenance group state dns_expiry media extra; do
+      [[ "$ver" = 1 && "$row_host" =~ ^[a-z0-9.-]+$ && "$row_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+         ( "$row_scope" = default || "$row_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$seen" =~ ^[1-9][0-9]{0,9}$ &&
+         "$provenance" =~ ^[a-f0-9]{64}$ && -z "$group" && -z "$state" && -z "$dns_expiry" && -z "$media" && -z "$extra" ]] || continue
+      (( seen > now )) || continue
+      [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$scope" ]] && continue
+      count=$((count + 1)); (( count < 128 )) || { rm -f "$tmp"; rmdir "$lock"; fail '507 Insufficient Storage' 'Ramp exemption limit reached'; }
+      printf '1\t%s\t%s\t%s\t%s\t%s\n' "$row_host" "$row_ip" "$row_scope" "$seen" "$provenance" >> "$tmp" || {
+        rm -f "$tmp"; rmdir "$lock"; fail '500 Internal Server Error' 'cannot update Ramp exemption store';
+      }
+    done < "$exempt_file"
+  fi
+  printf '1\t%s\t%s\t%s\t%s\t%s\n' "$host" "$ip" "$scope" "$expires" "$first_hash" >> "$tmp" &&
+    # nfqws2 drops privileges; its Lua callback must read the tmpfs policy.
+    chmod 644 "$tmp" && mv -f "$tmp" "$exempt_file" || {
+      rm -f "$tmp"; rmdir "$lock"; fail '500 Internal Server Error' 'cannot activate Ramp exemption';
+    }
+  rmdir "$lock" || fail '500 Internal Server Error' 'cannot release Ramp exemption lock'
+  send_json '200 OK' "{\"schema_version\":1,\"status\":\"ramp_exempt\",\"hostname\":\"$host\",\"destination_ip\":\"$ip\",\"scope\":\"$scope\",\"expires\":$expires}"
+}
+adaptive_ramp_exemption_revoke() {
+  local host="${fields[hostname]:-}" ip="${fields[destination_ip]:-}" scope="${fields[scope]:-}" ids="${fields[test_ids]:-}"
+  local exempt_file="${Z2R_ADAPTIVE_RAMP_EXEMPT_FILE:-$BASE/ramp-exempt.tsv}" now id json stage hash observed strategy bytes speed reason
+  local lock tmp ver row_host row_ip row_scope expires row_hash extra found=0 count=0 first_hash="" first_strategy="" first_seen=0 last_seen=0
+  adaptive_ramp_hardware_supported || fail '403 Forbidden' 'Ramp exemptions are unsupported on this Keenetic hardware until the late-ACK gate passes'
+  [[ "${#fields[@]}" -eq 5 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ && ${#host} -le 253 ]] ||
+    fail '400 Bad Request' 'invalid Ramp revocation target'
+  _adaptive_lan_public_ipv4_valid "$ip" || fail '400 Bad Request' 'invalid Ramp revocation IP'
+  [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] || fail '400 Bad Request' 'invalid Ramp revocation scope'
+  [[ "$ids" =~ ^[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid Ramp revocation proof IDs'
+  IFS=, read -r -a test_ids <<< "$ids"
+  [[ "${test_ids[0]}" != "${test_ids[1]}" && "${test_ids[0]}" != "${test_ids[2]}" && "${test_ids[1]}" != "${test_ids[2]}" ]] ||
+    fail '400 Bad Request' 'Ramp revocation proof IDs must be unique'
+  now="$(date +%s)" || fail '500 Internal Server Error' 'clock unavailable'
+  [[ "$now" =~ ^[0-9]{1,10}$ ]] || fail '500 Internal Server Error' 'clock unavailable'
+  for i in 0 1 2; do
+    id="${test_ids[$i]}"; stage="gv_tcp_ramp"; [[ "$i" != 1 ]] || stage=gv_tcp_plain
+    [[ -d "$BASE/$id" && ! -L "$BASE/$id" && -f "$BASE/$id/result.json" && ! -L "$BASE/$id/result.json" ]] || fail '409 Conflict' 'Ramp revocation result is unavailable'
+    (( $(wc -c < "$BASE/$id/result.json") <= 8192 )) || fail '409 Conflict' 'Ramp revocation result is oversized'
+    IFS= read -r json < "$BASE/$id/result.json" || fail '409 Conflict' 'Ramp revocation result is unavailable'
+    [[ "$json" = *"\"test_id\":\"$id\""* && "$json" = *'"route_verified":true'* &&
+       "$json" = *'"queue_seen":true'* && "$json" = *'"strategy_ack_seen":true'* &&
+       "$json" = *"\"hostname\":\"$host\""* && "$json" = *"\"destination_ip\":\"$ip\""* &&
+       "$json" = *'"profile_id":2'* && "$json" = *"\"scope\":\"$scope\""* &&
+       "$json" = *'"protocol":"tcp"'* && "$json" = *'"recipe_id":"googlevideo-tcp-media-v1"'* &&
+       "$json" = *"\"treatment_variant\":\"$stage\""* ]] || fail '409 Conflict' 'Ramp revocation result does not match its treatment'
+    [[ "$json" =~ \"media_url_sha256\":\"([a-f0-9]{64})\" ]] || fail '409 Conflict' 'Ramp revocation result lacks a URL fingerprint'
+    hash="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"observed_at\":([0-9]{1,10}) ]] || fail '409 Conflict' 'Ramp revocation timestamp is invalid'
+    observed="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"local_number\":([1-9][0-9]{0,2}) ]] || fail '409 Conflict' 'Ramp revocation strategy is invalid'
+    strategy="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"media_bytes\":([0-9]{1,8}) ]] || fail '409 Conflict' 'Ramp revocation media count is invalid'
+    bytes="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"media_speed_bps\":([0-9]{1,10}) ]] || fail '409 Conflict' 'Ramp revocation media speed is invalid'
+    speed="${BASH_REMATCH[1]}"
+    if (( i == 0 )); then first_hash="$hash"; first_strategy="$strategy"; first_seen="$observed"
+    else
+      [[ "$hash" = "$first_hash" && "$strategy" = "$first_strategy" ]] || fail '409 Conflict' 'Ramp revocation changed URL or strategy'
+      (( observed > last_seen )) || fail '409 Conflict' 'Ramp revocation results are not ordered'
+    fi
+    if (( i == 1 )); then
+      [[ "$json" != *'"syn_stage_confirmed":true'* && "$json" != *'"late_ack_stage_confirmed":true'* &&
+         "$json" = *'"overall":"INCONCLUSIVE"'* && "$json" =~ \"reason\":\"(media_insufficient|transport_timeout|target_unavailable)\" ]] ||
+        fail '409 Conflict' 'plain media result does not prove a bounded degradation'
+      reason="${BASH_REMATCH[1]}"
+      if [[ "$reason" = media_insufficient ]]; then
+        [[ "$json" = *'"transport":"OK"'* && "$json" = *'"application":"UNKNOWN"'* ]] || fail '409 Conflict' 'plain media result has inconsistent verdict fields'
+      else
+        [[ "$json" = *'"transport":"UNKNOWN"'* && "$json" = *'"application":"UNKNOWN"'* ]] || fail '409 Conflict' 'plain transport result has inconsistent verdict fields'
+      fi
+    else
+      [[ "$json" = *'"syn_stage_confirmed":true'* && "$json" = *'"late_ack_stage_confirmed":true'* &&
+         "$json" = *'"overall":"SUCCESS"'* && "$json" = *'"transport":"OK"'* && "$json" = *'"application":"OK"'* ]] &&
+        (( bytes >= 1048576 && speed > 0 )) ||
+        fail '409 Conflict' 'Ramp control did not succeed'
+    fi
+    (( observed >= now - 1200 && observed <= now + 60 )) || fail '409 Conflict' 'Ramp revocation result is stale'
+    last_seen="$observed"
+  done
+  (( last_seen - first_seen <= 1200 )) || fail '409 Conflict' 'Ramp revocation comparison exceeded its URL window'
+  [[ -r "$exempt_file" && ! -L "$exempt_file" ]] || fail '409 Conflict' 'Ramp exemption store is unavailable'
+  lock="$exempt_file.lock"
+  (umask 077; mkdir "$lock") 2>/dev/null || fail '409 Conflict' 'Ramp exemption store is busy'
+  tmp="$exempt_file.tmp.$$"
+  : > "$tmp" || { rmdir "$lock"; fail '500 Internal Server Error' 'cannot update Ramp exemption store'; }
+  while IFS=$'\t' read -r ver row_host row_ip row_scope expires row_hash extra; do
+    [[ "$ver" = 1 && "$expires" =~ ^[1-9][0-9]{0,9}$ && "$row_hash" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] || continue
+    (( expires > now )) || continue
+    if [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$scope" ]]; then found=1; continue; fi
+    count=$((count + 1)); (( count <= 128 )) || { rm -f "$tmp"; rmdir "$lock"; fail '507 Insufficient Storage' 'Ramp exemption store is oversized'; }
+    printf '1\t%s\t%s\t%s\t%s\t%s\n' "$row_host" "$row_ip" "$row_scope" "$expires" "$row_hash" >> "$tmp" || {
+      rm -f "$tmp"; rmdir "$lock"; fail '500 Internal Server Error' 'cannot update Ramp exemption store';
+    }
+  done < "$exempt_file"
+  (( found )) || { rm -f "$tmp"; rmdir "$lock"; fail '409 Conflict' 'exact Ramp exemption is no longer active'; }
+  # Keep the revoke output readable by the unprivileged nfqws2 worker too.
+  chmod 644 "$tmp" && mv -f "$tmp" "$exempt_file" || {
+    rm -f "$tmp"; rmdir "$lock"; fail '500 Internal Server Error' 'cannot revoke Ramp exemption';
+  }
+  rmdir "$lock" || fail '500 Internal Server Error' 'cannot release Ramp exemption lock'
+  send_json '200 OK' "{\"schema_version\":1,\"status\":\"ramp_default\",\"hostname\":\"$host\",\"destination_ip\":\"$ip\",\"scope\":\"$scope\"}"
+}
 json_candidates() {
-  local host="${1,,}" ip="$2" profile="$3" scope="$4" offset="${5:-0}" limit="${6:-10}" order="${7:-ranked}" requested_set="${8:-}" ranked_fingerprints="${9:-}" za_root="${10:-${ZAPRET2_ROOT:-/opt/zapret2}}"
+  local host="${1,,}" ip="$2" profile="$3" scope="$4" offset="${5:-0}" limit="${6:-10}" order="${7:-ranked}" requested_set="${8:-}" ranked_fingerprints="${9:-}" za_root="${10:-${ZAPRET2_ROOT:-/opt/zapret2}}" force_revalidate="${11:-0}"
   local config="$za_root/config" nfqws="$za_root/nfq2/nfqws2"
-  local max total_max candidate_count locked number count=0 first=1 stamp known known_strategy known_fp known_catalog known_expiry ranked source=local-profile-order catalog_dir args_file fingerprint candidate_set_version candidate_set_material remote_matched=0
+  local max total_max candidate_count locked number count=0 first=1 stamp known known_strategy="" known_fp known_catalog known_expiry ranked source=local-profile-order catalog_dir args_file fingerprint candidate_set_version candidate_set_material remote_matched=0 active_proto=tls group_id="" recipe=tls-http1-v1
   local -a ordered=() preferred=() remote_order=()
   local -A added=() seen_semantics=() strategy_fingerprints=() first_strategy_for_fingerprint=()
   [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
   _adaptive_lan_public_ipv4_valid "$ip" || return 2
-  [[ "$profile" =~ ^[1-4]$ ]] || return 2
+  [[ "$profile" =~ ^[1-5]$ ]] || return 2
   [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] || return 2
   [[ "$order" = ranked || "$order" = exploration ]] || return 2
+  [[ "$force_revalidate" = 0 || "$force_revalidate" = 1 ]] || return 2
   if [[ -n "$ranked_fingerprints" ]]; then
     [[ "$order" = ranked && ${#ranked_fingerprints} -le 729 ]] || return 2
     IFS=',' read -r -a remote_order <<< "$ranked_fingerprints"
@@ -154,20 +421,40 @@ json_candidates() {
   . "$ROOT/z2r_lib/orchestra_state.sh"
   . "$ROOT/z2r_lib/adaptive_rules.sh"
   . "$ROOT/z2r_lib/supersweep_probe.sh"
-  locked="$(ORCH_ACTIVE_SCOPE="$scope" profile_state_get "$profile" tls 2>/dev/null || printf auto)"
+  if [[ "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ]]; then
+    active_proto=googlevideo-tcp
+    recipe=googlevideo-tcp-media-v1
+    group_id="$(adaptive_rules_googlevideo_group_id "$host")" || return 2
+  elif [[ "$profile" = 5 ]]; then
+    [[ "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ]] || return 2
+    active_proto=udp
+    recipe=googlevideo-quic-h3-media-v1
+  fi
+  locked="$(ORCH_ACTIVE_SCOPE="$scope" profile_state_get "$profile" "$active_proto" 2>/dev/null || printf auto)"
   [[ "$locked" = auto ]] || return 4
   stamp="$(adaptive_rules_runtime_stamp "$config" "$nfqws" "$ORCH_DIR")" || return 3
-  if known="$(adaptive_rule_lookup_local "$host" "$ip" "$profile" tls "$scope" "$stamp")"; then
+  if [[ "$active_proto" != udp ]] && known="$(adaptive_rule_lookup_local "$host" "$ip" "$profile" "$active_proto" "$scope" "$stamp")"; then
     IFS=$'\t' read -r known_strategy known_fp known_catalog known_expiry <<< "$known"
-    printf '{"schema_version":1,"status":"already_confirmed","profile_id":%s,"scope":"%s","strategy_number":%s,"strategy_fingerprint":"%s","catalog_version":"%s","expires":%s}' \
-      "$profile" "$scope" "$known_strategy" "$known_fp" "$known_catalog" "$known_expiry"
-    return 0
+    if [[ "$force_revalidate" = 0 ]]; then
+      printf '{"schema_version":1,"status":"already_confirmed","profile_id":%s,"scope":"%s","strategy_number":%s,"winner_kind":"%s","strategy_fingerprint":"%s","catalog_version":"%s","expires":%s}' \
+        "$profile" "$scope" "$known_strategy" "$( [ "$known_strategy" = 0 ] && printf DIRECT || printf STRATEGY )" "$known_fp" "$known_catalog" "$known_expiry"
+      return 0
+    fi
   fi
   max="$(config_profile_max_strategy "$profile" "$config" 2>/dev/null)"
   [[ "$max" =~ ^[1-9][0-9]{0,2}$ ]] || return 5
   total_max="$max"
   if [[ "$order" = ranked ]]; then
-    ranked="$(adaptive_rules_ranked_candidates "$profile" tls "$scope" "$stamp" "$total_max" 2>/dev/null || true)"
+    if [[ "$force_revalidate" = 1 && "$known_strategy" =~ ^[1-9][0-9]{0,2}$ && "$known_strategy" -le "$total_max" ]]; then
+      preferred+=("$known_strategy"); added[$known_strategy]=1
+    fi
+    if [[ "$active_proto" = udp ]]; then
+      ranked=""
+    elif [[ -n "$group_id" ]]; then
+      ranked="$(adaptive_rules_ranked_candidates "$profile" "$active_proto" "$scope" "$stamp" "$total_max" "$group_id" 2>/dev/null || true)"
+    else
+      ranked="$(adaptive_rules_ranked_candidates "$profile" "$active_proto" "$scope" "$stamp" "$total_max" 2>/dev/null || true)"
+    fi
     while IFS= read -r number; do
       [[ "$number" =~ ^[1-9][0-9]{0,2}$ ]] && (( number <= total_max )) && [[ ! ${added[$number]+yes} ]] || continue
       preferred+=("$number"); added[$number]=1
@@ -175,7 +462,21 @@ json_candidates() {
   fi
   if (( ${#preferred[@]} > 0 )); then source=local-confirmations-first; fi
   if [[ "$order" = exploration ]]; then
-    for ((number=1; number<=total_max; number++)); do ordered+=("$number"); done
+    [[ ! -L "$BASE" ]] || return 3
+    mkdir -p "$BASE" || return 3
+    catalog_dir="$(mktemp -d "$BASE/catalog.XXXXXX")" || return 3
+    Z2R_SUPERSWEEP_DIR="$catalog_dir"
+    DESYNC_MARK="$(config_get_var "$config" DESYNC_MARK 2>/dev/null | tr -d '"\047')"
+    export Z2R_SUPERSWEEP_DIR DESYNC_MARK
+    if ! supersweep_probe_config "$profile" "$config" standard "$ip" "$recipe"; then rm -rf "$catalog_dir"; return 3; fi
+    args_file="$catalog_dir/probe/nfqws2.args"
+    source=family-diverse-local-order
+    while IFS= read -r number; do
+      [[ "$number" =~ ^[1-9][0-9]{0,2}$ && "$number" -le "$total_max" ]] || { rm -rf "$catalog_dir"; return 3; }
+      ordered+=("$number")
+    done < <(adaptive_exploration_strategy_order "$args_file" "$total_max")
+    rm -rf "$catalog_dir"
+    (( ${#ordered[@]} == total_max )) || return 3
   else
     [[ ! -L "$BASE" ]] || return 3
     mkdir -p "$BASE" || return 3
@@ -183,10 +484,10 @@ json_candidates() {
     Z2R_SUPERSWEEP_DIR="$catalog_dir"
     DESYNC_MARK="$(config_get_var "$config" DESYNC_MARK 2>/dev/null | tr -d '"\047')"
     export Z2R_SUPERSWEEP_DIR DESYNC_MARK
-    if ! supersweep_probe_config "$profile" "$config"; then rm -rf "$catalog_dir"; return 3; fi
+    if ! supersweep_probe_config "$profile" "$config" standard "$ip" "$recipe"; then rm -rf "$catalog_dir"; return 3; fi
     args_file="$catalog_dir/probe/nfqws2.args"
     for ((number=1; number<=total_max; number++)); do
-      fingerprint="$(adaptive_strategy_fingerprint "$profile" "$number" "$args_file" "$nfqws")" || {
+      fingerprint="$(adaptive_strategy_fingerprint "$profile" "$number" "$args_file" "$nfqws" standard "$recipe")" || {
         rm -rf "$catalog_dir"; return 3;
       }
       strategy_fingerprints[$number]="$fingerprint"
@@ -213,7 +514,8 @@ json_candidates() {
   [[ "$offset" =~ ^[0-9]{1,3}$ && "$limit" =~ ^[1-9][0-9]?$ ]] || return 2
   (( offset <= candidate_count && limit <= 10 )) || return 2
   [[ "$order" != ranked || "$remote_matched" -eq 0 || "$source" = local-confirmations-first ]] || source=remote-rankings-first
-  candidate_set_material="order=$order|profile=$profile|scope=$scope|profile_count=$total_max|candidate_count=$candidate_count|source=$source|stamp=$stamp|remote=$ranked_fingerprints|candidates=$(printf '%s,' "${ordered[@]}")"
+  [[ "$force_revalidate" != 1 ]] || source=active-rule-revalidation
+  candidate_set_material="order=$order|profile=$profile|protocol=$active_proto|recipe=$recipe|scope=$scope|profile_count=$total_max|candidate_count=$candidate_count|source=$source|force=$force_revalidate|known=${known_strategy:-none}|stamp=$stamp|identity=$group_id|remote=$ranked_fingerprints|candidates=$(printf '%s,' "${ordered[@]}")"
   candidate_set_version="sha256:$(printf '%s\n' "$candidate_set_material" | sha256sum | awk '{print $1}')" || return 3
   [[ "$candidate_set_version" =~ ^sha256:[a-f0-9]{64}$ ]] || return 3
   if [[ "$order" = ranked ]]; then
@@ -226,8 +528,8 @@ json_candidates() {
   elif [[ -n "$requested_set" ]]; then return 2; fi
   max=$((candidate_count - offset))
   (( max > limit )) && max="$limit"
-  printf '{"schema_version":1,"status":"%s","profile_id":%s,"scope":"%s","profile_strategy_count":%s,"candidate_count":%s,"candidate_set_version":"%s","candidate_offset":%s,"candidate_numbers":[' \
-    "$([[ "$max" -gt 0 ]] && printf ready || printf complete)" "$profile" "$scope" "$total_max" "$candidate_count" "$candidate_set_version" "$offset"
+  printf '{"schema_version":1,"status":"%s","profile_id":%s,"scope":"%s","protocol":"%s","recipe_id":"%s","profile_strategy_count":%s,"candidate_count":%s,"candidate_set_version":"%s","candidate_offset":%s,"candidate_numbers":[' \
+    "$([[ "$max" -gt 0 ]] && printf ready || printf complete)" "$profile" "$scope" "$active_proto" "$recipe" "$total_max" "$candidate_count" "$candidate_set_version" "$offset"
   for ((count=offset; count<offset + max; count++)); do
     (( first )) || printf ','
     first=0
@@ -267,7 +569,7 @@ for pair in "${pairs[@]}"; do
   decode "$key" || fail '400 Bad Request' 'invalid form encoding'; key="$REPLY"
   decode "$value" || fail '400 Bad Request' 'invalid form encoding'; value="$REPLY"
   case "$key" in
-    action|hostname|destination_ip|profile_id|local_strategy_number|source_port|scope|offset|limit|order|candidate_set_version|ranked_fingerprints|schema_version|test_id|route_verified|overall|observed_at|transport|application|reason|ip_family|protocol|port|strategy_fingerprint|catalog_version|recipe_id|client_profile|request_id) ;;
+    action|hostname|destination_ip|profile_id|local_strategy_number|source_port|probe_owner|scope|offset|limit|order|candidate_set_version|ranked_fingerprints|force_revalidate|schema_version|test_id|route_verified|overall|observed_at|transport|application|reason|ip_family|protocol|port|strategy_fingerprint|catalog_version|recipe_id|treatment_variant|client_profile|media_bytes|media_speed_bps|media_duration_ms|request_id|test_ids|stage|statistics_enabled|rankings_enabled|search_outcome|candidates_checked|fast_candidates|deep_candidates|search_duration_ms|time_to_first_success_ms|pc_cpu_percent|pc_free_memory_bytes|pc_network_bytes_per_second|router_load_milli|router_memory_available_kib|router_active_probes|revalidation_recoveries|revalidation_failures) ;;
     *) fail '400 Bad Request' 'unknown form field' ;;
   esac
   [[ -n "$key" && ! ${fields[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
@@ -288,6 +590,33 @@ case "$action" in
     adaptive_queue_agent_heartbeat >/dev/null 2>&1 || :
     send_json '200 OK' "$(json_events)"
     ;;
+  agent_status)
+    [[ "${#fields[@]}" -eq 18 ]] || fail '400 Bad Request' 'agent_status requires a bounded status snapshot'
+    adaptive_queue_agent_status "${fields[stage]:-}" "${fields[statistics_enabled]:-}" "${fields[rankings_enabled]:-}" \
+      "${fields[search_outcome]:-}" "${fields[candidates_checked]:-}" "${fields[fast_candidates]:-}" \
+      "${fields[deep_candidates]:-}" "${fields[search_duration_ms]:-}" "${fields[time_to_first_success_ms]:-}" \
+      "${fields[pc_cpu_percent]:-}" "${fields[pc_free_memory_bytes]:-}" "${fields[pc_network_bytes_per_second]:-}" \
+      "${fields[router_load_milli]:-}" "${fields[router_memory_available_kib]:-}" "${fields[router_active_probes]:-}" \
+      "${fields[revalidation_recoveries]:-}" "${fields[revalidation_failures]:-}" || \
+      fail '400 Bad Request' 'invalid agent status snapshot'
+    send_json '200 OK' '{"schema_version":1,"ok":true}'
+    ;;
+  ramp_targets)
+    [[ "${#fields[@]}" -eq 1 ]] || fail '400 Bad Request' 'ramp_targets accepts no parameters'
+    [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || \
+      fail '403 Forbidden' 'Ramp audit targets are available only in AGENT_BETA'
+    if ! adaptive_ramp_hardware_supported; then
+      send_json '200 OK' '{"schema_version":1,"supported":false,"reason":"keenetic_late_ack_gate_unverified","targets":[]}'
+    fi
+    target_json="$(json_ramp_targets)" || fail '503 Service Unavailable' 'Ramp observation catalog is unavailable'
+    send_json '200 OK' "$target_json"
+    ;;
+  ramp_exempt_apply)
+    adaptive_ramp_exemption_apply
+    ;;
+  ramp_exempt_revoke)
+    adaptive_ramp_exemption_revoke
+    ;;
   resources)
     [[ "${#fields[@]}" -eq 1 ]] || fail '400 Bad Request' 'resources accepts no parameters'
     resource_json="$(adaptive_queue_resources_json)" || fail '503 Service Unavailable' 'router resource counters are unavailable'
@@ -300,7 +629,15 @@ case "$action" in
     send_json '200 OK' '{"schema_version":1,"ok":true}'
     ;;
   cancel_probes)
-    [[ "${#fields[@]}" -eq 1 ]] || fail '400 Bad Request' 'cancel_probes accepts no parameters'
+    [[ "${#fields[@]}" -eq 1 || ( "${#fields[@]}" -eq 3 && ${fields[source_port]+present} && ${fields[probe_owner]+present} ) ]] || \
+      fail '400 Bad Request' 'invalid probe cancellation parameters'
+    source_port="${fields[source_port]:-}"
+    probe_owner="${fields[probe_owner]:-}"
+    if [[ -n "$source_port" || -n "$probe_owner" ]]; then
+      [[ "$source_port" =~ ^[1-9][0-9]{4}$ ]] && (( source_port >= 62000 && source_port <= 62999 )) || \
+        fail '400 Bad Request' 'invalid probe source port'
+      [[ "$probe_owner" =~ ^[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid probe owner'
+    fi
     cancelled=0
     if [[ -d "$BASE" && ! -L "$BASE" ]]; then
       for dir in "$BASE"/*; do
@@ -311,10 +648,10 @@ case "$action" in
         case "$state" in complete|failed|cleanup_failed) continue ;; esac
         lease_file="$dir/leases/$id.tsv"
         [[ -f "$lease_file" && ! -L "$lease_file" ]] || continue
-        lease_record="$(awk -F '\t' -v id="$id" -v ip="$client_ip" 'NF==7 && $1==id && $2==ip {n++; row=$0} END {if(n==1) print row; else exit 1}' "$lease_file" 2>/dev/null)" || continue
-        IFS=$'\t' read -r lease_id lease_ip lease_port lease_dst lease_dport lease_expiry lease_recipe <<< "$lease_record"
+        lease_record="$(awk -F '\t' -v id="$id" -v ip="$client_ip" -v port="$source_port" -v owner="$probe_owner" '((NF==7) || (NF==8 && length($8)==32 && $8 !~ /[^a-f0-9]/)) && $1==id && $2==ip && (port=="" || $3==port) && (owner=="" || (NF==8 && $8==owner)) {n++; row=$0} END {if(n==1) print row; else exit 1}' "$lease_file" 2>/dev/null)" || continue
+        IFS=$'\t' read -r lease_id lease_ip lease_port lease_dst lease_dport lease_expiry lease_recipe lease_owner <<< "$lease_record"
         [[ "$lease_id" = "$id" && "$lease_ip" = "$client_ip" && "$lease_expiry" =~ ^[0-9]{1,10}$ &&
-           "$lease_recipe" = tls-http1-v1 ]] || continue
+           ( "$lease_recipe" = tls-http1-v1 || "$lease_recipe" = googlevideo-tcp-media-v1 ) ]] || continue
         (( lease_expiry > $(date +%s) )) || continue
         [[ ! -e "$dir/cancel" && ! -L "$dir/cancel" ]] || continue
         cancel_tmp="$(mktemp "$dir/.cancel.XXXXXX")" || fail '500 Internal Server Error' 'could not create probe cancellation'
@@ -335,9 +672,9 @@ case "$action" in
     send_json '200 OK' '{"schema_version":1,"ok":true}'
     ;;
   candidates)
-    [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = TEST_ONLY ]] || \
-      fail '403 Forbidden' 'adaptive probe mode is not TEST_ONLY'
-    if candidate_json="$(json_candidates "${fields[hostname]:-}" "${fields[destination_ip]:-}" "${fields[profile_id]:-}" "${fields[scope]:-default}" "${fields[offset]:-0}" "${fields[limit]:-10}" "${fields[order]:-ranked}" "${fields[candidate_set_version]:-}" "${fields[ranked_fingerprints]:-}")"; then
+    mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
+    [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || fail '403 Forbidden' 'adaptive probe mode does not allow candidates'
+    if candidate_json="$(json_candidates "${fields[hostname]:-}" "${fields[destination_ip]:-}" "${fields[profile_id]:-}" "${fields[scope]:-default}" "${fields[offset]:-0}" "${fields[limit]:-10}" "${fields[order]:-ranked}" "${fields[candidate_set_version]:-}" "${fields[ranked_fingerprints]:-}" "${ZAPRET2_ROOT:-/opt/zapret2}" "${fields[force_revalidate]:-0}")"; then
       send_json '200 OK' "$candidate_json"
     else
       case "$?" in
@@ -352,17 +689,35 @@ case "$action" in
     ;;
   lease)
     [[ -x "$CONTROLLER" ]] || fail '503 Service Unavailable' 'adaptive controller is not installed'
-    [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = TEST_ONLY ]] || \
-      fail '403 Forbidden' 'adaptive probe mode is not TEST_ONLY'
+    mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
+    [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || fail '403 Forbidden' 'adaptive probe mode does not allow probes'
     host="${fields[hostname]:-}"
     dst_ip="${fields[destination_ip]:-}"
     profile="${fields[profile_id]:-}"
     strategy="${fields[local_strategy_number]:-}"
     scope="${fields[scope]:-default}"
+    probe_owner="${fields[probe_owner]:-}"
+    recipe="${fields[recipe_id]:-tls-http1-v1}"
+    treatment="${fields[treatment_variant]:-standard}"
+    [[ -z "$probe_owner" || "$probe_owner" =~ ^[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid probe owner'
     [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ && "$host" == *.* && ${#host} -le 253 ]] || fail '400 Bad Request' 'invalid hostname'
     host="${host,,}"
     _adaptive_lan_public_ipv4_valid "$dst_ip" || fail '400 Bad Request' 'public IPv4 destination required'
-    [[ "$profile" =~ ^[1-4]$ && "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ ]] || fail '400 Bad Request' 'invalid profile or strategy'
+    [[ "$profile" =~ ^[1-5]$ && "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ ]] || fail '400 Bad Request' 'invalid profile or strategy'
+    case "$recipe" in
+      tls-http1-v1) [[ "$treatment" = standard ]] || fail '400 Bad Request' 'TLS recipe does not accept a Googlevideo treatment' ;;
+      googlevideo-tcp-media-v1)
+        [[ "$profile" = 2 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ ]] || \
+          fail '400 Bad Request' 'Googlevideo media recipe requires a profile-2 Googlevideo hostname'
+        case "$treatment" in standard|gv_tcp_plain|gv_tcp_ramp|gv_tcp_ramp_syndata) ;; *) fail '400 Bad Request' 'invalid Googlevideo treatment' ;; esac
+        if [[ "$mode" = AGENT_BETA && "$treatment" =~ ^gv_tcp_ramp ]]; then
+          adaptive_ramp_hardware_supported || fail '403 Forbidden' 'Ramp probing is unsupported on this Keenetic hardware until the late-ACK gate passes'
+        fi ;;
+      googlevideo-quic-h3-media-v1)
+        [[ "$profile" = 5 && "$treatment" = standard && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ ]] || \
+          fail '400 Bad Request' 'Googlevideo QUIC recipe requires profile 5 and a Googlevideo hostname' ;;
+      *) fail '400 Bad Request' 'unsupported adaptive recipe' ;;
+    esac
     [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] || fail '400 Bad Request' 'invalid client scope'
     if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || fail '400 Bad Request' 'invalid client scope'; fi
     now="$(date +%s)"; expires=$((now + 90)); port=""
@@ -392,10 +747,17 @@ case "$action" in
     run="$BASE/$id"
     (umask 077; mkdir "$run") 2>/dev/null || fail '409 Conflict' 'test id collision'
     chmod 711 "$run" || fail '500 Internal Server Error' 'cannot protect test state'
-    nohup bash "$CONTROLLER" "$id" "$client_ip" "$port" "$host" "$dst_ip" "$profile" "$strategy" "$expires" "$scope" \
+    nohup bash "$CONTROLLER" "$id" "$client_ip" "$port" "$host" "$dst_ip" "$profile" "$strategy" "$expires" "$scope" "$probe_owner" "$recipe" "$treatment" \
       > "$run/controller.log" 2>&1 </dev/null &
-    for ((waited=0; waited<9; waited++)); do
-      [[ -s "$run/lease.json" ]] && send_json '200 OK' "$(cat "$run/lease.json")"
+    wait_limit=9
+    [[ "$recipe" != googlevideo-tcp-media-v1 ]] || wait_limit=45
+    for ((waited=0; waited<wait_limit; waited++)); do
+      if [[ -s "$run/lease.json" ]]; then
+        lease_body="$(cat "$run/lease.json")"
+        if [[ "$recipe" = googlevideo-tcp-media-v1 || "$recipe" = googlevideo-quic-h3-media-v1 ]]; then rm -f "$run/lease.json"; fi
+        printf 'Cache-Control: no-store\r\n'
+        send_json '200 OK' "$lease_body"
+      fi
       [[ -s "$run/error" ]] && fail '503 Service Unavailable' 'probe could not be started'
       sleep 1
     done
@@ -406,12 +768,19 @@ case "$action" in
     [[ "$id" =~ ^[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid test id'
     run="$BASE/$id"
     [[ -d "$run" && ! -L "$run" && -r "$run/leases/$id.tsv" ]] || fail '404 Not Found' 'unknown or expired test'
-    IFS=$'\t' read -r lease_id lease_ip lease_port lease_dst lease_dport lease_expiry lease_recipe < "$run/leases/$id.tsv" || fail '404 Not Found' 'unknown lease'
-    [[ "$lease_id" = "$id" && "$lease_ip" = "$client_ip" && "$lease_recipe" = tls-http1-v1 ]] || fail '403 Forbidden' 'lease owner mismatch'
+    IFS=$'\t' read -r lease_id lease_ip lease_port lease_dst lease_dport lease_expiry lease_recipe lease_owner < "$run/leases/$id.tsv" || fail '404 Not Found' 'unknown lease'
+    [[ "$lease_id" = "$id" && "$lease_ip" = "$client_ip" && ( "$lease_recipe" = tls-http1-v1 || "$lease_recipe" = googlevideo-tcp-media-v1 || "$lease_recipe" = googlevideo-quic-h3-media-v1 ) ]] || fail '403 Forbidden' 'lease owner mismatch'
+    expected_protocol=tcp
+    [[ "$lease_recipe" != googlevideo-quic-h3-media-v1 ]] || expected_protocol=udp
+    if [[ -n "$lease_owner" ]]; then
+      [[ "$lease_owner" =~ ^[a-f0-9]{32}$ && "${fields[probe_owner]:-}" = "$lease_owner" ]] || fail '403 Forbidden' 'probe owner mismatch'
+    elif [[ ${fields[probe_owner]+present} ]]; then
+      fail '403 Forbidden' 'probe owner mismatch'
+    fi
     [[ "${fields[schema_version]:-}" = 1 && "${fields[test_id]:-}" = "$id" ]] || fail '400 Bad Request' 'result schema mismatch'
     [[ "${fields[route_verified]:-}" = false && "${fields[overall]:-}" = INCONCLUSIVE &&
-       "${fields[ip_family]:-}" = ipv4 && "${fields[protocol]:-}" = tcp && "${fields[port]:-}" = 443 ]] \
-      || fail '400 Bad Request' 'client result must use the unverified IPv4 TCP/443 recipe'
+       "${fields[ip_family]:-}" = ipv4 && "${fields[protocol]:-}" = "$expected_protocol" && "${fields[port]:-}" = 443 ]] || \
+      fail '400 Bad Request' 'client result must use the unverified IPv4/443 recipe'
     observed="${fields[observed_at]:-}"; transport="${fields[transport]:-}"; application="${fields[application]:-}"
     reason="${fields[reason]:-}"; host="${fields[hostname]:-}"; dst_ip="${fields[destination_ip]:-}"
     profile="${fields[profile_id]:-}"; fingerprint="${fields[strategy_fingerprint]:-}"
@@ -421,15 +790,25 @@ case "$action" in
     [[ "$observed" =~ ^[0-9]{1,10}$ ]] || fail '400 Bad Request' 'invalid timestamp'
     case "$transport" in OK|FAIL|UNKNOWN) ;; *) fail '400 Bad Request' 'invalid transport verdict' ;; esac
     case "$application" in OK|FAIL|NOT_TESTED|UNKNOWN) ;; *) fail '400 Bad Request' 'invalid application verdict' ;; esac
-    case "$reason" in probe_ok|http_rejected|rate_limited|server_busy|response_too_large|empty_response|timeout|target_unavailable|route_unverified|probe_error|cancelled|expired) ;; *) fail '400 Bad Request' 'invalid reason' ;; esac
+    case "$reason" in probe_ok|http_rejected|rate_limited|server_busy|response_too_large|empty_response|timeout|transport_timeout|origin_unavailable|signed_url_expired|media_insufficient|media_ok|quic_unavailable|target_unavailable|route_unverified|probe_error|cancelled|expired) ;; *) fail '400 Bad Request' 'invalid reason' ;; esac
+    media_bytes="${fields[media_bytes]:-0}"; media_speed_bps="${fields[media_speed_bps]:-0}"; media_duration_ms="${fields[media_duration_ms]:-0}"
+    [[ "$media_bytes" =~ ^[0-9]{1,8}$ && "$media_bytes" -le 16777216 &&
+       "$media_speed_bps" =~ ^[0-9]{1,10}$ && "$media_speed_bps" -le 1073741824 &&
+       "$media_duration_ms" =~ ^[0-9]{1,8}$ && "$media_duration_ms" -le 60000 ]] || fail '400 Bad Request' 'invalid media metrics'
     [[ "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ ]] || fail '400 Bad Request' 'invalid strategy identity'
     [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] || fail '400 Bad Request' 'invalid client scope'
     if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || fail '400 Bad Request' 'invalid client scope'; fi
-    IFS=$'\t' read -r expected_host expected_dst expected_profile expected_fingerprint expected_strategy expected_catalog expected_scope < "$run/target.tsv" || fail '409 Conflict' 'probe context missing'
+    treatment="${fields[treatment_variant]:-standard}"
+    IFS=$'\t' read -r expected_host expected_dst expected_profile expected_fingerprint expected_strategy expected_catalog expected_scope expected_treatment < "$run/target.tsv" || fail '409 Conflict' 'probe context missing'
+    expected_treatment="${expected_treatment:-standard}"
     (( lease_expiry > $(date +%s) )) || fail '410 Gone' 'lease expired'
-    [[ "$host" = "$expected_host" && "$dst_ip" = "$expected_dst" && "$profile" = "$expected_profile" && "$fingerprint" = "$expected_fingerprint" && "$strategy" = "$expected_strategy" && "$catalog" = "$expected_catalog" && "$scope" = "$expected_scope" && "$lease_dport" = 443 && "$recipe" = tls-http1-v1 && "$client_profile" = curl-windows-v1 ]] || fail '409 Conflict' 'result does not match lease'
-    printf -v record '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-      "$id" "$observed" "$transport" "$application" "$reason" "$host" "$dst_ip" "$profile" "$fingerprint" "$strategy" "$catalog" "$recipe" "$client_profile" "$scope"
+    expected_client=curl-windows-v1; expected_protocol=tcp
+    [[ "$lease_recipe" != googlevideo-tcp-media-v1 ]] || expected_client=curl-windows-media-v1
+    if [[ "$lease_recipe" = googlevideo-quic-h3-media-v1 ]]; then expected_client=curl-windows-quic-media-v1; expected_protocol=udp; fi
+    [[ "${fields[protocol]:-}" = "$expected_protocol" && "$host" = "$expected_host" && "$dst_ip" = "$expected_dst" && "$profile" = "$expected_profile" && "$fingerprint" = "$expected_fingerprint" && "$strategy" = "$expected_strategy" && "$catalog" = "$expected_catalog" && "$scope" = "$expected_scope" && "$treatment" = "$expected_treatment" && "$lease_dport" = 443 && "$recipe" = "$lease_recipe" && "$client_profile" = "$expected_client" ]] || fail '409 Conflict' 'result does not match lease'
+    if [[ "$recipe" = tls-http1-v1 ]]; then [[ "$media_bytes:$media_speed_bps:$media_duration_ms" = 0:0:0 ]] || fail '400 Bad Request' 'TLS recipe cannot submit media metrics'; fi
+    printf -v record '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+      "$id" "$observed" "$transport" "$application" "$reason" "$host" "$dst_ip" "$profile" "$fingerprint" "$strategy" "$catalog" "$recipe" "$treatment" "$client_profile" "$scope" "$media_bytes" "$media_speed_bps" "$media_duration_ms"
     result_file="$run/complete.tsv"
     if [[ -e "$result_file" ]]; then
       [[ "$(cat "$result_file")" = "$record" ]] || fail '409 Conflict' 'test result already submitted'

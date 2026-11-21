@@ -61,7 +61,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh adaptive_lan_transport.sh adaptive_rules.sh adaptive_queue.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh googlevideo_ips.sh netcheck.sh youtube_media.sh quic_media.sh premium.sh adaptive_media.sh strategies.sh supersweep.sh supersweep_probe.sh supersweep_transport.sh adaptive_lan_transport.sh adaptive_rules.sh adaptive_queue.sh submenus.sh actions.sh config.sh orchestra_state.sh custom_strategies.sh"
 
 # Release assets are separate from the deploy tar so each router stores only
 # its own static binary. This is optional: the central Googlevideo feed works

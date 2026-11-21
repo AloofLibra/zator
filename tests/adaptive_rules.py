@@ -36,6 +36,20 @@ local long_row = table.concat({"1", "long.example.org", "93.184.216.34", "1", "t
 locked_load_adaptive_lines_for_tests({long_row}, 1000, long_stamp)
 assert(locked_adaptive_strategy_for_tuple("long.example.org", "93.184.216.34", "1", "tls", "default", 1000) == 7,
   "valid runtime stamp above 400 bytes was rejected")
+local direct = valid:gsub("\t7\t", "\t0\t")
+locked_load_adaptive_lines_for_tests({direct}, 1000, stamp)
+assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.34", "1", "tls", "default", 1000) == 0,
+  "DIRECT sentinel was not preserved as a distinct exact rule")
+local gv = table.concat({"1", "rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.37", "2", "googlevideo-tcp", "default", "12", fp, cat, stamp, "5000"}, "\t")
+locked_load_adaptive_lines_for_tests({gv}, 1000, stamp)
+assert(locked_adaptive_strategy_for_tuple("rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.37", "2", "googlevideo-tcp", "default", 1000) == 12,
+  "exact Googlevideo media rule was rejected")
+assert(locked_adaptive_strategy_for_tuple("rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.37", "2", "tls", "default", 1000) == nil,
+  "Googlevideo media result was mixed into the TLS recipe")
+local invalid_gv = gv:gsub("rr1%-%-%-sn%-a5mekn6e%.googlevideo%.com", "cdn.example.org")
+locked_load_adaptive_lines_for_tests({invalid_gv}, 1000, stamp)
+assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.37", "2", "tls", "default", 1000) == nil,
+  "media-derived rule accepted a non-Googlevideo host")
 ''')
 print("adaptive Lua rule lookup smoke ok")
 
@@ -46,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-snapshot-") as tmp:
     snapshot.parent.mkdir(parents=True)
     fp = "sha256:" + "a" * 64
     cat = "sha256:" + "b" * 64
-    stamp = "|".join(["0:0"] * 22)
+    stamp = "|".join(["0:0"] * 24)
     expiry = int(time.time()) + 3600
     snapshot.write_text(f"1\tpersist.example.org\t93.184.216.34\t1\ttls\tdefault\t7\t{fp}\t{cat}\t{stamp}\t{expiry}\n")
     runtime = LuaRuntime(unpack_returned_tuples=True)

@@ -80,6 +80,26 @@ fi
 printf 'complete\n' > "$tmp/runs/0123456789abcdef0123456789abcdef/state"
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" test-only >/dev/null
 [[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = TEST_ONLY ]] || { echo 'test-only mode was not persisted' >&2; exit 1; }
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AGENT_BETA &&
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope" ]] || {
+  echo 'scoped Beta mode enabled LAN-wide application without explicit consent' >&2; exit 1;
+}
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta-lan >/dev/null
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AGENT_BETA &&
+   "$(cat "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope")" = 1 &&
+   "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope")" = 600 ]] || {
+  echo 'explicit LAN-wide Beta consent was not stored privately' >&2; exit 1;
+}
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" test-only >/dev/null
+[[ ! -e "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope" ]] || {
+  echo 'leaving Beta retained LAN-wide scope consent' >&2; exit 1;
+}
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta-lan >/dev/null
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null
+[[ ! -e "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope" ]] || {
+  echo 'scoped Beta mode retained LAN-wide consent' >&2; exit 1;
+}
 mkdir -p "$tmp/zapret"
 printf 'WS_USER=nobody\n' > "$tmp/zapret/config"
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \

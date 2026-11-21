@@ -76,6 +76,15 @@ grep -q -- '-D FORWARD -m conntrack --ctdir ORIGINAL .*z2r-adaptive-lan-original
 grep -q -- '-D POSTROUTING .*Z2R_ADAPTIVE_LAN_POST' "$calls" || { echo 'postrouting bypass hook not removed' >&2; exit 1; }
 grep -q -- '-X Z2R_ADAPTIVE_LAN_POST' "$calls" || { echo 'postrouting bypass chain not removed' >&2; exit 1; }
 [[ ! -e "$Z2R_SUPERSWEEP_DIR.lock" ]] || { echo 'probe mutex leaked' >&2; exit 1; }
+calls_udp="$TMP_DIR/iptables-udp.log"
+calls="$calls_udp"
+adaptive_lan_lease_write "$TMP_DIR/leases" probe-udp 192.168.1.20 62001 142.250.72.14 2000000000 1999999999 googlevideo-quic-h3-media-v1
+adaptive_lan_transport_start "$TMP_DIR/leases" probe-udp 1999999999
+grep -q -- '-A Z2R_ADAPTIVE_LAN -p udp .*--queue-num 65535' "$calls_udp" || { echo 'QUIC lease did not route UDP through isolated queue 65535' >&2; exit 1; }
+grep -q -- '-A Z2R_ADAPTIVE_LAN_POST -p udp .*--set-xmark 0x40000000/0x40000000' "$calls_udp" || { echo 'QUIC lease lacks exact UDP production-queue bypass' >&2; exit 1; }
+! grep -q -- '-A Z2R_ADAPTIVE_LAN -p tcp ' "$calls_udp" || { echo 'UDP lease also captured TCP' >&2; exit 1; }
+adaptive_lan_transport_stop
+calls="$TMP_DIR/iptables.log"
 Z2R_ADAPTIVE_LOCK_DIR="$TMP_DIR/shared-sweep.lock"
 adaptive_lan_probe_lock_acquire
 [[ -d "$Z2R_ADAPTIVE_LOCK_DIR" && ! -e "$Z2R_SUPERSWEEP_DIR.lock" ]] || { echo 'adaptive probe did not use the shared lock override' >&2; exit 1; }
@@ -202,7 +211,7 @@ nft() {
     '-a list chain inet zapret2 z2r_adaptive_lan')
       [[ -e "$TMP_DIR/nft-active" ]] || return 1
       printf '%s\n' 'table inet zapret2 {' ' chain z2r_adaptive_lan { # handle 200'
-      for h in 201 202 203 204 205 206; do printf 'meta l4proto tcp comment "z2r_adaptive_lan" # handle %s\n' "$h"; done
+      for h in 201 202 203 204 205 206; do printf 'meta l4proto %s comment "z2r_adaptive_lan" # handle %s\n' "${NFT_L4PROTO:-tcp}" "$h"; done
       printf '%s\n' ' }' '}'
       return 0 ;;
     'list chain inet zapret2 postnat_hook'|'list chain inet zapret2 prenat_hook') return 0 ;;
@@ -234,6 +243,14 @@ adaptive_lan_transport_stop || { echo 'nft cleanup rejected table-wrapped chain 
 grep -q 'delete rule inet zapret2 postnat_hook handle 101' "$nft_calls" || { echo 'nft outbound hook not removed' >&2; exit 1; }
 grep -q 'delete rule inet zapret2 prenat_hook handle 102' "$nft_calls" || { echo 'nft reply hook not removed' >&2; exit 1; }
 [[ ! -e "$Z2R_SUPERSWEEP_DIR.lock" ]] || { echo 'nft cleanup leaked probe lock' >&2; exit 1; }
+NFT_L4PROTO=udp
+: > "$nft_calls"
+adaptive_lan_transport_start "$TMP_DIR/leases" probe-udp 1999999999
+grep -q 'meta l4proto udp ct direction original .* queue flags bypass to 65535' "$nft_calls" || { echo 'nft QUIC lease lacks exact outbound UDP queue rule' >&2; exit 1; }
+grep -q 'meta l4proto udp ct direction reply .* queue flags bypass to 65535' "$nft_calls" || { echo 'nft QUIC lease lacks exact return UDP queue rule' >&2; exit 1; }
+! grep -q 'RULE add rule .*meta l4proto tcp ' "$nft_calls" || { echo 'nft QUIC lease also captured TCP' >&2; exit 1; }
+adaptive_lan_transport_stop || { echo 'nft UDP cleanup failed' >&2; exit 1; }
+unset NFT_L4PROTO
 POSTNAT=0
 POSTNAT_ALL=0
 adaptive_lan_transport_start "$TMP_DIR/leases" probe1 1999999999

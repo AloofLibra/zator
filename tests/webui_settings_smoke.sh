@@ -28,6 +28,7 @@ assert_not_contains() {
 
 TMP_DIR="$(mktemp -d /tmp/zator-webui-settings.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+export Z2R_ADAPTIVE_NDM_ROOT="$TMP_DIR/no-ndm"
 
 ROOT="$TMP_DIR/zapret2"
 CFG="$ROOT/config"
@@ -120,9 +121,21 @@ printf ':\n' > "$TMP_DIR/runtime/z2r_lib/config.sh"
 mkdir -p "$TMP_DIR/runtime/extra_strats/cache/adaptive" "$TMP_DIR/runtime/tools" "$TMP_DIR/adaptive"
 printf 'TEST_ONLY\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode"
 printf 'paired-token\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token"
-printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
-printf '1\tseen\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/events.tsv"
+pairing_expiry=$(( $(date +%s) + 3600 ))
+printf '%s\n' "$pairing_expiry" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
+printf '3\t%s\tdeep_search\ttrue\tfalse\tdeep_scheduled\t12\t10\t2\t123456\t0\t23\t8589934592\t4096\t320\t65536\t0\t4\t1\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.status.tsv"
+renewal_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq "\"pairing_expires_at\":$pairing_expiry" <<< "$renewal_status" || fail 'adaptive status omitted pairing expiry for renewal warning'
+grep -Fq '"stage":"deep_search"' <<< "$renewal_status" || fail 'adaptive status omitted current DeepSearch phase'
+grep -Fq '"fast_candidates":10,"deep_candidates":2' <<< "$renewal_status" || fail 'adaptive status omitted FastSearch/DeepSearch progress metrics'
+grep -Fq '"statistics_enabled":true,"rankings_enabled":false' <<< "$renewal_status" || fail 'adaptive status omitted explicit statistics/rankings opt-in state'
+grep -Fq '"pc_cpu_percent":23,"pc_free_memory_bytes":8589934592,"pc_network_bytes_per_second":4096' <<< "$renewal_status" || fail 'adaptive status omitted Windows runtime metrics'
+grep -Fq '"router_load1_per_core":0.320,"router_memory_available_kib":65536,"router_active_probes":0' <<< "$renewal_status" || fail 'adaptive status omitted router runtime metrics'
+grep -Fq '"revalidation_recoveries":4,"revalidation_failures":1' <<< "$renewal_status" || fail 'adaptive status omitted aggregate revalidation results'
+printf '1\tseen\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n1\tactive_rule_degraded\tcdn2.example.org\t93.184.216.35\t1\ttls\tdefault\t%s\n' "$(date +%s)" "$(date +%s)" > "$TMP_DIR/adaptive/events.tsv"
 printf '1\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t7\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
+mkdir -p "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+printf '1\t%s\t%s\tSUCCESS\tmedia_ok\tgooglevideo-tcp-media-v1\tstandard\t2\tmark:4\t9\ttrue\ttrue\ttrue\t1048576\t2000000\t524\t12\n' "$(date +%s)" "$(date +%s)" > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status.tsv"
 printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.last"
 printf '%s\n' 'adaptive_rule_remove() { printf "%s|%s|%s|%s\\n" "$@" >> "$ADAPTIVE_RULE_RESET_LOG"; }' > "$TMP_DIR/runtime/z2r_lib/adaptive_rules.sh"
 cp "$REPO_DIR/lib/adaptive_queue.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_queue.base.sh"
@@ -138,14 +151,37 @@ chmod +x "$TMP_DIR/runtime/tools/adaptive-pair.sh"
 adaptive_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -Fq '"paired":true' <<< "$adaptive_status" || fail 'adaptive pairing status missing'
 grep -Fq '"mode":"TEST_ONLY"' <<< "$adaptive_status" || fail 'adaptive mode missing'
-grep -Fq '"event_count":1' <<< "$adaptive_status" || fail 'adaptive event count missing'
+grep -Fq '"adaptive_rule_flipflops":0' <<< "$adaptive_status" || fail 'adaptive panel omitted the semantic flip-flop count'
+grep -Fq '"event_count":2' <<< "$adaptive_status" || fail 'adaptive event count missing'
 grep -Fq '"pending_requests":0' <<< "$adaptive_status" || fail 'adaptive request count missing'
 grep -Fq '"hostname":"cdn.example.org"' <<< "$adaptive_status" || fail 'adaptive queue details missing'
 grep -Fq '"strategy_number":7' <<< "$adaptive_status" || fail 'adaptive exact rule details missing'
+grep -Fq '"last_probe":{"observed_at":' <<< "$adaptive_status" || fail 'adaptive status omitted the last probe summary'
+grep -Fq '"reason":"media_ok"' <<< "$adaptive_status" || fail 'adaptive status omitted the last probe reason'
+grep -Fq '"status":"active_rule_degraded"' <<< "$adaptive_status" || fail 'adaptive status omitted the degraded active-rule event'
+grep -Fq '"media_bytes":1048576' <<< "$adaptive_status" || fail 'adaptive status omitted media transfer metrics'
+assert_not_contains "$adaptive_status" 'media_url_sha256' 'adaptive status exposed media URL hashes'
+printf '1\tdirect.example.org\t93.184.216.35\t1\ttls\tmark:4\t0\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" >> "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
+adaptive_direct_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"hostname":"direct.example.org"' <<< "$adaptive_direct_status" || fail 'adaptive panel omitted the verified DIRECT rule'
+grep -Fq '"strategy_number":0' <<< "$adaptive_direct_status" || fail 'adaptive panel did not preserve the DIRECT sentinel'
 grep -Fq '"resources":{' <<< "$adaptive_status" || fail 'adaptive router capacity metrics missing'
 grep -Fq '"agent_online":true' <<< "$adaptive_status" || fail 'adaptive status did not report a recent Windows agent heartbeat'
 assert_not_contains "$adaptive_status" 'sha256:' 'adaptive GET exposed internal fingerprints'
 assert_not_contains "$adaptive_status" paired-token 'adaptive GET exposed bearer token'
+mkdir -p "$TMP_DIR/ndm"
+keenetic_adaptive_status="$(Z2R_ADAPTIVE_NDM_ROOT="$TMP_DIR/ndm" Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"ramp_audit_supported":false' <<< "$keenetic_adaptive_status" || fail 'adaptive panel did not mark the unverified Keenetic Ramp gate unsupported'
+grep -Fq 'keenetic_late_ack_gate_unverified' <<< "$keenetic_adaptive_status" || fail 'adaptive panel omitted the reason for the Keenetic Ramp gate'
+printf 'AGENT_BETA\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode"
+beta_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"automatic_apply":true' <<< "$beta_status" || fail 'adaptive Beta status omitted enabled exact-rule application'
+grep -Fq '"default_scope_apply":false' <<< "$beta_status" || fail 'adaptive Beta status overstated LAN-scope consent'
+printf '1\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/apply-default-scope"
+beta_lan_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"default_scope_apply":true' <<< "$beta_lan_status" || fail 'adaptive Beta status omitted explicit LAN-scope consent'
+rm -f "$TMP_DIR/runtime/extra_strats/cache/adaptive/apply-default-scope"
+printf 'TEST_ONLY\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode"
 printf '1\n' > "$TMP_DIR/adaptive/agent.last"
 offline_agent_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -Fq '"agent_online":false' <<< "$offline_agent_status" || fail 'adaptive status reported a stale Windows agent heartbeat as online'

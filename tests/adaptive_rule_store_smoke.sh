@@ -17,6 +17,31 @@ adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$cat" "$s
 [[ "$(wc -l < "$Z2R_ADAPTIVE_RULES_FILE")" -eq 1 ]] || { echo 'rule was not stored' >&2; exit 1; }
 found="$(adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls default "$stamp")"
 [[ "${found%%$'\t'*}" = 7 ]] || { echo 'exact current local rule was not found' >&2; exit 1; }
+if adaptive_rule_remove_if_matches cdn.example.org 93.184.216.34 1 tls default 8 "$fp" "$stamp"; then
+  echo 'failed candidate evicted a different active strategy' >&2; exit 1;
+fi
+[[ -n "$(adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls default "$stamp")" ]] || {
+  echo 'mismatched candidate removed the active rule' >&2; exit 1;
+}
+adaptive_rule_remove_if_matches cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$stamp" || {
+  echo 'matching degraded active rule was not removed' >&2; exit 1;
+}
+if adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls default "$stamp" >/dev/null; then
+  echo 'degraded active rule remained after exact revalidation failure' >&2; exit 1;
+fi
+adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$cat" "$stamp" "$((now + 3600))"
+adaptive_rule_add direct.example.org 93.184.216.36 1 tls default 0 "$fp" "$cat" "$stamp" "$((now + 3600))"
+direct_found="$(adaptive_rule_lookup_local direct.example.org 93.184.216.36 1 tls default "$stamp")"
+[[ "${direct_found%%$'\t'*}" = 0 ]] || { echo 'DIRECT runtime sentinel was not stored as strategy zero' >&2; exit 1; }
+adaptive_rule_remove direct.example.org 93.184.216.36 1 default || { echo 'DIRECT rule could not be removed' >&2; exit 1; }
+gv_host=rr1---sn-a5mekn6e.googlevideo.com
+adaptive_rule_add "$gv_host" 93.184.216.37 2 googlevideo-tcp default 12 "$fp" "$cat" "$stamp" "$((now + 3600))"
+gv_found="$(adaptive_rule_lookup_local "$gv_host" 93.184.216.37 2 googlevideo-tcp default "$stamp")"
+[[ "${gv_found%%$'\t'*}" = 12 ]] || { echo 'Googlevideo media rule was not stored in its own recipe category' >&2; exit 1; }
+if adaptive_rule_lookup_local "$gv_host" 93.184.216.37 2 tls default "$stamp" >/dev/null; then
+  echo 'Googlevideo media rule leaked into the TLS-only category' >&2; exit 1
+fi
+adaptive_rule_remove "$gv_host" 93.184.216.37 2 default googlevideo-tcp || { echo 'Googlevideo media rule could not be removed by exact category' >&2; exit 1; }
 if adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls mark:4 "$stamp" >/dev/null; then
   echo 'local rule lookup ignored client scope' >&2; exit 1;
 fi
@@ -24,7 +49,46 @@ adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 8 "$fp" "$cat" "$s
 [[ "$(wc -l < "$Z2R_ADAPTIVE_RULES_FILE")" -eq 1 && "$(cut -f7 "$Z2R_ADAPTIVE_RULES_FILE")" = 8 ]] || { echo 'exact tuple was not replaced' >&2; exit 1; }
 found="$(adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls default "$stamp")"
 [[ "${found%%$'\t'*}" = 8 ]] || { echo 'updated exact local rule was not found' >&2; exit 1; }
-for _ in $(seq 1 30); do [[ -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] && break; sleep 0.1; done
+flip_a="sha256:$(printf '%064d' 0 | tr 0 c)"
+flip_b="sha256:$(printf '%064d' 0 | tr 0 d)"
+flip_host=flip.example.org
+adaptive_rule_add "$flip_host" 93.184.216.38 1 tls default 1 "$flip_a" "$cat" "$stamp" "$((now + 3600))"
+adaptive_rule_add "$flip_host" 93.184.216.38 1 tls default 2 "$flip_b" "$cat" "$stamp" "$((now + 3600))"
+[[ "$(adaptive_rules_flipflop_total)" = 0 ]] || { echo 'single rule change was miscounted as a flip-flop' >&2; exit 1; }
+adaptive_rule_add "$flip_host" 93.184.216.38 1 tls default 1 "$flip_a" "$cat" "$stamp" "$((now + 3600))"
+[[ "$(adaptive_rules_flipflop_total)" = 1 ]] || { echo 'A-B-A semantic rule sequence was not counted once' >&2; exit 1; }
+flip_data_after_aba="$(cat "$(adaptive_rules_flipflop_file)")"
+adaptive_rule_add "$flip_host" 93.184.216.38 1 tls default 1 "$flip_a" "$cat" "$stamp" "$((now + 3600))"
+[[ "$(adaptive_rules_flipflop_total)" = 1 ]] || { echo 'identical rule refresh was counted as a flip-flop' >&2; exit 1; }
+adaptive_rule_add "$flip_host" 93.184.216.38 1 tls default 2 "$flip_b" "$cat" "$stamp" "$((now + 3600))"
+adaptive_rule_add "$flip_host" 93.184.216.38 1 tls default 1 "$flip_a" "$cat" "$stamp" "$((now + 3600))"
+flip_total="$(adaptive_rules_flipflop_total)"; flip_mode="$(stat -c '%a' "$(adaptive_rules_flipflop_file)")"; flip_data="$(cat "$(adaptive_rules_flipflop_file)")"
+[[ "$flip_total" = 2 && "$flip_mode" = 600 && "$flip_data" != *"$flip_host"* && "$flip_data" != *'93.184.216.38'* ]] || {
+  echo "semantic flip-flop history failed: total=$flip_total mode=$flip_mode after_aba=$flip_data_after_aba data=$flip_data" >&2; exit 1;
+}
+flip_file="$(adaptive_rules_flipflop_file)"
+cp "$flip_file" "$tmp/flipflops-v2.tsv"
+legacy_key="$(printf '%s\n' 'legacy.example.org|93.184.216.40|1|tls|default' | sha256sum | awk '{print $1}')"
+printf '1\t%s\t%s\t%s\t4\t%s\n' "$legacy_key" "$flip_a" "$flip_b" "$now" > "$flip_file"
+chmod 600 "$flip_file"
+adaptive_rules_flipflop_record legacy.example.org 93.184.216.40 1 tls default "$flip_b" "$flip_a"
+[[ "$(adaptive_rules_flipflop_total)" = 5 && "$(tail -n 1 "$flip_file" | cut -f5)" = 5 ]] || {
+  echo 'legacy per-tuple flip-flop history was not migrated into the cumulative total' >&2; exit 1;
+}
+cp "$tmp/flipflops-v2.tsv" "$flip_file"; chmod 600 "$flip_file"
+adaptive_rule_remove "$flip_host" 93.184.216.38 1 default || { echo 'flip-flop test rule could not be removed' >&2; exit 1; }
+for n in $(seq 1 255); do
+  adaptive_rules_flipflop_record "evict$n.example.org" 93.184.216.39 1 tls default "$flip_a" "$flip_b"
+done
+[[ "$(adaptive_rules_flipflop_total)" = 2 && "$(wc -l < "$(adaptive_rules_flipflop_file)")" -eq 256 ]] || {
+  echo 'flip-flop total was lost when bounded tuple history evicted an identity' >&2; exit 1;
+}
+for _ in $(seq 1 30); do
+  if [[ -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] &&
+     [[ "$(cut -f7 "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" | head -n 1)" = 8 ]] &&
+     ! grep -q $'\tflip.example.org\t' "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv"; then break; fi
+  sleep 0.1
+done
 [[ -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" && "$(stat -c '%a' "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv")" = 600 ]] || { echo 'delayed snapshot was not written privately' >&2; exit 1; }
 [[ "$(stat -c '%u' "$Z2R_ADAPTIVE_RULES_FILE")" = "$(id -u)" &&
    "$(stat -c '%u' "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv")" = "$(id -u)" ]] || { echo 'runtime/snapshot files are not readable by the daemon owner' >&2; exit 1; }

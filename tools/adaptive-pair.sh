@@ -7,8 +7,10 @@ TOKEN_DIR="$ROOT/extra_strats/cache/adaptive"
 TOKEN_FILE="$TOKEN_DIR/token"
 TOKEN_EXPIRY_FILE="$TOKEN_DIR/token.expires"
 MODE_FILE="$TOKEN_DIR/mode"
+DEFAULT_SCOPE_FILE="$TOKEN_DIR/apply-default-scope"
 BASE="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
 EVENTS_FILE="${Z2R_ADAPTIVE_EVENTS_FILE:-$BASE/events.tsv}"
+RAMP_TARGETS_FILE="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}"
 [ -r "$ROOT/z2r_lib/adaptive_queue.sh" ] && . "$ROOT/z2r_lib/adaptive_queue.sh"
 if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transport.sh" ]; then
   . "$ROOT/z2r_lib/config.sh"
@@ -21,19 +23,29 @@ if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transpor
 fi
 Z2R_ADAPTIVE_LOCK_DIR="${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}"
 action="${1:-create}"
-case "$action" in status|doctor|create|rotate|disable|observe|test-only|pause|events|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|pause|events|clear-events]' >&2; exit 2 ;; esac
+case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|pause|events|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|pause|events|clear-events]' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root on the router.' >&2; exit 1; }
 [ ! -L "$TOKEN_DIR" ] || { echo 'Refusing a symlinked adaptive token directory.' >&2; exit 1; }
 adaptive_mode() {
   local mode
   mode="$(cat "$MODE_FILE" 2>/dev/null || printf 'OFF')"
-  case "$mode" in OBSERVE|TEST_ONLY) printf '%s\n' "$mode" ;; *) printf 'OFF\n' ;; esac
+  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) printf '%s\n' "$mode" ;; *) printf 'OFF\n' ;; esac
 }
 adaptive_set_mode() {
   local mode="$1" tmp
   mkdir -p "$TOKEN_DIR" || return 1
+  if [ "$mode" != AGENT_BETA ]; then rm -f "$DEFAULT_SCOPE_FILE" || return 1; fi
   tmp="$(mktemp "$TOKEN_DIR/.mode.XXXXXX")" || return 1
   printf '%s\n' "$mode" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$MODE_FILE" || {
+    rm -f "$tmp"; return 1;
+  }
+}
+adaptive_set_default_scope() {
+  local value="$1" tmp
+  case "$value" in 0|1) ;; *) return 2 ;; esac
+  if [ "$value" = 0 ]; then rm -f "$DEFAULT_SCOPE_FILE"; return $?; fi
+  tmp="$(mktemp "$TOKEN_DIR/.default-scope.XXXXXX")" || return 1
+  printf '1\n' > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$DEFAULT_SCOPE_FILE" || {
     rm -f "$tmp"; return 1;
   }
 }
@@ -48,23 +60,24 @@ adaptive_token_valid() {
 }
 adaptive_prepare_events() {
   local config user uid gid
-  [ ! -L "$BASE" ] && [ ! -L "$EVENTS_FILE" ] || return 1
+  [ ! -L "$BASE" ] && [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
   config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   user="$(awk -F= '$1=="WS_USER" {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$config" 2>/dev/null)"
   [ -n "$user" ] || user=nobody
   uid="$(id -u "$user" 2>/dev/null)"; gid="$(id -g "$user" 2>/dev/null)"
   [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || return 1
-  mkdir -p "$TOKEN_DIR" "$BASE" && touch "$EVENTS_FILE" || return 1
+  mkdir -p "$TOKEN_DIR" "$BASE" && touch "$EVENTS_FILE" "$RAMP_TARGETS_FILE" || return 1
   chown 0:0 "$TOKEN_DIR" && chmod 711 "$TOKEN_DIR" || return 1
-  chown "$uid:$gid" "$EVENTS_FILE" && chmod 600 "$EVENTS_FILE"
+  chown "$uid:$gid" "$EVENTS_FILE" "$RAMP_TARGETS_FILE" && chmod 600 "$EVENTS_FILE" "$RAMP_TARGETS_FILE"
 }
 adaptive_pause_mode() {
   local tmp run run_id
-  [ ! -L "$EVENTS_FILE" ] || return 1
+  [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
   mkdir -p "$TOKEN_DIR"
   tmp="$(mktemp "$TOKEN_DIR/.mode.XXXXXX")" || return 1
   printf 'OFF\n' > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$MODE_FILE" || { rm -f "$tmp"; return 1; }
   [ ! -e "$EVENTS_FILE" ] || chmod 400 "$EVENTS_FILE"
+  [ ! -e "$RAMP_TARGETS_FILE" ] || chmod 400 "$RAMP_TARGETS_FILE"
   if [ -d "$BASE" ] && [ ! -L "$BASE" ]; then
     for run in "$BASE"/*; do
       [ -d "$run" ] && [ ! -L "$run" ] || continue
@@ -118,8 +131,11 @@ if [ "$action" = status ]; then
   else
     echo 'Adaptive agent pairing: disabled'
   fi
-  printf 'Adaptive observation: %s\n' "$(adaptive_mode)"
-  echo 'Automatic strategy application: disabled'
+  printf 'Adaptive mode: %s\n' "$(adaptive_mode)"
+  if [ "$(adaptive_mode)" = AGENT_BETA ]; then
+    if [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ]; then echo 'Beta application: exact rules including default/LAN scope'
+    else echo 'Beta application: exact marked-client scopes only; default/LAN scope disabled'; fi
+  else echo 'Automatic strategy application: disabled'; fi
   BASE="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   active=0; cleanup_failed=0
   if [ -d "$BASE" ] && [ ! -L "$BASE" ]; then
@@ -151,8 +167,11 @@ if [ "$action" = status ]; then
   ' "$rules_file")"
   printf 'Stored exact rules: %s\n' "$rules"
   event_count=0
-  [ ! -r "$EVENTS_FILE" ] || event_count="$(awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure") {n++} END {print n+0}' "$EVENTS_FILE")"
+  [ ! -r "$EVENTS_FILE" ] || event_count="$(awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded") {n++} END {print n+0}' "$EVENTS_FILE")"
   printf 'Observation events: %s\n' "$event_count"
+  ramp_target_count=0
+  [ ! -r "$RAMP_TARGETS_FILE" ] || ramp_target_count="$(awk -F '\t' 'NR<=128 && NF==10 && $1==1 && $6=="tls-observed" {n++} END {print n+0}' "$RAMP_TARGETS_FILE")"
+  printf 'Observed Googlevideo Ramp targets: %s\n' "$ramp_target_count"
   exit 0
 fi
 if [ "$action" = doctor ]; then
@@ -173,7 +192,7 @@ if [ "$action" = doctor ]; then
   elif [ -s "$TOKEN_FILE" ] && [ ! -L "$TOKEN_FILE" ]; then token_state=EXPIRED_OR_INVALID; fi
   doctor_check 'paired agent token' "$token_state"
   mode="$(adaptive_mode)"
-  case "$mode" in OBSERVE|TEST_ONLY) doctor_check 'runtime mode' "$mode" 0 ;; *) doctor_check 'runtime mode' OFF 0 ;; esac
+  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) doctor_check 'runtime mode' "$mode" 0 ;; *) doctor_check 'runtime mode' OFF 0 ;; esac
   fwtype="$(awk -F= '$1=="FWTYPE" {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$config" 2>/dev/null)"
   case "$fwtype" in
     nft|nftables) backend=nft; command -v nft >/dev/null 2>&1 && backend_state=OK || backend_state=MISSING ;;
@@ -209,39 +228,61 @@ if [ "$action" = test-only ]; then
   echo 'TEST_ONLY enabled: restart zapret2 to load event observation; authenticated probes may run, automatic strategy application remains disabled.'
   exit 0
 fi
+if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
+  adaptive_token_valid || { echo 'Pair the Windows agent first with: adaptive-pair.sh create' >&2; exit 1; }
+  adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; Beta mode was not changed.' >&2; exit 1; }
+  adaptive_prepare_events || { echo 'Could not prepare private observation queue.' >&2; exit 1; }
+  if [ "$action" = beta-lan ]; then
+    adaptive_set_default_scope 1 || { echo 'Could not save the explicit LAN-wide scope consent.' >&2; exit 1; }
+  else
+    adaptive_set_default_scope 0 || { echo 'Could not clear LAN-wide scope consent.' >&2; exit 1; }
+  fi
+  adaptive_set_mode AGENT_BETA || { echo 'Could not enable AGENT_BETA.' >&2; exit 1; }
+  if [ "$action" = beta-lan ]; then
+    echo 'AGENT_BETA enabled. Verified exact rules may apply to the whole LAN (default scope); restart zapret2 to activate.'
+  else
+    echo 'AGENT_BETA enabled. Verified exact rules may apply only to explicitly marked client scopes; default/LAN scope stays test-only. Restart zapret2 to activate.'
+  fi
+  exit 0
+fi
 if [ "$action" = pause ]; then
   adaptive_pause_mode || { echo 'Could not disable observation.' >&2; exit 1; }
+  adaptive_set_default_scope 0 || { echo 'Could not clear LAN-wide scope consent.' >&2; exit 1; }
   adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; adaptive mode is OFF but needs cleanup.' >&2; exit 1; }
   echo 'Observation paused. Restart zapret2 to reload the mode.'
   exit 0
 fi
 if [ "$action" = events ]; then
   if [ -r "$EVENTS_FILE" ]; then
-    awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure") && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && $4 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $5 ~ /^[1-4]$/ && $6=="tls" && ($7=="default" || $7 ~ /^mark:[0-9]+$/) && $8 ~ /^[0-9]+$/ {print $2 "\t" $3 "\t" $4 "\tprofile=" $5 "\t" $8}' "$EVENTS_FILE"
+    awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded") && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && $4 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $5 ~ /^[1-4]$/ && $6=="tls" && ($7=="default" || $7 ~ /^mark:[0-9]+$/) && $8 ~ /^[0-9]+$/ {print $2 "\t" $3 "\t" $4 "\tprofile=" $5 "\t" $8}' "$EVENTS_FILE"
   fi
   exit 0
 fi
 if [ "$action" = clear-events ]; then
-  [ ! -L "$EVENTS_FILE" ] || { echo 'Refusing a symlinked observation queue.' >&2; exit 1; }
+  [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || { echo 'Refusing a symlinked observation queue.' >&2; exit 1; }
   adaptive_pause_mode || { echo 'Could not pause observation.' >&2; exit 1; }
   adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; adaptive mode is OFF but events were not cleared.' >&2; exit 1; }
   if type adaptive_queue_clear >/dev/null 2>&1; then adaptive_queue_clear || { echo 'Could not clear queued probe requests.' >&2; exit 1; }; fi
-  if [ -e "$EVENTS_FILE" ]; then
-    tmp="$(mktemp "$EVENTS_FILE.tmp.XXXXXX")" || exit 1
-    owner="$(stat -c '%u:%g' "$EVENTS_FILE" 2>/dev/null)"
-    [[ "$owner" =~ ^[0-9]+:[0-9]+$ ]] || { rm -f "$tmp"; exit 1; }
-    chown "$owner" "$tmp" && chmod 400 "$tmp" && mv -f "$tmp" "$EVENTS_FILE" || {
-      rm -f "$tmp"; exit 1;
-    }
-  fi
+  for clear_file in "$EVENTS_FILE" "$RAMP_TARGETS_FILE"; do
+    if [ -e "$clear_file" ]; then
+      tmp="$(mktemp "$clear_file.tmp.XXXXXX")" || exit 1
+      owner="$(stat -c '%u:%g' "$clear_file" 2>/dev/null)"
+      [[ "$owner" =~ ^[0-9]+:[0-9]+$ ]] || { rm -f "$tmp"; exit 1; }
+      chown "$owner" "$tmp" && chmod 400 "$tmp" && mv -f "$tmp" "$clear_file" || {
+        rm -f "$tmp"; exit 1;
+      }
+    fi
+  done
   echo 'Observation queue cleared and paused; restart zapret2 to reload the mode.'
   exit 0
 fi
 if [ "$action" = disable ]; then
   adaptive_pause_mode || true
+  adaptive_set_default_scope 0 || { echo 'Could not clear LAN-wide scope consent.' >&2; exit 1; }
   adaptive_wait_probe_cleanup || { echo 'Probe cleanup did not finish; check the adaptive probe state before uninstalling.' >&2; exit 1; }
   if type adaptive_queue_clear >/dev/null 2>&1; then adaptive_queue_clear || { echo 'Could not clear queued probe requests.' >&2; exit 1; }; fi
   rm -f "$EVENTS_FILE"
+  rm -f "$RAMP_TARGETS_FILE"
   rm -f "$TOKEN_FILE" "$TOKEN_EXPIRY_FILE" "$TOKEN_FILE.tmp."* "$TOKEN_EXPIRY_FILE.tmp."*
   if [ -f "$ROOT/z2r_lib/adaptive_rules.sh" ]; then
     . "$ROOT/z2r_lib/adaptive_rules.sh"

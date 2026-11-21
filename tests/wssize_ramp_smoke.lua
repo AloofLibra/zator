@@ -11,6 +11,12 @@ function bitand(a, b)
 end
 function direction_cutoff_opposite() end
 function direction_check() return true end
+function dis_ipdst(dis) return dis.ip and dis.ip.ip_dst end
+function ntop(ip)
+  local out = {}
+  for i = 1, 4 do out[i] = tostring(string.byte(ip, i)) end
+  return table.concat(out, ".")
+end
 function instance_cutoff_shim(_, desync, dir)
   if dir == true then
     lite_cutoffs = lite_cutoffs + 1
@@ -34,6 +40,11 @@ d.dis.ip = {ip_dst=string.char(188,244,8,77)}
 assert(wssize_ramp({}, d) == VERDICT_MODIFY)
 assert(d.dis.tcp.th_win == 1 and u8(d.dis.tcp.options[1].data) == 1)
 assert(state.wssize_ramp_shift == 7)
+if os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH") then
+  local f = assert(io.open(os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH"), "r"))
+  assert(f:read("*l") == "1\t1\t0", "Ramp SYN change was not recorded")
+  f:close()
+end
 
 local function packet(ack, win)
   return {dis={ip={ip_dst=string.char(188,244,8,77)},tcp={th_flags=TH_ACK, th_ack=ack, th_win=win or 1, options={}}},
@@ -41,8 +52,18 @@ local function packet(ack, win)
 end
 local before = packet(1001)
 assert(wssize_ramp({}, before) == nil and before.dis.tcp.th_win == 1)
+if os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH") then
+  local f = assert(io.open(os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH"), "r"))
+  assert(f:read("*l") == "1\t1\t0", "ACK below the Ramp threshold was recorded")
+  f:close()
+end
 local open = packet(1002, 65535)
 assert(wssize_ramp({}, open) == nil and open.dis.tcp.th_win == 65535)
+if os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH") then
+  local f = assert(io.open(os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH"), "r"))
+  assert(f:read("*l") == "1\t1\t1", "Ramp ACK threshold was not recorded")
+  f:close()
+end
 local after = packet(1001, 100)
 assert(wssize_ramp({}, after) == VERDICT_MODIFY and after.dis.tcp.th_win == 12800)
 
@@ -89,4 +110,37 @@ assert(calls == 1 and missing.dis.tcp.th_win == 100)
 local no_track = {dis={tcp={th_flags=TH_ACK,th_ack=1002,th_win=100,options={}}},outgoing=true,arg={}}
 wssize_ramp({}, no_track)
 assert(calls == 2 and no_track.dis.tcp.th_win == 100)
+
+local function write(path, value)
+  local f = assert(io.open(path, "w")); f:write(value); f:close()
+end
+local root = os.getenv("ZATOR_ROOT")
+local targets_path = os.getenv("Z2R_ADAPTIVE_RAMP_TARGETS_FILE")
+local exempt_path = os.getenv("Z2R_ADAPTIVE_RAMP_EXEMPT_FILE")
+local ramp_host, ramp_ip, ramp_scope = "rr1-index.googlevideo.com", "188.244.8.77", "mark:4"
+local expiry = os.time() + 600
+assert(z2r_wssize_ramp_hostname_valid(ramp_host), "strict host validator rejected a Googlevideo target")
+write(targets_path, table.concat({"1", ramp_host, ramp_ip, ramp_scope, tostring(os.time()), "tls-observed",
+  "gv1:rr:index", "ramp_default", "0", "unknown"}, "\t") .. "\n")
+write(exempt_path, table.concat({"1", ramp_host, ramp_ip, ramp_scope, tostring(expiry), string.rep("a", 64)}, "\t") .. "\n")
+assert(z2r_wssize_ramp_exempt_for_new_flow(ramp_ip), "exact target exemption metadata was rejected")
+local function new_syn()
+  return {dis={ip={ip_dst=string.char(188,244,8,77)},tcp={th_flags=TH_SYN,th_win=64240,options={{kind=TCP_KIND_SCALE,data="\8"}}}},
+    track={lua_state={}},outgoing=true,arg={mode="full"}}
+end
+local exempt_flow = new_syn()
+assert(wssize_ramp({}, exempt_flow) == nil and exempt_flow.dis.tcp.th_win == 64240 and
+  exempt_flow.track.lua_state.wssize_ramp_exempt and lite_cutoffs == 2,
+  "confirmed exact-IP Ramp exemption did not bypass only the Ramp callback: " .. tostring(exempt_flow.track.lua_state.wssize_ramp_exempt) .. "/" .. tostring(exempt_flow.dis.tcp.th_win) .. "/" .. tostring(lite_cutoffs))
+local exempt_ack = {dis={ip={ip_dst=string.char(188,244,8,77)},tcp={th_flags=TH_ACK,th_ack=1002,th_win=500}},
+  track={lua_state=exempt_flow.track.lua_state},outgoing=true,arg={mode="full"}}
+assert(wssize_ramp({}, exempt_ack) == nil and exempt_ack.dis.tcp.th_win == 500,
+  "Ramp exemption did not stay pinned to the established flow")
+write(targets_path, table.concat({
+  table.concat({"1", ramp_host, ramp_ip, ramp_scope, tostring(os.time()), "tls-observed", "gv1:rr:index", "ramp_default", "0", "unknown"}, "\t"),
+  table.concat({"1", "rr2-index.googlevideo.com", ramp_ip, "default", tostring(os.time()), "tls-observed", "gv1:rr:index", "conflict", "0", "unknown"}, "\t")
+}, "\n") .. "\n")
+local conflicted_flow = new_syn()
+assert(wssize_ramp({}, conflicted_flow) == VERDICT_MODIFY and not conflicted_flow.track.lua_state.wssize_ramp_exempt,
+  "a shared destination IP incorrectly inherited a Ramp exemption")
 print("wssize_ramp smoke ok")

@@ -31,23 +31,36 @@ local CLONE_SIZES = {}
 local ADAPTIVE_RULES_PATH = os.getenv("Z2R_ADAPTIVE_RULES_FILE") or "/tmp/z2r-adaptive/rules.tsv"
 local ADAPTIVE_RULES_SNAPSHOT_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/rules.tsv"
 local ADAPTIVE_MODE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/mode"
+local ADAPTIVE_DEFAULT_SCOPE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/apply-default-scope"
 local ADAPTIVE_MODE = "OFF"
 do
   local f = io.open(ADAPTIVE_MODE_PATH, "r")
   if f then
     local mode = f:read("*l")
-    if mode == "OBSERVE" or mode == "TEST_ONLY" or mode == "AUTO" then ADAPTIVE_MODE = mode end
+    if mode == "OBSERVE" or mode == "TEST_ONLY" or mode == "AUTO" or mode == "AGENT_BETA" then ADAPTIVE_MODE = mode end
     f:close()
   end
 end
 -- Environment opt-in alone is insufficient: TEST_ONLY must never select a
 -- stored rule, even if a stale daemon environment still carries the flag.
-local ADAPTIVE_RULES_APPLY = os.getenv("Z2R_ADAPTIVE_RULES_APPLY") == "1" and ADAPTIVE_MODE == "AUTO"
+local ADAPTIVE_RULES_APPLY = ADAPTIVE_MODE == "AGENT_BETA"
+  or (os.getenv("Z2R_ADAPTIVE_RULES_APPLY") == "1" and ADAPTIVE_MODE == "AUTO")
+local ADAPTIVE_DEFAULT_SCOPE_APPLY = ADAPTIVE_MODE == "AUTO"
+do
+  if ADAPTIVE_MODE == "AGENT_BETA" then
+    local f = io.open(ADAPTIVE_DEFAULT_SCOPE_PATH, "r")
+    if f then ADAPTIVE_DEFAULT_SCOPE_APPLY = f:read("*l") == "1"; f:close() end
+  end
+end
 local ADAPTIVE_EVENTS_PATH = os.getenv("Z2R_ADAPTIVE_EVENTS_FILE") or "/tmp/z2r-adaptive/events.tsv"
-local ADAPTIVE_OBSERVE_ENABLED = ADAPTIVE_MODE == "OBSERVE" or ADAPTIVE_MODE == "TEST_ONLY"
+local ADAPTIVE_RAMP_TARGETS_PATH = os.getenv("Z2R_ADAPTIVE_RAMP_TARGETS_FILE") or "/tmp/z2r-adaptive/ramp-targets.tsv"
+local ADAPTIVE_OBSERVE_ENABLED = ADAPTIVE_MODE == "OBSERVE" or ADAPTIVE_MODE == "TEST_ONLY" or ADAPTIVE_MODE == "AGENT_BETA"
 local ADAPTIVE_OBSERVE_EVENTS = {}
 local ADAPTIVE_OBSERVE_ORDER = {}
 local ADAPTIVE_OBSERVE_COUNT = 0
+local ADAPTIVE_RAMP_TARGETS = {}
+local ADAPTIVE_RAMP_TARGET_ORDER = {}
+local ADAPTIVE_RAMP_TARGET_COUNT = 0
 if ADAPTIVE_OBSERVE_ENABLED then
   local f = io.open(ADAPTIVE_EVENTS_PATH, "r")
   if f then
@@ -56,14 +69,14 @@ if ADAPTIVE_OBSERVE_ENABLED then
       count = count + 1
       if count > 128 then break end
       local ver, status, host, ip, profile, proto, scope, seen = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)$")
-      if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure") and #host <= 253
+      if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure" or status == "active_rule_degraded") and #host <= 253
         and host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") and profile:match("^[1-4]$")
         and proto == "tls" and (scope == "default" or scope:match("^mark:%d+$")) then
         local key = table.concat({host, ip, profile, proto, scope}, "\0")
         if not ADAPTIVE_OBSERVE_EVENTS[key] then
           local event = {key = key, host = host, ip = ip, profile = profile, proto = proto,
             scope = scope, status = status, seen = tonumber(seen) or 0,
-            failure_count = status == "suspected_failure" and 2 or 0}
+            failure_count = (status == "suspected_failure" or status == "active_rule_degraded") and 2 or 0}
           ADAPTIVE_OBSERVE_EVENTS[key] = event
           ADAPTIVE_OBSERVE_ORDER[#ADAPTIVE_OBSERVE_ORDER + 1] = event
           ADAPTIVE_OBSERVE_COUNT = ADAPTIVE_OBSERVE_COUNT + 1
@@ -106,6 +119,8 @@ do
     zator_root .. "/lua/fake-adapt.lua",
     zator_root .. "/lua/wssize-ramp.lua",
     zator_root .. "/z2r_lib/adaptive_rules.sh",
+    zator_root .. "/z2r_lib/adaptive_media.sh",
+    zator_root .. "/z2r_lib/youtube_media.sh",
     zator_root .. "/z2r_lib/supersweep_probe.sh",
     zator_root .. "/tools/adaptive-controller.sh",
   }
@@ -377,11 +392,11 @@ local function adaptive_rule_parse_line(line, now)
     (a == 192 and (b == 168 or (b == 0 and (c == 0 or c == 2)) or (b == 88 and c == 99))) or
     (a == 198 and (b == 18 or b == 19 or (b == 51 and c == 100))) or
     (a == 203 and b == 0 and c == 113) then return nil end
-  if not profile:match("^[1-4]$") or proto ~= "tls" then return nil end
+  if not profile:match("^[1-4]$") or (proto ~= "tls" and not (proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$"))) then return nil end
   if scope ~= "default" and not scope:match("^mark:%d%d?%d?%d?%d?$") then
     if not scope:match("^mark:%d+$") or #scope > 10 then return nil end
   end
-  if not strategy or strategy < 1 or strategy > 999 or strategy % 1 ~= 0 then return nil end
+  if not strategy or strategy < 0 or strategy > 999 or strategy % 1 ~= 0 then return nil end
   if not fingerprint:match("^sha256:[0-9a-f]+$") or #fingerprint ~= 71 then return nil end
   if not catalog:match("^sha256:[0-9a-f]+$") or #catalog ~= 71 then return nil end
   if #runtime_stamp > 2048 or not runtime_stamp:match("^[0-9:|]+$") then return nil end
@@ -1306,6 +1321,120 @@ local function adaptive_observe_ip_valid(ip)
     (a == 198 and (b == 18 or b == 19 or (b == 51 and c == 100))) or (a == 203 and b == 0 and c == 113))
 end
 
+local function adaptive_ramp_group_id(host)
+  host = string.lower(host or ""):gsub("%.$", "")
+  if #host > 253 or not host:match("%.googlevideo%.com$") then return nil end
+  for label in (host .. "."):gmatch("(.-)%.") do
+    if #label < 1 or #label > 63 or (not label:match("^[a-z0-9]$")
+      and not label:match("^[a-z0-9][a-z0-9%-]*[a-z0-9]$")) then return nil end
+  end
+  local rr = host:match("^rr[0-9]+%-([a-z0-9][a-z0-9%-]*[a-z0-9])%.googlevideo%.com$")
+  if rr then return "gv1:rr:" .. rr end
+  local r = host:match("^r[0-9]+(%-%-%-sn%-%w[%w%-]*)%.googlevideo%.com$")
+  if r then return "gv1:r:" .. r end
+  return "gv1:exact:" .. host
+end
+
+local function adaptive_ramp_targets_load()
+  if ADAPTIVE_RAMP_TARGET_COUNT > 0 then return end
+  local f = io.open(ADAPTIVE_RAMP_TARGETS_PATH, "r")
+  if not f then return end
+  local count = 0
+  for line in f:lines() do
+    count = count + 1
+    if count > 128 then break end
+    local fields = {}
+    for field in (line .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = field end
+    local ver, host, ip, scope, seen, provenance, group, state, dns_expiry, media =
+      fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9], fields[10]
+    local valid_group = adaptive_ramp_group_id(host or "")
+    if #fields == 10 and ver == "1" and valid_group == group and adaptive_observe_ip_valid(ip)
+      and (scope == "default" or (scope or ""):match("^mark:%d+$"))
+      and (seen or ""):match("^%d+$") and provenance == "tls-observed"
+      and (state == "pending" or state == "ramp_default" or state == "ramp_exempt" or state == "conflict" or state == "uncertain")
+      and ((dns_expiry or ""):match("^%d+$")) and (media == "unknown" or media == "available" or media == "unavailable") then
+      local key = table.concat({host, ip, scope}, "\0")
+      if not ADAPTIVE_RAMP_TARGETS[key] and ADAPTIVE_RAMP_TARGET_COUNT < 128 then
+        local item = {key=key, host=host, ip=ip, scope=scope, seen=tonumber(seen) or 0,
+          provenance=provenance, group=group, state=state, dns_expiry=tonumber(dns_expiry) or 0, media=media}
+        ADAPTIVE_RAMP_TARGETS[key] = item
+        ADAPTIVE_RAMP_TARGET_ORDER[#ADAPTIVE_RAMP_TARGET_ORDER + 1] = item
+        ADAPTIVE_RAMP_TARGET_COUNT = ADAPTIVE_RAMP_TARGET_COUNT + 1
+      end
+    end
+  end
+  f:close()
+end
+
+local function adaptive_ramp_targets_write()
+  local tmp = ADAPTIVE_RAMP_TARGETS_PATH .. ".tmp"
+  local f = io.open(tmp, "w")
+  if not f then return false end
+  local lines = {}
+  for i, item in ipairs(ADAPTIVE_RAMP_TARGET_ORDER) do
+    lines[i] = table.concat({"1", item.host, item.ip, item.scope, tostring(item.seen), item.provenance,
+      item.group, item.state, tostring(item.dns_expiry), item.media}, "\t")
+  end
+  f:seek("set", 0)
+  local ok = f:write(table.concat(lines, "\n"), "\n")
+  f:close()
+  local renamed = ok and os.rename(tmp, ADAPTIVE_RAMP_TARGETS_PATH)
+  -- Windows-based Lua smoke environments do not replace an existing file
+  -- with os.rename; router filesystems do, so retain the atomic fast path.
+  if not renamed and ok and os.remove(ADAPTIVE_RAMP_TARGETS_PATH) then
+    renamed = os.rename(tmp, ADAPTIVE_RAMP_TARGETS_PATH)
+  end
+  if not renamed then
+    os.remove(tmp)
+    return false
+  end
+  return true
+end
+
+local function adaptive_ramp_target_seen(host, ip, scope, now, profile)
+  if not ADAPTIVE_OBSERVE_ENABLED or tostring(ADAPTIVE_MODE) ~= "AGENT_BETA"
+    or tostring(profile or "") ~= "2" then return end
+  if not adaptive_ramp_group_id(host) or not adaptive_observe_ip_valid(ip) then return end
+  local group = adaptive_ramp_group_id(host)
+  if not group then return end
+  adaptive_ramp_targets_load()
+  scope = tostring(scope or "default")
+  if scope ~= "default" then
+    local mark = scope:match("^mark:(%d+)$")
+    if not mark or #mark > 5 or tonumber(mark) < 1 or tonumber(mark) > 65535 then return end
+  end
+  local key = table.concat({host, ip, scope}, "\0")
+  local item = ADAPTIVE_RAMP_TARGETS[key]
+  if item then
+    item.seen = now
+  else
+    item = {key=key, host=host, ip=ip, scope=scope, seen=now, provenance="tls-observed",
+      group=group, state="pending", dns_expiry=0, media="unknown"}
+    if ADAPTIVE_RAMP_TARGET_COUNT >= 128 then
+      local evicted = table.remove(ADAPTIVE_RAMP_TARGET_ORDER, 1)
+      if evicted then ADAPTIVE_RAMP_TARGETS[evicted.key] = nil end
+    else
+      ADAPTIVE_RAMP_TARGET_COUNT = ADAPTIVE_RAMP_TARGET_COUNT + 1
+    end
+    ADAPTIVE_RAMP_TARGET_ORDER[#ADAPTIVE_RAMP_TARGET_ORDER + 1] = item
+    ADAPTIVE_RAMP_TARGETS[key] = item
+  end
+  -- Ramp is decided at SYN by destination IP. Different observed hostnames
+  -- sharing that IP therefore cannot safely receive different Ramp policies.
+  for _, candidate in ipairs(ADAPTIVE_RAMP_TARGET_ORDER) do
+    if candidate.ip == ip and candidate.scope == scope and now - candidate.seen <= 604800 then
+      local conflict = false
+      for _, other in ipairs(ADAPTIVE_RAMP_TARGET_ORDER) do
+        if other.ip == ip and other.scope == scope and other.host ~= candidate.host
+          and now - other.seen <= 604800 then conflict = true; break end
+      end
+      if conflict then candidate.state = "conflict"
+      elseif candidate.state == "conflict" then candidate.state = "pending" end
+    end
+  end
+  return adaptive_ramp_targets_write()
+end
+
 local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
   if not ADAPTIVE_OBSERVE_ENABLED or not host or host == "" or not ip or proto ~= "tls"
     or not track or type(track.lua_state) ~= "table" then return end
@@ -1317,10 +1446,11 @@ local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
   local key = table.concat({host, ip, tostring(profile), proto, scope}, "\0")
   if state.adaptive_observe_key == key then return end
   local now = os.time()
+  if tostring(profile) == "2" then adaptive_ramp_target_seen(host, ip, scope, now, profile) end
   local old = ADAPTIVE_OBSERVE_EVENTS[key]
   if old then
     state.adaptive_observe_context = {key = key, host = host, ip = ip, profile = tostring(profile),
-      proto = proto, scope = scope}
+      proto = proto, scope = scope, adaptive_rule_applied = state.adaptive_rule_applied == true}
     state.adaptive_observe_key = key
     return
   end
@@ -1359,7 +1489,7 @@ local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
   end
   state.adaptive_observe_key = key
   state.adaptive_observe_context = {key = key, host = host, ip = ip, profile = tostring(profile),
-    proto = proto, scope = scope}
+    proto = proto, scope = scope, adaptive_rule_applied = state.adaptive_rule_applied == true}
 end
 
 local function adaptive_observe_rewrite()
@@ -1386,10 +1516,10 @@ function z2r_adaptive_suspected_failure(desync, crec)
   local context = desync.track.lua_state.adaptive_observe_context
   if type(context) ~= "table" then return end
   local event = ADAPTIVE_OBSERVE_EVENTS[context.key]
-  if not event or event.status == "suspected_failure" then return end
+  if not event or event.status == "suspected_failure" or event.status == "active_rule_degraded" then return end
   event.failure_count = (event.failure_count or 0) + 1
   if event.failure_count < 2 then return end
-  event.status = "suspected_failure"
+  event.status = context.adaptive_rule_applied and "active_rule_degraded" or "suspected_failure"
   event.seen = os.time()
   adaptive_observe_rewrite()
 end
@@ -1498,19 +1628,24 @@ function circular_locked(ctx, desync)
   end
 
   local adaptive_strategy
-  if ADAPTIVE_RULES_APPLY and locked == nil and host and host ~= "" and desync.track
+  local adaptive_proto = proto
+  if base_profile == "2" and host and host:match("^[a-z0-9%-]+%.googlevideo%.com$") then
+    adaptive_proto = "googlevideo-tcp"
+  end
+  if ADAPTIVE_RULES_APPLY and (scope ~= "default" or ADAPTIVE_DEFAULT_SCOPE_APPLY)
+    and locked == nil and host and host ~= "" and desync.track
     and type(desync.track.lua_state) == "table" and desync.dis and desync.dis.ip
     and desync.dis.tcp and tonumber(desync.dis.tcp.th_dport) == 443
     and type(dis_ipdst) == "function" and type(ntop) == "function" then
     local dst = dis_ipdst(desync.dis)
     local dst_ip = dst and ntop(dst) or nil
     if dst_ip and dst_ip ~= "" then
-      local tuple_key = table.concat({host, dst_ip, "443", base_profile, proto, scope}, "\0")
+      local tuple_key = table.concat({host, dst_ip, "443", base_profile, adaptive_proto, scope}, "\0")
       local state = desync.track.lua_state
       if state.adaptive_rule_checked and state.adaptive_rule_key == tuple_key then
         adaptive_strategy = state.adaptive_rule_strategy or nil
       else
-        adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, proto, scope)
+        adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope)
         state.adaptive_rule_key = tuple_key
         state.adaptive_rule_strategy = adaptive_strategy or false
         state.adaptive_rule_checked = true
@@ -1518,11 +1653,22 @@ function circular_locked(ctx, desync)
     end
   end
 
-  if locked == nil and not adaptive_strategy and host and host ~= "" and desync.track
+  if locked == nil and host and host ~= "" and desync.track
     and desync.dis and desync.dis.ip and desync.dis.tcp
     and tonumber(desync.dis.tcp.th_dport) == 443 and proto == "tls"
     and type(dis_ipdst) == "function" and type(ntop) == "function" then
     z2r_adaptive_observe_connection(desync, base_profile, host, scope)
+  end
+
+  -- DIRECT is a distinct verified adaptive result. It passes this exact flow
+  -- through before constructing/executing the numbered strategy plan. Manual
+  -- and profile locks have already won above, so DIRECT cannot override them.
+  if locked == nil and adaptive_strategy == 0 then
+    if desync.track and type(desync.track.lua_state) == "table" and desync.track.lua_state.adaptive_observe_context then
+      desync.track.lua_state.adaptive_observe_context.adaptive_rule_applied = true
+    end
+    DLOG("circular_locked: exact adaptive DIRECT host="..host)
+    return circular_locked_passthrough(ctx, desync)
   end
 
   orchestrate(ctx, desync)
@@ -1572,6 +1718,11 @@ function circular_locked(ctx, desync)
     hrec.nstrategy = 1
     selected_strategy = 1
     DLOG("circular_locked: start from strategy 1 profile="..profile)
+  end
+
+  if desync.track and type(desync.track.lua_state) == "table" and desync.track.lua_state.adaptive_observe_context then
+    desync.track.lua_state.adaptive_observe_context.adaptive_rule_applied =
+      adaptive_strategy ~= nil and selected_strategy == adaptive_strategy
   end
 
   local verdict = VERDICT_PASS
