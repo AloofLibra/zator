@@ -1320,7 +1320,12 @@ remove_zapret() {
  	   && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
  		rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
  	fi
- 	rm -fv /opt/etc/init.d/S90-zapret /opt/etc/init.d/S90-zapret2 /opt/etc/ndm/netfilter.d/000-zapret2.sh /opt/etc/init.d/S00fix
+  rm -fv /opt/etc/init.d/S90-zapret /opt/etc/init.d/S90-zapret2 /opt/etc/init.d/S00fix
+  # Keep the live NDM hook during reinstall. entware_fixes refreshes it
+  # atomically; a failed download must not leave the router without recovery.
+  if [ "${1:-}" != "reinstall" ]; then
+   rm -fv /opt/etc/ndm/netfilter.d/000-zapret2.sh
+  fi
  fi
 }
 
@@ -2973,7 +2978,7 @@ while true; do
  client_scope_config_snapshot
 
  # Watchdog не трогаем: это переустановка (поднимем в конце — watchdog_ensure_running).
- remove_zapret
+ remove_zapret reinstall
  
  #Запрос желаемой версии zapret2
  if [ "${Z2R_OFFLINE:-0}" = "1" ]; then

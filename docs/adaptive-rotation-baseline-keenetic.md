@@ -100,3 +100,12 @@ This does not pass the Keenetic Ramp gate. The SYN callback alone is insufficien
 - Cleanup stopped the temporary listener, removed the exact INPUT allowance, staged tree and temporary archive/token. Final checks showed no q65535 registration, no adaptive controller/probe, no port-17783 allowance, and production PID 2958 unchanged.
 
 This adds Keenetic plain TCP media evidence and leaves Ramp-first/exemption, degraded-plain revocation, alternate routes/offload, rebuild/crash/reboot during a lease, sustained contention, and other nfqws2 builds open. AUTO remains disabled.
+
+## NDM hook recovery after update (2026-11-22)
+
+- The live `/opt/etc/ndm/netfilter.d/000-zapret2.sh` and `/opt/zapret2/init.d/sysv/keenetic-policy.sh` were both absent. Production NFQUEUE 300 was still registered (PID 16764), so traffic worked until an NDM firewall rebuild removed its iptables rules.
+- Restored the NDM hook byte-for-byte from the installed release source (`origin/zator`, commit `33cd950`) and restored `keenetic-policy.sh` from the installed `.deploy-payload`. Both scripts passed `sh -n`; the NDM hook is executable. Its SHA-256 is `eac74b9d70bfeddce2010961183ecf2bc7217ecd40d52911780f6f310309879e`.
+- Invoked the restored hook with `table=mangle` to simulate an NDM rebuild. `restart-fw` completed without the prior missing-policy-script error, rebuilt iptables queue-300 rules, and left production NFQUEUE 300 owned by PID 16764. A pinned HTTPS HEAD to `www.google.com/robots.txt` returned HTTP 200; the q300 sequence counter advanced from 1482 to 1502.
+- The installer regression was that `remove_zapret` deleted the NDM hook before reinstall, while `entware_fixes` could continue after a failed download. Reinstall now preserves the live hook while still removing it during full uninstall; a regression check covers both paths.
+
+This verifies one manually triggered NDM-hook rebuild and a post-rebuild HTTPS flow. It does not observe a later spontaneous NDM event over several minutes.

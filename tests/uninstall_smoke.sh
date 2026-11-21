@@ -140,8 +140,10 @@ printf '%s\n' "$FOUR_BLOCK" | grep -qF 'watchdog_uninstall || echo' \
   || fail "в обработчике 4 вызов watchdog_uninstall не защищён (|| echo)"
 printf '%s\n' "$FORTYFOUR_BLOCK" | grep -qF 'watchdog_uninstall || echo' \
   || fail "в обработчике 44 вызов watchdog_uninstall не защищён (|| echo)"
-INSTALL_BODY="$(sed -n '/^ remove_zapret$/,/^ get_menu$/p' "$REPO_DIR/z2r.sh")"
+INSTALL_BODY="$(sed -n '/^ remove_zapret reinstall$/,/^ get_menu$/p' "$REPO_DIR/z2r.sh")"
 [ -n "$INSTALL_BODY" ] || fail "не найдено тело установщика (remove_zapret → get_menu)"
+printf '%s\n' "$INSTALL_BODY" | grep -qF 'remove_zapret reinstall' \
+  || fail "переустановка должна сохранять NDM hook на время обновления"
 printf '%s\n' "$INSTALL_BODY" | grep -q 'watchdog_ensure_running' \
   || fail "тело установщика не поднимает watchdog после переустановки"
 if printf '%s\n' "$INSTALL_BODY" | grep -q 'watchdog_uninstall'; then
@@ -225,7 +227,7 @@ ok "сбой rm локализован: предупреждение видно,
 # 4. статика: перед сносом zapret2 в теле установщика предлагается бэкап
 # ===========================================================================
 echo "== 4. статика: бэкап перед remove_zapret в теле установщика =="
-ctx="$(grep -B8 -E '^[[:space:]]*remove_zapret$' "$REPO_DIR/z2r.sh")"
+ctx="$(grep -B8 -E '^[[:space:]]*remove_zapret([[:space:]]+reinstall)?$' "$REPO_DIR/z2r.sh")"
 printf '%s\n' "$ctx" | grep -q 'backup_helper_ask_and_create' \
   || fail "переустановка сносит /opt/zapret2/config без предложения бэкапа"
 printf '%s\n' "$ctx" | grep -q 'ZAPRET2_ROOT/config' \
@@ -237,7 +239,9 @@ printf '%s\n' "$body" | grep -q 'webui_stop_service' \
   || fail "remove_zapret не останавливает сервис Web-панели на время сноса zapret2"
 printf '%s\n' "$body" | grep -q 'S90-zapret2' \
   || fail "remove_zapret не удаляет симлинк автозапуска S90-zapret2 (после п.44 останется dangling symlink)"
-ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса); S90-zapret2 чистится"
+printf '%s\n' "$body" | grep -qF '[ "${1:-}" != "reinstall" ]' \
+  || fail "remove_zapret должен удалять NDM hook при uninstall, сохраняя его при reinstall"
+ok "при reinstall NDM hook переживает сбой загрузки; uninstall по-прежнему удаляет hook и S90-zapret2"
 
 # ===========================================================================
 # 5. post-install меню: Enter→5 из него снова запускает переустановку
