@@ -458,15 +458,15 @@ custom_strategies_import_text() {
 # wssize/syndata/tcpseg/multidisorder_legacy и nofake2/nofake4/tls_mod/midhost
 # встречаются только в выводе блокчека; disorder_after бывает и флагом (конфиг),
 # и ключом со значением (блокчек: disorder_after=-1) — потому в обоих списках.
-custom_strategies_primitives_tcp="fake multisplit multidisorder multidisorder_legacy fakeddisorder fakedsplit fakemultisplit fakemultidisorder hostfakesplit syndata wssize tcpseg send tls_client_hello_clone oob"
-custom_strategies_primitives_udp="fake send udplen dnsclone"
+custom_strategies_primitives_tcp="fake multisplit multidisorder multidisorder_legacy fakeddisorder fakedsplit fakemultisplit fakemultidisorder hostfakesplit syndata wssize tcpseg send tls_client_hello_clone oob pktmod drop http_hostcase http_domcase http_methodeol http_unixeol"
+custom_strategies_primitives_udp="fake send udplen dnsclone drop"
 
-custom_strategies_keys_tcp="fake_blob fallback host midhost pos seqovl seqovl_pattern sni_first sni_snt_new tcp_seq tcp_ack tcp_ts fake_count wsize scale disorder_after urp char byte"
+custom_strategies_keys_tcp="fake_blob fallback host midhost pos seqovl seqovl_pattern sni_first sni_snt_new tcp_seq tcp_ack tcp_ts fake_count wsize scale disorder_after urp char byte spell tcp_flags_unset tcp_flags_set"
 custom_strategies_keys_udp="increment min ipfrag_pos_udp"
 custom_strategies_keys_both="blob repeats out_range ip_autottl ip6_autottl ip_ttl ip6_ttl ip_id payload tls_mod pattern"
 
-custom_strategies_flags_tcp="tcp_md5 ip6_destopt disorder_after nofake1 nofake2 nofake3 nofake4 fake_all nodrop tcp_ts_up sni_del"
-custom_strategies_flags_udp=""
+custom_strategies_flags_tcp="tcp_md5 tcp_nop_del ip6_destopt ip6_hopbyhop ip6_hopbyhop2 ip6_routing ip6_ah disorder_after nofake1 nofake2 nofake3 nofake4 fake_all nodrop tcp_ts_up sni_del"
+custom_strategies_flags_udp="ip6_destopt ip6_hopbyhop ip6_hopbyhop2 ip6_routing ip6_ah"
 custom_strategies_flags_both="badsum ipfrag ipfrag_disorder"
 
 _custom_in_list() {
@@ -498,6 +498,7 @@ custom_strategies_blob_names() {
   val="$val
 fake_default_tls
 fake_default_http
+fake_default_quic
 clone_vk
 clone_hcaptcha
 clone_vk_fmd
@@ -555,8 +556,10 @@ custom_strategies_validate() {
   [ -n "$spec" ] || { echo "Пустая стратегия." >&2; return 2; }
   [ "${#spec}" -le 500 ] || { echo "Стратегия длиннее 500 символов." >&2; return 2; }
   case "$spec" in
-    *[!A-Za-z0-9_=:,.\-+\ ]*)
-      echo "Запрещённые символы в стратегии (допустимы буквы, цифры и .,:=+-_)." >&2
+    # #% — префиксы apply_arg_prefix fork (seqovl=#блоб — длина, sni=%блоб — содержимое);
+    # внутри токена не спецсимволы шелла, инъекции не создают
+    *[!A-Za-z0-9_=:,.\-+\ #%]*)
+      echo "Запрещённые символы в стратегии (допустимы буквы, цифры и .,:=+-_#%)." >&2
       return 2 ;;
   esac
 
@@ -594,8 +597,10 @@ _custom_validate_group() {
             || { echo "Примитив $prim не работает в TCP-блоке." >&2; return 1; } ;;
   esac
 
-  # разбираем остаток по «:»
-  local body="${group#*:}" tok key val
+  # разбираем остаток по «:» (голый примитив без аргументов — syndata/multisplit/
+  # drop в блокчеке — body пуст: иначе примитив проверялся бы сам как флаг себя)
+  local body="" tok key val
+  case "$group" in *:*) body="${group#*:}" ;; esac
   while [ -n "$body" ]; do
     tok="${body%%:*}"
     [ "$tok" = "$body" ] && body="" || body="${body#*:}"
@@ -649,9 +654,10 @@ _custom_validate_kv() {
     repeats|fake_count|tcp_seq|tcp_ack|tcp_ts|increment|min|ipfrag_pos_udp|sni_snt_new|wsize|scale|disorder_after|byte)
       printf '%s' "$val" | grep -Eq '^-?[0-9]+$' || { echo "Ключ $key= ждёт целое число." >&2; return 1; } ;;
     seqovl)
-      # число или маркер-позиция (блокчек: seqovl=midsld-1, host+1, sniext)
-      printf '%s' "$val" | grep -Eq '^(-?[0-9]+|[A-Za-z_][A-Za-z0-9_]*([+-][0-9]+)?)$' \
-        || { echo "Ключ seqovl= ждёт число или маркер (midsld-1, host+1, sniext)." >&2; return 1; } ;;
+      # число, маркер-позиция (блокчек: seqovl=midsld-1, host+1, sniext)
+      # или #имя-блоба — длина блоба (fork apply_arg_prefix: tcpseg:seqovl=#pat)
+      printf '%s' "$val" | grep -Eq '^(-?[0-9]+|#?[A-Za-z_][A-Za-z0-9_]*([+-][0-9]+)?)$' \
+        || { echo "Ключ seqovl= ждёт число, маркер (midsld-1, host+1, sniext) или #блоб." >&2; return 1; } ;;
     urp)
       # urgent pointer: "b"|"e" (только строчные — fork сравнивает == 'b'/'e')
       # или маркер-позиция resolve_pos (док. fork §oob / protocol.c posmarker_parse):
@@ -661,12 +667,22 @@ _custom_validate_kv() {
         || { echo "Ключ urp= ждёт b, e, число или маркер (midsld, host+1, sniext)." >&2; return 1; } ;;
     char)
       printf '%s' "$val" | grep -Eq '^[A-Za-z0-9]$'         || { echo "Ключ char= ждёт ровно один символ (букву/цифру)." >&2; return 1; } ;;
+    spell)
+      # fork http_hostcase: 4 буквы вместо «Host» (spell=hoSt), ошибка рантайма при #spell~=4
+      printf '%s' "$val" | grep -Eq '^[A-Za-z]{4}$' \
+        || { echo "Ключ spell= ждёт ровно 4 буквы (hoSt)." >&2; return 1; } ;;
+    tcp_flags_unset|tcp_flags_set)
+      # fork parse_tcp_flags: FIN SYN RST PSH PUSH ACK URG ECE CWR через запятую (регистр любой)
+      printf '%s' "$val" | grep -Eq '^[A-Za-z,]+$' \
+        || { echo "Ключ $key= ждёт флаги через запятую (SYN,ACK,...)." >&2; return 1; } ;;
     midhost)
       printf '%s' "$val" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$' \
         || { echo "Ключ midhost= ждёт маркер позиции (midsld и т.п.)." >&2; return 1; } ;;
     tls_mod)
-      printf '%s' "$val" | grep -Eq '^[a-z0-9_,]+$' \
-        || { echo "Ключ tls_mod= ждёт список модов через запятую (rnd,dupsid,padencap,…)." >&2; return 1; } ;;
+      # точный список TLSMod_parse_list fork (protocol.c): rnd rndsni dupsid
+      # padencap none sni=домен (и sni=%блоб — поддержка %var в fork)
+      printf '%s' "$val" | grep -Eq '^(rnd|rndsni|dupsid|padencap|none|sni=[A-Za-z0-9._%-]+)(,(rnd|rndsni|dupsid|padencap|none|sni=[A-Za-z0-9._%-]+))*$' \
+        || { echo "Ключ tls_mod= ждёт моды через запятую (rnd,rndsni,dupsid,padencap,sni=домен)." >&2; return 1; } ;;
     ip_autottl|ip6_autottl)
       printf '%s' "$val" | grep -Eq '^-?[0-9]+([,-][0-9]+)*' || { echo "Ключ $key= ждёт диапазон вида -1,4-20." >&2; return 1; } ;;
     out_range)
@@ -680,7 +696,7 @@ _custom_validate_kv() {
     blob|fake_blob|fallback)
       printf '%s' "$val" | grep -Eq '^[0-9A-Za-z_]+$' || { echo "Ключ $key= ждёт имя блоба." >&2; return 1; } ;;
     ip_id)
-      printf '%s' "$val" | grep -Eq '^(zero|0x[0-9A-Fa-f]+|[0-9]+)$' || { echo "Ключ ip_id= ждёт zero/hex/число." >&2; return 1; } ;;
+      printf '%s' "$val" | grep -Eq '^(zero|rnd|0x[0-9A-Fa-f]+|[0-9]+)$' || { echo "Ключ ip_id= ждёт zero/rnd/hex/число." >&2; return 1; } ;;
     payload)
       printf '%s' "$val" | grep -Eq '^[a-z_,0-9]+$' || { echo "Ключ payload= ждёт список l7-протоколов." >&2; return 1; } ;;
     pos)
