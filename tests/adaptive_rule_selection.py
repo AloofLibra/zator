@@ -18,7 +18,7 @@ def lua_table(values):
 
 def run_selection(enabled, lock_rows=(), strategy=7, ip="93.184.216.34", repeat=False,
                   rule_stamp=STAMP, process_stamp=STAMP, mode=None, allow_default_scope=False,
-                  hostname="cdn.example.org", profile="1", rule_proto="tls"):
+                  hostname="cdn.example.org", profile="1", rule_proto="tls", expiry_offset=3600):
     temporary = tempfile.TemporaryDirectory(prefix="adaptive-rule-mode-")
     root = Path(temporary.name)
     mode_path = root / "extra_strats/cache/adaptive/mode"
@@ -36,7 +36,7 @@ def run_selection(enabled, lock_rows=(), strategy=7, ip="93.184.216.34", repeat=
     lua.execute("os.getenv = fake_getenv")
     lua.execute(f"dofile({json.dumps(str(repo / 'orchestra/locked.lua'))})")
     locks = lua_table(lock_rows)
-    expected_lookup = strategy if rule_stamp == process_stamp else "nil"
+    expected_lookup = strategy if rule_stamp == process_stamp and expiry_offset > 0 else "nil"
     lua.execute(f'''
       VERDICT_PASS = 0
       DLOG = function() end
@@ -58,7 +58,7 @@ def run_selection(enabled, lock_rows=(), strategy=7, ip="93.184.216.34", repeat=
       locked_load_lines_for_tests({locks})
       local function rule_line(number)
         return table.concat({{"1", {json.dumps(hostname)}, "93.184.216.34", {json.dumps(profile)}, {json.dumps(rule_proto)}, "default",
-          tostring(number), {json.dumps(FP)}, {json.dumps(CAT)}, {json.dumps(rule_stamp)}, tostring(os.time() + 3600)}}, string.char(9))
+          tostring(number), {json.dumps(FP)}, {json.dumps(CAT)}, {json.dumps(rule_stamp)}, tostring(os.time() + {expiry_offset})}}, string.char(9))
       end
       locked_load_adaptive_lines_for_tests({{rule_line({strategy})}}, os.time(), {json.dumps(process_stamp)})
       assert(locked_adaptive_strategy_for_tuple({json.dumps(hostname)}, "93.184.216.34", {json.dumps(profile)}, {json.dumps(rule_proto)}, "default") == {expected_lookup}, "runtime stamp validation failed")
@@ -115,6 +115,14 @@ beta_default_allowed = run_selection(False, mode="AGENT_BETA", allow_default_sco
 assert beta_default_allowed[0] == 7, f"explicit Beta LAN-scope consent did not apply the exact rule: {beta_default_allowed}"
 stale = run_selection(True, process_stamp="99:98|97:96|95:94|93:92|91:90|89:88|87:86")
 assert stale[0] == 1, f"rule from an old runtime catalog was applied: {stale}"
+expired = run_selection(True, expiry_offset=-1)
+assert expired[0] == 1, f"expired adaptive rule did not return to the installed profile fallback: {expired}"
+expired_manual = run_selection(True, ["cdn.example.org\ttls\t3"], expiry_offset=-1)
+assert expired_manual[0] == 3, f"manual domain fallback did not retain priority after adaptive expiry: {expired_manual}"
+expired_profile = run_selection(True, ["1\ttls\t4"], expiry_offset=-1)
+assert expired_profile[0] == 4, f"manual profile fallback did not retain priority after adaptive expiry: {expired_profile}"
+stale_manual = run_selection(True, ["1\ttls\t4"], process_stamp="99:98|97:96|95:94|93:92|91:90|89:88|87:86")
+assert stale_manual[0] == 4, f"manual profile fallback did not retain priority after catalog invalidation: {stale_manual}"
 cached = run_selection(True, repeat=True)
 assert cached[0] == 7 and cached[1] == 7, f"connection changed strategy mid-flow: {cached}"
 print("adaptive Lua strategy selection smoke ok")
