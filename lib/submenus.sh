@@ -1839,8 +1839,10 @@ sni_pool_profile_pick() {
     local sets_cnt="${#sets[@]}"
     local custom_idx=$(( sets_cnt + 1 ))
     local clear_idx=$(( sets_cnt + 2 ))
+    local policy_idx=$(( sets_cnt + 3 ))
     submenu_item "$custom_idx" "Свой список… (ввод построчно)"
     submenu_item "$clear_idx" "Убрать пул профиля (один SNI — меню SNI/дефолт)"
+    submenu_item "$policy_idx" "Чередование: $(sni_pool_policy_label "$(sni_pool_policy_get "$profile")") — сменить"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1888,6 +1890,29 @@ sni_pool_profile_pick() {
         echo -e "${green}Пул профиля $profile убран; профиль берёт один SNI (меню «SNI клон-стратегий» или дефолт).${plain}"
       else
         echo -e "${red}Не удалось убрать пул.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$policy_idx" ]; then
+      local pol pol_choice
+      pol="$(sni_pool_policy_get "$profile")"
+      [ -n "$pol" ] || pol="rr"
+      echo -e "${yellow}Чередование профиля $profile: сейчас — $(sni_pool_policy_label "$pol").${plain}"
+      echo -e "${yellow}1 - по кругу (следующее имя набора на каждое соединение),${plain}"
+      echo -e "${yellow}2 - случайно, без двух одинаковых подряд (осмысленно при >3 имён),${plain}"
+      read -re -p "Ваш выбор (0 - отмена): " pol_choice || pol_choice=""
+      case "$pol_choice" in
+        1) pol="rr" ;;
+        2) pol="rand" ;;
+        *) pol="" ;;
+      esac
+      if [ -n "$pol" ]; then
+        if sni_pool_policy_set "$profile" "$pol"; then
+          echo -e "${green}Профиль $profile: чередование — $(sni_pool_policy_label "$pol").${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сохранить политику чередования.${plain}"
+        fi
       fi
       pause_enter
     else

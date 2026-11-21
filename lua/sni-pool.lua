@@ -27,6 +27,7 @@
 -- ============================================================================
 
 local POOL_TSV = "/opt/zator/extra_strats/cache/orchestra/sni_pool.tsv"
+local POOL_POLICY = "/opt/zator/extra_strats/cache/orchestra/sni_pool_policy.tsv"
 local POOL_PIN = "/opt/zator/extra_strats/cache/orchestra/sni_pool.pin"
 local SETS_PROJECT = "/opt/zator/extra_strats/sni_zator.txt"
 local SETS_USER = "/opt/zator/extra_strats/sni_user.txt"
@@ -36,9 +37,12 @@ local PIN_AGE = 900
 
 local last_load = 0
 local pools = nil
+local policies = nil
 local sets_map = nil
 local pinned = false
 local rr = {}
+local last_pick = {}
+local seeded = false
 
 local function trim(v)
   return (v:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -91,6 +95,20 @@ local function load_sets_map(test_sets)
   return map
 end
 
+local function load_policies(test_policies)
+  if type(test_policies) == "table" then return test_policies end
+  local map = {}
+  for _, l in ipairs(read_lines(POOL_POLICY) or {}) do
+    l = l:gsub("\r$", "")
+    if l ~= "" and not l:match("^%s*#") then
+      local f = {}
+      for x in (l .. "\t"):gmatch("(.-)\t") do f[#f + 1] = trim(x) end
+      if #f == 2 and f[1]:match("^%d+$") and f[2] == "rand" then map[f[1]] = "rand" end
+    end
+  end
+  return map
+end
+
 local function load_pools(test_lines, sets)
   local map = {}
   for _, l in ipairs(test_lines or read_lines(POOL_TSV) or {}) do
@@ -115,11 +133,13 @@ end
 local test_lines = nil
 local test_sets = nil
 local test_pinned = false
+local test_policies = nil
 
-function z2r_sni_pool_for_tests(lines, sets, pin)
+function z2r_sni_pool_for_tests(lines, sets, pin, policies)
   test_lines = lines
   test_sets = sets
   test_pinned = pin and true or false
+  test_policies = policies
   pools = nil
   sets_map = nil
   last_load = 0
@@ -129,6 +149,7 @@ local function refresh()
   if test_lines ~= nil then
     sets_map = load_sets_map(test_sets)
     pools = load_pools(test_lines, sets_map)
+    policies = type(test_policies) == "table" and test_policies or {}
     pinned = test_pinned
     return
   end
@@ -137,6 +158,7 @@ local function refresh()
   last_load = now
   sets_map = load_sets_map(nil)
   pools = load_pools(nil, sets_map)
+  policies = load_policies(nil)
   pinned = false
   local p = io.open(POOL_PIN, "r")
   if p then
@@ -144,6 +166,25 @@ local function refresh()
     p:close()
     if s and (now - s) <= PIN_AGE then pinned = true end
   end
+end
+
+local function next_idx(pool_size, profile_key)
+  if policies[profile_key] == "rand" then
+    if not seeded then
+      math.randomseed((os.time() or 0) + math.floor((os.clock or function() return 0 end)() * 1000))
+      seeded = true
+    end
+    local exclude = last_pick[profile_key]
+    if type(exclude) == "number" and exclude >= 1 and exclude <= pool_size then
+      local i = math.random(pool_size - 1)
+      if i >= exclude then i = i + 1 end
+      return i
+    end
+    return math.random(pool_size)
+  end
+  local n = (rr[profile_key] or 0) + 1
+  rr[profile_key] = n
+  return ((n - 1) % pool_size) + 1
 end
 
 function z2r_sni_pool_pick(desync, profile_key)
@@ -159,9 +200,8 @@ function z2r_sni_pool_pick(desync, profile_key)
   local k = "z2r_sni_pool_" .. profile_key
   local idx = state and state[k]
   if type(idx) ~= "number" or idx % 1 ~= 0 or idx < 1 or idx > #pool then
-    local n = (rr[profile_key] or 0) + 1
-    rr[profile_key] = n
-    idx = ((n - 1) % #pool) + 1
+    idx = next_idx(#pool, profile_key)
+    last_pick[profile_key] = idx
     if type(state) == "table" then state[k] = idx end
     if type(DLOG) == "function" then
       DLOG("sni-pool: profile=" .. profile_key .. " sni_first -> " .. pool[idx]

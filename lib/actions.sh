@@ -1066,6 +1066,7 @@ extra_strats/cache/orchestra/blob_override.tsv
 extra_strats/cache/orchestra/blob_files.tsv
 extra_strats/cache/orchestra/sni_override.tsv
 extra_strats/cache/orchestra/sni_pool.tsv
+extra_strats/cache/orchestra/sni_pool_policy.tsv
 extra_strats/sni_user.txt
 extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv

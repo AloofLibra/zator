@@ -784,6 +784,7 @@ sni_override_clear() {
 # Читает lua/sni-pool.lua с TTL-кэшом 2с — применяется без рестарта nfqws2.
 # Приоритет: пин sni_override.tsv -> пул -> прежнее поведение (дефолт/конфиг).
 ORCH_SNI_POOL_FILE="${ORCH_SNI_POOL_FILE:-$ORCH_DIR/sni_pool.tsv}"
+ORCH_SNI_POOL_POLICY_FILE="${ORCH_SNI_POOL_POLICY_FILE:-$ORCH_DIR/sni_pool_policy.tsv}"
 ORCH_SNI_POOL_PIN="${ORCH_SNI_POOL_PIN:-$ORCH_DIR/sni_pool.pin}"
 Z2R_SNI_ZATOR_FILE="${Z2R_SNI_ZATOR_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/sni_zator.txt}"
 Z2R_SNI_USER_FILE="${Z2R_SNI_USER_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/sni_user.txt}"
@@ -1058,10 +1059,48 @@ sni_pool_pinned() {
   [ -f "$ORCH_SNI_POOL_PIN" ]
 }
 
+# Политика чередования профиля: rr (по кругу, нет строки/файла) | rand
+# (случайно, без двух одинаковых подряд; осмысленно при >3 имён). Читает
+# lua/sni-pool.lua тем же TTL-кэшом, применяется без рестарта.
+sni_pool_policy_get() {
+  [ -f "$ORCH_SNI_POOL_POLICY_FILE" ] || return 0
+  awk -F '\t' -v pr="$1" '$1==pr {print $2; exit}' "$ORCH_SNI_POOL_POLICY_FILE"
+}
+
+sni_pool_policy_valid() {
+  case "$1" in rr|rand) return 0 ;; esac
+  return 1
+}
+
+sni_pool_policy_set() {
+  local profile="$1" policy="$2" tmp
+  printf '%s' "$profile" | grep -Eq '^[0-9]+$' || return 2
+  sni_pool_policy_valid "$policy" || return 2
+  mkdir -p "$ORCH_DIR" || return 1
+  [ -f "$ORCH_SNI_POOL_POLICY_FILE" ] || : > "$ORCH_SNI_POOL_POLICY_FILE"
+  tmp="${ORCH_SNI_POOL_POLICY_FILE}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v pr="$profile" -v pol="$policy" '
+    {if ($1==pr) {if (!seen) {print pr, pol; seen=1}; next} print}
+    END {if (!seen) print pr, pol}
+  ' "$ORCH_SNI_POOL_POLICY_FILE" > "$tmp" && mv -f "$tmp" "$ORCH_SNI_POOL_POLICY_FILE" || {
+    rm -f "$tmp"
+    echo "Unable to update sni pool policy file" >&2
+    return 1
+  }
+  return 0
+}
+
+sni_pool_policy_label() {
+  case "${1:-}" in
+    rand) printf 'случайно' ;;
+    *) printf 'по кругу' ;;
+  esac
+}
+
 # Человекочитаемый статус для меню: единственная @строка -> «набор имя (N)»,
 # иначе «свой список (N)» / «нет пула (один SNI)».
 sni_pool_display() {
-  local profile="$1" rows first name n
+  local profile="$1" rows first name n pol
   rows="$(sni_pool_list "$profile")"
   if [ -z "$rows" ]; then
     printf 'нет пула (один SNI)'
@@ -1069,18 +1108,19 @@ sni_pool_display() {
   fi
   n="$(sni_pool_effective "$profile" | grep -c . || true)"
   [ -n "$n" ] || n=0
+  pol="$(sni_pool_policy_label "$(sni_pool_policy_get "$profile")")"
   first="$(printf '%s\n' "$rows" | head -n1)"
   case "$first" in
     @*)
       name="$(printf '%s' "${first#@}" | tr '[:upper:]' '[:lower:]')"
       if [ "$(printf '%s\n' "$rows" | grep -c . || true)" = "1" ]; then
-        printf 'набор %s (%s имён, автосмена)' "$name" "$n"
+        printf 'набор %s (%s имён, %s, автосмена)' "$name" "$n" "$pol"
       else
-        printf 'набор %s + свои (%s имён, автосмена)' "$name" "$n"
+        printf 'набор %s + свои (%s имён, %s, автосмена)' "$name" "$n" "$pol"
       fi
       ;;
     *)
-      printf 'свой список (%s имён, автосмена)' "$n"
+      printf 'свой список (%s имён, %s, автосмена)' "$n" "$pol"
       ;;
   esac
 }

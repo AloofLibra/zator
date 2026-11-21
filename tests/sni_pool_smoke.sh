@@ -79,6 +79,10 @@ assert_contains "$POOL_LUA_SRC" 'attribution fully preserved' \
 # 1b. Движок: пути, липкость, ротация, пин с TTL; домены НЕ зашиты в Lua
 assert_contains "$POOL_LUA_SRC" 'POOL_TSV = "/opt/zator/extra_strats/cache/orchestra/sni_pool\.tsv"' \
   "sni-pool.lua: не тот путь пула"
+assert_contains "$POOL_LUA_SRC" 'POOL_POLICY = "/opt/zator/extra_strats/cache/orchestra/sni_pool_policy\.tsv"' \
+  "sni-pool.lua: нет пути файла политик чередования"
+assert_contains "$POOL_LUA_SRC" 'math\.random\(pool_size - 1\)' \
+  "sni-pool.lua: нет случайного выбора без повторов подряд"
 assert_contains "$POOL_LUA_SRC" 'SETS_PROJECT = "/opt/zator/extra_strats/sni_zator\.txt"' \
   "sni-pool.lua: не тот путь проектных наборов"
 assert_contains "$POOL_LUA_SRC" 'SETS_USER = "/opt/zator/extra_strats/sni_user\.txt"' \
@@ -167,13 +171,17 @@ for fn in sni_pool_set_name_valid sni_pool_sets_list sni_pool_set_origin \
   sni_pool_set_read sni_pool_set_write sni_pool_set_delete sni_pool_list \
   sni_pool_effective sni_pool_assign_set sni_pool_set_list sni_pool_clear \
   sni_pool_pin sni_pool_unpin sni_pool_pinned sni_pool_display \
-  sni_pool_supported_profiles; do
+  sni_pool_policy_get sni_pool_policy_set sni_pool_policy_valid \
+  sni_pool_policy_label sni_pool_supported_profiles; do
   assert_contains "$STATE_SRC" "^${fn}\(\)" "orchestra_state.sh нет функции $fn"
 done
 assert_contains "$STATE_SRC" 'sni_override_valid "\$d" \|\| return 2' \
   "sni_pool_* валидирует не как sni_override"
 assert_contains "$ACTIONS_SRC" 'extra_strats/cache/orchestra/sni_pool\.tsv' \
   "z2r_backup_state_files не бэкапит sni_pool.tsv"
+assert_contains "$ACTIONS_SRC" 'extra_strats/cache/orchestra/sni_pool_policy\.tsv' \
+  "z2r_backup_state_files не бэкапит sni_pool_policy.tsv"
+assert_contains "$SUBMENUS_SRC" 'Чередование:' "меню пула не предлагает смену политики"
 assert_contains "$ACTIONS_SRC" 'extra_strats/sni_user\.txt' \
   "z2r_backup_state_files не бэкапит файл пользовательских наборов"
 assert_contains "$SUBMENUS_SRC" 'SNI-пул — наборы невинных имён с автосменой' \
@@ -291,6 +299,19 @@ grep -Eq '^[0-9]+$' "$ORCH_SNI_POOL_PIN" || fail "пин не числовая �
 sni_pool_unpin
 ! sni_pool_pinned || fail "unpin не снял пин"
 
+# политика чередования: дефолт пуст (rr), валидация, метки, display
+[ -z "$(sni_pool_policy_get 1)" ] || fail "политика без файла не пуста"
+[ "$(sni_pool_policy_label "")" = "по кругу" ] || fail "label(rr) неверен"
+sni_pool_policy_set 1 rand
+[ "$(sni_pool_policy_get 1)" = "rand" ] || fail "policy_set(rand) не записался"
+[ "$(sni_pool_policy_label "$(sni_pool_policy_get 1)")" = "случайно" ] || fail "label(rand) неверен"
+sni_pool_assign_set 1 google
+sni_pool_display 1 | grep -q 'случайно' || fail "display не показывает политику"
+sni_pool_clear 1
+if sni_pool_policy_set 1 "bad"; then fail "policy_set принял мусор"; fi
+sni_pool_policy_set 1 rr
+[ "$(sni_pool_policy_get 1)" = "rr" ] || fail "policy_set(rr) не записался"
+
 # бэкап-лист: файл пула и пользовательские наборы
 z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/sni_pool.tsv' \
   || fail "z2r_backup_state_files не бэкапит sni_pool.tsv"
@@ -362,6 +383,34 @@ ok(z2r_sni_pool_pick(fresh(), "4") == "solo.example.org", "одиночный п
 z2r_sni_pool_for_tests({ "1\t@google" }, sets, true)
 ok(z2r_sni_pool_pick(fresh(), "1") == G[1], "пин не зафиксировал первый SNI")
 ok(z2r_sni_pool_pick(fresh(), "1") == G[1], "пин пропустил ротацию")
+
+-- политика rand: случайно, без двух одинаковых подряд
+local R = {}
+for i = 1, 5 do R[i] = "r" .. i .. ".example.org" end
+local rlines = {}
+for i = 1, 5 do rlines[i] = "6\t" .. R[i] end
+z2r_sni_pool_for_tests(rlines, sets, false, { ["6"] = "rand" })
+local prev
+for i = 1, 40 do
+  local t = fresh()
+  local v = z2r_sni_pool_pick(t, "6")
+  ok(v ~= nil, "rand: pick вернул nil")
+  ok(prev == nil or v ~= prev, "rand: два одинаковых подряд (" .. tostring(v) .. ")")
+  local known = false
+  for _, x in ipairs(R) do if x == v then known = true end end
+  ok(known, "rand: pick вне пула: " .. tostring(v))
+  prev = v
+end
+-- rr-политика по умолчанию: строгий порядок
+z2r_sni_pool_for_tests(rlines, sets, false, nil)
+local seq = {}
+for i = 1, 7 do
+  local t = fresh()
+  seq[i] = z2r_sni_pool_pick(t, "6")
+end
+for i = 1, 7 do
+  ok(seq[i] == R[((i - 1) % 5) + 1], "rr: порядок сбился на шаге " .. i)
+end
 
 -- лимит 32 на стороне Lua
 local many = {}
