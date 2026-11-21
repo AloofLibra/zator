@@ -653,8 +653,12 @@ _custom_validate_kv() {
       printf '%s' "$val" | grep -Eq '^(-?[0-9]+|[A-Za-z_][A-Za-z0-9_]*([+-][0-9]+)?)$' \
         || { echo "Ключ seqovl= ждёт число или маркер (midsld-1, host+1, sniext)." >&2; return 1; } ;;
     urp)
-      # позиционный маркер urgent pointer: "b"|"e" (док. fork) или число
-      printf '%s' "$val" | grep -Eq '^([bBeE]|[0-9]+)$'         || { echo "Ключ urp= ждёт b, e или число." >&2; return 1; } ;;
+      # urgent pointer: "b"|"e" (только строчные — fork сравнивает == 'b'/'e')
+      # или маркер-позиция resolve_pos (док. fork §oob / protocol.c posmarker_parse):
+      # число (в т.ч. отрицательное — от конца) или имя из таблицы posmarker_names
+      # с необязательным смещением (midsld, midsld+3, host-1, sniext, …)
+      printf '%s' "$val" | grep -Eq '^([be]|[+-]?[0-9]+|(abs|host|endhost|sld|midsld|endsld|method|extlen|sniext)([+-][0-9]+)?)$' \
+        || { echo "Ключ urp= ждёт b, e, число или маркер (midsld, host+1, sniext)." >&2; return 1; } ;;
     char)
       printf '%s' "$val" | grep -Eq '^[A-Za-z0-9]$'         || { echo "Ключ char= ждёт ровно один символ (букву/цифру)." >&2; return 1; } ;;
     midhost)
@@ -1238,7 +1242,7 @@ custom_strategies_submenu() {
       done < <(custom_strategies_list)
     fi
     echo ""
-    submenu_item "1" "Добавить стратегию"
+    submenu_item "1" "Добавить ОДНУ стратегию"
     submenu_item "2" "Изменить (spec/блок/комментарий)"
     submenu_item "3" "Включить/выключить"
     submenu_item "4" "Удалить"

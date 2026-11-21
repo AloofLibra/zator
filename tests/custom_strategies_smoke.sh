@@ -439,6 +439,25 @@ fi
 if custom_strategies_validate tpl 'oob:urp=zz' 2>/dev/null; then
   fail "validate: urp мусором должен падать"
 fi
+# urp — позиционный маркер (док. fork §oob, protocol.c posmarker_parse;
+# живой кейс: «Ключ urp= ждёт b, e или число» на oob:urp=midsld)
+custom_strategies_validate tpl 'oob:urp=midsld' \
+  || fail "validate: oob:urp=midsld (маркер) должен проходить"
+custom_strategies_validate tpl 'oob:urp=midsld+3' \
+  || fail "validate: oob:urp=midsld+3 (маркер со смещением) должен проходить"
+custom_strategies_validate tpl 'oob:urp=host-1' \
+  || fail "validate: oob:urp=host-1 (маркер со смещением) должен проходить"
+custom_strategies_validate tpl 'oob:urp=-1' \
+  || fail "validate: oob:urp=-1 (отрицательная позиция от конца) должен проходить"
+if custom_strategies_validate tpl 'oob:urp=B' 2>/dev/null; then
+  fail "validate: urp=B должен падать (fork принимает только строчные b/e)"
+fi
+# три плоские строки пользователя с РАЗНЫМИ :strategy=N — три отдельные записи
+res="$(custom_strategies_import_text $'--lua-desync=oob:urp=b:strategy=154\n--lua-desync=oob:urp=2:strategy=155\n--lua-desync=oob:urp=midsld:strategy=156' tpl)"
+printf '%s\n' "$res" | awk -F '\t' '$1=="RESULT" && $2==3 && $3==0 && $4==0 {ok=1} END {exit !ok}' \
+  || fail "import_text: три oob-строки с разными strategy=N должны лечь отдельными записями (получено: $(printf '%s\n' "$res"))"
+awk -F '\t' '$3=="oob:urp=b" || $3=="oob:urp=2" || $3=="oob:urp=midsld"' "$CUSTOM_STRATS_FILE" | grep -c . | grep -qx 3 \
+  || fail "import_text: у записей urp=oob должны быть срезаны :strategy=N"
 # blob= у tls_client_hello_clone — цель, nfqws2 создаёт её сам в рантайме
 # (живой кейс: «Блоб «clone_www2» не объявлен в конфиге» на ручном вводе)
 custom_strategies_validate tpl 'tls_client_hello_clone:blob=clone_www2:fallback=fake_default_tls:sni_del:sni_first=www.google.com:sni_snt_new=0' \

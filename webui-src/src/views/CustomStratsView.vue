@@ -204,7 +204,7 @@ async function removeItem(item: CustomStrategy) {
 }
 
 // --- импорт готовых строк -----------------------------------------------------
-const importBlock = ref('p5')
+const importBlock = ref('tpl')
 const importText = ref('')
 const importErrors = ref<{ line: string; reason: string }[]>([])
 const importNotes = ref<string[]>([])
@@ -290,11 +290,17 @@ async function applyToConfig() {
 
         <div class="card-actions">
           <button id="custom-strat-add" type="button" class="primary" :disabled="busyActive || !blocks.length"
-            @click="openAdd">Добавить стратегию</button>
+            @click="openAdd">Добавить ОДНУ стратегию</button>
         </div>
 
         <details class="import-block" id="custom-import-block-details">
-          <summary>Импорт готовых строк (стратегии / блокчек / nfqws2)</summary>
+          <summary>Импорт готовых строк — одной стратегии или сразу нескольких (стратегии / блокчек / nfqws2)</summary>
+          <p class="form-hint">
+            Можно вставить как одну стратегию, так и сразу несколько построчно.
+            Подряд идущие строки с одинаковым номером <code>:strategy=N</code> склеятся в одну запись-комбо,
+            строки с разными номерами или без номера — каждая станет отдельной стратегией.
+            Разрывы строк внутри одной стратегии склеятся сами.
+          </p>
           <label>
             <span>Блок импорта</span>
             <select id="custom-import-block" v-model="importBlock" :disabled="busyActive">
@@ -302,7 +308,7 @@ async function applyToConfig() {
             </select>
           </label>
           <textarea id="custom-import-text" v-model="importText" rows="6" :disabled="busyActive"
-            placeholder="--lua-desync=... :strategy=N, строка SUMMARY blockcheck2 или команда nfqws2 целиком — лишнее (--blob/--payload, номера) вырежется само; гугловский блоб блокчека заменится на дефолтный из конфига"></textarea>
+            placeholder="одна строка = одна стратегия (или комбо через « --lua-desync=» с одним номером): готовая строка --lua-desync=... , строка SUMMARY blockcheck2 или команда nfqws2 целиком — лишнее (--blob/--payload, номера) вырежется само; гугловский блоб блокчека заменится на дефолтный из конфига"></textarea>
           <ul v-if="importNotes.length" class="form-hint" id="custom-import-notes">
             <li v-for="n in importNotes" :key="n">{{ n }}</li>
           </ul>
