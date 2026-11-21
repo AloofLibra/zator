@@ -134,6 +134,22 @@ backup_state="$(z2r_backup_state_files)"
   echo 'backup must preserve adaptive rules without copying the pairing secret' >&2; exit 1;
 }
 for _ in $(seq 1 30); do [[ -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] && break; sleep 0.1; done
+source "$ROOT/lib/actions.sh"
+export Z2R_BACKUP_DIR="$tmp/backups"
+archive="$(backup_create_core)"
+[[ -s "$archive" ]] || { echo 'adaptive backup archive was not created' >&2; exit 1; }
+restore="$tmp/backup-restore"
+mkdir -p "$restore"
+"$(z2r_pick_tar)" -xf "$archive" -C "$restore"
+[[ -s "$restore/extra_strats/cache/adaptive/rules.tsv" ]] || {
+  echo 'backup archive omitted adaptive rules.tsv' >&2; exit 1;
+}
+cmp -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" "$restore/extra_strats/cache/adaptive/rules.tsv" || {
+  echo 'adaptive rules changed during backup round-trip' >&2; exit 1;
+}
+if "$(z2r_pick_tar)" -tf "$archive" | grep -Eq '(^|/)extra_strats/cache/adaptive/token$'; then
+  echo 'backup archive copied the adaptive pairing secret' >&2; exit 1;
+fi
 cat > "$tmp/init" <<'INIT'
 #!/bin/sh
 exit 0
