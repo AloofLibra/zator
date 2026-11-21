@@ -1612,9 +1612,11 @@ tls_blob_submenu() {
         v="глобальный"
         vcol=yellow
       fi
-      # профиль 5 (QUIC) — без SNI-части (клоны/SNI не про UDP)
+      # профиль 5 (QUIC) — без SNI-части (клоны/SNI не про UDP); у классики
+      # сводка пуста, пока не задан пин/пул
       if [ "${profiles[$idx]}" != "5" ]; then
-        v="${v} · $(fake_mode_sni_summary "${profiles[$idx]}")"
+        t="$(fake_mode_sni_summary "${profiles[$idx]}")"
+        [ -n "$t" ] && v="${v} · ${t}"
       fi
       submenu_status_item "$i" "${tag} Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v" "$vcol"
       i=$((i+1))
@@ -2135,7 +2137,9 @@ fake_mode_profile_tag() {
   fi
 }
 
-# Короткая SNI-сводка профиля для строки «Сейчас:» списков меню.
+# Короткая SNI-сводка профиля для строки «Сейчас:» списков меню. У классики
+# ([blob]) без пина/пула SNI не участвует — пусто, чтобы не шуметь; дефолт
+# показываем только в режиме clone.
 fake_mode_sni_summary() {
   local profile="$1" pin
   pin="$(sni_override_get "$profile")"
@@ -2147,7 +2151,10 @@ fake_mode_sni_summary() {
     printf 'SNI: %s' "$(sni_pool_display "$profile")"
     return 0
   fi
-  printf 'SNI: www.google.com (дефолт)'
+  if [ "$(mode_override_get "$profile")" = "clone" ]; then
+    printf 'SNI: www.google.com (дефолт)'
+  fi
+  return 0
 }
 
 fake_mode_sni_display() {
