@@ -50,6 +50,34 @@ adaptive_gc_runs() {
   (( count < 128 ))
 }
 
+# Recover only a stale adaptive-lan owner whose lease, process, private Lua,
+# queue PID, and temporary firewall state all match. This runs on Watch polls
+# and before issuing a new lease so controller SIGKILL does not strand q65535.
+adaptive_recover_abandoned_probe() {
+  local config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  local lock_dir="${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}"
+  local owner controller owner_boot boot_id
+  [[ -d "$BASE" && ! -L "$BASE" && -d "$lock_dir" && ! -L "$lock_dir" ]] || return 0
+  if [[ -f "$lock_dir/owner" && ! -L "$lock_dir/owner" ]]; then
+    IFS=$'\t' read -r owner controller owner_boot < "$lock_dir/owner" || return 1
+    boot_id="$(cat "${Z2R_ADAPTIVE_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}" 2>/dev/null)"
+    [[ -n "$boot_id" ]] || boot_id=-
+    if [[ "$owner" = adaptive-lan && "$controller" =~ ^[0-9]+$ && "$owner_boot" = "$boot_id" ]] &&
+       _adaptive_lan_controller_alive "$controller"; then return 0; fi
+  fi
+  [[ -r "$config" && ! -L "$config" ]] || return 1
+  FWTYPE="$(config_get_var "$config" FWTYPE 2>/dev/null | tr -d '"\047')"
+  DESYNC_MARK="$(config_get_var "$config" DESYNC_MARK 2>/dev/null | tr -d '"\047')"
+  DESYNC_MARK_POSTNAT="$(config_get_var "$config" DESYNC_MARK_POSTNAT 2>/dev/null | tr -d '"\047')"
+  FILTER_MARK="$(config_get_var "$config" FILTER_MARK 2>/dev/null | tr -d '"\047')"
+  CLIENT_SCOPE_MARK_MASK="$(config_get_var "$config" CLIENT_SCOPE_MARK_MASK 2>/dev/null | tr -d '"\047')"
+  POSTNAT="$(config_get_var "$config" POSTNAT 2>/dev/null | tr -d '"\047')"
+  POSTNAT_ALL="$(config_get_var "$config" POSTNAT_ALL 2>/dev/null | tr -d '"\047')"
+  ZAPRET_NFT_TABLE="$(config_get_var "$config" ZAPRET_NFT_TABLE 2>/dev/null | tr -d '"\047')"
+  export FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE
+  adaptive_lan_transport_recover_stale "$BASE"
+}
+
 if [[ "${REQUEST_METHOD:-}" != POST || "${CONTENT_TYPE%%;*}" != application/x-www-form-urlencoded ]]; then
   fail '405 Method Not Allowed' 'POST form data required'
 fi
@@ -587,6 +615,7 @@ case "$action" in
     send_json '200 OK' "{\"schema_version\":1,\"provider\":\"$(json_escape "$provider")\"}"
     ;;
   events)
+    adaptive_recover_abandoned_probe || fail '503 Service Unavailable' 'adaptive probe recovery could not verify its queue owner or clean its rules'
     adaptive_queue_agent_heartbeat >/dev/null 2>&1 || :
     send_json '200 OK' "$(json_events)"
     ;;
@@ -689,6 +718,7 @@ case "$action" in
     fi
     ;;
   lease)
+    adaptive_recover_abandoned_probe || fail '503 Service Unavailable' 'adaptive probe recovery could not verify its queue owner or clean its rules'
     [[ -x "$CONTROLLER" ]] || fail '503 Service Unavailable' 'adaptive controller is not installed'
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
     [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || fail '403 Forbidden' 'adaptive probe mode does not allow probes'

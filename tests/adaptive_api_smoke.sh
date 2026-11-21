@@ -12,6 +12,14 @@ printf 'Example ISP - Test City\n' > "$ZATOR_ROOT/extra_strats/cache/provider.tx
 cp "$ROOT/lib/adaptive_lan_transport.sh" "$ZATOR_ROOT/z2r_lib/"
 cp "$ROOT/lib/config.sh" "$ROOT/lib/orchestra_state.sh" "$ROOT/lib/adaptive_rules.sh" "$ROOT/lib/supersweep_probe.sh" "$ZATOR_ROOT/z2r_lib/"
 cp "$ROOT/lib/adaptive_queue.sh" "$ZATOR_ROOT/z2r_lib/"
+cat >> "$ZATOR_ROOT/z2r_lib/adaptive_lan_transport.sh" <<'RECOVERY_MOCK'
+adaptive_lan_transport_recover_stale() {
+  printf '%s\n' "$1" >> "$Z2R_RECOVERY_TEST_LOG"
+  [[ "${Z2R_RECOVERY_TEST_FAIL:-0}" != 1 ]] || return 1
+  return 0
+}
+_adaptive_lan_controller_alive() { [[ "${Z2R_RECOVERY_TEST_LIVE_PID:-}" = "$1" ]]; }
+RECOVERY_MOCK
 cp "$ROOT/orchestra/locked.lua" "$ZATOR_ROOT/lua/locked.lua"
 cp "$ROOT/lua/fake-adapt.lua" "$ZATOR_ROOT/lua/"
 cp "$ROOT/config.default" "$tmp/zapret2/config"
@@ -30,6 +38,8 @@ esac
 NFQWS
 chmod +x "$tmp/zapret2/nfq2/nfqws2"
 export ZAPRET2_ROOT="$tmp/zapret2"
+export Z2R_ADAPTIVE_LOCK_DIR="$tmp/adaptive-lock" Z2R_RECOVERY_TEST_LOG="$tmp/recovery-calls.log"
+mkdir -p "$Z2R_ADAPTIVE_LOCK_DIR"
 printf '%064d' 7 > "$ZATOR_ROOT/extra_strats/cache/adaptive/token"
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$ZATOR_ROOT/extra_strats/cache/adaptive/token.expires"
 printf 'OFF\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
@@ -576,6 +586,23 @@ duplicate_request="$(ZATOR_ROOT="$ZATOR_ROOT" Z2R_ADAPTIVE_DIR="$Z2R_ADAPTIVE_DI
 [[ -z "$duplicate_request" ]] || { echo 'manual request cooldown did not suppress duplicate' >&2; exit 1; }
 events="$(call_api 'action=events')"
 [[ "$events" == *"\"request_id\":\"$request_id\""* && "$events" == *'"status":"needs_verify"'* ]] || { echo 'queued manual request did not reach the paired agent' >&2; exit 1; }
+[[ "$(wc -l < "$Z2R_RECOVERY_TEST_LOG")" -ge 1 ]] || { echo 'Watch event polling did not invoke stale-probe recovery' >&2; exit 1; }
+recovery_calls_before_live="$(wc -l < "$Z2R_RECOVERY_TEST_LOG")"
+printf 'adaptive-lan\t424242\t%s\n' "$(cat /proc/sys/kernel/random/boot_id)" > "$Z2R_ADAPTIVE_LOCK_DIR/owner"
+live_recovery="$(Z2R_RECOVERY_TEST_LIVE_PID=424242 call_api 'action=events')"
+rm -f "$Z2R_ADAPTIVE_LOCK_DIR/owner"
+[[ "$live_recovery" == *'Status: 200 OK'* && "$(wc -l < "$Z2R_RECOVERY_TEST_LOG")" = "$recovery_calls_before_live" ]] || {
+  echo 'event polling disrupted or attempted recovery of a live adaptive controller' >&2; exit 1;
+}
+failed_recovery="$(Z2R_RECOVERY_TEST_FAIL=1 call_api 'action=events')"
+[[ "$failed_recovery" == *'503 Service Unavailable'* && "$failed_recovery" == *'could not verify its queue owner or clean its rules'* ]] || {
+  echo 'Watch event API continued after stale-probe recovery failed closed' >&2; exit 1;
+}
+recovery_calls_before_lease="$(wc -l < "$Z2R_RECOVERY_TEST_LOG")"
+recovery_lease="$(call_api 'action=lease&hostname=lease-recovery.example.org&destination_ip=93.184.216.32&profile_id=1&local_strategy_number=1')"
+[[ "$recovery_lease" == *'Status: 200 OK'* && "$(wc -l < "$Z2R_RECOVERY_TEST_LOG")" -gt "$recovery_calls_before_lease" ]] || {
+  echo 'new lease did not run stale-probe recovery before queue ownership' >&2; exit 1;
+}
 ack="$(call_api "action=ack_request&request_id=$request_id")"
 [[ "$ack" == *'"ok":true'* ]] || { echo 'agent could not acknowledge its manual request' >&2; exit 1; }
 event_ack="$(call_api 'action=ack_event&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=2&scope=mark%3A4')"
