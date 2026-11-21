@@ -136,3 +136,11 @@ This closes one OpenWrt profile-2 DIRECT Ramp media path through the isolated qu
 - Temporary listener, firewall rule, probe root, archive, and token were removed. Final queue read-back showed only production queue 300 owned by PID 26630; the temporary listener/rule and q65535 were absent. Persistent config and strategy locks were untouched.
 
 This adds one successful numbered strategy-2 Ramp path and verifies active-exemption Ramp control on OpenWrt. It does not pass Keenetic Ramp, demonstrate a valid degraded-plain revocation, or cover alternate routes/offload, sustained traffic, both nfqws2 builds, or the other Beta gates. AUTO remains disabled.
+
+### Reboot cleanup follow-up (2026-11-22)
+
+- With the user's approval to reboot OpenWrt only, the router restarted after the temporary paired-flow stage, listener, and firewall rule had been removed. The direct LAN SSH endpoint at `192.168.10.1` then presented an ED25519 host key different from the previously trusted key. The new key was not accepted and `known_hosts` was not changed.
+- Read-only access through the already trusted WAN endpoint `192.168.1.37` confirmed the same Cudy WR3000P v1 (`br-lan` MAC `d4:0d:ab:65:e5:fb`). Production NFQUEUE 300 was registered to PID 3753; queue 65535 was absent; the temporary paired-flow stage, adaptive rules, and shared lock were absent.
+- The live `/opt/zapret2/config` SHA-256 after reboot was `3ff9f5c87976eda4fea680993b4031355edd339b598aee5b6583096a81a1c323`, different from the recorded pre-reboot hash `7ed4556e2d5719b111e627beb5c9a322b30a1fd583989fe3abb9b304ed29e5d9`. The file timestamp is `Nov 22 02:17`, and the reason for the content change is undetermined. No config was restored or edited.
+
+This verifies post-reboot cleanup and production queue ownership via the trusted endpoint. It does not explain the changed live config or the LAN SSH host-key mismatch, and no claim is made about a live HTTPS check after reboot. AUTO remains disabled.
