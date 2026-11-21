@@ -5,6 +5,7 @@ import type { CustomBlobInfo } from '../api/types'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
 import { confirmDialog } from '../stores/confirm'
 import { showToast } from '../stores/toast'
+import ProfileMapCard from '../components/settings/ProfileMapCard.vue'
 import SniPanel from '../components/settings/SniPanel.vue'
 import TlsBlobPanel from '../components/settings/TlsBlobPanel.vue'
 
@@ -264,6 +265,7 @@ async function applyToConfig() {
     <div v-if="!loaded" class="status-loading" aria-live="polite">Пожалуйста подождите...</div>
 
     <template v-else>
+      <ProfileMapCard />
       <TlsBlobPanel />
       <SniPanel />
       <section class="panel" id="custom-blobs-upload-panel">

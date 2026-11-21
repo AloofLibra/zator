@@ -211,10 +211,24 @@ done
 assert_contains "$SUBMENUS_SRC" '\[clone-pool\]' "нет тега clone-pool в карте п.16"
 assert_contains "$SUBMENUS_SRC" 'Блобы, клоны и SNI профилей' "заголовок п.16 не переименован"
 assert_contains "$Z2R_SRC" 'Блобы, клоны и SNI профилей' "пункт главного меню 16 не переименован"
-assert_contains "$(tr -d '\r' < "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue")" \
-  'sni-profile-map' "SniPanel: нет сводной карты профилей"
+[ -f "$REPO_DIR/webui-src/src/components/settings/ProfileMapCard.vue" ] \
+  || fail "нет ProfileMapCard.vue (карта профилей вкладки)"
+assert_contains "$(tr -d '\r' < "$REPO_DIR/webui-src/src/components/settings/ProfileMapCard.vue")" \
+  'profile-map-card' "ProfileMapCard: нет карточки карты"
+grep -q 'clone-pool' "$REPO_DIR/webui-src/src/components/settings/ProfileMapCard.vue" \
+  || fail "ProfileMapCard: не считает тег clone-pool"
+grep -q 'ProfileMapCard' "$REPO_DIR/webui-src/src/views/CustomBlobsView.vue" \
+  || fail "CustomBlobsView не рендерит карту профилей"
+# карта — первой секцией вкладки
+map_line="$(grep -n '<ProfileMapCard' "$REPO_DIR/webui-src/src/views/CustomBlobsView.vue" | head -1 | cut -d: -f1)"
+tls_line="$(grep -n '<TlsBlobPanel' "$REPO_DIR/webui-src/src/views/CustomBlobsView.vue" | head -1 | cut -d: -f1)"
+[ -n "$map_line" ] && [ -n "$tls_line" ] && [ "$map_line" -lt "$tls_line" ] \
+  || fail "карта профилей не первая на вкладке"
+if grep -q 'sni-profile-map' "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue"; then
+  fail "SniPanel: старая встроенная карта не убрана"
+fi
 grep -q 'clone-pool' "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue" \
-  || fail "SniPanel: карта не считает тег clone-pool"
+  || fail "SniPanel: карточки профилей без тегов режима"
 
 # 1i. WebUI: вкладка «Блобы и SNI» (blobs.cgi + фронт + мок-сервер)
 assert_contains "$BLOBS_CGI_SRC" '_blobs_sni_json' "blobs.cgi не собирает sni-стейт"

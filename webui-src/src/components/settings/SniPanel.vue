@@ -33,9 +33,9 @@ const pinPick = reactive<Record<string, string>>({})
 const userSets = computed(() => sets.value.filter(s => s.origin === 'user'))
 const zatorSets = computed(() => sets.value.filter(s => s.origin !== 'user'))
 
-// Карта профилей: сразу видно режим ([blob]/[clone-solo]/[clone-pool]) —
-// как тег в CLI-меню п.16. Режим и блоб — из стора tls_blob (панель блобов
-// выше), SNI — из этого payload.
+// Тег режима для заголовков карточек ([blob]/[clone-solo]/[clone-pool]);
+// сама карта профилей — отдельной карточкой сверху вкладки (ProfileMapCard).
+// Режим — из стора tls_blob (панель блобов выше).
 const tls = computed(() => tlsBlobSettings.value)
 
 function profileTag(p: SniProfileInfo): string {
@@ -43,17 +43,6 @@ function profileTag(p: SniProfileInfo): string {
   if (mode !== 'clone') return 'blob'
   if (p.pin) return 'clone-solo'
   return (p.set || (p.effective || []).length > 0) ? 'clone-pool' : 'clone-solo'
-}
-
-function profileBlobLabel(p: SniProfileInfo): string {
-  const b = tls.value?.profile_blobs?.[p.id] || ''
-  return b ? `блоб: ${b}` : 'блоб: глобальный'
-}
-
-function profileSniLabel(p: SniProfileInfo): string {
-  if (p.pin) return `SNI: ${p.pin} (пин)`
-  if (p.set || (p.effective || []).length > 0) return `SNI: ${p.pool}`
-  return 'SNI: www.google.com (дефолт)'
 }
 
 function syncDrafts() {
@@ -189,19 +178,6 @@ async function removeSet(s: SniSetInfo) {
     </div>
 
     <template v-else>
-      <div class="status-note" id="sni-profile-map" v-if="profiles.length">
-        <strong>Карта профилей:</strong>
-        <span class="chip">[blob] — блобы конфига</span>
-        <span class="chip">[clone-solo] — клон, один SNI</span>
-        <span class="chip">[clone-pool] — клон, пул</span>
-        <div v-for="p in profiles" :key="p.id" class="sni-map-row" :id="`sni-map-${p.id}`">
-          <span class="chip" :class="{ 'is-ok': profileTag(p) !== 'blob' }">[{{ profileTag(p) }}]</span>
-          <strong>{{ p.title }}</strong>
-          <span>{{ profileBlobLabel(p) }}</span>
-          <span>· {{ profileSniLabel(p) }}</span>
-        </div>
-      </div>
-
       <div v-for="p in profiles" :key="p.id" class="settings-form sni-profile" :id="`sni-profile-${p.id}`">
         <h3><span class="chip" :class="{ 'is-ok': profileTag(p) !== 'blob' }">[{{ profileTag(p) }}]</span> {{ p.title }}</h3>
         <p class="status-note">Сейчас: {{ p.pool || 'нет пула (один SNI)' }}</p>
