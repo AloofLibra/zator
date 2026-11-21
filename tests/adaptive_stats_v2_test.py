@@ -8,6 +8,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/stats"))
 import adaptive_results as adaptive
+import adaptive_v2_load_test as adaptive_load
+import adaptive_v2_capacity_test as adaptive_capacity
 
 
 class Pipeline:
@@ -171,6 +173,24 @@ for recipe, profile, protocol, treatment in (
 ):
     media = batch(2, 502, recipe=recipe, profile=profile, protocol=protocol, treatment=treatment)
     assert adaptive.validate_batch(media, SECRET, now=NOW)["rows"][0]["recipe_id"] == recipe
+load_batch = adaptive.validate_batch(batch(3, 503, observed=int(time.time())), SECRET)
+load_keys = adaptive_load._owned_ingest_keys(load_batch)
+load_dimension = load_batch["rows"][0]["dimension"]
+assert f"z4r:adaptive:v2:agg:{load_batch['day']}:{load_dimension}" in load_keys
+assert f"z4r:adaptive:v2:sources:{load_dimension}" in load_keys
+assert f"z4r:adaptive:v2:meta:{load_dimension}" in load_keys
+assert "z4r:adaptive:v2:dimensions:active" in load_keys
+for label, kwargs, expected in (
+    ("tls", {}, (1, "tls", "tls-http1-v1")),
+    ("tcp-media", {"recipe": "googlevideo-tcp-media-v1", "profile": 2,
+                    "protocol": "tcp-media", "treatment": "gv_tcp_plain"},
+     (2, "tcp-media", "googlevideo-tcp-media-v1")),
+    ("quic", {"recipe": "googlevideo-quic-h3-media-v1", "profile": 5, "protocol": "quic"},
+     (5, "quic", "googlevideo-quic-h3-media-v1")),
+):
+    capacity_payload = adaptive_capacity._payload("Capacity Test ISP", label, int(time.time()), **kwargs)
+    capacity_row = adaptive.validate_batch(capacity_payload, SECRET)["rows"][0]
+    assert (capacity_row["profile_id"], capacity_row["protocol"], capacity_row["recipe_id"]) == expected
 tokens = FakeRedis()
 token_a = adaptive.issue_client_token(tokens, SECRET)
 token_b = adaptive.issue_client_token(tokens, SECRET)

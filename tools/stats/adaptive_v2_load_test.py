@@ -7,18 +7,28 @@ adaptive V2 keys it creates after collecting latency and memory measurements.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 import hashlib
-import hmac
 import os
 from statistics import median
 from threading import Lock
 import time
 from urllib.parse import urlparse
 
-import redis
+from adaptive_results import ingest_batch, refresh_rankings, get_rankings, validate_batch
 
-from adaptive_results import ingest_batch, refresh_rankings, get_rankings
+
+def _owned_ingest_keys(batch):
+    keys = {
+        "z4r:adaptive:v2:req:" + batch["request_id"],
+        f"z4r:adaptive:v2:source:{batch['source']}:{batch['day']}",
+        "z4r:adaptive:v2:dimensions:active",
+    }
+    for row in batch["rows"]:
+        dimension = row["dimension"]
+        keys.update((f"z4r:adaptive:v2:agg:{row['day']}:{dimension}",
+                     f"z4r:adaptive:v2:sources:{dimension}",
+                     f"z4r:adaptive:v2:meta:{dimension}"))
+    return keys
 
 
 def _percentile(values, fraction):
@@ -27,6 +37,8 @@ def _percentile(values, fraction):
 
 
 def main():
+    import redis
+
     url = os.environ.get("Z2R_ADAPTIVE_TEST_REDIS_URL", "redis://127.0.0.1:6379/15")
     parsed = urlparse(url)
     if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
@@ -49,18 +61,6 @@ def main():
             def submit(client_index):
                 source_id = hashlib.sha256(f"adaptive-load-{client_count}-{client_index}".encode()).hexdigest()
                 request_id = hashlib.sha256(f"request-{client_count}-{client_index}".encode()).hexdigest()[:32]
-                source = hmac.new(secret.encode(), source_id.encode("ascii"), hashlib.sha256).hexdigest()
-                day = datetime.now(timezone.utc).strftime("%Y%m%d")
-                dimension = f"{provider_hash}|1|tls|{fingerprint[7:]}"
-                with owned_keys_lock:
-                    owned_keys.update((
-                        "z4r:adaptive:v2:req:" + request_id,
-                        f"z4r:adaptive:v2:source:{source}:{day}",
-                        "z4r:adaptive:v2:dimensions:active",
-                        f"z4r:adaptive:v2:agg:{day}:{dimension}",
-                        f"z4r:adaptive:v2:sources:{dimension}",
-                        f"z4r:adaptive:v2:meta:{dimension}",
-                    ))
                 payload = {
                     "schema_version": 2,
                     "request_id": request_id,
@@ -73,6 +73,9 @@ def main():
                                  "route_verified": True, "transport": "OK", "application": "OK",
                                  "verdict": "SUCCESS"}],
                 }
+                batch = validate_batch(payload, secret)
+                with owned_keys_lock:
+                    owned_keys.update(_owned_ingest_keys(batch))
                 started = time.perf_counter()
                 accepted = ingest_batch(db, payload, secret)
                 elapsed_ms = (time.perf_counter() - started) * 1000
@@ -84,10 +87,10 @@ def main():
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 latencies = list(pool.map(submit, range(client_count)))
             wall_seconds = time.perf_counter() - started
-            refresh_rankings(db, min_sources=10)
             with owned_keys_lock:
                 owned_keys.add(f"z4r:adaptive:v2:ranking:{provider_hash}:1:tls")
                 owned_keys.add("z4r:adaptive:v2:rankings:refresh-lock")
+            refresh_rankings(db, min_sources=10)
             ranking = get_rankings(db, "Adaptive Load Test ISP", 1)
             row = next((item for item in ranking.get("rankings", [])
                         if item["fingerprint"] == fingerprint), None)
@@ -102,9 +105,10 @@ def main():
         keys = list(owned_keys)
         for start in range(0, len(keys), 500):
             db.delete(*keys[start:start + 500])
-        if keys and db.exists(*keys):
-            raise RuntimeError("load-test cleanup could not remove all keys it created")
+        leftovers = list(db.scan_iter(count=100))
         db.close()
+        if leftovers:
+            raise RuntimeError(f"load-test cleanup left {len(leftovers)} keys in the initially empty DB 15")
 
 
 if __name__ == "__main__":
