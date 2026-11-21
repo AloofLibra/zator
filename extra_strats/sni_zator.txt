@@ -12,17 +12,19 @@
 www.google.com
 developers.google.com
 codelabs.developers.google.com
-www.gstatic.com
 accounts.google.com
-fonts.gstatic.com
 google.com
+lh0.google.com
+lh1.google.com
+lh2.google.com
 lh3.google.com
 fonts.googleapis.com
 
 # set: rkn
+apteka.ru
 300.ya.ru
 ya.ru
 max.ru
-vk.com
+vk.ru
+rutube.ru
 mail.ru
-hcaptcha.com
