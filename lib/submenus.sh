@@ -1964,22 +1964,51 @@ sni_pool_domains_dialog() {
 }
 
 sni_pool_sets_edit() {
-  local name="$1" origin
+  local name="$1" origin mode choice d
+  local -a cur=() items=()
   origin="$(sni_pool_set_origin "$name")"
+  while IFS= read -r d; do
+    [ -n "$d" ] && cur+=("$d")
+  done < <(sni_pool_set_read "$name")
   echo -e "${yellow}Набор «${name}», текущие имена:${plain}"
-  sni_pool_set_read "$name" | sed 's/^/  /'
+  [ "${#cur[@]}" -gt 0 ] && printf '  %s\n' "${cur[@]}"
   echo ""
   if [ "$origin" = "zator" ]; then
-    echo -e "${yellow}Это проектный набор (sni_zator.txt): ваш список перекроет его для всех профилей.${plain}"
+    echo -e "${yellow}Это проектный набор (sni_zator.txt): ваш вариант станет его перекрытием в sni_user.txt.${plain}"
   fi
-  local -a items=()
-  if items=($(sni_pool_domains_dialog "Новые имена набора «${name}»:")); then :; else
-    echo -e "${yellow}Список пуст — набор не изменён.${plain}"
-    pause_enter
-    return
+  if [ "${#cur[@]}" -gt 0 ]; then
+    # правка существующего набора: затирать молча нельзя — спрашиваем режим
+    echo -e "${yellow}1 - добавить домены к текущим · 2 - заменить список целиком · 0 - отмена.${plain}"
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in
+      1) mode="append" ;;
+      2) mode="replace" ;;
+      *) return 0 ;;
+    esac
+  else
+    mode="replace"
+  fi
+  if [ "$mode" = "append" ]; then
+    if items=($(sni_pool_domains_dialog "Домены для ДОБАВЛЕНИЯ к «${name}»:")); then :; else
+      echo -e "${yellow}Список пуст — набор не изменён.${plain}"
+      pause_enter
+      return
+    fi
+    # sni_pool_set_write сам дедупнит и ограничит лимит
+    items=("${cur[@]}" "${items[@]}")
+  else
+    if items=($(sni_pool_domains_dialog "Новые имена набора «${name}» (текущий список будет ЗАМЕНЁН):")); then :; else
+      echo -e "${yellow}Список пуст — набор не изменён.${plain}"
+      pause_enter
+      return
+    fi
   fi
   if sni_pool_set_write "$name" "${items[@]}"; then
-    echo -e "${green}Набор «${name}» сохранён (${#items[@]} имён) в sni_user.txt.${plain}"
+    if [ "$mode" = "append" ]; then
+      echo -e "${green}Набор «${name}» дополнен (имен: ${#items[@]}) в sni_user.txt.${plain}"
+    else
+      echo -e "${green}Набор «${name}» сохранён (имен: ${#items[@]}) в sni_user.txt.${plain}"
+    fi
     echo -e "${yellow}Профили с этим набором подхватят изменения в течение ~2 секунд.${plain}"
     telemetry_notify
   else

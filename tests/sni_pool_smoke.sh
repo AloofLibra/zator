@@ -199,6 +199,13 @@ assert_contains "$SUBMENUS_SRC" '^sni_pool_sets_view\(\)' "нет экрана �
 dialog_body="$(sed -n '/^sni_pool_domains_dialog()/,/^}/p' "$REPO_DIR/lib/submenus.sh")"
 bad_echoes="$(printf '%s\n' "$dialog_body" | grep -E 'echo -e' | grep -cv '>&2' || true)"
 [ "${bad_echoes:-0}" = "0" ] || fail "sni_pool_domains_dialog: echo без >&2 (подсказки утекут в stdout)"
+# правка существующего набора обязана спрашивать режим: добавить/заменить
+# (молчаливое затирание — живой кейс), merge идёт через cur+new
+assert_contains "$SUBMENUS_SRC" '1 - добавить домены к текущим' \
+  "правка набора не предлагает добавление без затирания"
+assert_contains "$SUBMENUS_SRC" '2 - заменить список целиком' \
+  "правка набора не предлагает явную замену"
+assert_contains "$SUBMENUS_SRC" 'дополнен' "нет сообщения о дополнении набора"
 assert_contains "$SUBMENUS_SRC" 'Наборы SNI — создание/правка/удаление' \
   "список профилей пула не ведёт в управление наборами"
 assert_contains "$SUBMENUS_SRC" 'sni_pool_effective "\$1"' \
