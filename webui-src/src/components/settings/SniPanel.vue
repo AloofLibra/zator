@@ -22,6 +22,13 @@ const policyDraft = reactive<Record<string, string>>({})
 const customDraft = reactive<Record<string, string>>({})
 const customOpen = reactive<Record<string, boolean>>({})
 
+// Пресеты одиночного SNI — зеркало sni_preset_list() из lib/submenus.sh
+// (CLI-меню «SNI клон-стратегий»); синхронность пинит sni_pool_smoke.
+const PIN_PRESETS = ['300.ya.ru', 'www.google.com', 'max.ru', 'hcaptcha.com']
+const PIN_CUSTOM = '__custom__'
+// Выбор в селекте пина: '' (не задан) | пресет | __custom__ (свой домен)
+const pinPick = reactive<Record<string, string>>({})
+
 const userSets = computed(() => sets.value.filter(s => s.origin === 'user'))
 const zatorSets = computed(() => sets.value.filter(s => s.origin !== 'user'))
 
@@ -30,6 +37,7 @@ function syncDrafts() {
     pinDraft[p.id] = p.pin || ''
     setDraft[p.id] = p.set || ''
     policyDraft[p.id] = p.policy || 'rr'
+    pinPick[p.id] = !p.pin ? '' : (PIN_PRESETS.includes(p.pin) ? p.pin : PIN_CUSTOM)
     if (!(p.id in customDraft)) customDraft[p.id] = (p.effective || []).join('\n')
   }
 }
@@ -74,7 +82,9 @@ async function act(key: string, fn: () => Promise<unknown>, okText: string) {
 }
 
 function savePin(id: string) {
-  const value = (pinDraft[id] || '').trim().toLowerCase()
+  // селект: '' — сброс (пул/конфиг), пресет — готовое имя, __custom__ — из поля
+  const pick = pinPick[id] ?? ''
+  const value = pick === PIN_CUSTOM ? (pinDraft[id] || '').trim().toLowerCase() : pick
   pinDraft[id] = value
   return act(`sni-pin-${id}`, () => sni.pin(id, value),
     value ? 'SNI закреплён — он побеждает пул.' : 'Пин снят — снова работает пул.')
@@ -161,14 +171,25 @@ async function removeSet(s: SniSetInfo) {
 
         <form class="settings-form" :id="`sni-pin-form-${p.id}`" @submit.prevent="savePin(p.id)">
           <label>
-            <span>Один SNI (пин; пусто — сброс, работает пул)</span>
-            <input :id="`sni-pin-${p.id}`" v-model="pinDraft[p.id]" :disabled="busyActive"
-              placeholder="например, www.google.com" autocomplete="off">
+            <span>Один SNI — побеждает пул (пусто = из конфига/пула)</span>
+            <select :id="`sni-pin-${p.id}`" v-model="pinPick[p.id]" :disabled="busyActive">
+              <option value="">Не задан (работает пул / из конфига)</option>
+              <option v-for="preset in PIN_PRESETS" :key="preset" :value="preset">{{ preset }}</option>
+              <option :value="PIN_CUSTOM">Свой домен…</option>
+            </select>
+          </label>
+          <label v-if="pinPick[p.id] === PIN_CUSTOM">
+            <span>Домен (например, www.example.com)</span>
+            <input :id="`sni-pin-custom-${p.id}`" v-model="pinDraft[p.id]" :disabled="busyActive"
+              placeholder="www.example.com" autocomplete="off">
           </label>
           <div class="card-actions">
             <button type="submit" class="primary" :class="{ 'is-busy': busyButton === `sni-pin-${p.id}` }"
-              :disabled="busyActive">Сохранить пин</button>
+              :disabled="busyActive">Сохранить SNI</button>
+            <button type="button" :class="{ 'is-busy': busyButton === `sni-pin-${p.id}` }" :disabled="busyActive"
+              @click="pinPick[p.id] = ''; savePin(p.id)">Сбросить</button>
           </div>
+          <p v-if="p.pin" class="status-note">Закреплён: {{ p.pin }}</p>
         </form>
 
         <form class="settings-form" :id="`sni-pool-form-${p.id}`" @submit.prevent="assignSet(p.id)">

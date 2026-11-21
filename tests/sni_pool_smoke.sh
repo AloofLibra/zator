@@ -225,6 +225,18 @@ grep -q 'SniPanel' "$REPO_DIR/webui-src/src/views/CustomBlobsView.vue" \
   || fail "нет SniPanel.vue"
 grep -q 'sni_pool_assign' "$REPO_DIR/webui-src/src/api/endpoints.ts" \
   || fail "endpoints.ts не знает sni-действия"
+# пресеты одиночного SNI в вебе — зеркало sni_preset_list() из CLI-меню
+sni_panel_presets="$(sed -n "s/.*const PIN_PRESETS = \[\(.*\)\].*/\1/p" \
+  "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue" | head -n1 | tr -d "' " | tr ',' ' ' | sed 's/ *$//')"
+cli_presets="$(sed -n "/^sni_preset_list/,/^}/p" "$REPO_DIR/lib/submenus.sh" \
+  | grep -oE '[0-9a-z.-]+\.[a-z]{2,}' | tr '\n' ' ' | sed 's/ *$//')"
+[ -n "$sni_panel_presets" ] || fail "SniPanel: не найден список PIN_PRESETS"
+[ "$sni_panel_presets" = "$cli_presets" ] \
+  || fail "пресеты пина разошлись web($sni_panel_presets) != cli($cli_presets)"
+grep -q 'sni-pin-custom' "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue" \
+  || fail "SniPanel: нет поля своего домена для пина"
+grep -q 'Не задан (работает пул' "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue" \
+  || fail "SniPanel: нет сброса пина"
 assert_contains "$MOCK_SRC" 'sni_user_sets' "fake_router_server не держит SNI-стейт"
 assert_contains "$MOCK_SRC" '"sni": sni_state\(\)' "мок GET blobs.cgi не отдаёт sni"
 
