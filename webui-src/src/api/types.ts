@@ -83,7 +83,7 @@ export interface AdaptiveStatus {
   adaptive_rule_flipflops: number
   agent_status?: {
     updated_at: number
-    stage: 'idle' | 'fast_search' | 'deep_search' | 'explore' | 'ramp_audit'
+    stage: 'idle' | 'fast_search' | 'deep_search' | 'explore' | 'ramp_audit' | 'cooldown'
     statistics_enabled: boolean
     rankings_enabled: boolean
     search_outcome: 'none' | 'found' | 'direct' | 'deep_scheduled' | 'all_exhausted' | 'limit_reached' | 'inconclusive' | 'stopped_rate_limit' | 'stopped_infra' | 'cancelled'

@@ -46,7 +46,7 @@ function probeOutcome(outcome: string) {
 }
 
 function adaptiveStage(stage: string) {
-  return ({ idle: 'ожидание событий', fast_search: 'FastSearch · Top-10', deep_search: 'DeepSearch', explore: 'низкоприоритетный Explore', ramp_audit: 'низкоприоритетный Ramp-аудит' } as Record<string, string>)[stage] || stage
+  return ({ idle: 'ожидание событий', fast_search: 'FastSearch · Top-10', deep_search: 'DeepSearch', explore: 'низкоприоритетный Explore', ramp_audit: 'низкоприоритетный Ramp-аудит', cooldown: 'пауза повторной проверки' } as Record<string, string>)[stage] || stage
 }
 
 function adaptiveSearchOutcome(outcome: string) {

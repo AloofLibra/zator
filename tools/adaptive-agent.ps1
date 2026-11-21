@@ -86,7 +86,7 @@ function Invoke-AdaptiveApi {
 
 function Send-AdaptiveAgentStatus {
     param(
-        [ValidateSet('idle', 'fast_search', 'deep_search', 'explore', 'ramp_audit')][string]$Stage,
+        [ValidateSet('idle', 'fast_search', 'deep_search', 'explore', 'ramp_audit', 'cooldown')][string]$Stage,
         [string]$Outcome = 'none', [int]$CandidatesChecked = 0, [int]$FastCandidates = 0,
         [int]$DeepCandidates = 0, [long]$DurationMs = 0, [long]$TimeToFirstSuccessMs = 0,
         [int]$CpuPercent = -1, [long]$FreeMemoryBytes = -1, [long]$NetworkBytesPerSecond = -1,
@@ -471,6 +471,9 @@ if ($Watch) {
                             profile_id = $dueDeep.ProfileId; scope = $dueDeep.Scope; observed_at = $dueDeep.NextAt
                         })
                     }
+                }
+                if ($next.Count -eq 0 -and (Test-AdaptiveWatchCooldownPending -State $failureRetryState -Events @($queue.events))) {
+                    Send-AdaptiveAgentStatus -Stage 'cooldown'
                 }
                 if ($RampAudit -and $queue.mode -eq 'AGENT_BETA' -and -not $hasUrgentRequest -and $next.Count -eq 0) {
                     try {

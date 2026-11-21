@@ -87,6 +87,22 @@ function Get-AdaptiveFailureRetryCooldownCount {
     return [Math]::Min(128, @($State.Rows | Where-Object { [long]$_.NextAt -gt $Now }).Count)
 }
 
+function Test-AdaptiveWatchCooldownPending {
+    param([Parameter(Mandatory = $true)][hashtable]$State,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Events,
+        [long]$Now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    foreach ($event in $Events) {
+        if ($event.protocol -ne 'tls' -or $event.status -notin @('suspected_failure', 'active_rule_degraded') -or
+            [string]$event.hostname -notmatch '^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$' -or
+            [string]$event.destination_ip -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}$' -or
+            [int]$event.profile_id -lt 1 -or [int]$event.profile_id -gt 4 -or
+            [string]$event.scope -notmatch '^(default|mark:[1-9][0-9]{0,4})$') { continue }
+        $key = Get-AdaptiveFailureRetryKey -Event $event
+        if (-not (Test-AdaptiveFailureRetryDue -State $State -Key $key -Now $Now)) { return $true }
+    }
+    return $false
+}
+
 function Save-AdaptiveFailureRetry {
     param([Parameter(Mandatory = $true)][hashtable]$State, [Parameter(Mandatory = $true)]$Event,
         [ValidateRange(60, 86400)][int]$DelayBaseSeconds = 60,

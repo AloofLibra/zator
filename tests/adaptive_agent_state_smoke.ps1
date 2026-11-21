@@ -60,6 +60,14 @@ try {
     $retryState = Read-AdaptiveFailureRetryState
     if ((Get-AdaptiveFailureRetryCooldownCount -State $retryState -Now ($retryNow + 1)) -ne 1 -or
         (Get-AdaptiveFailureRetryCooldownCount -State $retryState -Now ($retryNow + 60)) -ne 0 -or
+        -not (Test-AdaptiveWatchCooldownPending -State $retryState -Events @([pscustomobject]@{
+            hostname = 'cdn.example.org'; destination_ip = '93.184.216.34'; profile_id = 1; scope = 'default'
+            protocol = 'tls'; status = 'active_rule_degraded'
+        }) -Now ($retryNow + 1)) -or
+        (Test-AdaptiveWatchCooldownPending -State $retryState -Events @([pscustomobject]@{
+            hostname = 'cdn.example.org'; destination_ip = '93.184.216.34'; profile_id = 1; scope = 'default'
+            protocol = 'tls'; status = 'active_rule_degraded'
+        }) -Now ($retryNow + 60)) -or
         (Get-Content -LiteralPath $AdaptiveRetryStatePath -Raw).Contains('cdn.example.org')) {
         throw 'Target-free retry cooldown count did not track active cooldown state.'
     }

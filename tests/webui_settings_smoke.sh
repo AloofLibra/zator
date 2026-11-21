@@ -133,9 +133,10 @@ grep -Fq '"pc_cpu_percent":23,"pc_free_memory_bytes":8589934592,"pc_network_byte
 grep -Fq '"router_load1_per_core":0.320,"router_memory_available_kib":65536,"router_active_probes":0' <<< "$renewal_status" || fail 'adaptive status omitted router runtime metrics'
 grep -Fq '"revalidation_recoveries":4,"revalidation_failures":1' <<< "$renewal_status" || fail 'adaptive status omitted aggregate revalidation results'
 grep -Fq '"cooldown_targets":2' <<< "$renewal_status" || fail 'adaptive status omitted target-free cooldown count'
-printf '3\t%s\tdeep_search\ttrue\tfalse\tdeep_scheduled\t12\t10\t2\t123456\t0\t23\t8589934592\t4096\t320\t65536\t0\t4\t1\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.status.tsv"
+printf '3\t%s\tcooldown\ttrue\tfalse\tdeep_scheduled\t12\t10\t2\t123456\t0\t23\t8589934592\t4096\t320\t65536\t0\t4\t1\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.status.tsv"
 legacy_adaptive_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -Fq '"cooldown_targets":0' <<< "$legacy_adaptive_status" || fail 'legacy adaptive status did not default cooldown count to zero'
+grep -Fq '"stage":"cooldown"' <<< "$legacy_adaptive_status" || fail 'adaptive panel API rejected the cooldown Watch stage'
 printf '4\t%s\tdeep_search\ttrue\tfalse\tdeep_scheduled\t12\t10\t2\t123456\t0\t23\t8589934592\t4096\t320\t65536\t0\t4\t1\t2\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.status.tsv"
 printf '1\tseen\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n1\tactive_rule_degraded\tcdn2.example.org\t93.184.216.35\t1\ttls\tdefault\t%s\n' "$(date +%s)" "$(date +%s)" > "$TMP_DIR/adaptive/events.tsv"
 printf '1\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t7\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"

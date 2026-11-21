@@ -27,7 +27,7 @@ adaptive_queue_agent_status() {
   local cpu="${10}" pc_mem="${11}" pc_net="${12}" router_load="${13}" router_mem="${14}" router_active="${15}"
   local revalidation_recoveries="${16}" revalidation_failures="${17}" cooldown_targets="${18:-0}" now
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file tmp
-  [[ "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit)$ &&
+  [[ "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit|cooldown)$ &&
      "$stats" =~ ^(true|false)$ && "$rankings" =~ ^(true|false)$ &&
      "$outcome" =~ ^(none|found|direct|deep_scheduled|all_exhausted|limit_reached|inconclusive|stopped_rate_limit|stopped_infra|cancelled)$ &&
      "$checked" =~ ^[0-9]{1,3}$ && "$checked" -le 999 &&

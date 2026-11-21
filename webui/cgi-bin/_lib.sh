@@ -90,7 +90,7 @@ adaptive_agent_status_json() {
   [[ -n "$cooldown_targets" ]] || cooldown_targets=0
   now="$(date +%s)" || { printf 'null\n'; return 0; }
   [[ -z "$extra" && ( "$version" = 3 || "$version" = 4 ) && "$updated" =~ ^[1-9][0-9]{0,9}$ && "$updated" -le $((now + 60)) && "$updated" -ge $((now - 120)) &&
-     "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit)$ && ( "$statistics" = true || "$statistics" = false ) &&
+     "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit|cooldown)$ && ( "$statistics" = true || "$statistics" = false ) &&
      ( "$rankings" = true || "$rankings" = false ) && "$outcome" =~ ^(none|found|direct|deep_scheduled|all_exhausted|limit_reached|inconclusive|stopped_rate_limit|stopped_infra|cancelled)$ &&
      "$checked" =~ ^[0-9]{1,3}$ && "$checked" -le 999 && "$fast" =~ ^[0-9]{1,3}$ && "$fast" -le 999 &&
      "$deep" =~ ^[0-9]{1,3}$ && "$deep" -le 999 && "$duration" =~ ^[0-9]{1,8}$ && "$duration" -le 86400000 &&
