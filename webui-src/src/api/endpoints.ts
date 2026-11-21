@@ -63,6 +63,25 @@ export const customBlobsUpload = (name: string, data: ArrayBuffer) =>
     `/cgi-bin/blobs.cgi?action=upload&name=${encodeURIComponent(name)}`,
     { method: 'POST', body: data, headers: { 'Content-Type': 'application/octet-stream' } })
 
+// SNI-пул вкладки «Блобы и SNI»: те же POST blobs.cgi, применяется на лету
+// (TTL ~2 с), рестарт не нужен. list — домены через перевод строки/пробел.
+export const sni = {
+  pin: (profile: string, domain: string) =>
+    customBlobsPost({ action: 'sni_pin', profile, value: domain }),
+  assignSet: (profile: string, name: string) =>
+    customBlobsPost({ action: 'sni_pool_assign', profile, value: name }),
+  customList: (profile: string, list: string) =>
+    customBlobsPost({ action: 'sni_pool_custom', profile, list }),
+  clearPool: (profile: string) =>
+    customBlobsPost({ action: 'sni_pool_clear', profile }),
+  policy: (profile: string, value: string) =>
+    customBlobsPost({ action: 'sni_pool_policy', profile, value }),
+  writeSet: (name: string, list: string) =>
+    customBlobsPost({ action: 'sni_set_write', name, list }),
+  deleteSet: (name: string) =>
+    customBlobsPost({ action: 'sni_set_delete', name }),
+}
+
 export const fetchScopes = () => api<ScopesPayload>('/cgi-bin/scopes.cgi')
 
 export const setLock = (profile: string, strategy: number, scope: string) =>

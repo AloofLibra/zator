@@ -59,6 +59,10 @@ ACTIONS_SRC="$(tr -d '\r' < "$REPO_DIR/lib/actions.sh")"
 STRATS_SRC="$(tr -d '\r' < "$REPO_DIR/lib/strategies.sh")"
 SWEEP_SRC="$(tr -d '\r' < "$REPO_DIR/lib/supersweep.sh")"
 PACK_SRC="$(tr -d '\r' < "$REPO_DIR/webui-src/scripts/pack-zator-tar.mjs")"
+BLOBS_CGI_SRC="$(tr -d '\r' < "$REPO_DIR/webui/cgi-bin/blobs.cgi")"
+APP_VUE_SRC="$(tr -d '\r' < "$REPO_DIR/webui-src/src/App.vue")"
+PANELS_TS_SRC="$(tr -d '\r' < "$REPO_DIR/webui-src/src/components/settings/panels.ts")"
+MOCK_SRC="$(tr -d '\r' < "$REPO_DIR/webui/dev/fake_router_server.py")"
 
 # 1a. Баннер авторства: атрибуция, офиц. репозиторий, GPL, DMCA, ИИ-разрешение
 assert_contains "$POOL_LUA_SRC" 'АВТОРСКОЕ ПРАВО \(c\) 2026 Alexander Markin' \
@@ -199,6 +203,30 @@ assert_contains "$STRATS_SRC" 'sni_pool_unpin' "автопрогон не сни
 assert_contains "$SWEEP_SRC" 'sni_pool_pin' "суперавтопрогон не пинит SNI-пул"
 assert_contains "$SWEEP_SRC" 'type sni_pool_unpin' \
   "cleanup суперавтопрогона не снимает пин безусловно"
+
+# 1i. WebUI: вкладка «Блобы и SNI» (blobs.cgi + фронт + мок-сервер)
+assert_contains "$BLOBS_CGI_SRC" '_blobs_sni_json' "blobs.cgi не собирает sni-стейт"
+assert_contains "$BLOBS_CGI_SRC" 'sni\\":\$sni' "GET blobs.cgi не отдаёт поле sni"
+for a in sni_pin sni_pool_assign sni_pool_custom sni_pool_clear sni_pool_policy \
+  sni_set_write sni_set_delete; do
+  assert_contains "$BLOBS_CGI_SRC" "$a\)" "blobs.cgi не знает действие $a"
+done
+assert_contains "$BLOBS_CGI_SRC" '503 Service Unavailable" "Для SNI-настроек' \
+  "blobs.cgi не деградирует на старом Core"
+assert_contains "$APP_VUE_SRC" "label: 'Блобы и SNI'" "вкладка не переименована"
+if grep -qE "^import TlsBlobPanel|id: 'tls-blob'" "$REPO_DIR/webui-src/src/components/settings/panels.ts"; then
+  fail "TlsBlobPanel не уехала из настроек на вкладку «Блобы и SNI»"
+fi
+grep -q 'TlsBlobPanel' "$REPO_DIR/webui-src/src/views/CustomBlobsView.vue" \
+  || fail "CustomBlobsView не рендерит TlsBlobPanel"
+grep -q 'SniPanel' "$REPO_DIR/webui-src/src/views/CustomBlobsView.vue" \
+  || fail "CustomBlobsView не рендерит SniPanel"
+[ -f "$REPO_DIR/webui-src/src/components/settings/SniPanel.vue" ] \
+  || fail "нет SniPanel.vue"
+grep -q 'sni_pool_assign' "$REPO_DIR/webui-src/src/api/endpoints.ts" \
+  || fail "endpoints.ts не знает sni-действия"
+assert_contains "$MOCK_SRC" 'sni_user_sets' "fake_router_server не держит SNI-стейт"
+assert_contains "$MOCK_SRC" '"sni": sni_state\(\)' "мок GET blobs.cgi не отдаёт sni"
 
 # --- 2. Поведение шелл-хелперов (настоящий sni_zator.txt из репо) ----------
 

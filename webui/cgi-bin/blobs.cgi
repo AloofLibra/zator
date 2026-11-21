@@ -13,6 +13,68 @@ _blobs_lib_guard() {
     || send_error "503 Service Unavailable" "Для «Своих блобов» обновите Core zator."
 }
 
+# SNI-блок вкладки (пул/наборы/пин/политика) — поверх общих хелперов
+# lib/orchestra_state.sh; на старом Core деградирует: GET отдаёт "sni":null,
+# POST отвечает 503.
+_blobs_sni_available() {
+  type sni_pool_supported_profiles >/dev/null 2>&1 \
+    && type sni_pool_display >/dev/null 2>&1 \
+    && type sni_override_set >/dev/null 2>&1
+}
+
+_blobs_sni_guard() {
+  _blobs_sni_available || send_error "503 Service Unavailable" "Для SNI-настроек обновите Core zator."
+}
+
+_blobs_sni_profile_ok() {
+  local want="$1" p
+  while read -r p; do
+    [ "$p" = "$want" ] && return 0
+  done < <(sni_pool_supported_profiles)
+  return 1
+}
+
+# Домены из параметра list (пробелы и переводы строк — разделители).
+_blobs_sni_domains() {
+  printf '%s' "$1" | tr '\r\n' '  '
+}
+
+_blobs_sni_json() {
+  local profiles="" p title pin pool pol cur_set eff="" sets="" name origin doms="" d
+  while read -r p; do
+    [ -n "$p" ] || continue
+    title="$(config_profile_title "$p")"
+    pin="$(sni_override_get "$p")"
+    pool="$(sni_pool_display "$p")"
+    pol="$(sni_pool_policy_get "$p")"
+    [ -n "$pol" ] || pol="rr"
+    cur_set="$(sni_pool_list "$p" | head -n1)"
+    case "$cur_set" in
+      @*) cur_set="$(printf '%s' "${cur_set#@}" | tr '[:upper:]' '[:lower:]')" ;;
+      *) cur_set="" ;;
+    esac
+    eff=""
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      eff="${eff}${eff:+,}\"$(json_escape "$d")\""
+    done < <(sni_pool_effective "$p")
+    profiles="${profiles}${profiles:+,}{\"id\":\"$p\",\"title\":\"$(json_escape "$title")\",\"pin\":\"$(json_escape "$pin")\",\"pool\":\"$(json_escape "$pool")\",\"policy\":\"$pol\",\"set\":\"$(json_escape "$cur_set")\",\"effective\":[${eff}]}"
+  done < <(sni_pool_supported_profiles)
+  sets=""
+  while read -r name; do
+    [ -n "$name" ] || continue
+    origin="$(sni_pool_set_origin "$name")"
+    [ "$origin" = "user" ] || origin="zator"
+    doms=""
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      doms="${doms}${doms:+,}\"$(json_escape "$d")\""
+    done < <(sni_pool_set_read "$name")
+    sets="${sets}${sets:+,}{\"name\":\"$(json_escape "$name")\",\"origin\":\"$origin\",\"domains\":[${doms}]}"
+  done < <(sni_pool_sets_list)
+  printf '{"profiles":[%s],"sets":[%s]}' "$profiles" "$sets"
+}
+
 _blobs_config_path() {
   local cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
@@ -21,8 +83,10 @@ _blobs_config_path() {
 
 api_blobs_list() {
   _blobs_lib_guard
-  local cfg rows="" row refs files="" f stock="" b name file comment
+  local cfg rows="" row refs files="" f stock="" b name file comment sni
   cfg="$(_blobs_config_path)"
+  sni="null"
+  _blobs_sni_available && sni="$(_blobs_sni_json)"
   while IFS= read -r row; do
     _custom_blobs_split "$row" || continue
     refs="$(custom_strategies_blob_ref_rows "$_CB_NAME")"
@@ -47,7 +111,7 @@ api_blobs_list() {
   actual="$(awk '/^#Z2R_CUSTOM_BLOBS_BEGIN$/{f=1;next} /^#Z2R_CUSTOM_BLOBS_END$/{f=0} f && /^--blob=/' "$cfg")"
   [ "$actual" != "$expected" ] && dirty=1
   printf 'Cache-Control: no-store\r\n'
-  send_json "200 OK" "{\"dir\":\"$(json_escape "$(custom_blobs_dir)")\",\"blobs\":[$rows],\"files\":[$files],\"stock\":[$stock],\"config_dirty\":$dirty}"
+  send_json "200 OK" "{\"dir\":\"$(json_escape "$(custom_blobs_dir)")\",\"blobs\":[$rows],\"files\":[$files],\"stock\":[$stock],\"config_dirty\":$dirty,\"sni\":$sni}"
 }
 
 # Параметр ТОЛЬКО из QUERY_STRING (parse_params при POST читает тело — для
@@ -163,6 +227,85 @@ api_blobs_action() {
       PARAM_RESTART="${PARAM_RESTART:-1}" _service_apply_restart
       telemetry_notify
       send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"restart_required\":true}"
+      ;;
+    sni_pin)
+      _blobs_sni_guard
+      _blobs_sni_profile_ok "$PARAM_PROFILE" \
+        || send_error "400 Bad Request" "Некорректный профиль: $PARAM_PROFILE"
+      if [ -z "$PARAM_VALUE" ]; then
+        sni_override_clear "$PARAM_PROFILE" \
+          || send_error "500 Internal Server Error" "Не удалось сбросить SNI"
+      elif sni_override_valid "$PARAM_VALUE"; then
+        sni_override_set "$PARAM_PROFILE" "$PARAM_VALUE" \
+          || send_error "500 Internal Server Error" "Не удалось сохранить SNI"
+      else
+        send_error "400 Bad Request" "Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов."
+      fi
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+      ;;
+    sni_pool_assign)
+      _blobs_sni_guard
+      _blobs_sni_profile_ok "$PARAM_PROFILE" \
+        || send_error "400 Bad Request" "Некорректный профиль: $PARAM_PROFILE"
+      sni_pool_assign_set "$PARAM_PROFILE" "$PARAM_VALUE" \
+        || send_error "400 Bad Request" "Набор «$PARAM_VALUE» не найден или некорректен."
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+      ;;
+    sni_pool_custom)
+      _blobs_sni_guard
+      _blobs_sni_profile_ok "$PARAM_PROFILE" \
+        || send_error "400 Bad Request" "Некорректный профиль: $PARAM_PROFILE"
+      local -a sni_items=()
+      local sni_d
+      for sni_d in $(_blobs_sni_domains "$PARAM_LIST"); do
+        [ -n "$sni_d" ] && sni_items+=("$sni_d")
+      done
+      [ "${#sni_items[@]}" -ge 1 ] || send_error "400 Bad Request" "Список пуст."
+      sni_pool_set_list "$PARAM_PROFILE" "${sni_items[@]}" \
+        || send_error "400 Bad Request" "Некорректный домен в списке или больше ${Z2R_SNI_POOL_MAX:-32} имён."
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+      ;;
+    sni_pool_clear)
+      _blobs_sni_guard
+      _blobs_sni_profile_ok "$PARAM_PROFILE" \
+        || send_error "400 Bad Request" "Некорректный профиль: $PARAM_PROFILE"
+      sni_pool_clear "$PARAM_PROFILE" \
+        || send_error "500 Internal Server Error" "Не удалось убрать пул"
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+      ;;
+    sni_pool_policy)
+      _blobs_sni_guard
+      _blobs_sni_profile_ok "$PARAM_PROFILE" \
+        || send_error "400 Bad Request" "Некорректный профиль: $PARAM_PROFILE"
+      sni_pool_policy_set "$PARAM_PROFILE" "$PARAM_VALUE" \
+        || send_error "400 Bad Request" "Политика: rr (по кругу) или rand (случайно без повторов)."
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+      ;;
+    sni_set_write)
+      _blobs_sni_guard
+      local -a sni_items=()
+      local sni_d
+      for sni_d in $(_blobs_sni_domains "$PARAM_LIST"); do
+        [ -n "$sni_d" ] && sni_items+=("$sni_d")
+      done
+      # имя набора — name, домены — list
+      [ "${#sni_items[@]}" -ge 1 ] || send_error "400 Bad Request" "Список пуст."
+      sni_pool_set_write "$PARAM_NAME" "${sni_items[@]}" \
+        || send_error "400 Bad Request" "Некорректное имя набора или домен в списке (до ${Z2R_SNI_POOL_MAX:-32} имён)."
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
+      ;;
+    sni_set_delete)
+      _blobs_sni_guard
+      sni_pool_set_delete "$PARAM_NAME" \
+        || send_error "400 Bad Request" "Нельзя удалить: набор занят в пулах или не является вашим."
+      telemetry_notify
+      send_json "200 OK" "{\"ok\":true,\"restarted\":false,\"restart_required\":false}"
       ;;
     *)
       send_error "400 Bad Request" "Неизвестное действие: $action"
