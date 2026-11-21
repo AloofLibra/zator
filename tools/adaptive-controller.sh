@@ -100,6 +100,33 @@ adaptive_ramp_control_exemptions() {
   export Z2R_ADAPTIVE_RAMP_EXEMPT_FILE
 }
 
+# Survive controller SIGKILL without making the Windows agent or a later API
+# request responsible for removing this controller's temporary route/queue.
+adaptive_controller_start_recovery_watchdog() {
+  [ "$#" = 5 ] || return 2
+  local watch_run="$1" watch_base="$2" watch_lock="$3" owner_pid="$4" owner_boot="$5"
+  [[ -d "$watch_run" && ! -L "$watch_run" && -d "$watch_lock" && ! -L "$watch_lock" &&
+     "$owner_pid" =~ ^[0-9]+$ && "$owner_boot" =~ ^[A-Za-z0-9-]{1,80}$ ]] || return 1
+  (
+    trap '' INT TERM HUP
+    while _adaptive_lan_controller_alive "$owner_pid"; do sleep 1; done
+    # Let the controller's EXIT trap finish its normal cleanup before taking
+    # over a lock left behind by a dead process.
+    sleep 2
+    local owner actual_pid actual_boot state
+    [[ -f "$watch_lock/owner" && ! -L "$watch_lock/owner" ]] || exit 0
+    IFS=$'\t' read -r owner actual_pid actual_boot < "$watch_lock/owner" || exit 0
+    [[ "$owner" = adaptive-lan && "$actual_pid" = "$owner_pid" && "$actual_boot" = "$owner_boot" ]] || exit 0
+    state="$(cat "$watch_run/state" 2>/dev/null)"
+    case "$state" in complete|failed) exit 0 ;; esac
+    adaptive_lan_transport_recover_stale "$watch_base" || {
+      printf 'watchdog_recovery_deferred\n' > "$watch_run/watchdog.status" 2>/dev/null || :
+      chmod 600 "$watch_run/watchdog.status" 2>/dev/null || :
+    }
+  ) </dev/null >/dev/null 2>&1 &
+  Z2R_ADAPTIVE_RECOVERY_WATCHDOG_PID=$!
+}
+
 run="$BASE/$id"
 [[ -d "$run" && ! -L "$run" ]] || exit 2
 umask 077
@@ -322,6 +349,12 @@ printf '{"schema_version":1,"test_id":"%s","hostname":"%s","source_ip":"%s","sou
   "$id" "${host,,}" "$src_ip" "$src_port" "$dst_ip" "$lease_protocol" "$expires" "$recipe" "$treatment" "$profile" "$scope" "$strategy" "$fingerprint" "$catalog_version" "$media_json" > "$run/lease.json.tmp"
 mv -f "$run/lease.json.tmp" "$run/lease.json"
 printf 'leased\n' > "$run/state"
+watchdog_boot_id="$(cat "${Z2R_ADAPTIVE_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}" 2>/dev/null)"
+[[ -n "$watchdog_boot_id" ]] || watchdog_boot_id=-
+adaptive_controller_start_recovery_watchdog "$run" "$BASE" "$Z2R_ADAPTIVE_LOCK_DIR" "$BASHPID" "$watchdog_boot_id" || {
+  printf 'recovery_watchdog_unavailable\n' > "$run/error"
+  exit 1
+}
 
 cancelled=0
 reconcile_failed=0
