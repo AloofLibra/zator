@@ -292,10 +292,12 @@ case "${f[action]:-}" in
        "${f[result]:-}" =~ ^(network_success|network_failure)$ && "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ &&
        "${f[browser_ip]:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid browser result'
     awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; exit 0} {exit 1}' <<< "${f[browser_ip]}" || fail '400 Bad Request' 'invalid browser IP'
-    [[ "${f[result]}" != network_success || "${f[request_class]}" = main_frame ]] || fail '400 Bad Request' 'only main-frame success can recover a site'
     row="$(adaptive_browser_attempt_read "${f[attempt_id]}")" || fail '404 Not Found' 'attempt not found'
     IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy attempt_fingerprint created expires generation extra <<< "$row"
     [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
+    if [[ "${f[request_class]}" != main_frame ]]; then
+      [[ "$trigger" = critical_resource_repeated_failure && "${f[request_class]}" =~ ^(script|xmlhttprequest|media)$ && "$proto" != quic ]] || fail '400 Bad Request' 'critical-resource result does not match this attempt'
+    fi
     if [[ "$state" = WAIT_NEW_FLOW ]]; then browser_confirm_flow || fail '409 Conflict' 'new production flow with selected strategy is not confirmed'; state=FLOW_CONFIRMED; fi
     if [[ "$state" = FLOW_CONFIRMED ]]; then
       adaptive_browser_attempt_transition "$attempt_id" FLOW_CONFIRMED WAIT_BROWSER_RESULT || fail '409 Conflict' 'attempt changed concurrently'

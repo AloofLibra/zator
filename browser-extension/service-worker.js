@@ -113,11 +113,12 @@
     state.seen = seen.slice(-MAX_SEEN);
 
     let trigger = "";
+    let resourceId = "";
     if (type === "main_frame" && method === "GET") trigger = "main_frame_network_failure";
     else if (RESOURCE_TYPES.has(type) && safeMethod(method)) {
-      const identity = await resourceIdentity(details.url);
-      if (identity) {
-        const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${host}|${type}|${identity}`;
+      resourceId = await resourceIdentity(details.url);
+      if (resourceId) {
+        const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${host}|${type}|${resourceId}`;
         const recent = state.resourceErrors.filter(x => x && Number.isFinite(x.at) && now - x.at <= DEDUPE_MS);
         const matching = recent.filter(x => x.key === resourceKey);
         if (matching.length >= 1) trigger = "critical_resource_repeated_failure";
@@ -127,11 +128,13 @@
     }
     const event = {
       id: opaqueId(), hostname: host, request_class: type, method: safeMethod(method) ? method : "UNSAFE",
-      failure_class: failure, trigger, observed_at: now, tab_id: details.tabId
+      failure_class: failure, trigger, observed_at: now, tab_id: details.tabId,
+      resource_identity: trigger === "critical_resource_repeated_failure" ? resourceId : undefined
     };
     event.failure_transport = failureTransport(details.error);
     event.failure_count = trigger === "critical_resource_repeated_failure" ? 2 : 1;
-    if (trigger && await captureAttemptResult(state, host, details.tabId, "network_failure", type, now, details.ip)) {
+    const feedbackEligible = (type === "main_frame" && method === "GET") || (RESOURCE_TYPES.has(type) && method === "GET");
+    if (feedbackEligible && await captureAttemptResult(state, host, details.tabId, "network_failure", type, now, details.ip, resourceId)) {
       await chrome.storage.local.set({ seen: state.seen, resourceErrors: state.resourceErrors });
       return { accepted: true, trigger: "attempt_result" };
     }
@@ -245,11 +248,13 @@
     return { ok: result.ok, state: result.data.state || result.status };
   }
 
-  async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp) {
+  async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp, resourceId = "") {
     if (!safeRemoteIp(browserIp)) return false;
     const event = [...state.events].reverse().find(row => row && row.attempt_id && row.hostname === host && row.tab_id === tabId &&
       ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status));
     if (!event || (event.attempt_expires_at && observedAt > event.attempt_expires_at * 1000)) return false;
+    if (requestClass !== "main_frame" && !(event.trigger === "critical_resource_repeated_failure" &&
+        requestClass === event.request_class && typeof event.resource_identity === "string" && event.resource_identity === resourceId)) return false;
     event.pending_result = { id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt };
     await chrome.storage.local.set({ events: state.events });
     void syncAttempt(event.id);
@@ -281,9 +286,14 @@
     if (!details || details.tabId < 0 || details.incognito === true) return;
     const host = safeHost(details.url);
     if (!host) return;
-    if (details.type === "main_frame" && details.method === "GET" && details.statusCode >= 200 && details.statusCode < 400 && details.statusCode !== 304 && details.fromCache !== true) {
+    if (details.method === "GET" && details.statusCode >= 200 && details.statusCode < 400 && details.statusCode !== 304 && details.fromCache !== true) {
       const state = await loadState();
-      await captureAttemptResult(state, host, details.tabId, "network_success", "main_frame", Date.now(), details.ip);
+      if (details.type === "main_frame") {
+        await captureAttemptResult(state, host, details.tabId, "network_success", "main_frame", Date.now(), details.ip);
+      } else if (RESOURCE_TYPES.has(details.type)) {
+        const identity = await resourceIdentity(details.url);
+        await captureAttemptResult(state, host, details.tabId, "network_success", details.type, Date.now(), details.ip, identity);
+      }
       return;
     }
     if (![403, 451, 500, 502, 503, 504].includes(details.statusCode)) return;

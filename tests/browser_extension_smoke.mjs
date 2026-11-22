@@ -34,11 +34,16 @@ const fakeRouter = createServer(async (request, response) => {
     response.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"invalid token"}')
     return
   }
-  const result = action === 'browser_report_failure' && new URLSearchParams(body).get('hostname') === 'video.example.test'
+  const params = new URLSearchParams(body)
+  const result = action === 'browser_report_failure' && params.get('hostname') === 'video.example.test'
     ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'a'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
+    : action === 'browser_report_failure' && params.get('hostname') === 'media.example.test'
+      ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'c'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
     : action === 'browser_attempt_status'
       ? { schema_version: 1, state: 'FLOW_CONFIRMED', ramp_treatment: 'applied', ramp_ack_evidence: 'confirmed' }
-    : { schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }
+      : action === 'browser_report_result'
+        ? { schema_version: 1, state: params.get('result') === 'network_failure' ? 'NEXT_CANDIDATE' : 'PROVISIONAL_SUCCESS' }
+        : { schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
 })
 await new Promise(resolve => fakeRouter.listen(0, '127.0.0.1', resolve))
@@ -133,13 +138,16 @@ assert.equal(head.trigger, 'observe_only')
 assert.equal(sent.length, 1)
 
 const subresource = (requestId, path = '/chunk/a', type = 'xmlhttprequest') => ({ tabId: 8, documentId: 'doc-resource', requestId, type, method: 'GET',
-  url: `https://media.example.test${path}?private=1`, error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now() })
+  url: `https://media.example.test${path}?private=1`, error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now(), ip: '8.8.8.8' })
 const firstResource = await api.rememberFailure(subresource('sub-1'))
 assert.equal(firstResource.trigger, 'observe_only')
 const differentResource = await api.rememberFailure(subresource('sub-other', '/chunk/b'))
 assert.equal(differentResource.trigger, 'observe_only', 'different subresources on one host must not be grouped')
 const secondResource = await api.rememberFailure(subresource('sub-2', '/chunk/a'))
 assert.equal(secondResource.trigger, 'critical_resource_repeated_failure')
+const secondResourceEvent = stored.events.find(row => row.id === secondResource.event_id)
+assert.match(secondResourceEvent.resource_identity, /^[a-f0-9]{64}$/)
+assert.ok(!JSON.stringify(secondResourceEvent).includes('/chunk') && !JSON.stringify(secondResourceEvent).includes('private'))
 assert.equal(sent.length, 2)
 assert.equal(new URLSearchParams(sent[1].body).get('failure_count'), '2')
 assert.ok(!sent[1].body.includes('/chunk') && !sent[1].body.includes('private'))
@@ -164,8 +172,38 @@ assert.equal(sent.length, 4)
 assert.equal(sent[3].authorization, `Bearer ${'x'.repeat(48)}`)
 stored.config.token = routerToken
 
+const resultRequestsBefore = sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').length
+await api.recordHttpResponse({ tabId: 8, type: 'xmlhttprequest', method: 'GET', statusCode: 206, fromCache: false,
+  url: 'https://media.example.test/chunk/b?private=1', ip: '8.8.8.8' })
+assert.equal(sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').length, resultRequestsBefore,
+  'a different resource on the same hostname must not confirm recovery')
+await api.recordHttpResponse({ tabId: 8, type: 'xmlhttprequest', method: 'GET', statusCode: 206, fromCache: true,
+  url: 'https://media.example.test/chunk/a?private=1', ip: '8.8.8.8' })
+assert.equal(sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').length, resultRequestsBefore,
+  'cached resource success must not confirm recovery')
+await api.recordHttpResponse({ tabId: 8, type: 'xmlhttprequest', method: 'GET', statusCode: 206, fromCache: false,
+  url: 'https://media.example.test/chunk/a?private=1', ip: '8.8.8.8' })
+await new Promise(resolve => setTimeout(resolve, 30))
+const resourceResultRequest = sent.find(row => new URLSearchParams(row.body).get('action') === 'browser_report_result')
+assert.ok(resourceResultRequest, 'successful retry of the exact critical resource was not reported')
+assert.equal(new URLSearchParams(resourceResultRequest.body).get('request_class'), 'xmlhttprequest')
+assert.equal(new URLSearchParams(resourceResultRequest.body).get('browser_ip'), '8.8.8.8')
+assert.ok(!resourceResultRequest.body.includes('/chunk') && !resourceResultRequest.body.includes('private'),
+  'resource URLs must not be sent to the router')
+const reportedResultCount = sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').length
+const unrelatedPostTrialFailure = await api.rememberFailure(subresource('sub-unrelated', '/chunk/c'))
+assert.equal(unrelatedPostTrialFailure.trigger, 'observe_only')
+assert.equal(sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').length, reportedResultCount,
+  'an unrelated subresource failure must not be charged to the active trial')
+const exactPostTrialFailure = await api.rememberFailure(subresource('sub-retry-failed', '/chunk/a'))
+assert.equal(exactPostTrialFailure.trigger, 'attempt_result', 'matching post-trial critical-resource failure was not correlated')
+await new Promise(resolve => setTimeout(resolve, 30))
+const resourceFailureRequest = sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').at(-1)
+assert.equal(new URLSearchParams(resourceFailureRequest.body).get('result'), 'network_failure')
+assert.equal(new URLSearchParams(resourceFailureRequest.body).get('request_class'), 'xmlhttprequest')
+
 await api.recordHttpResponse({ tabId: 2, type: 'main_frame', statusCode: 503, url: 'https://server.example.test/path' })
-assert.equal(sent.length, 4)
+assert.equal(sent.length, 6)
 assert.equal(stored.events.at(-1).trigger, 'manual_only')
 assert.ok(!Object.keys(stored.events.at(-1)).includes('url'))
 

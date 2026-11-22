@@ -281,6 +281,26 @@ result_response="$(printf '%s' "$result_body" | env REQUEST_METHOD=POST CONTENT_
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$result_response"
 
+critical_attempt=efefefefefefefefefefefefefefefef
+critical_generation=8
+critical_now="$(date +%s)"
+critical_expires=$((critical_now + 30))
+adaptive_browser_attempt_write "$critical_attempt" "$client_id" 192.168.1.42 mark:7 media.example.test 8.8.8.8 1 tls critical_resource_repeated_failure WAIT_BROWSER_RESULT "$selected_strategy" "$selected_fingerprint" "$critical_now" "$critical_expires" "$critical_generation"
+printf '1\t%s\t%s\t%s\tmark:7\tmedia.example.test\t8.8.8.8\t1\ttls\t%s\t%s\t%s\t%s\n' \
+  "$critical_attempt" "$critical_generation" "$client_id" "$selected_strategy" "$selected_fingerprint" "$critical_now" "$critical_now" > "$flow_dir/$critical_attempt.$critical_generation.tsv"
+critical_success_body="schema_version=1&action=browser_report_result&attempt_id=$critical_attempt&browser_event_id=12121212121212121212121212121212&result=network_success&request_class=xmlhttprequest&browser_ip=8.8.8.8&observed_at=$((critical_now * 1000))"
+critical_success_response="$(printf '%s' "$critical_success_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#critical_success_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"PROVISIONAL_SUCCESS"' <<< "$critical_success_response"
+wrong_class_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_flow&browser_event_id=13131313131313131313131313131313&result=network_success&request_class=xmlhttprequest&browser_ip=8.8.8.8&observed_at=$((critical_now * 1000))"
+wrong_class_response="$(printf '%s' "$wrong_class_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#wrong_class_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q 'critical-resource result does not match this attempt' <<< "$wrong_class_response"
+wrong_class_failure_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_flow&browser_event_id=14141414141414141414141414141414&result=network_failure&request_class=script&browser_ip=8.8.8.8&observed_at=$((critical_now * 1000))"
+wrong_class_failure_response="$(printf '%s' "$wrong_class_failure_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#wrong_class_failure_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q 'critical-resource result does not match this attempt' <<< "$wrong_class_failure_response"
+
 # A failed post-trial main-frame request chooses exactly the next candidate,
 # bounded by the same per-host event budget and a fresh production flow.
 attempt_failed=ffffffffffffffffffffffffffffffff
