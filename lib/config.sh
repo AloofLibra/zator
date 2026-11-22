@@ -668,7 +668,14 @@ zapret2_version_short() {
   # слабых роутерах), а версия меняется только при обновлении zapret2.
   # Шапка меню и state.cgi зовут это на каждом открытии.
   cache="${TMPDIR:-/tmp}/z2r_z2ver_cache"
-  key="$(stat -c '%s.%Y' "$bin" 2>/dev/null || printf '%s' "$bin")"
+  # ключ кеша = размер.mtime бинаря. GNU stat (-c) есть не везде :
+  # BusyBox stat (keenetic) его не знает и без фолбэка ключ вырождался
+  # в путь к файлу - не менялся при обновлении бинаря, и шапка меню
+  # вечно показывала версию с первого запуска. Фолбэк собирает тот же
+  # размер.mtime средствами BusyBox (wc -c + date -r).
+  key="$(stat -c '%s.%Y' "$bin" 2>/dev/null)"
+  [ -n "$key" ] || key="$(wc -c <"$bin" 2>/dev/null | tr -d ' ').$(date -r "$bin" +%s 2>/dev/null)"
+  [ -n "$key" ] || key="$bin"
   if [ -f "$cache" ] && [ "$(head -n1 "$cache" 2>/dev/null)" = "$key" ]; then
     tail -n +2 "$cache" 2>/dev/null
     return 0
