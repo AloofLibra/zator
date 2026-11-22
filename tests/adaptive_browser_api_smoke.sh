@@ -189,4 +189,25 @@ failed_response="$(printf '%s' "$failed_body" | env REQUEST_METHOD=POST CONTENT_
 grep -q '"state":"NEXT_CANDIDATE"' <<< "$failed_response"
 grep -q '"attempt_id":"[a-f0-9]\{32\}"' <<< "$failed_response"
 grep -q '"strategy":1' <<< "$failed_response"
+
+# A browser success after a confirmed profile-5 flow is not QUIC success unless
+# Chromium provides reliable H3 protocol evidence (the current extension does not).
+quic_attempt=abababababababababababababababab
+quic_generation=10
+quic_host=rr1---sn-a5mekn6e.googlevideo.com
+quic_now="$(date +%s)"
+quic_expires=$((quic_now + 30))
+quic_fingerprint="sha256:$(printf '%064d' 0 | tr 0 c)"
+quic_strategy=2
+adaptive_browser_attempt_write "$quic_attempt" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic main_frame_network_failure WAIT_BROWSER_RESULT "$quic_strategy" "$quic_fingerprint" "$quic_now" "$quic_expires" "$quic_generation"
+printf '1\t%s\t%s\t%s\tmark:7\t%s\t8.8.8.8\t5\tquic\t%s\t%s\t%s\t%s\n' \
+  "$quic_attempt" "$quic_generation" "$client_id" "$quic_host" "$quic_strategy" "$quic_fingerprint" "$quic_now" "$quic_now" > "$flow_dir/$quic_attempt.$quic_generation.tsv"
+quic_result_body="schema_version=1&action=browser_report_result&attempt_id=$quic_attempt&browser_event_id=abababababababababababababababab&result=network_success&request_class=main_frame&browser_ip=8.8.8.8&observed_at=$((quic_now * 1000))"
+quic_result_response="$(printf '%s' "$quic_result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#quic_result_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"UNKNOWN"' <<< "$quic_result_response"
+grep -q '"status":"PROTOCOL_UNKNOWN"' <<< "$quic_result_response"
+if grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$quic_result_response"; then
+  echo 'browser success on a QUIC trial was incorrectly counted as H3 success' >&2; exit 1;
+fi
 echo 'adaptive browser API smoke: OK'

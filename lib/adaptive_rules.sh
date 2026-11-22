@@ -11,6 +11,21 @@ adaptive_rules_snapshot_file() {
   printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/rules.tsv"
 }
 
+adaptive_rules_quic_host_valid() {
+  [[ $# = 1 && "${1,,}" =~ (^|\.)(googlevideo\.com|youtube\.com|youtubei\.googleapis\.com)$ ]]
+}
+
+adaptive_rules_kind_valid() {
+  [[ $# = 3 ]] || return 1
+  local profile="$1" proto="$2" host="${3,,}"
+  case "$proto" in
+    tls) [[ "$profile" =~ ^[1-4]$ ]] ;;
+    googlevideo-tcp) [[ "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ]] ;;
+    quic) [[ "$profile" = 5 ]] && adaptive_rules_quic_host_valid "$host" ;;
+    *) return 1 ;;
+  esac
+}
+
 adaptive_rules_resolve_runtime_path() {
   local path="$1" zator_root="${ZATOR_ROOT:-/opt/zator}" zapret_root="${ZAPRET2_ROOT:-/opt/zapret2}"
   case "$path" in
@@ -433,7 +448,8 @@ adaptive_rule_add() {
        (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1
     exit 0
   } {exit 1}' <<< "$ip" || return 2
-  [[ "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ ) ]] || return 2
+  [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ ) ]] || return 2
+  [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   [[ "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ ]] || return 2
   [[ "$runtime_stamp" =~ ^[0-9:|]{1,2048}$ ]] || return 2
   [[ "$expires" =~ ^[1-9][0-9]{0,9}$ ]] || return 2
@@ -484,7 +500,8 @@ adaptive_rule_remove() {
   local host="${1,,}" ip="$2" profile="$3" scope="$4" proto="${5:-tls}"
   local file dir lock snapshot source tmp row ver old_host old_ip old_profile old_proto old_scope old_strategy old_fp old_catalog old_stamp old_expiry extra tries=0 owner removed=0 count=0
   [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
-  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
+  [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   file="$(adaptive_rules_file)"; dir="$(dirname "$file")"; lock="$file.lock"; snapshot="$(adaptive_rules_snapshot_file)"
   mkdir -p "$dir" "$(dirname "$snapshot")" || return 1
   while ! (umask 077; mkdir "$lock") 2>/dev/null; do
@@ -523,6 +540,7 @@ adaptive_rule_lookup_local() {
   local host="${1,,}" ip="$2" profile="$3" proto="$4" scope="$5" stamp="$6"
   local file snapshot row ver old_host old_ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now
   local found='' matches=0 count=0
+  [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   file="$(adaptive_rules_file)"; snapshot="$(adaptive_rules_snapshot_file)"
   [[ -f "$file" && ! -L "$file" ]] || file="$snapshot"
   [[ -r "$file" && ! -L "$file" ]] || return 1
@@ -531,7 +549,7 @@ adaptive_rule_lookup_local() {
     count=$((count + 1)); (( count <= 256 )) || return 1
     IFS=$'\t' read -r ver old_host old_ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra <<< "$row"
     [[ "$ver" = 1 && -z "${extra:-}" && "$old_host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ &&
-       "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$old_profile" =~ ^[1-4]$ && ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 && "$old_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) &&
+       "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$old_profile" =~ ^[1-4]$ && ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 && "$old_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$old_profile" = 5 && "$old_proto" = quic ) ) &&
        ( "$old_scope" = default || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ &&
        "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
     [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_profile" = "$profile" && "$old_proto" = "$proto" &&
@@ -551,8 +569,8 @@ adaptive_rule_remove_if_matches() {
   [[ $# = 8 ]] || return 2
   local host="$1" ip="$2" profile="$3" proto="$4" scope="$5" strategy="$6" fingerprint="$7" stamp="$8"
   local current current_strategy current_fingerprint current_catalog current_expiry
-  [[ ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) && "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || return 2
-  [[ "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ]] || return 2
+  adaptive_rules_kind_valid "$profile" "$proto" "$host" || return 2
+  [[ "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || return 2
   current="$(adaptive_rule_lookup_local "$host" "$ip" "$profile" "$proto" "$scope" "$stamp")" || return 1
   IFS=$'\t' read -r current_strategy current_fingerprint current_catalog current_expiry <<< "$current"
   [[ "$current_strategy" = "$strategy" && "$current_fingerprint" = "$fingerprint" ]] || return 1
@@ -579,7 +597,7 @@ adaptive_rules_ranked_candidates() {
   local file snapshot row ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now catalog_seen row_identity pair remaining
   local -A scores=() seen_catalog=() seen_pairs=()
   local best_score=0 best_ties=0
-  [[ "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ ) && "$stamp" =~ ^[0-9:|]{1,2048}$ && "$max" =~ ^[1-9][0-9]{0,2}$ ]] || return 2
+  [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ ) && "$stamp" =~ ^[0-9:|]{1,2048}$ && "$max" =~ ^[1-9][0-9]{0,2}$ ]] || return 2
   [[ -z "$identity" || "$identity" =~ ^(gv1:(rr|r):[a-z0-9.-]+|exact:[a-z0-9.-]+)$ ]] || return 2
   file="$(adaptive_rules_file)"; snapshot="$(adaptive_rules_snapshot_file)"
   [[ -f "$file" && ! -L "$file" ]] || file="$snapshot"
@@ -593,6 +611,7 @@ adaptive_rules_ranked_candidates() {
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra <<< "$row"
     [[ "$ver" = 1 && -z "${extra:-}" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" &&
+       "$(adaptive_rules_kind_valid "$old_profile" "$old_proto" "$host" && printf valid)" = valid &&
        "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ &&
        "$old_stamp" = "$stamp" && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
     if [[ -n "$identity" ]]; then row_identity="$(adaptive_rules_googlevideo_group_id "$host" 2>/dev/null)" || continue; [[ "$row_identity" = "$identity" ]] || continue; fi
@@ -604,6 +623,7 @@ adaptive_rules_ranked_candidates() {
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra <<< "$row"
     [[ "$ver" = 1 && -z "${extra:-}" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" &&
+       "$(adaptive_rules_kind_valid "$old_profile" "$old_proto" "$host" && printf valid)" = valid &&
        "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" = "$catalog_seen" &&
        "$old_stamp" = "$stamp" && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
     if [[ -n "$identity" ]]; then row_identity="$(adaptive_rules_googlevideo_group_id "$host" 2>/dev/null)" || continue; [[ "$row_identity" = "$identity" ]] || continue; fi

@@ -21,6 +21,10 @@ adaptive_browser_host_valid() {
   ADAPTIVE_BROWSER_HOST="$host"
 }
 
+adaptive_browser_quic_host_valid() {
+  [[ $# = 1 && "${1,,}" =~ (^|\.)(googlevideo\.com|youtube\.com|youtubei\.googleapis\.com)$ ]]
+}
+
 adaptive_browser_context_valid() {
   local client_id="$1" client_ip="$2" scope="$3" now="${4:-$(date +%s)}"
   local map_file="${CLIENT_SCOPE_MAP_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/client_scope.tsv}"
@@ -55,8 +59,9 @@ adaptive_browser_resolve_observation() {
   while IFS= read -r row || [[ -n "$row" ]]; do
     IFS=$'\t' read -r ver status old_host ip profile proto old_scope seen extra <<< "$row"
     [[ "$ver" = 1 && "$status" = seen && "$old_host" = "$host" && "$old_scope" = "$scope" &&
-       "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) &&
+       ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) &&
        "$seen" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || continue
+    [[ "$proto" != quic ]] || adaptive_browser_quic_host_valid "$old_host" || continue
     (( seen >= now - 300 && seen <= now + 10 )) || continue
     awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || continue
     printf -v tuple '%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$scope" "$seen"
@@ -71,15 +76,16 @@ adaptive_browser_resolve_observation() {
 # Existing verified local rankings only sort candidates; a browser failure does
 # not itself create a verified rule or lower another strategy's rating.
 adaptive_browser_profile_lock_check() {
-  [[ $# = 3 && "$1" =~ ^[1-4]$ && ( "$2" = default || "$2" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
-  local profile="$1" scope="$2" orch_dir="$3" lock_file scoped_lock
+  [[ $# = 3 && "$1" =~ ^[1-5]$ && ( "$2" = default || "$2" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
+  local profile="$1" scope="$2" orch_dir="$3" lock_file scoped_lock proto=udp
+  [[ "$profile" != 5 ]] && proto=tls
   scoped_lock=""
   if [[ "$scope" != default ]]; then scoped_lock="$orch_dir/scopes/${scope/:/_}.tsv"; fi
   # Match Lua's scoped-first, default-fallback lock resolution.
   for lock_file in "$scoped_lock" "$orch_dir/locked.tsv"; do
     [[ -n "$lock_file" && -e "$lock_file" ]] || continue
     [[ -f "$lock_file" && ! -L "$lock_file" && -r "$lock_file" ]] || return 2
-    if awk -F '\t' -v pr="$profile" '$1==pr && (($2=="tls" && NF>=3) || NF==2) {found=1} END{exit !found}' "$lock_file"; then
+    if awk -F '\t' -v pr="$profile" -v proto="$proto" '$1==pr && (($2==proto && NF>=3) || NF==2) {found=1} END{exit !found}' "$lock_file"; then
       return 0
     fi
   done
@@ -92,7 +98,7 @@ adaptive_browser_candidate_select() {
   local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" max current state stamp exact ranked family identity strategy fingerprint now
   local -A seen=()
   local -a candidates=()
-  [[ "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) &&
+  [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) || ( "$profile" = 5 && "$proto" = quic ) ) &&
      ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && -r "$args_file" && -x "$nfqws" ]] || return 2
   adaptive_browser_profile_lock_check "$profile" "$scope" "$orch_dir"
   case $? in 1) ;; *) return 4 ;; esac
@@ -112,7 +118,8 @@ adaptive_browser_candidate_select() {
     [[ "$strategy" != "$current" && ! ${seen[$strategy]+yes} ]] || continue
     seen[$strategy]=1
     if adaptive_browser_candidate_confirmed_failed "$client_id" "$host" "$ip" "$profile" "$proto" "$scope" "$strategy" "$now"; then continue; fi
-    fingerprint="$(adaptive_strategy_fingerprint "$profile" "$strategy" "$args_file" "$nfqws" standard "$( [[ "$proto" = googlevideo-tcp ]] && printf googlevideo-tcp-media-v1 || printf tls-http1-v1 )" 2>/dev/null)" || continue
+    case "$proto" in googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; quic) recipe=googlevideo-quic-h3-media-v1 ;; *) recipe=tls-http1-v1 ;; esac
+    fingerprint="$(adaptive_strategy_fingerprint "$profile" "$strategy" "$args_file" "$nfqws" standard "$recipe" 2>/dev/null)" || continue
     [[ "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || continue
     printf '%s\t%s\n' "$strategy" "$fingerprint"
     return 0
@@ -190,10 +197,11 @@ adaptive_browser_flow_read() {
   IFS=$'\t' read -r ver id generation client_id scope host ip profile proto strategy fingerprint syn_at selected_at extra <<< "$row"
   [[ "$ver" = 1 && "$id" = "$1" && "$generation" = "$2" && "$client_id" =~ ^[a-f0-9]{32}$ &&
      ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$host" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ &&
-     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ &&
-     ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( "$profile" =~ ^[1-4]$ || "$profile" = 5 ) &&
+     ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) || ( "$proto" = quic && "$profile" = 5 ) ) &&
      "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
      "$syn_at" =~ ^[0-9]{1,10}$ && "$selected_at" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || return 2
+  [[ "$proto" != quic ]] || adaptive_browser_quic_host_valid "$host" || return 2
   printf '%s\n' "$row"
 }
 
@@ -235,9 +243,10 @@ adaptive_browser_trial_add() {
   [[ "$id" =~ ^[a-f0-9]{32}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ && "$client_id" =~ ^[a-f0-9]{32}$ &&
      "$client_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
      "$(adaptive_browser_host_valid "$host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "${host,,}" &&
-     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) &&
      "$strategy" =~ ^[1-9][0-9]{0,2}$ && ( "$fingerprint" = - || "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ) &&
      "$created" =~ ^[0-9]{1,10}$ && "$expires" =~ ^[0-9]{1,10}$ ]] || return 2
+  [[ "$proto" != quic ]] || adaptive_browser_quic_host_valid "$host" || return 2
   now="$(date +%s)"; (( expires > now && expires <= now + 90 && created <= now + 5 )) || return 2
   file="$(adaptive_browser_trials_file)"; dir="$(dirname "$file")"; lock="$file.lock"
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$file" && ! -L "$lock" ]] || return 1
@@ -250,8 +259,8 @@ adaptive_browser_trial_add() {
       IFS=$'\t' read -r ver old_id old_gen old_client old_client_ip old_scope old_host old_ip old_profile old_proto old_strategy old_fp old_created old_expires extra <<< "$row"
       [[ "$ver" = 1 && "$old_id" =~ ^[a-f0-9]{32}$ && "$old_gen" =~ ^[1-9][0-9]{0,8}$ &&
          "$old_client" =~ ^[a-f0-9]{32}$ && "$old_scope" =~ ^(default|mark:[1-9][0-9]{0,4})$ &&
-         "$old_host" =~ ^[a-z0-9.-]+$ && "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$old_profile" =~ ^[1-4]$ &&
-         ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 ) ) && "$old_strategy" =~ ^[1-9][0-9]{0,2}$ &&
+         "$old_host" =~ ^[a-z0-9.-]+$ && "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+         ( ( "$old_profile" =~ ^[1-4]$ && ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 ) ) ) || ( "$old_profile" = 5 && "$old_proto" = quic ) ) && "$old_strategy" =~ ^[1-9][0-9]{0,2}$ &&
          ( "$old_fp" = - || "$old_fp" =~ ^sha256:[a-f0-9]{64}$ ) && "$old_created" =~ ^[0-9]{1,10}$ && "$old_expires" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
       (( old_expires > now )) || continue
       count=$((count + 1)); (( count <= 63 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
@@ -356,6 +365,7 @@ adaptive_browser_attempt_write() {
      "$strategy" =~ ^(-|0|[1-9][0-9]{0,2})$ &&
      ( "$fingerprint" = - || "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ) &&
      "$created" =~ ^[0-9]{1,10}$ && "$expires" =~ ^[0-9]{1,10}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ ]] || return 2
+  if [[ "$proto" = quic ]]; then [[ "$profile" = 5 ]] && adaptive_browser_quic_host_valid "$host" || return 2; fi
   dir="$(dirname "$(adaptive_browser_attempt_file "$attempt_id")")"
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$dir" ]] || return 1
   mkdir -p "$dir" || return 1

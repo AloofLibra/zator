@@ -66,6 +66,7 @@ browser_start_trial() {
   case "$proto" in
     tls) recipe=tls-http1-v1 ;;
     googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;;
+    quic) recipe=googlevideo-quic-h3-media-v1 ;;
     *) return 3 ;;
   esac
   ORCH_DIR="$ROOT/extra_strats/cache/orchestra"
@@ -147,7 +148,7 @@ browser_promote_attempt() {
   [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 1
   adaptive_browser_profile_lock_check "$profile" "$attempt_scope" "$ROOT/extra_strats/cache/orchestra"
   [[ "$?" = 1 ]] || return 1
-  case "$proto" in tls) recipe=tls-http1-v1 ;; googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; *) return 1 ;; esac
+  case "$proto" in tls) recipe=tls-http1-v1 ;; googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; quic) recipe=googlevideo-quic-h3-media-v1 ;; *) return 1 ;; esac
   nfqws="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
   config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   [[ -x "$nfqws" && -r "$config" && ! -L "$config" ]] || return 1
@@ -282,6 +283,11 @@ case "${f[action]:-}" in
        "$flow_profile" = "$profile" && "$flow_proto" = "$proto" && "$flow_strategy" = "$strategy" && "$flow_fingerprint" = "$attempt_fingerprint" ]] || fail '409 Conflict' 'production flow does not match this attempt'
     (( f[observed_at] >= selected_at * 1000 && f[observed_at] <= now_ms + 5000 && f[observed_at] <= expires * 1000 )) || fail '400 Bad Request' 'result is outside the confirmed flow window'
     [[ "$state" = WAIT_BROWSER_RESULT || "$state" = PROVISIONAL_SUCCESS ]] || fail '409 Conflict' 'attempt is not waiting for a browser result'
+    if [[ "$proto" = quic ]]; then
+      adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || fail '409 Conflict' 'attempt changed concurrently'
+      adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+      send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"UNKNOWN\",\"status\":\"PROTOCOL_UNKNOWN\"}"
+    fi
     result_claim="$(adaptive_browser_result_claim "$client_id" "$attempt_id" "${f[browser_event_id]}" "${f[result]}" "$(date +%s)")" || {
       result_rc=$?
       [[ "$result_rc" = 3 ]] && send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"status\":\"DUPLICATE\"}"

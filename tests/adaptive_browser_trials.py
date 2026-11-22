@@ -82,6 +82,42 @@ assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "m
 local default_trial = trial("8.8.8.8", "default", "tls", 1, 2, 1045)
 locked_load_browser_trials_for_tests({default_trial}, now)
 assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "default", now), "explicitly consented default trial rejected")
+
+local qhost = "rr1---sn-a.googlevideo.com"
+local qtrial = table.concat({"1", id, "2", client, "192.168.1.42", "mark:7", qhost,
+  "8.8.8.8", "5", "quic", "2", fingerprint, "990", "1045"}, "\t")
+locked_load_browser_trials_for_tests({qtrial}, now)
+local qmatch = locked_browser_trial_for_tuple(qhost, "8.8.8.8", 5, "quic", "mark:7", now)
+assert(qmatch and qmatch.proto == "quic" and qmatch.profile == "5", "exact profile-5 QUIC trial not returned")
+local qtrack = {}
+local qinitial = {outgoing=true, l7payload="quic_initial", hostname=qhost, track=qtrack,
+  dis={dst="8.8.8.8", udp={th_dport=443}}}
+local qcaptured, qreason = locked_browser_capture_quic_for_tests(qinitial, qhost, "5", "mark:7")
+assert(qcaptured, "QUIC Initial capture refused: " .. tostring(qreason))
+assert(locked_browser_record_flow_for_tests({track=qtrack}, qmatch, qhost, "8.8.8.8", "5", "quic", "mark:7", 2),
+  "matching QUIC Initial did not create production flow evidence")
+local qflow = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".2.tsv", "r"))
+local qline = qflow:read("*l")
+qflow:close()
+local qfields = {}
+for field in (qline .. "\t"):gmatch("(.-)\t") do qfields[#qfields + 1] = field end
+assert(qfields[1] == "1" and qfields[2] == id and qfields[3] == "2" and qfields[4] == client
+  and qfields[5] == "mark:7" and qfields[6] == qhost and qfields[7] == "8.8.8.8"
+  and qfields[8] == "5" and qfields[9] == "quic" and qfields[10] == "2" and qfields[11] == fingerprint,
+  "QUIC flow proof did not bind host, profile, and selected strategy: " .. tostring(qline))
+qtrack.lua_state.adaptive_browser_trial_id = id
+qtrack.lua_state.adaptive_browser_trial_generation = 2
+local qagain = {outgoing=true, l7payload="quic_initial", hostname=qhost, track=qtrack,
+  dis={dst="8.8.8.8", udp={th_dport=443}}}
+assert(not locked_browser_capture_quic_for_tests(qagain, qhost, "5", "mark:7"), "repeat QUIC Initial was treated as a new flow")
+local qambiguous = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".2.tsv", "r"))
+local qcontents = qambiguous:read("*a")
+qambiguous:close()
+assert(qcontents:match("AMBIGUOUS"), "repeated QUIC Initial did not invalidate its proof")
+local nonvideo = qtrial:gsub(qhost, "example.org")
+locked_load_browser_trials_for_tests({nonvideo}, now)
+assert(locked_browser_trial_for_tuple("example.org", "8.8.8.8", 5, "quic", "mark:7", now) == nil,
+  "profile-5 QUIC trial accepted a non-YouTube host")
 ''')
 
     off_root = root / "off"

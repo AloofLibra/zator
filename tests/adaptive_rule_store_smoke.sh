@@ -42,6 +42,18 @@ if adaptive_rule_lookup_local "$gv_host" 93.184.216.37 2 tls default "$stamp" >/
   echo 'Googlevideo media rule leaked into the TLS-only category' >&2; exit 1
 fi
 adaptive_rule_remove "$gv_host" 93.184.216.37 2 default googlevideo-tcp || { echo 'Googlevideo media rule could not be removed by exact category' >&2; exit 1; }
+quic_host=rr1---sn-a5mekn6e.googlevideo.com
+adaptive_rule_add "$quic_host" 93.184.216.41 5 quic mark:4 9 "$fp" "$cat" "$stamp" "$((now + 3600))"
+quic_found="$(adaptive_rule_lookup_local "$quic_host" 93.184.216.41 5 quic mark:4 "$stamp")"
+[[ "${quic_found%%$'\t'*}" = 9 ]] || { echo 'profile-5 QUIC rule was not stored in its exact scoped category' >&2; exit 1; }
+[[ "$(adaptive_rules_ranked_candidates 5 quic mark:4 "$stamp" 20)" = 9 ]] || { echo 'profile-5 QUIC confirmation was not available to candidate ranking' >&2; exit 1; }
+if adaptive_rule_add example.org 93.184.216.42 5 quic mark:4 9 "$fp" "$cat" "$stamp" "$((now + 3600))"; then
+  echo 'profile-5 QUIC rule accepted a non-YouTube host' >&2; exit 1;
+fi
+if adaptive_rule_add "$quic_host" 93.184.216.41 4 quic mark:4 9 "$fp" "$cat" "$stamp" "$((now + 3600))"; then
+  echo 'QUIC rule accepted a non-profile-5 tuple' >&2; exit 1;
+fi
+adaptive_rule_remove "$quic_host" 93.184.216.41 5 mark:4 quic || { echo 'profile-5 QUIC rule could not be removed by exact category' >&2; exit 1; }
 if adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls mark:4 "$stamp" >/dev/null; then
   echo 'local rule lookup ignored client scope' >&2; exit 1;
 fi

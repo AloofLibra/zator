@@ -33,6 +33,11 @@ local ADAPTIVE_RULES_SNAPSHOT_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .
 local ADAPTIVE_BROWSER_TRIALS_PATH = os.getenv("Z2R_ADAPTIVE_BROWSER_TRIALS_FILE") or "/tmp/z2r-adaptive/browser/trials.tsv"
 local ADAPTIVE_BROWSER_FLOW_DIR = os.getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR")
   or ((os.getenv("Z2R_ADAPTIVE_DIR") or "/tmp/z2r-adaptive") .. "/browser/flows")
+local function adaptive_quic_host_allowed(host)
+  return type(host) == "string" and (host == "youtube.com" or host:match("%.youtube%.com$") or
+    host == "googlevideo.com" or host:match("%.googlevideo%.com$") or
+    host == "youtubei.googleapis.com" or host:match("%.youtubei%.googleapis%.com$"))
+end
 local ADAPTIVE_MODE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/mode"
 local ADAPTIVE_DEFAULT_SCOPE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/apply-default-scope"
 local ADAPTIVE_MODE = "OFF"
@@ -72,9 +77,12 @@ if ADAPTIVE_OBSERVE_ENABLED then
       count = count + 1
       if count > 128 then break end
       local ver, status, host, ip, profile, proto, scope, seen = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)$")
+      local valid_kind = proto == "tls" and profile:match("^[1-4]$")
+        or proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$")
+        or proto == "quic" and profile == "5" and adaptive_quic_host_allowed(host)
       if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure" or status == "active_rule_degraded") and #host <= 253
-        and host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") and profile:match("^[1-4]$")
-        and proto == "tls" and (scope == "default" or scope:match("^mark:%d+$")) then
+        and host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") and valid_kind
+        and (scope == "default" or scope:match("^mark:%d+$")) then
         local key = table.concat({host, ip, profile, proto, scope}, "\0")
         if not ADAPTIVE_OBSERVE_EVENTS[key] then
           local event = {key = key, host = host, ip = ip, profile = profile, proto = proto,
@@ -398,7 +406,10 @@ local function adaptive_rule_parse_line(line, now)
     (a == 192 and (b == 168 or (b == 0 and (c == 0 or c == 2)) or (b == 88 and c == 99))) or
     (a == 198 and (b == 18 or b == 19 or (b == 51 and c == 100))) or
     (a == 203 and b == 0 and c == 113) then return nil end
-  if not profile:match("^[1-4]$") or (proto ~= "tls" and not (proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$"))) then return nil end
+  local valid_rule = proto == "tls" and profile:match("^[1-4]$")
+    or proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$")
+    or proto == "quic" and profile == "5" and adaptive_quic_host_allowed(host)
+  if not valid_rule then return nil end
   if scope ~= "default" and not scope:match("^mark:%d%d?%d?%d?%d?$") then
     if not scope:match("^mark:%d+$") or #scope > 10 then return nil end
   end
@@ -448,11 +459,13 @@ local function adaptive_browser_trial_parse_line(line, now)
   end
   if not valid_client_ip(client_ip) or not valid_ip(ip, true) or
     (scope ~= "default" and not scope:match("^mark:[1-9]%d?%d?%d?%d?$")) or
-    (profile < 1 or profile > 4 or profile % 1 ~= 0) or
-    (proto ~= "tls" and not (proto == "googlevideo-tcp" and profile == 2 and host:match("^[a-z0-9%-]+%.googlevideo%.com$"))) or
+    (profile < 1 or profile > 5 or profile % 1 ~= 0) or
+    not ((proto == "tls" and profile <= 4) or (proto == "googlevideo-tcp" and profile == 2 and host:match("^[a-z0-9%-]+%.googlevideo%.com$")) or
+      (proto == "quic" and profile == 5 and adaptive_quic_host_allowed(host))) or
     (strategy < 1 or strategy > 999 or strategy % 1 ~= 0) or
     (fingerprint ~= "-" and (not fingerprint:match("^sha256:[0-9a-f]+$") or #fingerprint ~= 71)) or
     not created or not expires or expires <= (now or os.time()) or expires > (now or os.time()) + 90 then return nil end
+  if proto == "quic" and not adaptive_quic_host_allowed(host) then return nil end
   if scope == "default" and not ADAPTIVE_DEFAULT_SCOPE_APPLY then return nil end
   return {id=id, generation=generation, client_id=client_id, client_ip=client_ip, scope=scope,
     host=host, ip=ip, profile=tostring(profile), proto=proto, strategy=strategy,
@@ -1542,10 +1555,12 @@ local function adaptive_ramp_target_seen(host, ip, scope, now, profile)
 end
 
 local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
-  if not ADAPTIVE_OBSERVE_ENABLED or not host or host == "" or not ip or proto ~= "tls"
+  local valid_kind = proto == "tls" and tostring(profile):match("^[1-4]$")
+    or proto == "quic" and tostring(profile) == "5" and adaptive_quic_host_allowed(host)
+  if not ADAPTIVE_OBSERVE_ENABLED or not host or host == "" or not ip or not valid_kind
     or not track or type(track.lua_state) ~= "table" then return end
   if not host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") or #host > 253
-    or not adaptive_observe_ip_valid(ip) or not tostring(profile):match("^[1-4]$") then return end
+    or not adaptive_observe_ip_valid(ip) then return end
   scope = tostring(scope or "default")
   if scope ~= "default" and not scope:match("^mark:%d%d?%d?%d?%d?$" ) then return end
   local state = track.lua_state
@@ -1653,7 +1668,33 @@ local function adaptive_browser_capture_syn(desync, profile, scope)
   local dst = dis_ipdst(desync.dis)
   local ip = dst and ntop(dst) or nil
   if type(ip) ~= "string" or not ip:match("^%d+%.%d+%.%d+%.%d+$") then return false, "invalid-ip" end
-  state.adaptive_browser_syn = {ip = ip, profile = tostring(profile), scope = tostring(scope or "default"), seen = os.time()}
+  state.adaptive_browser_syn = {ip = ip, profile = tostring(profile), proto = "tcp", scope = tostring(scope or "default"), seen = os.time()}
+  return true
+end
+
+local function adaptive_browser_capture_quic_initial(desync, host, profile, scope)
+  if ADAPTIVE_MODE ~= "AGENT_BETA" or tostring(profile) ~= "5" or not adaptive_quic_host_allowed(host)
+    or type(desync) ~= "table" or desync.outgoing ~= true or desync.l7payload ~= "quic_initial"
+    or type(desync.track) ~= "table" or type(desync.dis) ~= "table" or type(desync.dis.udp) ~= "table"
+    or tonumber(desync.dis.udp.th_dport) ~= 443 then return false, "ineligible" end
+  local state = desync.track.lua_state
+  if type(state) ~= "table" then state = {}; desync.track.lua_state = state end
+  if state.adaptive_browser_syn then
+    if state.adaptive_browser_syn.proto == "quic" then
+      state.adaptive_browser_syn.quic_repeated = true
+      local id, generation = state.adaptive_browser_trial_id, state.adaptive_browser_trial_generation
+      if type(id) == "string" and id:match("^[0-9a-f]+$") and #id == 32 and tonumber(generation) then
+        local f = io.open(ADAPTIVE_BROWSER_FLOW_DIR .. "/" .. id .. "." .. tostring(generation) .. ".tsv", "a")
+        if f then f:write("AMBIGUOUS\n"); f:close() end
+      end
+    end
+    return false, "already-seen"
+  end
+  if type(dis_ipdst) ~= "function" or type(ntop) ~= "function" then return false, "ip-helpers-missing" end
+  local dst = dis_ipdst(desync.dis)
+  local ip = dst and ntop(dst) or nil
+  if type(ip) ~= "string" or not ip:match("^%d+%.%d+%.%d+%.%d+$") then return false, "invalid-ip" end
+  state.adaptive_browser_syn = {ip = ip, profile = "5", proto = "quic", scope = tostring(scope or "default"), seen = os.time()}
   return true
 end
 
@@ -1662,7 +1703,9 @@ local function adaptive_browser_record_flow(desync, trial, host, ip, profile, pr
     or type(desync.track) ~= "table" or type(desync.track.lua_state) ~= "table" then return false end
   local syn = desync.track.lua_state.adaptive_browser_syn
   local now = os.time()
-  if type(syn) ~= "table" or syn.ip ~= ip or syn.profile ~= tostring(profile) or syn.scope ~= scope
+  local expected_syn_proto = proto == "quic" and "quic" or "tcp"
+  if type(syn) ~= "table" or syn.ip ~= ip or syn.profile ~= tostring(profile) or syn.proto ~= expected_syn_proto or syn.scope ~= scope
+    or (proto == "quic" and syn.quic_repeated)
     or syn.seen < trial.created or syn.seen > now or now > trial.expires
     or trial.host ~= host or trial.ip ~= ip or trial.profile ~= tostring(profile) or trial.proto ~= proto
     or trial.scope ~= scope or trial.strategy ~= strategy or not trial.id:match("^[0-9a-f]+$")
@@ -1694,6 +1737,10 @@ function locked_browser_record_flow_for_tests(desync, trial, host, ip, profile, 
   return adaptive_browser_record_flow(desync, trial, host, ip, profile, proto, scope, strategy)
 end
 
+function locked_browser_capture_quic_for_tests(desync, host, profile, scope)
+  return adaptive_browser_capture_quic_initial(desync, host, profile, scope)
+end
+
 function circular_locked(ctx, desync)
   if desync.arg and desync.arg.payload and not payload_check(desync) then
     return circular_locked_passthrough(ctx, desync)
@@ -1714,6 +1761,8 @@ function circular_locked(ctx, desync)
   local base_profile = desync_profile_key(desync)
   local scope = desync_client_scope(desync)
   adaptive_browser_capture_syn(desync, base_profile, scope)
+  local quic_initial = base_profile == "5" and proto == "udp" and desync.l7payload == "quic_initial"
+    and desync.dis and desync.dis.udp and tonumber(desync.dis.udp.th_dport) == 443
   -- Хост извлекается для любого профиля: доменные локи должны срабатывать на
   -- первом пакете соединения независимо от allow_nohost (он управляет только
   -- допуском потоков без хоста).
@@ -1746,6 +1795,14 @@ function circular_locked(ctx, desync)
     DLOG("circular_locked: substring routed to profile="..base_profile.." host="..tostring(gate_host))
   end
   local profile = (host and host ~= "") and host or base_profile
+  if quic_initial and host and host ~= "" then
+    adaptive_browser_capture_quic_initial(desync, host, base_profile, scope)
+    if type(dis_ipdst) == "function" and type(ntop) == "function" and desync.track then
+      local dst = dis_ipdst(desync.dis)
+      local dst_ip = dst and ntop(dst) or nil
+      if dst_ip and dst_ip ~= "" then adaptive_observe_seen(host, dst_ip, base_profile, "quic", scope, desync.track) end
+    end
+  end
   if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, gate_host) then
     DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..tostring(gate_host))
     return circular_locked_passthrough(ctx, desync)
@@ -1795,10 +1852,12 @@ function circular_locked(ctx, desync)
   if base_profile == "2" and host and host:match("^[a-z0-9%-]+%.googlevideo%.com$") then
     adaptive_proto = "googlevideo-tcp"
   end
+  if quic_initial and host and adaptive_quic_host_allowed(host) then adaptive_proto = "quic" end
+  local adaptive_transport_ok = (desync.dis and desync.dis.tcp and tonumber(desync.dis.tcp.th_dport) == 443 and proto == "tls")
+    or (quic_initial and adaptive_proto == "quic")
   if ADAPTIVE_RULES_APPLY and (scope ~= "default" or ADAPTIVE_DEFAULT_SCOPE_APPLY)
     and locked == nil and host and host ~= "" and desync.track
-    and type(desync.track.lua_state) == "table" and desync.dis and desync.dis.ip
-    and desync.dis.tcp and tonumber(desync.dis.tcp.th_dport) == 443
+    and type(desync.track.lua_state) == "table" and desync.dis and desync.dis.ip and adaptive_transport_ok
     and type(dis_ipdst) == "function" and type(ntop) == "function" then
     local dst = dis_ipdst(desync.dis)
     local dst_ip = dst and ntop(dst) or nil
