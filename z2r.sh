@@ -584,6 +584,49 @@ set_zapret2_init() {
   export ZAPRET2_INIT
 }
 
+# install_easy.sh can leave the OpenWrt init script only under ZAPRET2_ROOT.
+# z2r_service_action can start it by absolute path, but procd will not start it
+# after reboot unless /etc/init.d/zapret2 exists and is enabled.
+z2r_openwrt_enable_zapret2_init() {
+  [ "${OSystem:-}" = WRT ] || return 0
+  local init_source="${ZAPRET2_INIT:-$ZAPRET2_ROOT/init.d/openwrt/zapret2}"
+  local init_link="${Z2R_OPENWRT_INIT_LINK:-/etc/init.d/zapret2}"
+  local current_target source_target
+
+  [ -f "$init_source" ] && [ -x "$init_source" ] || {
+    echo "OpenWrt zapret2 init script is missing or not executable: $init_source" >&2
+    return 1
+  }
+  if [ -L "$init_link" ]; then
+    current_target="$(readlink -f "$init_link" 2>/dev/null || true)"
+    source_target="$(readlink -f "$init_source" 2>/dev/null || true)"
+    [ -n "$current_target" ] && [ "$current_target" = "$source_target" ] || {
+      echo "OpenWrt init link points elsewhere; leaving it unchanged: $init_link" >&2
+      return 1
+    }
+  elif [ -e "$init_link" ]; then
+    # A locally managed regular init script may be intentional. Preserve it,
+    # but ask that script itself to register with procd.
+    [ -x "$init_link" ] || {
+      echo "OpenWrt init path exists but is not executable; leaving it unchanged: $init_link" >&2
+      return 1
+    }
+  else
+    mkdir -p "$(dirname "$init_link")" || return 1
+    ln -s "$init_source" "$init_link" || return 1
+  fi
+
+  "$init_link" enable >/dev/null 2>&1 || {
+    echo "Could not enable OpenWrt zapret2 init service: $init_link" >&2
+    return 1
+  }
+  "$init_link" enabled >/dev/null 2>&1 || {
+    echo "OpenWrt zapret2 init service did not report enabled: $init_link" >&2
+    return 1
+  }
+  return 0
+}
+
 z2r_archive_preflight() {
   local required_archive
 
@@ -1738,6 +1781,9 @@ unpatch_installer_zapret() {
 install_zapret_reboot() {
  sh -i "$ZAPRET2_ROOT/install_easy.sh" || echo -e "${red}install_easy.sh завершился с ошибкой (rc=$?). Продолжаю.${plain}"
  cleanup_zapret2_init_dirs
+ if [ "$OSystem" = WRT ] && ! z2r_openwrt_enable_zapret2_init; then
+  echo -e "${yellow}Не удалось включить автозапуск zapret2 через procd; после перезагрузки zapret2 может не стартовать.${plain}"
+ fi
  # install_easy may refresh platform init files; restore the Googlevideo
  # listener assets after that step so the service restart below sees them.
  if googlevideo_local_collection_supported "$OSystem"; then
