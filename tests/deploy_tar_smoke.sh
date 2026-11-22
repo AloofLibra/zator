@@ -115,12 +115,30 @@ if [ -n "${SMOKE_DIST:-}" ]; then
   done
   ok "готовые архивы из SMOKE_DIST"
 else
-  # node под MSYS понимает только нативные пути: /tmp/... превращается в корень диска
+  NODE_BIN=node
+  PACK_SCRIPT=scripts/pack-zator-tar.mjs
   DIST_OUT="$DIST"
-if command -v cygpath >/dev/null 2>&1; then
-  DIST_OUT="$(cygpath -w "$DIST")"
-fi
-(cd "$REPO_DIR/webui-src" && node scripts/pack-zator-tar.mjs --version=deploy-smoke-1010 --out "$DIST_OUT") >/dev/null \
+  NODE_MANIFEST="$DIST/latest.json"
+  if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+    command -v node.exe >/dev/null 2>&1 || fail "node/node.exe не найден"
+    NODE_BIN=node.exe
+    PACK_SCRIPT="$REPO_DIR/webui-src/scripts/pack-zator-tar.mjs"
+    if command -v cygpath >/dev/null 2>&1; then
+      PACK_SCRIPT="$(cygpath -w "$PACK_SCRIPT")"
+      DIST_OUT="$(cygpath -w "$DIST")"
+      NODE_MANIFEST="$(cygpath -w "$NODE_MANIFEST")"
+    elif command -v wslpath >/dev/null 2>&1; then
+      PACK_SCRIPT="$(wslpath -w "$PACK_SCRIPT")"
+      DIST_OUT="$(wslpath -w "$DIST")"
+      NODE_MANIFEST="$(wslpath -w "$NODE_MANIFEST")"
+    else
+      fail "для node.exe нужен cygpath или wslpath"
+    fi
+  elif command -v cygpath >/dev/null 2>&1; then
+    # Node под MSYS понимает только нативные пути: /tmp/... превращается в корень диска.
+    DIST_OUT="$(cygpath -w "$DIST")"
+  fi
+  (cd "$REPO_DIR/webui-src" && "$NODE_BIN" "$PACK_SCRIPT" --version=deploy-smoke-1010 --out "$DIST_OUT") >/dev/null \
   || fail "сборщик упал"
 for v in core webui full; do
   [ -f "$DIST/zator-$v.tar.gz" ] || fail "нет zator-$v.tar.gz"
@@ -129,14 +147,14 @@ for v in core webui full; do
 done
 grep -q '"release": "deploy-smoke-1010"' "$DIST/latest.json" || fail "latest.json без номера версии"
 grep -q '"unpackedSize"' "$DIST/latest.json" || fail "latest.json без unpackedSize"
-node -e '
+"$NODE_BIN" -e '
   const m = require(process.argv[1]);
   if (m.schemaVersion !== 1) process.exit(1);
   for (const v of ["core", "webui", "full"]) {
     const a = m.assets[v];
     if (!a || !a.size || !a.sha256 || !a.unpackedSize) process.exit(1);
   }
-' "$DIST/latest.json" 2>/dev/null || fail "схема latest.json неполная"
+' "$NODE_MANIFEST" 2>/dev/null || fail "схема latest.json неполная"
 ok "сборщик: 3 варианта, latest.json, sha256"
 fi
 
@@ -145,16 +163,18 @@ mkdir -p "$STAGE"
 tar -xzf "$DIST/zator-full.tar.gz" -C "$STAGE" || fail "распаковка full"
 grep -q '^ZATOR_VERSION="..*"$' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без версии"
 grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без TRACKING"
-for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
+for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-browser-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
   [ -s "$STAGE/tools/$tool" ] || fail "full архив без tools/$tool"
   grep -q "^tools/$tool|/opt/zator/tools/$tool|auto|" "$STAGE/extra_strats/cache/deploy/manifest.tsv" \
     || fail "manifest full архива без tools/$tool"
 done
 [ -s "$STAGE/webui/cgi-bin/adaptive.cgi" ] || fail "full архив без adaptive WebUI API"
+[ -s "$STAGE/webui/cgi-bin/adaptive-browser.cgi" ] || fail "full архив без browser API CGI"
+[ -s "$STAGE/z2r_lib/adaptive_browser.sh" ] || fail "full архив без browser adaptive runtime library"
 CORE_STAGE="$WORK/core-unpack"
 mkdir -p "$CORE_STAGE"
 tar -xzf "$DIST/zator-core.tar.gz" -C "$CORE_STAGE" || fail "распаковка core"
-for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
+for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-browser-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
   [ -s "$CORE_STAGE/tools/$tool" ] || fail "core архив без tools/$tool"
 done
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"
@@ -377,6 +397,9 @@ ok "харденинг: tar с ../ и манифест с чужим dest отк
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ "$(wc -l < "$SNIF_INSTALL_MARK" | tr -d ' ')" = 1 ] || fail "full/core deploy не обновил отдельный VPS sniffer asset"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
+[ -f "$ZATOR_ROOT/z2r_lib/adaptive_browser.sh" ] || fail "browser adaptive runtime library is missing from the full package"
+[ -f "$ZATOR_ROOT/tools/adaptive-browser-pair.sh" ] || fail "browser pairing CLI is missing from the full package"
+[ -f "$ZATOR_ROOT/webui/cgi-bin/adaptive-browser.cgi" ] || fail "browser API CGI is missing from the full package"
 [ -f "$ZATOR_ROOT/lua/locked.lua" ] || fail "runtime lua/locked.lua не установлен"
 tr -d '\r' < "$REPO_DIR/orchestra/locked.lua" > "$WORK/expected-locked.lua"
 cmp -s "$WORK/expected-locked.lua" "$ZATOR_ROOT/lua/locked.lua" || fail "runtime locked.lua не совпадает с исходником"
