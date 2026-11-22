@@ -63,12 +63,13 @@
   }
 
   async function loadState() {
-    const state = await chrome.storage.local.get({ config: {}, events: [], seen: [], resourceErrors: [] });
+    const state = await chrome.storage.local.get({ config: {}, events: [], seen: [], resourceErrors: [], autoRetriedAttempts: [] });
     return {
       config: state.config && typeof state.config === "object" ? state.config : {},
       events: Array.isArray(state.events) ? state.events : [],
       seen: Array.isArray(state.seen) ? state.seen : [],
-      resourceErrors: Array.isArray(state.resourceErrors) ? state.resourceErrors : []
+      resourceErrors: Array.isArray(state.resourceErrors) ? state.resourceErrors : [],
+      autoRetriedAttempts: Array.isArray(state.autoRetriedAttempts) ? state.autoRetriedAttempts.filter(x => /^[a-f0-9]{32}$/.test(x)).slice(-64) : []
     };
   }
 
@@ -153,8 +154,30 @@
           pending_result: row.pending_result || null }
       : row);
     await chrome.storage.local.set({ events: latest.events });
-    if (result.data.attempt_id) void syncAttempt(event.id);
+    if (result.data.attempt_id) {
+      await retryFailedGetOnce(event, result);
+      void syncAttempt(event.id);
+    }
     return { paired: true, ok: result.ok, status: result.status, data: result.data };
+  }
+
+  async function retryFailedGetOnce(event, result) {
+    const attemptId = result?.data?.attempt_id;
+    if (!result?.ok || result.data.state !== "WAIT_NEW_FLOW" || !/^[a-f0-9]{32}$/.test(attemptId || "") ||
+        event.trigger !== "main_frame_network_failure" || event.request_class !== "main_frame" ||
+        event.method !== "GET" || event.failure_class !== "network_failure" || !Number.isInteger(event.tab_id) || event.tab_id < 0) return false;
+    const latest = await loadState();
+    if (latest.autoRetriedAttempts.includes(attemptId)) return false;
+    let tab;
+    try { tab = await chrome.tabs.get(event.tab_id); } catch { return false; }
+    if (safeHost(tab?.url) !== event.hostname) return false;
+    latest.autoRetriedAttempts.push(attemptId);
+    latest.autoRetriedAttempts = latest.autoRetriedAttempts.slice(-64);
+    await chrome.storage.local.set({ autoRetriedAttempts: latest.autoRetriedAttempts });
+    try {
+      await chrome.tabs.reload(event.tab_id, { bypassCache: true });
+      return true;
+    } catch { return false; }
   }
 
   async function syncAttempt(eventId) {
@@ -284,6 +307,6 @@
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, rememberFailure, reportFailure, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, cancelAttempt };
+    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, cancelAttempt };
   }
 })();

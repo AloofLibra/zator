@@ -15,17 +15,22 @@ assert.ok(manifest.optional_host_permissions.includes('<all_urls>'))
 const listeners = { failure: null, completed: null, message: null }
 const routerToken = 'a'.repeat(48)
 const sent = []
+const reloads = []
+let currentTabUrl = 'https://video.example.test/watch?v=secret'
 const fakeRouter = createServer(async (request, response) => {
   const chunks = []
   for await (const chunk of request) chunks.push(chunk)
   const body = Buffer.concat(chunks).toString('utf8')
-  sent.push({ url: request.url, authorization: request.headers.authorization, body })
+  const action = new URLSearchParams(body).get('action')
+  if (action !== 'browser_attempt_status') sent.push({ url: request.url, authorization: request.headers.authorization, body })
   if (request.headers.authorization !== `Bearer ${routerToken}`) {
     response.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"invalid token"}')
     return
   }
-  const action = new URLSearchParams(body).get('action')
-  response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }))
+  const result = action === 'browser_report_failure' && new URLSearchParams(body).get('hostname') === 'video.example.test'
+    ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'a'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
+    : { schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }
+  response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
 })
 await new Promise(resolve => fakeRouter.listen(0, '127.0.0.1', resolve))
 const fakeRouterAddress = fakeRouter.address()
@@ -39,6 +44,10 @@ const chrome = {
   webRequest: {
     onErrorOccurred: { addListener: fn => { listeners.failure = fn } },
     onCompleted: { addListener: fn => { listeners.completed = fn } }
+  },
+  tabs: {
+    get: async id => ({ id, url: currentTabUrl }),
+    reload: async (id, options) => { reloads.push({ id, options }) }
   },
   runtime: { onMessage: { addListener: fn => { listeners.message = fn } } }
 }
@@ -74,6 +83,9 @@ const posted = new URLSearchParams(sent[0].body)
 assert.equal(posted.get('hostname'), 'video.example.test')
 assert.equal(posted.get('trigger'), 'main_frame_network_failure')
 assert.equal(posted.get('failure_count'), '1')
+assert.equal(reloads.length, 1, 'eligible main-frame GET should retry once after trial setup')
+assert.equal(reloads[0].id, 2)
+assert.equal(reloads[0].options.bypassCache, true)
 assert.equal(posted.has('url'), false)
 assert.equal(posted.has('tabId'), false)
 assert.equal(posted.has('client_ip'), false)
@@ -85,6 +97,15 @@ const duplicate = await api.rememberFailure({ tabId: 2, documentId: 'doc-a', req
 assert.equal(duplicate.ignored, 'duplicate')
 assert.equal(sent.length, 1)
 
+const retryEvent = { trigger: 'main_frame_network_failure', request_class: 'main_frame', method: 'GET', failure_class: 'network_failure', tab_id: 2, hostname: 'video.example.test' }
+await api.retryFailedGetOnce(retryEvent, { ok: true, data: { state: 'WAIT_NEW_FLOW', attempt_id: 'a'.repeat(32) } })
+assert.equal(reloads.length, 1, 'a second response for one attempt must not cause a reload loop')
+
+currentTabUrl = 'https://another.example.test/'
+await api.retryFailedGetOnce({ ...retryEvent, tab_id: 9 }, { ok: true, data: { state: 'WAIT_NEW_FLOW', attempt_id: 'b'.repeat(32) } })
+assert.equal(reloads.length, 1, 'do not reload a tab after the user navigated elsewhere')
+currentTabUrl = 'https://video.example.test/watch?v=secret'
+
 const dns = await api.rememberFailure({ tabId: 2, requestId: 'req-dns', type: 'main_frame', method: 'GET',
   url: 'https://dns.example.test/', error: 'net::ERR_NAME_NOT_RESOLVED', timeStamp: Date.now() })
 assert.equal(dns.ignored, 'not_eligible')
@@ -92,6 +113,7 @@ const unsafe = await api.rememberFailure({ tabId: 2, requestId: 'req-post', type
   url: 'https://pay.example.test/submit', error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now() })
 assert.equal(unsafe.trigger, 'observe_only')
 assert.equal(sent.length, 1)
+assert.equal(reloads.length, 1, 'POST failure must never be auto-replayed')
 const head = await api.rememberFailure({ tabId: 2, requestId: 'req-head', type: 'main_frame', method: 'HEAD',
   url: 'https://head.example.test/', error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now() })
 assert.equal(head.trigger, 'observe_only')

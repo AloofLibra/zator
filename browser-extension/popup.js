@@ -27,8 +27,9 @@ async function render() {
   }
   activeEvent = row;
   const attemptActive = row.attempt_id && ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status);
+  const autoRetryStarted = attemptActive && (state.autoRetriedAttempts || []).includes(row.attempt_id);
   latest.textContent = attemptActive
-    ? `${row.hostname} · ${row.router_status}${row.pending_result ? " · browser result received" : " · reload the page if needed; waiting for a new connection"}`
+    ? `${row.hostname} · ${row.router_status}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : " · waiting for a new connection"}`
     : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${row.router_status}` : ""}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
   cancel.hidden = !attemptActive;
