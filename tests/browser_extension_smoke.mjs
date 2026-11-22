@@ -44,6 +44,8 @@ const fakeRouter = createServer(async (request, response) => {
       : action === 'browser_report_result'
         ? params.get('attempt_id') === 'g'.repeat(32)
           ? { schema_version: 1, state: 'UNKNOWN', status: 'PROTOCOL_UNKNOWN', reason: 'h3_protocol_evidence_unavailable' }
+          : params.get('attempt_id') === 'p'.repeat(32)
+            ? { schema_version: 1, state: 'NEXT_CANDIDATE', next_attempt: { state: 'WAIT_NEW_FLOW', attempt_id: '1'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 } }
           : { schema_version: 1, state: params.get('result') === 'network_failure' ? 'NEXT_CANDIDATE' : 'PROVISIONAL_SUCCESS' }
         : { schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
@@ -236,6 +238,15 @@ await api.syncAttempt('h'.repeat(32))
 assert.equal(stored.events.at(-1).router_status, 'UNKNOWN')
 assert.equal(stored.events.at(-1).router_reason, 'h3_protocol_evidence_unavailable')
 assert.match(popupScript, /H3 protocol evidence unavailable; QUIC success not confirmed/)
+
+stored.events.push({ id: 'r'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'p'.repeat(32),
+  trigger: 'main_frame_network_failure', request_class: 'main_frame', method: 'GET', failure_class: 'network_failure', router_status: 'FLOW_CONFIRMED',
+  pending_result: { id: 's'.repeat(32), result: 'network_failure', request_class: 'main_frame', browser_ip: '8.8.8.8', observed_at: Date.now() } })
+await api.syncAttempt('r'.repeat(32))
+assert.equal(stored.events.at(-1).attempt_id, '1'.repeat(32), 'next server candidate must become the active attempt')
+assert.equal(stored.events.at(-1).router_status, 'WAIT_NEW_FLOW')
+assert.equal(reloads.length, 2, 'each server-issued candidate gets one controlled browser retry')
+assert.ok(stored.autoRetriedAttempts.includes('1'.repeat(32)))
 
 stored.events.push({ id: 'l'.repeat(32), hostname: 'media.example.test', tab_id: 8, attempt_id: 'm'.repeat(32),
   trigger: 'critical_resource_repeated_failure', request_class: 'xmlhttprequest', router_status: 'FLOW_CONFIRMED',

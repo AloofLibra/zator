@@ -239,6 +239,11 @@
       };
     });
     await chrome.storage.local.set({ events: latest.events });
+    const nextAttempt = result.data.next_attempt;
+    if (result.ok && nextAttempt?.state === "WAIT_NEW_FLOW" && typeof nextAttempt.attempt_id === "string") {
+      const retryEvent = latest.events.find(row => row && row.id === eventId);
+      await retryFailedGetOnce(retryEvent, { ok: true, data: { state: nextAttempt.state, attempt_id: nextAttempt.attempt_id } });
+    }
     return { ok: result.ok, state: result.data.state || result.data.status || status.data.state };
   }
 
