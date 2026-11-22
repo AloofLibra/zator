@@ -38,7 +38,7 @@ for pair in "${pairs[@]}"; do
   [[ "$pair" = *=* && "$pair" != *%* && "$pair" != *+* ]] || fail '400 Bad Request' 'invalid form encoding'
   key="${pair%%=*}"; value="${pair#*=}"
   [[ "$key" =~ ^[a-z_]+$ && "$value" =~ ^[a-zA-Z0-9_.:-]*$ ]] || fail '400 Bad Request' 'invalid form field'
-  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_transport|failure_count|observed_at|attempt_id|result|browser_ip|browser_protocol) ;;
+  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_transport|failure_count|observed_at|attempt_id|result|browser_ip|browser_protocol|media_quality|media_sample_ms|media_progress_ms|media_stall_ms|media_dropped_frames|media_total_frames) ;;
     *) fail '400 Bad Request' 'unknown form field' ;; esac
   [[ -n "$key" && ! ${f[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
   f[$key]="$value"
@@ -302,10 +302,29 @@ case "${f[action]:-}" in
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
     ;;
   browser_report_result)
-    [[ ( ${#f[@]} -eq 8 || ${#f[@]} -eq 9 ) && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
+    [[ ${#f[@]} -ge 8 && ${#f[@]} -le 15 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
        "${f[result]:-}" =~ ^(network_success|network_failure)$ && "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ &&
        "${f[browser_ip]:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ &&
        ( -z "${f[browser_protocol]:-}" || "${f[browser_protocol]}" =~ ^(h3|tcp)$ ) ]] || fail '400 Bad Request' 'invalid browser result'
+    media_fields=0
+    for media_key in media_quality media_sample_ms media_progress_ms media_stall_ms media_dropped_frames media_total_frames; do
+      [[ ${f[$media_key]+present} ]] && media_fields=$((media_fields + 1))
+    done
+    [[ "$media_fields" = 0 || "$media_fields" = 6 ]] || fail '400 Bad Request' 'incomplete media quality evidence'
+    if [[ "$media_fields" = 6 ]]; then
+      [[ "${f[media_quality]}" =~ ^(healthy|degraded|unknown)$ &&
+         "${f[media_sample_ms]}" =~ ^[0-9]{1,5}$ && "${f[media_progress_ms]}" =~ ^[0-9]{1,5}$ &&
+         "${f[media_stall_ms]}" =~ ^[0-9]{1,5}$ && "${f[media_dropped_frames]}" =~ ^[0-9]{1,6}$ &&
+         "${f[media_total_frames]}" =~ ^[0-9]{1,6}$ ]] || fail '400 Bad Request' 'invalid media quality evidence'
+      (( f[media_sample_ms] <= 12000 && f[media_progress_ms] <= 12000 && f[media_stall_ms] <= 12000 &&
+         f[media_dropped_frames] <= 999999 && f[media_total_frames] <= 999999 )) || fail '400 Bad Request' 'media quality evidence out of range'
+      if [[ "${f[media_quality]}" = healthy ]]; then
+        (( f[media_sample_ms] >= 7500 && f[media_progress_ms] >= 5000 && f[media_stall_ms] < 1000 )) || fail '400 Bad Request' 'healthy media evidence is too weak'
+      elif [[ "${f[media_quality]}" = degraded ]]; then
+        (( f[media_sample_ms] >= 5000 )) || fail '400 Bad Request' 'degraded media evidence is too short'
+      fi
+      [[ "${f[result]}" = network_success ]] || fail '400 Bad Request' 'media evidence requires a successful resource'
+    fi
     awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; exit 0} {exit 1}' <<< "${f[browser_ip]}" || fail '400 Bad Request' 'invalid browser IP'
     row="$(adaptive_browser_attempt_read "${f[attempt_id]}")" || fail '404 Not Found' 'attempt not found'
     IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy attempt_fingerprint created expires generation extra <<< "$row"
@@ -339,7 +358,7 @@ case "${f[action]:-}" in
       state=WAIT_BROWSER_RESULT
     fi
     flow_row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || fail '409 Conflict' 'production flow evidence is unavailable'
-    IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_extra <<< "$flow_row"
+    IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_ramp_treatment flow_ramp_ack_evidence flow_extra <<< "$flow_row"
     [[ "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" && "$flow_host" = "$host" && "$flow_ip" = "$ip" && "${f[browser_ip]}" = "$flow_ip" &&
        "$flow_profile" = "$profile" && "$flow_proto" = "$proto" && "$flow_strategy" = "$strategy" && "$flow_fingerprint" = "$attempt_fingerprint" ]] || fail '409 Conflict' 'production flow does not match this attempt'
     (( f[observed_at] >= selected_at * 1000 && f[observed_at] <= now_ms + 5000 && f[observed_at] <= expires * 1000 )) || fail '400 Bad Request' 'result is outside the confirmed flow window'
@@ -355,6 +374,21 @@ case "${f[action]:-}" in
       [[ "$result_rc" = 3 ]] && send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"status\":\"DUPLICATE\"}"
       fail '503 Service Unavailable' 'browser result journal unavailable'
     }
+    media_quality_json=""
+    if [[ "$media_fields" = 6 ]]; then
+      [[ "$proto" = googlevideo-tcp && "$profile" = 2 && "$flow_ramp_treatment" =~ ^(applied|bypassed)$ &&
+         "$flow_ramp_ack_evidence" =~ ^(unknown|confirmed|pending)$ ]] || fail '400 Bad Request' 'media quality requires a proven Googlevideo Ramp flow'
+      media_store_rc=0
+      adaptive_browser_media_quality_write "$attempt_id" "$generation" "$client_id" "$attempt_scope" "$host" "$ip" \
+        "$profile" "$proto" "$strategy" "$attempt_fingerprint" "$flow_ramp_treatment" "$flow_ramp_ack_evidence" \
+        "${f[media_quality]}" "${f[media_sample_ms]}" "${f[media_progress_ms]}" "${f[media_stall_ms]}" \
+        "${f[media_dropped_frames]}" "${f[media_total_frames]}" "$(date +%s)" || media_store_rc=$?
+      if [[ "$media_store_rc" = 0 ]]; then
+        media_quality_json=",\"media_quality\":\"${f[media_quality]}\""
+      else
+        media_quality_json=',"media_quality":"unknown"'
+      fi
+    fi
     case "$state:${f[result]}" in
       WAIT_BROWSER_RESULT:network_failure)
         adaptive_browser_attempt_transition "$attempt_id" WAIT_BROWSER_RESULT CONFIRMED_FAILURE || fail '409 Conflict' 'attempt changed concurrently'
@@ -396,7 +430,7 @@ case "${f[action]:-}" in
         fi
       fi
     fi
-    send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\"}"
+    send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\"$media_quality_json}"
     ;;
   *) fail '400 Bad Request' 'unknown browser action' ;;
 esac

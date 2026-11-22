@@ -4,12 +4,17 @@
 <body>
   <main>
     <h1>Zator Browser Feedback</h1>
-    <p class="notice">Beta, observe and retry only. Eligible network failures are sent to your paired LAN router. The extension does not collect successful visits or page paths.</p>
+    <p class="notice">Beta, observe and retry only. Eligible network failures are sent to your paired LAN router. Successful visits and page paths are not collected.</p>
     <section>
       <h2>Site error monitoring</h2>
       <p>Monitoring needs permission to read network error metadata on sites you visit. It does not read page contents, cookies, or request bodies.</p>
       <button id="grant-monitoring" type="button">Enable error monitoring</button>
       <span id="permission-state" role="status"></span>
+    </section>
+    <section>
+      <h2>Googlevideo media evidence</h2>
+      <p>Optional and off by default. During an active Googlevideo trial, the extension can sample whether one visible video is progressing or stalling. It sends only coarse playback metrics to the paired router; it does not read video URLs, page paths, titles, or content. These metrics never create or remove a Ramp exemption by themselves.</p>
+      <label><input id="media-quality-opt-in" type="checkbox"> Allow media quality sampling during active Googlevideo trials</label>
     </section>
     <form id="settings">
       <h2>Paired router</h2>

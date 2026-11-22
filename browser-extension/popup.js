@@ -45,14 +45,15 @@ async function render() {
   const rampEvidence = row.ramp_treatment
     ? ` · Ramp ${({ applied: "applied on SYN", bypassed: "bypassed for exact target", unchanged: "no SYN change", no_window_scale: "no window-scale option", unknown: "not observed" })[row.ramp_treatment] || "not observed"}${row.ramp_treatment === "applied" ? ` · late ACK ${row.ramp_ack_evidence === "confirmed" ? "confirmed" : row.ramp_ack_evidence === "pending" ? "pending" : "unknown"}` : ""}`
     : "";
+  const mediaEvidence = row.media_quality ? ` · media playback ${row.media_quality}` : "";
   const reason = ({
     h3_protocol_evidence_unavailable: "H3 protocol evidence unavailable; QUIC success not confirmed",
     ambiguous_recent_flows: "multiple recent connections match; no trial started",
     strategy_fingerprint_changed_or_promotion_failed: "strategy changed or could not be confirmed"
   })[row.router_reason] || "";
   latest.textContent = attemptActive
-    ? `${row.hostname} · ${status}${reason ? ` · ${reason}` : ""}${rampEvidence}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : ""}`
-    : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}${reason ? ` · ${reason}` : ""}`;
+    ? `${row.hostname} · ${status}${reason ? ` · ${reason}` : ""}${rampEvidence}${mediaEvidence}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : ""}`
+    : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}${reason ? ` · ${reason}` : ""}${rampEvidence}${mediaEvidence}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
   cancel.hidden = !attemptActive;
 }

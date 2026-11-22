@@ -10,6 +10,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const manifest = JSON.parse(readFileSync(resolve(root, 'browser-extension/manifest.json'), 'utf8'))
 const popup = readFileSync(resolve(root, 'browser-extension/popup.html'), 'utf8')
 const popupScript = readFileSync(resolve(root, 'browser-extension/popup.js'), 'utf8')
+const options = readFileSync(resolve(root, 'browser-extension/options.html'), 'utf8')
+const optionsScript = readFileSync(resolve(root, 'browser-extension/options.js'), 'utf8')
 assert.equal(manifest.manifest_version, 3)
 assert.match(popup, /failed main-frame GET may retry once/i)
 assert.doesNotMatch(popup, /No automatic reloads/i)
@@ -21,6 +23,9 @@ assert.ok(manifest.permissions.includes('webRequest'))
 assert.ok(manifest.permissions.includes('scripting'))
 assert.ok(!manifest.permissions.includes('webNavigation'), 'extension must not request an unused navigation permission')
 assert.ok(manifest.optional_host_permissions.includes('<all_urls>'))
+assert.match(options, /Allow media quality sampling during active Googlevideo trials/)
+assert.match(optionsScript, /config\.mediaQualityOptIn === true/, 'media sampling must default off unless explicitly enabled')
+assert.match(optionsScript, /mediaQualityOptIn: mediaQualityOptIn\.checked/)
 
 const listeners = { failure: null, completed: null, message: null }
 const routerToken = 'a'.repeat(48)
@@ -28,6 +33,7 @@ const sent = []
 const reloads = []
 let pageTimingEntries = []
 let currentTabUrl = 'https://video.example.test/watch?v=secret'
+let scriptedMediaResult = null
 const fakeRouter = createServer(async (request, response) => {
   const chunks = []
   for await (const chunk of request) chunks.push(chunk)
@@ -77,7 +83,9 @@ const chrome = {
     get: async id => ({ id, url: currentTabUrl }),
     reload: async (id, options) => { reloads.push({ id, options }) }
   },
-  scripting: { executeScript: async spec => [{ result: spec.func(...spec.args) }] },
+  scripting: { executeScript: async spec => spec.args?.length
+    ? [{ result: spec.func(...spec.args) }]
+    : [{ result: scriptedMediaResult }] },
   runtime: { onMessage: { addListener: fn => { listeners.message = fn } } }
 }
 const context = {
@@ -91,6 +99,12 @@ const context = {
 context.globalThis = context
 vm.runInNewContext(readFileSync(resolve(root, 'browser-extension/service-worker.js'), 'utf8'), context)
 const api = context.__Z2R_BROWSER_TEST__.api
+
+stored.config.mediaQualityOptIn = true
+scriptedMediaResult = { quality: 'healthy', sample_ms: 8000, progress_ms: 7000, stall_ms: 0, dropped_frames: 1, total_frames: 240 }
+assert.deepEqual(JSON.parse(JSON.stringify(await api.readMediaQuality(2))), scriptedMediaResult)
+scriptedMediaResult = null
+assert.equal((await api.readMediaQuality(2)).quality, 'unknown', 'missing video must remain unknown')
 
 assert.equal(api.failureClass('net::ERR_CONNECTION_RESET'), 'network_failure')
 assert.equal(api.failureClass('net::ERR_NAME_NOT_RESOLVED'), '')
@@ -233,6 +247,30 @@ await api.recordHttpResponse({ tabId: 2, type: 'main_frame', statusCode: 503, ur
 assert.equal(sent.length, 6)
 assert.equal(stored.events.at(-1).trigger, 'manual_only')
 assert.ok(!Object.keys(stored.events.at(-1)).includes('url'))
+
+const googlevideoUrl = 'https://rr1---sn-a5mekn6e.googlevideo.com/videoplayback?sig=private'
+const googlevideoPath = `${new URL(googlevideoUrl).origin}${new URL(googlevideoUrl).pathname}`
+const googlevideoHash = Array.from(new Uint8Array(await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(googlevideoPath))),
+  x => x.toString(16).padStart(2, '0')).join('')
+const googlevideoAttempt = '4'.repeat(32)
+const googlevideoEvent = '5'.repeat(32)
+stored.events.push({ id: googlevideoEvent, hostname: 'rr1---sn-a5mekn6e.googlevideo.com', tab_id: 42, attempt_id: googlevideoAttempt,
+  router_status: 'WAIT_NEW_FLOW', candidate_protocol: 'googlevideo-tcp', attempt_expires_at: Math.floor(Date.now() / 1000) + 40,
+  trigger: 'critical_resource_repeated_failure', request_class: 'media', resource_identity: googlevideoHash })
+scriptedMediaResult = { quality: 'healthy', sample_ms: 8000, progress_ms: 7000, stall_ms: 0, dropped_frames: 1, total_frames: 240 }
+await api.recordHttpResponse({ tabId: 42, type: 'media', method: 'GET', statusCode: 206, fromCache: false, url: googlevideoUrl, ip: '8.8.8.8' })
+await api.queueSyncAttempt(googlevideoEvent)
+const googlevideoResult = sent.map(row => new URLSearchParams(row.body)).findLast(params =>
+  params.get('action') === 'browser_report_result' && params.get('attempt_id') === googlevideoAttempt)
+assert.ok(googlevideoResult, 'active Googlevideo trial did not report its result')
+assert.equal(googlevideoResult.get('media_quality'), 'healthy')
+assert.equal(googlevideoResult.get('media_sample_ms'), '8000')
+assert.equal(googlevideoResult.get('media_progress_ms'), '7000')
+assert.equal(googlevideoResult.get('media_stall_ms'), '0')
+assert.equal(googlevideoResult.get('media_dropped_frames'), '1')
+assert.equal(googlevideoResult.get('media_total_frames'), '240')
+assert.ok(!JSON.stringify(googlevideoResult).includes('videoplayback') && !JSON.stringify(googlevideoResult).includes('private'),
+  'media evidence must not contain signed resource paths')
 
 stored.events.push({ id: 'c'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'd'.repeat(32), router_status: 'WAIT_NEW_FLOW',
   pending_result: { id: 'e'.repeat(32) }, pending_results: [{ id: 'e'.repeat(32) }] })

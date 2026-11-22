@@ -789,3 +789,70 @@ adaptive_browser_attempt_transition() {
   adaptive_browser_attempt_write "$attempt" "$client" "$ip" "$scope" "$host" "$dst" "$profile" "$proto" "$trigger" "$next" "$strategy" "$fp" "$created" "$expires" "$generation" || { rmdir "$lock"; return 1; }
   rmdir "$lock" || return 1
 }
+
+# Store only coarse, opt-in Googlevideo playback evidence. It is short-lived,
+# bounded, local to the router, and never sufficient by itself to create a Ramp
+# exemption. Row: attempt/generation/client/scope/host/IP/profile/transport/
+# strategy/fingerprint/Ramp treatment+ACK/quality/playback metrics/timestamp.
+adaptive_browser_media_quality_write() {
+  [[ $# = 19 ]] || return 2
+  local attempt_id="$1" generation="$2" client_id="$3" scope="$4" host="$5" ip="$6"
+  local profile="$7" proto="$8" strategy="$9" fingerprint="${10}" treatment="${11}" ack="${12}"
+  local quality="${13}" sample_ms="${14}" progress_ms="${15}" stall_ms="${16}"
+  local dropped="${17}" total="${18}" observed_at="${19}"
+  local dir file lock tmp row ver old_attempt old_generation old_client old_scope old_host old_ip old_profile old_proto
+  local old_strategy old_fingerprint old_treatment old_ack old_quality old_sample old_progress old_stall old_dropped old_total old_at extra
+  local now tries=0 count=0
+
+  [[ "$attempt_id" =~ ^[a-f0-9]{32}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ && "$client_id" =~ ^[a-f0-9]{32}$ &&
+     ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+     "$(adaptive_browser_host_valid "$host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "$host" &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" = 2 && "$proto" = googlevideo-tcp &&
+     "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
+     "$treatment" =~ ^(applied|bypassed)$ && "$ack" =~ ^(unknown|confirmed|pending)$ &&
+     "$quality" =~ ^(healthy|degraded|unknown)$ && "$sample_ms" =~ ^[0-9]{1,5}$ &&
+     "$progress_ms" =~ ^[0-9]{1,5}$ && "$stall_ms" =~ ^[0-9]{1,5}$ &&
+     "$dropped" =~ ^[0-9]{1,6}$ && "$total" =~ ^[0-9]{1,6}$ && "$observed_at" =~ ^[0-9]{10}$ ]] || return 2
+  (( sample_ms <= 12000 && progress_ms <= 12000 && stall_ms <= 12000 && dropped <= 999999 && total <= 999999 )) || return 2
+  if [[ "$quality" = healthy ]]; then (( sample_ms >= 7500 && progress_ms >= 5000 && stall_ms < 1000 )) || return 2; fi
+  if [[ "$quality" = degraded ]]; then (( sample_ms >= 5000 )) || return 2; fi
+
+  now="$(date +%s)"
+  (( observed_at >= now - 60 && observed_at <= now + 5 )) || return 2
+  dir="$(adaptive_browser_state_dir)/media-quality"
+  file="$dir/evidence.tsv"; lock="$file.lock"
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$dir" && ! -L "$file" && ! -L "$lock" ]] || return 1
+  mkdir -p "$dir" && chmod 700 "$dir" || return 1
+  while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries + 1)); (( tries < 20 )) || return 1; sleep 0.05; done
+  tmp="$(mktemp "$dir/.evidence.XXXXXX")" || { rmdir "$lock"; return 1; }
+  if [[ -r "$file" ]]; then
+    [[ $(wc -c < "$file") -le 32768 ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    while IFS= read -r row || [[ -n "$row" ]]; do
+      IFS=$'\t' read -r ver old_attempt old_generation old_client old_scope old_host old_ip old_profile old_proto \
+        old_strategy old_fingerprint old_treatment old_ack old_quality old_sample old_progress old_stall old_dropped old_total old_at extra <<< "$row"
+      [[ "$ver" = 1 && "$old_attempt" =~ ^[a-f0-9]{32}$ && "$old_generation" =~ ^[1-9][0-9]{0,8}$ &&
+         "$old_client" =~ ^[a-f0-9]{32}$ && ( "$old_scope" = default || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+         "$old_host" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ && "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+         "$old_profile" = 2 && "$old_proto" = googlevideo-tcp && "$old_strategy" =~ ^[1-9][0-9]{0,2}$ &&
+         "$old_fingerprint" =~ ^sha256:[a-f0-9]{64}$ && "$old_treatment" =~ ^(applied|bypassed)$ &&
+         "$old_ack" =~ ^(unknown|confirmed|pending)$ && "$old_quality" =~ ^(healthy|degraded|unknown)$ &&
+         "$old_sample" =~ ^[0-9]{1,5}$ && "$old_progress" =~ ^[0-9]{1,5}$ && "$old_stall" =~ ^[0-9]{1,5}$ &&
+         "$old_dropped" =~ ^[0-9]{1,6}$ && "$old_total" =~ ^[0-9]{1,6}$ && "$old_at" =~ ^[0-9]{10}$ && -z "${extra:-}" ]] || {
+           rm -f "$tmp"; rmdir "$lock"; return 1;
+         }
+      (( old_at >= now - 86400 )) || continue
+      if [[ "$old_attempt" = "$attempt_id" && "$old_generation" = "$generation" ]]; then
+        rm -f "$tmp"; rmdir "$lock"; return 3
+      fi
+      count=$((count + 1)); (( count < 64 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+      printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    done < "$file"
+  fi
+  printf '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$attempt_id" "$generation" "$client_id" "$scope" "$host" "$ip" "$profile" "$proto" "$strategy" \
+    "$fingerprint" "$treatment" "$ack" "$quality" "$sample_ms" "$progress_ms" "$stall_ms" "$dropped" "$total" "$observed_at" >> "$tmp" || {
+      rm -f "$tmp"; rmdir "$lock"; return 1;
+    }
+  chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock" || return 1
+}

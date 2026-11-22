@@ -359,6 +359,39 @@ video_status_response="$(printf '%s' "$video_status_body" | env REQUEST_METHOD=P
 grep -q '"state":"FLOW_CONFIRMED"' <<< "$video_status_response"
 grep -q '"ramp_treatment":"applied"' <<< "$video_status_response"
 grep -q '"ramp_ack_evidence":"confirmed"' <<< "$video_status_response"
+
+video_media_attempt=edededededededededededededededed
+video_media_event=fefefefefefefefefefefefefefefefe
+video_media_now="$(date +%s)"
+video_media_expires=$((video_media_now + 30))
+adaptive_browser_attempt_write "$video_media_attempt" "$client_id" 192.168.1.42 mark:7 "$video_host" 8.8.8.8 2 googlevideo-tcp \
+  critical_resource_repeated_failure WAIT_NEW_FLOW 4 "$video_fingerprint" "$video_media_now" "$video_media_expires" 12
+printf '1\t%s\t12\t%s\tmark:7\t%s\t8.8.8.8\t2\tgooglevideo-tcp\t4\t%s\t%s\t%s\tapplied\tconfirmed\n' \
+  "$video_media_attempt" "$client_id" "$video_host" "$video_fingerprint" "$video_media_now" "$video_media_now" > "$flow_dir/$video_media_attempt.12.tsv"
+video_media_status_body="schema_version=1&action=browser_attempt_status&attempt_id=$video_media_attempt"
+video_media_status="$(printf '%s' "$video_media_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_media_status_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"FLOW_CONFIRMED"' <<< "$video_media_status"
+video_media_result_body="schema_version=1&action=browser_report_result&attempt_id=$video_media_attempt&browser_event_id=$video_media_event&result=network_success&request_class=media&browser_ip=8.8.8.8&observed_at=$((video_media_now * 1000))&media_quality=healthy&media_sample_ms=8000&media_progress_ms=7000&media_stall_ms=0&media_dropped_frames=2&media_total_frames=240"
+video_media_result="$(printf '%s' "$video_media_result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_media_result_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"PROVISIONAL_SUCCESS"' <<< "$video_media_result"
+grep -q '"media_quality":"healthy"' <<< "$video_media_result"
+video_media_file="$Z2R_ADAPTIVE_BROWSER_DIR/media-quality/evidence.tsv"
+[[ -f "$video_media_file" && "$(stat -c '%a' "$video_media_file")" = 600 ]]
+[[ "$(wc -l < "$video_media_file")" = 1 ]]
+grep -q $'^1\t'"$video_media_attempt"$'\t12\t' "$video_media_file"
+! grep -q 'videoplayback\|sig=private' "$video_media_file"
+video_media_duplicate="$(printf '%s' "$video_media_result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_media_result_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"status":"DUPLICATE"' <<< "$video_media_duplicate"
+[[ "$(wc -l < "$video_media_file")" = 1 ]]
+weak_media_body="${video_media_result_body//media_sample_ms=8000/media_sample_ms=5000}"
+weak_media_body="${weak_media_body//media_progress_ms=7000/media_progress_ms=1000}"
+weak_media_response="$(printf '%s' "$weak_media_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#weak_media_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q 'healthy media evidence is too weak' <<< "$weak_media_response"
+
 observed_result_ms="$(( $(date +%s) * 1000 ))"
 wrong_ip_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_flow&browser_event_id=dddddddddddddddddddddddddddddddd&result=network_success&request_class=main_frame&browser_ip=1.1.1.1&observed_at=$observed_result_ms"
 wrong_ip_response="$(printf '%s' "$wrong_ip_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#wrong_ip_body}" \

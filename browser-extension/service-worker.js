@@ -87,6 +87,80 @@
       return ["h2", "h2c", "http/1.0", "http/1.1"].includes(result) ? "tcp" : "";
     } catch { return ""; }
   }
+  async function readMediaQuality(tabId) {
+    const unknown = { quality: "unknown", sample_ms: 0, progress_ms: 0, stall_ms: 0, dropped_frames: 0, total_frames: 0 };
+    if (!chrome.scripting?.executeScript) return unknown;
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async () => {
+          const videos = [...document.querySelectorAll("video")].filter(video => {
+            if (video.ended || video.readyState === 0 || video.getClientRects().length === 0) return false;
+            const rect = video.getBoundingClientRect();
+            const style = getComputedStyle(video);
+            return rect.width >= 160 && rect.height >= 90 && style.visibility !== "hidden" && style.display !== "none";
+          });
+          if (videos.length !== 1) return null;
+          const video = videos[0];
+          const startedAt = performance.now();
+          const initialTime = video.currentTime;
+          const samples = [];
+          let waiting = false;
+          let waitingStartedAt = 0;
+          let waitingEvents = 0;
+          let stallMs = 0;
+          const onWaiting = () => {
+            if (!waiting) { waiting = true; waitingStartedAt = performance.now(); waitingEvents += 1; }
+          };
+          const onPlaying = () => {
+            if (waiting) { stallMs += performance.now() - waitingStartedAt; waiting = false; }
+          };
+          video.addEventListener("waiting", onWaiting);
+          video.addEventListener("playing", onPlaying);
+          try {
+            for (let i = 0; i <= 8; i += 1) {
+              const playback = typeof video.getVideoPlaybackQuality === "function" ? video.getVideoPlaybackQuality() : null;
+              samples.push({
+                at: performance.now(), time: video.currentTime, paused: video.paused, seeking: video.seeking,
+                ready: video.readyState, dropped: Number(playback?.droppedVideoFrames ?? video.webkitDroppedFrameCount ?? 0),
+                frames: Number(playback?.totalVideoFrames ?? video.webkitDecodedFrameCount ?? 0)
+              });
+              if (i < 8) await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          } finally {
+            video.removeEventListener("waiting", onWaiting);
+            video.removeEventListener("playing", onPlaying);
+            if (waiting) stallMs += performance.now() - waitingStartedAt;
+          }
+          const elapsed = Math.max(0, Math.min(12000, Math.round(performance.now() - startedAt)));
+          const active = samples.filter(sample => !sample.paused && !sample.seeking);
+          const end = samples[samples.length - 1];
+          const progress = Math.round((end.time - initialTime) * 1000);
+          const dropped = Math.max(0, Math.min(999999, Math.round(end.dropped - samples[0].dropped)));
+          const frames = Math.max(0, Math.min(999999, Math.round(end.frames - samples[0].frames)));
+          const boundedStall = Math.max(0, Math.min(12000, Math.round(stallMs)));
+          let quality = "unknown";
+          if (elapsed >= 5000 && active.length >= 4 && samples.filter(sample => sample.paused || sample.seeking).length < 3 && progress >= 0) {
+            if (waitingEvents >= 2 || boundedStall >= 1500 || (active.length >= 5 && progress < 2000)) quality = "degraded";
+            else if (elapsed >= 7500 && active.length >= 6 && progress >= 5000 && boundedStall < 1000) quality = "healthy";
+          }
+          return {
+            quality, sample_ms: elapsed, progress_ms: Math.max(0, Math.min(12000, progress)),
+            stall_ms: boundedStall, dropped_frames: dropped, total_frames: frames
+          };
+        }
+      });
+      if (!result || !["healthy", "degraded", "unknown"].includes(result.quality)) return unknown;
+      return {
+        quality: result.quality,
+        sample_ms: Number.isInteger(result.sample_ms) && result.sample_ms >= 0 && result.sample_ms <= 12000 ? result.sample_ms : 0,
+        progress_ms: Number.isInteger(result.progress_ms) && result.progress_ms >= 0 && result.progress_ms <= 12000 ? result.progress_ms : 0,
+        stall_ms: Number.isInteger(result.stall_ms) && result.stall_ms >= 0 && result.stall_ms <= 12000 ? result.stall_ms : 0,
+        dropped_frames: Number.isInteger(result.dropped_frames) && result.dropped_frames >= 0 && result.dropped_frames <= 999999 ? result.dropped_frames : 0,
+        total_frames: Number.isInteger(result.total_frames) && result.total_frames >= 0 && result.total_frames <= 999999 ? result.total_frames : 0
+      };
+    } catch { return unknown; }
+  }
   function opaqueId() {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "");
     const bytes = new Uint8Array(16);
@@ -247,7 +321,15 @@
       schema_version: "1", action: "browser_report_result", attempt_id: current.attempt_id,
       browser_event_id: pending.id, result: pending.result, request_class: pending.request_class,
       browser_ip: pending.browser_ip, observed_at: String(pending.observed_at),
-      ...(pending.browser_protocol ? { browser_protocol: pending.browser_protocol } : {})
+      ...(pending.browser_protocol ? { browser_protocol: pending.browser_protocol } : {}),
+      ...(pending.media_quality ? {
+        media_quality: pending.media_quality.quality,
+        media_sample_ms: String(pending.media_quality.sample_ms),
+        media_progress_ms: String(pending.media_quality.progress_ms),
+        media_stall_ms: String(pending.media_quality.stall_ms),
+        media_dropped_frames: String(pending.media_quality.dropped_frames),
+        media_total_frames: String(pending.media_quality.total_frames)
+      } : {})
     });
     latest = await loadState();
     latest.events = latest.events.map(row => {
@@ -263,6 +345,7 @@
         attempt_expires_at: result.data.next_attempt?.expires_at || row.attempt_expires_at,
         router_status: result.data.next_attempt?.state || result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
         router_reason: result.data.reason || row.router_reason || null,
+        media_quality: result.data.media_quality || row.media_quality || null,
         pending_results: remaining,
         pending_result: remaining[0] || null
       };
@@ -319,7 +402,23 @@
     return readBrowserProtocol(tabId, url);
   }
 
-  async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp, resourceId = "", browserProtocol = "") {
+  async function browserMediaQualityForAttempt(state, host, tabId, requestClass, observedAt, resourceId = "") {
+    if (state.config.mediaQualityOptIn !== true || !host.endsWith(".googlevideo.com") ||
+        !["media", "xmlhttprequest"].includes(requestClass)) return null;
+    const event = findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId);
+    if (!event || event.candidate_protocol !== "googlevideo-tcp" || event.media_quality_sampled === true) return null;
+    const attemptId = event.attempt_id;
+    event.media_quality_sampled = true;
+    await chrome.storage.local.set({ events: state.events });
+    await queueSyncAttempt(event.id);
+    const latest = await loadState();
+    const current = latest.events.find(row => row && row.id === event.id && row.attempt_id === attemptId);
+    if (!current || !["applied", "bypassed"].includes(current.ramp_treatment) ||
+        !["FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(current.router_status)) return null;
+    return readMediaQuality(tabId);
+  }
+
+  async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp, resourceId = "", browserProtocol = "", mediaQuality = null) {
     if (!safeRemoteIp(browserIp)) return false;
     const event = findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId);
     if (!event) return false;
@@ -328,7 +427,8 @@
       : event.pending_result ? [event.pending_result] : [];
     if (queue.length >= 4) return false;
     queue.push({ id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt,
-      ...(browserProtocol ? { browser_protocol: browserProtocol } : {}) });
+      ...(browserProtocol ? { browser_protocol: browserProtocol } : {}),
+      ...(mediaQuality ? { media_quality: mediaQuality } : {}) });
     event.pending_results = queue;
     event.pending_result = queue[0];
     await chrome.storage.local.set({ events: state.events });
@@ -370,8 +470,10 @@
       } else if (RESOURCE_TYPES.has(details.type)) {
         const identity = await resourceIdentity(details.url);
         const observedAt = Date.now();
-        const protocol = await browserProtocolForAttempt(state, host, details.tabId, details.type, observedAt, details.url, identity);
-        await captureAttemptResult(state, host, details.tabId, "network_success", details.type, observedAt, details.ip, identity, protocol);
+        const mediaQuality = await browserMediaQualityForAttempt(state, host, details.tabId, details.type, observedAt, identity);
+        const latest = await loadState();
+        const protocol = await browserProtocolForAttempt(latest, host, details.tabId, details.type, observedAt, details.url, identity);
+        await captureAttemptResult(latest, host, details.tabId, "network_success", details.type, observedAt, details.ip, identity, protocol, mediaQuality);
       }
       return;
     }
@@ -411,6 +513,6 @@
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, readBrowserProtocol, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt };
+  globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, readBrowserProtocol, readMediaQuality, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt };
   }
 })();
