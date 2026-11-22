@@ -512,7 +512,12 @@ if ($Watch) {
                                 $rampTargetsResponse = Invoke-AdaptiveApi @{ action = 'ramp_targets' }
                                 if ($rampTargetsResponse.schema_version -eq 1 -and $rampTargetsResponse.supported -eq $false) {
                                     if (-not $rampUnsupportedWarningShown) {
-                                        [Console]::Error.WriteLine('Adaptive Ramp audit is unsupported on this Keenetic hardware until its late-ACK gate passes.')
+                                        $rampReason = [string]$rampTargetsResponse.reason
+                                        if ($rampReason -eq 'ramp_pool_consent_required') {
+                                            [Console]::Error.WriteLine('Adaptive Ramp audit is paused until Ramp-first is explicitly enabled for the configured Googlevideo pool under Beta LAN consent.')
+                                        } else {
+                                            [Console]::Error.WriteLine("Adaptive Ramp audit is unavailable: $rampReason")
+                                        }
                                         $rampUnsupportedWarningShown = $true
                                     }
                                 } elseif ($rampTargetsResponse.schema_version -eq 1 -and $null -ne $rampTargetsResponse.targets) {
