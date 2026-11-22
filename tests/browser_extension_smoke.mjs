@@ -185,13 +185,7 @@ assert.equal(sent.filter(row => new URLSearchParams(row.body).get('action') === 
   'cached resource success must not confirm recovery')
 await api.recordHttpResponse({ tabId: 8, type: 'xmlhttprequest', method: 'GET', statusCode: 206, fromCache: false,
   url: 'https://media.example.test/chunk/a?private=1', ip: '8.8.8.8' })
-await new Promise(resolve => setTimeout(resolve, 30))
-const resourceResultRequest = sent.find(row => new URLSearchParams(row.body).get('action') === 'browser_report_result')
-assert.ok(resourceResultRequest, 'successful retry of the exact critical resource was not reported')
-assert.equal(new URLSearchParams(resourceResultRequest.body).get('request_class'), 'xmlhttprequest')
-assert.equal(new URLSearchParams(resourceResultRequest.body).get('browser_ip'), '8.8.8.8')
-assert.ok(!resourceResultRequest.body.includes('/chunk') && !resourceResultRequest.body.includes('private'),
-  'resource URLs must not be sent to the router')
+const resourceAttempt = stored.events.find(row => row.hostname === 'media.example.test' && row.attempt_id)
 const reportedResultCount = sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').length
 const unrelatedPostTrialFailure = await api.rememberFailure(subresource('sub-unrelated', '/chunk/c'))
 assert.equal(unrelatedPostTrialFailure.trigger, 'observe_only')
@@ -199,10 +193,20 @@ assert.equal(sent.filter(row => new URLSearchParams(row.body).get('action') === 
   'an unrelated subresource failure must not be charged to the active trial')
 const exactPostTrialFailure = await api.rememberFailure(subresource('sub-retry-failed', '/chunk/a'))
 assert.equal(exactPostTrialFailure.trigger, 'attempt_result', 'matching post-trial critical-resource failure was not correlated')
-await new Promise(resolve => setTimeout(resolve, 30))
-const resourceFailureRequest = sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').at(-1)
+await api.queueSyncAttempt(resourceAttempt.id)
+const resourceResultRequests = sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result')
+assert.equal(resourceResultRequests.length, 2, 'both overlapping outcomes must be reported')
+const resourceResultRequest = resourceResultRequests[0]
+const resourceFailureRequest = resourceResultRequests[1]
+assert.equal(new URLSearchParams(resourceResultRequest.body).get('result'), 'network_success', 'the first outcome must be serialized first')
+assert.equal(new URLSearchParams(resourceResultRequest.body).get('request_class'), 'xmlhttprequest')
+assert.equal(new URLSearchParams(resourceResultRequest.body).get('browser_ip'), '8.8.8.8')
+assert.ok(!resourceResultRequest.body.includes('/chunk') && !resourceResultRequest.body.includes('private'),
+  'resource URLs must not be sent to the router')
 assert.equal(new URLSearchParams(resourceFailureRequest.body).get('result'), 'network_failure')
 assert.equal(new URLSearchParams(resourceFailureRequest.body).get('request_class'), 'xmlhttprequest')
+assert.equal(stored.events.find(row => row.id === resourceAttempt.id).pending_results.length, 0,
+  'confirmed serialized outcomes should drain the bounded local result queue')
 
 await api.recordHttpResponse({ tabId: 2, type: 'main_frame', statusCode: 503, url: 'https://server.example.test/path' })
 assert.equal(sent.length, 6)

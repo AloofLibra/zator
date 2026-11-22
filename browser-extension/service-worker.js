@@ -4,6 +4,7 @@
   const MAX_SEEN = 128;
   const DEDUPE_MS = 30_000;
   const RESOURCE_TYPES = new Set(["script", "xmlhttprequest", "media"]);
+  const attemptSyncQueues = new Map();
   const mainFrameErrors = new Set([
     "ERR_CONNECTION_RESET", "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT", "ERR_EMPTY_RESPONSE",
     "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_FAILED", "ERR_SSL_PROTOCOL_ERROR",
@@ -169,7 +170,7 @@
     await chrome.storage.local.set({ events: latest.events });
     if (result.data.attempt_id) {
       await retryFailedGetOnce(event, result);
-      void syncAttempt(event.id);
+      void queueSyncAttempt(event.id);
     }
     return { paired: true, ok: result.ok, status: result.status, data: result.data };
   }
@@ -210,26 +211,46 @@
     } : row);
     await chrome.storage.local.set({ events: latest.events });
     const current = latest.events.find(row => row && row.id === eventId);
-    if (!current?.pending_result || !["FLOW_CONFIRMED", "PROVISIONAL_SUCCESS"].includes(status.data.state)) {
+    const pendingResult = current?.pending_results?.[0] || current?.pending_result;
+    if (!pendingResult || !["FLOW_CONFIRMED", "PROVISIONAL_SUCCESS"].includes(status.data.state)) {
       return { ok: true, state: status.data.state || "UNKNOWN" };
     }
-    const pending = current.pending_result;
+    const pending = pendingResult;
     const result = await postRouterForm(latest.config, {
       schema_version: "1", action: "browser_report_result", attempt_id: current.attempt_id,
       browser_event_id: pending.id, result: pending.result, request_class: pending.request_class,
       browser_ip: pending.browser_ip, observed_at: String(pending.observed_at)
     });
     latest = await loadState();
-    latest.events = latest.events.map(row => row.id === eventId ? {
-      ...row,
-      attempt_id: result.data.next_attempt?.attempt_id || row.attempt_id,
-      attempt_expires_at: result.data.next_attempt?.expires_at || row.attempt_expires_at,
-      router_status: result.data.next_attempt?.state || result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
-      router_reason: result.data.reason || row.router_reason || null,
-      pending_result: result.ok ? null : row.pending_result
-    } : row);
+    latest.events = latest.events.map(row => {
+      if (row.id !== eventId) return row;
+      const queue = Array.isArray(row.pending_results)
+        ? row.pending_results
+        : row.pending_result ? [row.pending_result] : [];
+      const remaining = result.ok ? queue.filter(item => item.id !== pending.id) : queue;
+      return {
+        ...row,
+        attempt_id: result.data.next_attempt?.attempt_id || row.attempt_id,
+        attempt_expires_at: result.data.next_attempt?.expires_at || row.attempt_expires_at,
+        router_status: result.data.next_attempt?.state || result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
+        router_reason: result.data.reason || row.router_reason || null,
+        pending_results: remaining,
+        pending_result: remaining[0] || null
+      };
+    });
     await chrome.storage.local.set({ events: latest.events });
     return { ok: result.ok, state: result.data.state || result.data.status || status.data.state };
+  }
+
+  function queueSyncAttempt(eventId) {
+    const previous = attemptSyncQueues.get(eventId) || Promise.resolve();
+    const next = previous.catch(() => {}).then(() => syncAttempt(eventId));
+    attemptSyncQueues.set(eventId, next);
+    const cleanup = () => {
+      if (attemptSyncQueues.get(eventId) === next) attemptSyncQueues.delete(eventId);
+    };
+    void next.then(cleanup, cleanup);
+    return next;
   }
 
   async function cancelAttempt(eventId) {
@@ -256,9 +277,15 @@
     if (!event || (event.attempt_expires_at && observedAt > event.attempt_expires_at * 1000)) return false;
     if (requestClass !== "main_frame" && !(event.trigger === "critical_resource_repeated_failure" &&
         requestClass === event.request_class && typeof event.resource_identity === "string" && event.resource_identity === resourceId)) return false;
-    event.pending_result = { id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt };
+    const queue = Array.isArray(event.pending_results)
+      ? event.pending_results
+      : event.pending_result ? [event.pending_result] : [];
+    if (queue.length >= 4) return false;
+    queue.push({ id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt });
+    event.pending_results = queue;
+    event.pending_result = queue[0];
     await chrome.storage.local.set({ events: state.events });
-    void syncAttempt(event.id);
+    void queueSyncAttempt(event.id);
     return true;
   }
 
@@ -323,7 +350,7 @@
       return true;
     }
     if (message && message.type === "z2r:sync-attempt" && typeof message.eventId === "string") {
-      void syncAttempt(message.eventId).then(sendResponse).catch(() => sendResponse({ ok: false, state: "error" }));
+      void queueSyncAttempt(message.eventId).then(sendResponse).catch(() => sendResponse({ ok: false, state: "error" }));
       return true;
     }
     if (message && message.type === "z2r:cancel-attempt" && typeof message.eventId === "string") {
@@ -333,6 +360,6 @@
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, cancelAttempt };
+    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt };
   }
 })();
