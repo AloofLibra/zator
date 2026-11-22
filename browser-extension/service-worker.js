@@ -203,11 +203,13 @@
     });
     if (!status.ok) return { ok: false, state: status.status };
     let latest = await loadState();
+    const terminal = ["CANCELLED", "EXPIRED", "CONFIRMED_SUCCESS", "CONFIRMED_FAILURE", "UNKNOWN"].includes(status.data.state);
     latest.events = latest.events.map(row => row.id === eventId ? {
       ...row,
       router_status: status.data.state || row.router_status,
       ramp_treatment: status.data.ramp_treatment || row.ramp_treatment,
-      ramp_ack_evidence: status.data.ramp_ack_evidence || row.ramp_ack_evidence
+      ramp_ack_evidence: status.data.ramp_ack_evidence || row.ramp_ack_evidence,
+      ...(terminal ? { pending_results: [], pending_result: null } : {})
     } : row);
     await chrome.storage.local.set({ events: latest.events });
     const current = latest.events.find(row => row && row.id === eventId);
@@ -268,7 +270,7 @@
     if (result.ok) {
       const latest = await loadState();
       latest.events = latest.events.map(row => row.id === eventId ? {
-        ...row, router_status: result.data.state || "CANCELLED", pending_result: null
+        ...row, router_status: result.data.state || "CANCELLED", pending_result: null, pending_results: []
       } : row);
       await chrome.storage.local.set({ events: latest.events });
     }

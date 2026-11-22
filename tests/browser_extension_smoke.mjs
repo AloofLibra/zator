@@ -44,7 +44,9 @@ const fakeRouter = createServer(async (request, response) => {
     : action === 'browser_report_failure' && params.get('hostname') === 'media.example.test'
       ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'c'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
     : action === 'browser_attempt_status'
-      ? { schema_version: 1, state: 'FLOW_CONFIRMED', ramp_treatment: 'applied', ramp_ack_evidence: 'confirmed' }
+      ? params.get('attempt_id') === 'w'.repeat(32)
+        ? { schema_version: 1, state: 'EXPIRED' }
+        : { schema_version: 1, state: 'FLOW_CONFIRMED', ramp_treatment: 'applied', ramp_ack_evidence: 'confirmed' }
       : action === 'browser_report_result'
         ? params.get('attempt_id') === 'g'.repeat(32)
           ? { schema_version: 1, state: 'UNKNOWN', status: 'PROTOCOL_UNKNOWN', reason: 'h3_protocol_evidence_unavailable' }
@@ -219,12 +221,22 @@ assert.equal(sent.length, 6)
 assert.equal(stored.events.at(-1).trigger, 'manual_only')
 assert.ok(!Object.keys(stored.events.at(-1)).includes('url'))
 
-stored.events.push({ id: 'c'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'd'.repeat(32), router_status: 'WAIT_NEW_FLOW' })
+stored.events.push({ id: 'c'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'd'.repeat(32), router_status: 'WAIT_NEW_FLOW',
+  pending_result: { id: 'e'.repeat(32) }, pending_results: [{ id: 'e'.repeat(32) }] })
 const cancelled = await api.cancelAttempt('c'.repeat(32))
 assert.equal(cancelled.ok, true)
 assert.equal(cancelled.state, 'CANCELLED')
 assert.equal(new URLSearchParams(sent.at(-1).body).get('action'), 'browser_cancel_attempt')
 assert.equal(stored.events.at(-1).router_status, 'CANCELLED')
+assert.deepEqual(stored.events.at(-1).pending_results, [], 'cancel must clear queued browser outcomes')
+assert.equal(stored.events.at(-1).pending_result, null)
+
+stored.events.push({ id: 'f'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'w'.repeat(32), router_status: 'WAIT_NEW_FLOW',
+  pending_result: { id: 'x'.repeat(32) }, pending_results: [{ id: 'x'.repeat(32) }] })
+await api.syncAttempt('f'.repeat(32))
+assert.equal(stored.events.at(-1).router_status, 'EXPIRED')
+assert.deepEqual(stored.events.at(-1).pending_results, [], 'expired attempts must discard queued browser outcomes')
+assert.equal(stored.events.at(-1).pending_result, null)
 
 stored.events.push({ id: 'e'.repeat(32), hostname: 'rr1---sn-a.googlevideo.com', tab_id: 2,
   attempt_id: 'f'.repeat(32), router_status: 'WAIT_NEW_FLOW' })
