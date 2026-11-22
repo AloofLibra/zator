@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { customBlobs, customBlobsUpload } from '../api/endpoints'
+import { refreshTlsBlobSettings } from '../stores/settings'
 import { refreshSniState } from '../stores/sni'
 import type { CustomBlobInfo } from '../api/types'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
@@ -30,7 +31,8 @@ const refsTotal = computed(() => blobs.value.reduce((acc, b) => acc + (b.refs ||
 async function load() {
   // один blobs.cgi на всю вкладку: список блобов + sni-стейт в общий стор
   // (карта профилей и SniPanel читают его, своих запросов не делают)
-  const data = await refreshSniState()
+  // PR83-REVIEW(2/6) [ответ на замечание AloofLibra, SniPanel.vue:79]: первоначальную загрузку делаем ТОЛЬКО здесь, в родителе, и вместе с ней tls_blob (раньше его грузил onMounted SniPanel — теперь SniPanel при монтировании не качает ничего, вкладка открывается одним blobs.cgi). Удалить после проверки.
+  const [data] = await Promise.all([refreshSniState(), refreshTlsBlobSettings()])
   dir.value = data.dir || ''
   blobs.value = Array.isArray(data.blobs) ? data.blobs : []
   files.value = Array.isArray(data.files) ? data.files : []
