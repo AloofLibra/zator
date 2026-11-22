@@ -856,3 +856,70 @@ adaptive_browser_media_quality_write() {
   chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
   rmdir "$lock" || return 1
 }
+
+# Accept only a natural Ramp -> Plain -> Plain -> Ramp browser sequence for
+# one exact target. Applying the short exception remains a separate operation.
+adaptive_browser_ramp_canary_validate() {
+  [[ $# = 5 ]] || return 2
+  local host="$1" ip="$2" scope="$3" ids="$4" now="$5"
+  local file row ver id generation client old_scope old_host old_ip profile proto strategy fp treatment ack
+  local quality sample progress stall dropped total observed extra count=0 i current_id expected_treatment
+  local first_client="" first_strategy="" first_fp="" first_at=0 last_at=0
+  local -a wanted=() expected=(applied bypassed bypassed applied)
+  local -A rows=()
+  [[ "$(adaptive_browser_host_valid "$host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "$host" &&
+     "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+     ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+     "$ids" =~ ^[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32}$ &&
+     "$now" =~ ^[0-9]{10}$ ]] || return 2
+  if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 2; fi
+  awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || return 2
+  IFS=, read -r -a wanted <<< "$ids"
+  for ((i=0; i<4; i++)); do
+    for ((count=0; count<i; count++)); do [[ "${wanted[i]}" != "${wanted[count]}" ]] || return 2; done
+  done
+  file="$(adaptive_browser_state_dir)/media-quality/evidence.tsv"
+  [[ -f "$file" && ! -L "$file" && -r "$file" && $(wc -c < "$file") -le 32768 ]] || return 1
+  count=0
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    count=$((count + 1)); (( count <= 64 )) || return 1
+    IFS=$'\t' read -r ver id generation client old_scope old_host old_ip profile proto strategy fp treatment ack \
+      quality sample progress stall dropped total observed extra <<< "$row"
+    [[ "$ver" = 1 && "$id" =~ ^[a-f0-9]{32}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ &&
+       "$client" =~ ^[a-f0-9]{32}$ && ( "$old_scope" = default || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+       "$old_host" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ && "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+       "$profile" = 2 && "$proto" = googlevideo-tcp && "$strategy" =~ ^[1-9][0-9]{0,2}$ &&
+       "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$treatment" =~ ^(applied|bypassed)$ &&
+       "$ack" =~ ^(unknown|confirmed|pending)$ && "$quality" =~ ^(healthy|degraded|unknown)$ &&
+       "$sample" =~ ^[0-9]{1,5}$ && "$progress" =~ ^[0-9]{1,5}$ && "$stall" =~ ^[0-9]{1,5}$ &&
+       "$dropped" =~ ^[0-9]{1,6}$ && "$total" =~ ^[0-9]{1,6}$ && "$observed" =~ ^[0-9]{10}$ &&
+       -z "${extra:-}" ]] || return 1
+    for current_id in "${wanted[@]}"; do
+      if [[ "$id" = "$current_id" ]]; then
+        [[ ! ${rows[$id]+yes} ]] || return 1
+        rows[$id]="$row"
+      fi
+    done
+  done < "$file"
+  for ((i=0; i<4; i++)); do
+    current_id="${wanted[i]}"; row="${rows[$current_id]:-}"
+    [[ -n "$row" ]] || return 1
+    IFS=$'\t' read -r ver id generation client old_scope old_host old_ip profile proto strategy fp treatment ack \
+      quality sample progress stall dropped total observed extra <<< "$row"
+    expected_treatment="${expected[i]}"
+    [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_scope" = "$scope" &&
+       "$treatment" = "$expected_treatment" && "$quality" = healthy &&
+       "$sample" -ge 7500 && "$progress" -ge 5000 && "$stall" -lt 1000 ]] || return 1
+    if [[ "$treatment" = applied ]]; then [[ "$ack" = confirmed ]] || return 1; fi
+    if (( i == 0 )); then
+      first_client="$client"; first_strategy="$strategy"; first_fp="$fp"; first_at="$observed"
+    else
+      [[ "$client" = "$first_client" && "$strategy" = "$first_strategy" && "$fp" = "$first_fp" ]] || return 1
+      (( observed > last_at )) || return 1
+    fi
+    last_at="$observed"
+  done
+  (( first_at >= now - 1200 && last_at <= now + 5 && last_at - first_at <= 1200 )) || return 1
+  printf '%s' "$ids|$host|$ip|$scope|$first_strategy|$first_fp" | sha256sum | awk '{print $1}'
+}
