@@ -1087,6 +1087,7 @@ extra_strats/cache/orchestra/mode_override.tsv
 extra_strats/cache/orchestra/clonesize.tsv
 extra_strats/cache/orchestra/custom_strategies.tsv
 extra_strats/cache/adaptive/rules.tsv
+extra_strats/cache/adaptive/ramp-pool
 extra_strats/cache/orchestra/custom_blobs.tsv
 files/fake/custom_blob
 EOF

@@ -127,11 +127,15 @@ fi
 adaptive_rules_invalidate
 [[ ! -e "$Z2R_ADAPTIVE_RULES_FILE" && ! -e "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] || { echo 'invalidation did not clear runtime and snapshot rules' >&2; exit 1; }
 adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$cat" "$stamp" "$((now + 3600))"
+printf '1\tmanaged\tmanual_unverified\t%s\n' "$fp" > "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
+chmod 600 "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
 source "$ROOT/lib/config.sh"
 eval "$(sed -n '/^z2r_backup_state_files()/,/^}/p' "$ROOT/lib/actions.sh")"
 backup_state="$(z2r_backup_state_files)"
-[[ "$backup_state" == *'extra_strats/cache/adaptive/rules.tsv'* && "$backup_state" != *'extra_strats/cache/adaptive/token'* ]] || {
-  echo 'backup must preserve adaptive rules without copying the pairing secret' >&2; exit 1;
+[[ "$backup_state" == *'extra_strats/cache/adaptive/rules.tsv'* &&
+   "$backup_state" == *'extra_strats/cache/adaptive/ramp-pool'* &&
+   "$backup_state" != *'extra_strats/cache/adaptive/token'* ]] || {
+  echo 'backup must preserve adaptive rules and Ramp ownership without copying the pairing secret' >&2; exit 1;
 }
 for _ in $(seq 1 30); do [[ -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] && break; sleep 0.1; done
 source "$ROOT/lib/actions.sh"
@@ -144,12 +148,19 @@ mkdir -p "$restore"
 [[ -s "$restore/extra_strats/cache/adaptive/rules.tsv" ]] || {
   echo 'backup archive omitted adaptive rules.tsv' >&2; exit 1;
 }
+[[ -s "$restore/extra_strats/cache/adaptive/ramp-pool" &&
+   "$(stat -c '%a' "$restore/extra_strats/cache/adaptive/ramp-pool")" = 600 ]] || {
+  echo 'backup archive omitted private Ramp ownership state' >&2; exit 1;
+}
 cmp -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" "$restore/extra_strats/cache/adaptive/rules.tsv" || {
   echo 'adaptive rules changed during backup round-trip' >&2; exit 1;
 }
 if "$(z2r_pick_tar)" -tf "$archive" | grep -Eq '(^|/)extra_strats/cache/adaptive/token$'; then
   echo 'backup archive copied the adaptive pairing secret' >&2; exit 1;
 fi
+cmp -s "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool" "$restore/extra_strats/cache/adaptive/ramp-pool" || {
+  echo 'backup round-trip changed Ramp ownership state' >&2; exit 1;
+}
 cat > "$tmp/init" <<'INIT'
 #!/bin/sh
 exit 0
