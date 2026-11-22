@@ -126,6 +126,15 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "
    ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool-armed" ]] || {
   echo 'cancelling proof-triggered Ramp-first changed config or left consent behind' >&2; exit 1;
 }
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-arm >/dev/null
+sed -i 's/^Z2R_WSSIZE_RAMP_WSIZE=1$/Z2R_WSSIZE_RAMP_WSIZE=2/' "$tmp/zapret2/config"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-off > "$tmp/ramp-stale-arm-off.out"
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=0 &&
+   "$(grep '^Z2R_WSSIZE_RAMP_WSIZE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_WSIZE=2 &&
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool-armed" ]] || {
+  echo 'stale Ramp-first arm blocked opt-out or changed the manually edited config' >&2; exit 1;
+}
+sed -i 's/^Z2R_WSSIZE_RAMP_WSIZE=2$/Z2R_WSSIZE_RAMP_WSIZE=1/' "$tmp/zapret2/config"
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null
 [[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=1 &&
    "$(cut -f3 "$tmp/zator/extra_strats/cache/adaptive/ramp-pool")" = manual_unverified &&

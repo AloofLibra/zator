@@ -222,7 +222,13 @@ adaptive_ramp_pool_enable() {
 adaptive_ramp_pool_restore() {
   local version ownership basis fingerprint extra proof current current_fingerprint
   if [ -e "$RAMP_POOL_ARM_FILE" ]; then
-    adaptive_ramp_pool_armed || { echo 'Ramp-first proof arm is invalid or stale; it was not removed.' >&2; return 1; }
+    [ -f "$RAMP_POOL_ARM_FILE" ] && [ ! -L "$RAMP_POOL_ARM_FILE" ] && [ "$(wc -c < "$RAMP_POOL_ARM_FILE")" -le 256 ] || {
+      echo 'Ramp-first proof arm is unsafe; it was not removed.' >&2; return 1;
+    }
+    IFS=$'\t' read -r version ownership fingerprint extra < "$RAMP_POOL_ARM_FILE" || return 1
+    [[ "$version" = 1 && "$ownership" = armed && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] || {
+      echo 'Ramp-first proof arm is invalid; it was not removed.' >&2; return 1;
+    }
     rm -f "$RAMP_POOL_ARM_FILE" || return 1
   fi
   [ -e "$RAMP_POOL_FILE" ] || return 0
