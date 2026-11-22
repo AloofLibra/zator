@@ -132,14 +132,18 @@ if adaptive_browser_attempt_gc "$gc_now" 66666666666666666666666666666666; then
 else [[ "$?" = 3 ]]; fi
 adaptive_browser_attempt_reservation_release "$gc_reserve_c"
 adaptive_browser_attempt_reservation_release "$gc_reserve_d"
-for i in $(seq 1000 1060); do rm -f -- "$(adaptive_browser_attempt_file "$(printf '%032x' "$i")")"; done
+gc_fixture_files=()
+for i in $(seq 1000 1060); do gc_fixture_files+=("$(adaptive_browser_attempt_file "$(printf '%032x' "$i")")"); done
+rm -f -- "${gc_fixture_files[@]}"
 for i in $(seq 1 63); do
   gc_id="$(printf '%032x' "$i")"
   gc_make_attempt "$gc_id" "$gc_now" "$((gc_now + 45))" WAIT_NEW_FLOW
 done
 if adaptive_browser_attempt_gc "$gc_now"; then echo '64 fresh attempts exceeded the journal cap' >&2; exit 1
 else [[ "$?" = 3 ]]; fi
-for i in $(seq 1 63); do rm -f -- "$(adaptive_browser_attempt_file "$(printf '%032x' "$i")")"; done
+gc_fixture_files=()
+for i in $(seq 1 63); do gc_fixture_files+=("$(adaptive_browser_attempt_file "$(printf '%032x' "$i")")"); done
+rm -f -- "${gc_fixture_files[@]}"
 adaptive_browser_attempt_gc "$gc_now"
 
 trial_id=99999999999999999999999999999999
