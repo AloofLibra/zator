@@ -217,16 +217,27 @@ api_adaptive_get() {
   [ -r "$rule_file" ] && [ ! -L "$rule_file" ] || rule_file="$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv"
   if [ -r "$rule_file" ] && [ ! -L "$rule_file" ]; then
     rules_json="$(awk -F '\t' -v now="$(date +%s)" '
+      FNR==NR {
+        if (FNR<=256 && NF==11 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
+          $3 ~ /^[0-9.]+$/ && (($4 ~ /^[1-4]$/ && ($5=="tls" || ($5=="googlevideo-tcp" && $4==2 && $2 ~ /\.googlevideo\.com$/))) || ($4==5 && $5=="quic" && ($2 ~ /\.googlevideo\.com$/ || $2 ~ /\.youtube\.com$/ || $2 ~ /\.youtubei\.googleapis\.com$/))) &&
+          $6=="shared" && $7 ~ /^(0|[1-9][0-9]*)$/ && $8 ~ /^sha256:[a-f0-9]{64}$/ && $9 ~ /^sha256:[a-f0-9]{64}$/ && $10 ~ /^[0-9:|]+$/ && $11 ~ /^[0-9]+$/ && $11>now) {
+          shared_key=$2 SUBSEP $3 SUBSEP $4 SUBSEP $5 SUBSEP $7 SUBSEP $8 SUBSEP $9 SUBSEP $10
+          browser_shared[shared_key]=1
+        }
+        next
+      }
       BEGIN { printf "[" }
-      NR<=256 && NF==11 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
+      FNR<=256 && NF==11 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
         $3 ~ /^[0-9.]+$/ && (($4 ~ /^[1-4]$/ && ($5=="tls" || ($5=="googlevideo-tcp" && $4==2 && $2 ~ /\.googlevideo\.com$/))) || ($4==5 && $5=="quic" && ($2 ~ /\.googlevideo\.com$/ || $2 ~ /\.youtube\.com$/ || $2 ~ /\.youtubei\.googleapis\.com$/))) && ($6=="default" || $6=="shared" || $6 ~ /^mark:[1-9][0-9]*$/) &&
         $7 ~ /^(0|[1-9][0-9]*)$/ && $8 ~ /^sha256:[a-f0-9]{64}$/ && $9 ~ /^sha256:[a-f0-9]{64}$/ &&
         $11 ~ /^[0-9]+$/ && $11>now {
+          shared_key=$2 SUBSEP $3 SUBSEP $4 SUBSEP $5 SUBSEP $7 SUBSEP $8 SUBSEP $9 SUBSEP $10
           if (n++) printf ","
-          printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"strategy_number\":%s,\"treatment_variant\":\"standard\",\"evidence\":\"%s\",\"expires\":%s,\"ttl_seconds\":%s}", $2,$3,$4,$5,$6,$7,($6=="shared"?"browser_confirmed_shared":"route_verified"),$11,$11-now
+          evidence=($6=="shared" || browser_shared[shared_key])?"browser_confirmed_shared":"route_verified"
+          printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"strategy_number\":%s,\"treatment_variant\":\"standard\",\"evidence\":\"%s\",\"expires\":%s,\"ttl_seconds\":%s}", $2,$3,$4,$5,$6,$7,evidence,$11,$11-now
         }
       END { printf "]" }
-    ' "$rule_file")"
+    ' "$rule_file" "$rule_file")"
   fi
   if [ -d "$base" ] && [ ! -L "$base" ]; then
     for run in "$base"/*; do

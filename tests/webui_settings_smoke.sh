@@ -185,9 +185,13 @@ grep -Fq '"media_bytes":1048576' <<< "$adaptive_status" || fail 'adaptive status
 grep -Fq '"probe_network_bytes":1234567' <<< "$adaptive_status" || fail 'adaptive status omitted test-queue IP byte metrics'
 assert_not_contains "$adaptive_status" 'media_url_sha256' 'adaptive status exposed media URL hashes'
 printf '1\tdirect.example.org\t93.184.216.35\t1\ttls\tmark:4\t0\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" >> "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
+printf '1\tconfirmed.example.org\t93.184.216.36\t1\ttls\tmark:7\t4\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" >> "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
+printf '1\tconfirmed.example.org\t93.184.216.36\t1\ttls\tshared\t4\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" >> "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
 adaptive_direct_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -Fq '"hostname":"direct.example.org"' <<< "$adaptive_direct_status" || fail 'adaptive panel omitted the verified DIRECT rule'
 grep -Fq '"strategy_number":0' <<< "$adaptive_direct_status" || fail 'adaptive panel did not preserve the DIRECT sentinel'
+grep -Fq '"hostname":"confirmed.example.org","destination_ip":"93.184.216.36","profile_id":1,"protocol":"tls","scope":"mark:7","strategy_number":4,"treatment_variant":"standard","evidence":"browser_confirmed_shared"' <<< "$adaptive_direct_status" || fail 'adaptive panel misreported the source-scope browser-confirmed rule'
+grep -Fq '"hostname":"confirmed.example.org","destination_ip":"93.184.216.36","profile_id":1,"protocol":"tls","scope":"shared","strategy_number":4,"treatment_variant":"standard","evidence":"browser_confirmed_shared"' <<< "$adaptive_direct_status" || fail 'adaptive panel misreported the shared browser-confirmed rule'
 grep -Fq '"resources":{' <<< "$adaptive_status" || fail 'adaptive router capacity metrics missing'
 grep -Fq '"agent_online":true' <<< "$adaptive_status" || fail 'adaptive status did not report a recent Windows agent heartbeat'
 grep -Fq '"paired_clients":1,"connected_clients":1' <<< "$adaptive_status" || fail 'adaptive status omitted paired browser presence'
