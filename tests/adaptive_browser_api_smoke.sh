@@ -40,10 +40,13 @@ grep -q '"status":"paired"' <<< "$response"
 grep -q '"ranking_opt_in":false' <<< "$response"
 [[ "$(cat "$Z2R_ADAPTIVE_BROWSER_DIR/presence/$client_id")" =~ ^[0-9]{10}$ ]] || { echo 'browser API did not record tmpfs presence' >&2; exit 1; }
 grep -q "Access-Control-Allow-Origin: $origin" <<< "$response"
-preflight="$(env REQUEST_METHOD=OPTIONS HTTP_ORIGIN="$origin" HTTP_ACCESS_CONTROL_REQUEST_METHOD=POST \
-  HTTP_ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK=true bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi" </dev/null)"
+preflight="$(env REQUEST_METHOD=OPTIONS HTTP_ORIGIN="$origin" \
+  bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi" </dev/null)"
 grep -q 'Status: 204 No Content' <<< "$preflight"
 grep -q 'Access-Control-Allow-Private-Network: true' <<< "$preflight"
+wrong_preflight="$(env REQUEST_METHOD=OPTIONS HTTP_ORIGIN=https://example.org \
+  bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi" </dev/null)"
+grep -q 'Status: 403 Forbidden' <<< "$wrong_preflight"
 wrong_origin="$(printf '%s' "$body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#body}" \
   HTTP_ORIGIN=https://example.org HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 \
   bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"

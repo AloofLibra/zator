@@ -10,8 +10,10 @@ origin_ok() { [[ "$1" =~ ^chrome-extension://[a-p]{32}$ ]]; }
 headers() {
   printf 'Cache-Control: no-store\r\nVary: Origin\r\nContent-Type: application/json; charset=utf-8\r\n'
   if origin_ok "$origin"; then
-    printf 'Access-Control-Allow-Origin: %s\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type\r\nAccess-Control-Max-Age: 300\r\n' "$origin"
-    [[ "${HTTP_ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK:-}" != true ]] || printf 'Access-Control-Allow-Private-Network: true\r\n'
+    # OpenWrt uhttpd only exports a fixed allowlist of request headers to CGI;
+    # Chromium's preflight headers are dropped. Answer PNA preflight for the
+    # exact extension origin without depending on those unavailable variables.
+    printf 'Access-Control-Allow-Origin: %s\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type\r\nAccess-Control-Max-Age: 300\r\nAccess-Control-Allow-Private-Network: true\r\n' "$origin"
   fi
 }
 send() { local status="$1" body="$2"; printf 'Status: %s\r\n' "$status"; headers; printf '\r\n%s\n' "$body"; exit 0; }
@@ -19,7 +21,6 @@ fail() { send "$1" "{\"schema_version\":1,\"error\":\"$2\"}"; }
 
 if [[ "${REQUEST_METHOD:-}" = OPTIONS ]]; then
   origin_ok "$origin" || fail '403 Forbidden' 'extension origin required'
-  [[ "${HTTP_ACCESS_CONTROL_REQUEST_METHOD:-}" = POST ]] || fail '405 Method Not Allowed' 'POST preflight required'
   send '204 No Content' ''
 fi
 [[ "${REQUEST_METHOD:-}" = POST && "${CONTENT_TYPE%%;*}" = application/x-www-form-urlencoded ]] || fail '405 Method Not Allowed' 'POST form data required'
