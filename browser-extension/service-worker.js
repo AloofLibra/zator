@@ -176,6 +176,23 @@
     return { ok: result.ok, state: result.data.state || result.data.status || status.data.state };
   }
 
+  async function cancelAttempt(eventId) {
+    const state = await loadState();
+    const event = state.events.find(row => row && row.id === eventId && row.attempt_id);
+    if (!event || !state.config.router || !state.config.token) return { ok: false, state: "NO_ATTEMPT" };
+    const result = await postRouterForm(state.config, {
+      schema_version: "1", action: "browser_cancel_attempt", attempt_id: event.attempt_id
+    });
+    if (result.ok) {
+      const latest = await loadState();
+      latest.events = latest.events.map(row => row.id === eventId ? {
+        ...row, router_status: result.data.state || "CANCELLED", pending_result: null
+      } : row);
+      await chrome.storage.local.set({ events: latest.events });
+    }
+    return { ok: result.ok, state: result.data.state || result.status };
+  }
+
   async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp) {
     if (!safeRemoteIp(browserIp)) return false;
     const event = [...state.events].reverse().find(row => row && row.attempt_id && row.hostname === host && row.tab_id === tabId &&
@@ -246,9 +263,13 @@
       void syncAttempt(message.eventId).then(sendResponse).catch(() => sendResponse({ ok: false, state: "error" }));
       return true;
     }
+    if (message && message.type === "z2r:cancel-attempt" && typeof message.eventId === "string") {
+      void cancelAttempt(message.eventId).then(sendResponse).catch(() => sendResponse({ ok: false, state: "error" }));
+      return true;
+    }
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, rememberFailure, reportFailure, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt };
+    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, rememberFailure, reportFailure, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, cancelAttempt };
   }
 })();

@@ -1,6 +1,7 @@
 const mode = document.querySelector("#mode");
 const latest = document.querySelector("#latest");
 const fix = document.querySelector("#fix");
+const cancel = document.querySelector("#cancel");
 let activeEvent = null;
 let activeTab = null;
 
@@ -18,6 +19,7 @@ async function render() {
   const permission = await chrome.permissions.contains({ origins: ["http://*/*", "https://*/*"] });
   mode.textContent = permission ? (state.config?.token ? "Paired · waiting for site errors" : "Monitoring enabled · pair a router") : "Enable error monitoring in Settings";
   fix.hidden = !activeTab?.url || !/^https?:\/\//i.test(activeTab.url);
+  cancel.hidden = true;
   if (!row) {
     activeEvent = null;
     latest.textContent = "No recent eligible network error. You can still ask Zator to try this site.";
@@ -29,6 +31,7 @@ async function render() {
     ? `${row.hostname} · ${row.router_status}${row.pending_result ? " · browser result received" : " · reload the page if needed; waiting for a new connection"}`
     : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${row.router_status}` : ""}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
+  cancel.hidden = !attemptActive;
 }
 
 fix.addEventListener("click", async () => {
@@ -39,6 +42,14 @@ fix.addEventListener("click", async () => {
     : await chrome.runtime.sendMessage({ type: "z2r:fix-current", url: activeTab.url, tabId: activeTab.id });
   latest.textContent = result.ok ? "Request sent. Waiting for router status." : `Could not start: ${result.reason}`;
   fix.disabled = false;
+});
+cancel.addEventListener("click", async () => {
+  if (!activeEvent?.attempt_id) return;
+  cancel.disabled = true;
+  const result = await chrome.runtime.sendMessage({ type: "z2r:cancel-attempt", eventId: activeEvent.id });
+  latest.textContent = result.ok ? "Trial cancelled." : `Could not cancel: ${result.state}`;
+  cancel.disabled = false;
+  await render();
 });
 document.querySelector("#options").addEventListener("click", () => chrome.runtime.openOptionsPage());
 void render();

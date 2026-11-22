@@ -23,7 +23,8 @@ const fakeRouter = createServer(async (request, response) => {
     response.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"invalid token"}')
     return
   }
-  response.writeHead(200, { 'content-type': 'application/json' }).end('{"schema_version":1,"state":"WAITING_FOR_NEW_FLOW"}')
+  const action = new URLSearchParams(body).get('action')
+  response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }))
 })
 await new Promise(resolve => fakeRouter.listen(0, '127.0.0.1', resolve))
 const fakeRouterAddress = fakeRouter.address()
@@ -122,6 +123,13 @@ await api.recordHttpResponse({ tabId: 2, type: 'main_frame', statusCode: 503, ur
 assert.equal(sent.length, 4)
 assert.equal(stored.events.at(-1).trigger, 'manual_only')
 assert.ok(!Object.keys(stored.events.at(-1)).includes('url'))
+
+stored.events.push({ id: 'c'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'd'.repeat(32), router_status: 'WAIT_NEW_FLOW' })
+const cancelled = await api.cancelAttempt('c'.repeat(32))
+assert.equal(cancelled.ok, true)
+assert.equal(cancelled.state, 'CANCELLED')
+assert.equal(new URLSearchParams(sent.at(-1).body).get('action'), 'browser_cancel_attempt')
+assert.equal(stored.events.at(-1).router_status, 'CANCELLED')
 
 for (const file of ['popup.js', 'options.js']) {
   assert.doesNotThrow(() => new vm.Script(readFileSync(resolve(root, `browser-extension/${file}`), 'utf8'), { filename: file }))
