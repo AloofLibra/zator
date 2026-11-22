@@ -71,6 +71,9 @@ assert.equal(api.failureClass('net::ERR_SSL_HANDSHAKE_NOT_COMPLETED'), 'network_
 assert.equal(api.failureClass('net::ERR_SSL_VERSION_OR_CIPHER_MISMATCH'), 'network_failure')
 assert.equal(api.failureClass('net::ERR_QUIC_HANDSHAKE_FAILED'), 'network_failure')
 assert.equal(api.failureClass('net::ERR_SSL_CLIENT_AUTH_CERT_NEEDED'), '')
+assert.equal(api.failureTransport('net::ERR_QUIC_HANDSHAKE_FAILED'), 'quic')
+assert.equal(api.failureTransport('net::ERR_SSL_HANDSHAKE_NOT_COMPLETED'), 'tls')
+assert.equal(api.failureTransport('net::ERR_CONNECTION_RESET'), 'unknown')
 assert.equal(api.safeHost('https://router.home.arpa/path'), '')
 
 const main = await api.rememberFailure({ tabId: 2, documentId: 'doc-a', requestId: 'req-a', type: 'main_frame', method: 'GET',
@@ -83,6 +86,7 @@ const posted = new URLSearchParams(sent[0].body)
 assert.equal(posted.get('hostname'), 'video.example.test')
 assert.equal(posted.get('trigger'), 'main_frame_network_failure')
 assert.equal(posted.get('failure_count'), '1')
+assert.equal(posted.get('failure_transport'), 'unknown')
 assert.equal(reloads.length, 1, 'eligible main-frame GET should retry once after trial setup')
 assert.equal(reloads[0].id, 2)
 assert.equal(reloads[0].options.bypassCache, true)

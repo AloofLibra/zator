@@ -49,15 +49,19 @@ adaptive_browser_context_valid() {
 # Resolve a browser hostname only from a fresh exact Lua observation. No DNS or
 # synthetic probing is performed here; ambiguous/malformed tuples are refused.
 adaptive_browser_resolve_observation() {
-  [[ $# = 4 ]] || return 2
-  local host="${1,,}" scope="$2" file="$3" now="$4" row ver status old_host ip profile proto old_scope seen extra tuple
+  [[ $# = 4 || $# = 5 ]] || return 2
+  local host="${1,,}" scope="$2" file="$3" now="$4" transport="${5:-unknown}" row ver status old_host ip profile proto old_scope seen extra tuple
   adaptive_browser_host_valid "$host" || return 1
   host="$ADAPTIVE_BROWSER_HOST"
-  [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] && [[ "$now" =~ ^[0-9]{1,10}$ ]] || return 2
+  [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] && [[ "$now" =~ ^[0-9]{1,10}$ ]] && [[ "$transport" =~ ^(unknown|tls|quic)$ ]] || return 2
   [[ -r "$file" && ! -L "$file" && $(wc -c < "$file") -le 32768 ]] || return 1
   local -a rows=()
   while IFS= read -r row || [[ -n "$row" ]]; do
     IFS=$'\t' read -r ver status old_host ip profile proto old_scope seen extra <<< "$row"
+    case "$transport" in
+      tls) [[ "$proto" = tls || "$proto" = googlevideo-tcp ]] || continue ;;
+      quic) [[ "$proto" = quic ]] || continue ;;
+    esac
     [[ "$ver" = 1 && "$status" = seen && "$old_host" = "$host" && "$old_scope" = "$scope" &&
        ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) &&
        "$seen" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || continue

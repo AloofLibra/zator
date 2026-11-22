@@ -68,6 +68,13 @@ resolved="$(adaptive_browser_resolve_observation example.org mark:7 "$events" "$
 [[ "$resolved" = $'example.org\t8.8.8.8\t1\ttls\tmark:7\t'"$now" ]]
 printf '1\tseen\texample.org\t1.1.1.1\t1\ttls\tmark:7\t%s\n' "$now" >> "$events"
 if adaptive_browser_resolve_observation example.org mark:7 "$events" "$now"; then exit 1; fi
+printf '1\tseen\twww.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$now" > "$events"
+printf '1\tseen\twww.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t%s\n' "$now" >> "$events"
+if adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now"; then exit 1; fi
+resolved="$(adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now" quic)"
+[[ "$resolved" = $'www.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t'"$now" ]]
+resolved="$(adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now" tls)"
+[[ "$resolved" = $'www.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t'"$now" ]]
 
 attempt=abcdefabcdefabcdefabcdefabcdefab
 adaptive_browser_attempt_write "$attempt" "$client_id" 192.168.1.42 mark:7 example.org 203.0.113.10 1 tls main_frame_network_failure WAIT_NEW_FLOW 2 - "$(date +%s)" "$(( $(date +%s) + 30 ))" 1

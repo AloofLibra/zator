@@ -41,6 +41,13 @@
     return "";
   }
 
+  function failureTransport(error) {
+    const code = String(error || "").replace(/^net::/, "").toUpperCase();
+    if (code.startsWith("ERR_QUIC_")) return "quic";
+    if (code.startsWith("ERR_SSL_") || code.startsWith("ERR_HTTP2_")) return "tls";
+    return "unknown";
+  }
+
   function safeMethod(method) { return method === "GET"; }
   function safeRemoteIp(ip) {
     return typeof ip === "string" && /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip) &&
@@ -122,6 +129,7 @@
       id: opaqueId(), hostname: host, request_class: type, method: safeMethod(method) ? method : "UNSAFE",
       failure_class: failure, trigger, observed_at: now, tab_id: details.tabId
     };
+    event.failure_transport = failureTransport(details.error);
     event.failure_count = trigger === "critical_resource_repeated_failure" ? 2 : 1;
     if (trigger && await captureAttemptResult(state, host, details.tabId, "network_failure", type, now, details.ip)) {
       await chrome.storage.local.set({ seen: state.seen, resourceErrors: state.resourceErrors });
@@ -142,7 +150,8 @@
       schema_version: "1", action: "browser_report_failure", browser_event_id: event.id,
       trigger: userRequested ? "user_fix" : event.trigger,
       request_class: event.request_class, hostname: event.hostname, method: event.method,
-      failure_class: event.failure_class, failure_count: String(userRequested ? 1 : (event.failure_count || 1)),
+      failure_class: event.failure_class, failure_transport: event.failure_transport || "unknown",
+      failure_count: String(userRequested ? 1 : (event.failure_count || 1)),
       observed_at: String(event.observed_at)
     });
     const result = await postRouterForm(state.config, Object.fromEntries(form.entries()));
@@ -307,6 +316,6 @@
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, cancelAttempt };
+    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, cancelAttempt };
   }
 })();

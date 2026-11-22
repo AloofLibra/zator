@@ -37,7 +37,7 @@ for pair in "${pairs[@]}"; do
   [[ "$pair" = *=* && "$pair" != *%* && "$pair" != *+* ]] || fail '400 Bad Request' 'invalid form encoding'
   key="${pair%%=*}"; value="${pair#*=}"
   [[ "$key" =~ ^[a-z_]+$ && "$value" =~ ^[a-zA-Z0-9_.:-]*$ ]] || fail '400 Bad Request' 'invalid form field'
-  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_count|observed_at|attempt_id|result|browser_ip) ;;
+  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_transport|failure_count|observed_at|attempt_id|result|browser_ip) ;;
     *) fail '400 Bad Request' 'unknown form field' ;; esac
   [[ -n "$key" && ! ${f[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
   f[$key]="$value"
@@ -195,9 +195,10 @@ case "${f[action]:-}" in
     send '200 OK' "{\"schema_version\":1,\"client_id\":\"$client_id\",\"scope\":\"$scope\",\"mode\":\"$mode\",\"ranking_opt_in\":$ranking_opt_in,\"status\":\"paired\"}"
     ;;
   browser_report_failure)
-    [[ ${#f[@]} -eq 10 && "${f[trigger]:-}" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
+    [[ ( ${#f[@]} -eq 10 || ${#f[@]} -eq 11 ) && "${f[trigger]:-}" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
        "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ && "${f[method]:-}" =~ ^(GET|HEAD|UNSAFE)$ &&
        "${f[failure_class]:-}" =~ ^(network_failure|user_requested|http_(403|451|500|502|503|504))$ &&
+       "${f[failure_transport]:-unknown}" =~ ^(unknown|tls|quic)$ &&
        "${f[failure_count]:-}" =~ ^[12]$ &&
        "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid failure event'
     trigger="${f[trigger]}"; klass="${f[request_class]}"; method="${f[method]}"; failure="${f[failure_class]}"
@@ -224,7 +225,7 @@ case "${f[action]:-}" in
     # No DNS lookup or synthetic request is performed before the first trial.
     events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
     [[ -r "$events" && ! -L "$events" ]] || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
-    now="$(date +%s)"; matches="$(adaptive_browser_resolve_observation "$host" "$scope" "$events" "$now" 2>/dev/null)" || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
+    now="$(date +%s)"; matches="$(adaptive_browser_resolve_observation "$host" "$scope" "$events" "$now" "${f[failure_transport]:-unknown}" 2>/dev/null)" || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
     IFS=$'\t' read -r obs_host obs_ip obs_profile obs_proto obs_scope obs_seen <<< "$matches"
     if [[ "$obs_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$obs_profile" = 2 ]]; then
       obs_proto=googlevideo-tcp
