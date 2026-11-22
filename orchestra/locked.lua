@@ -30,6 +30,7 @@ local CLONESIZE_PATH = LOCKED_DIR .. "/clonesize.tsv"
 local CLONE_SIZES = {}
 local ADAPTIVE_RULES_PATH = os.getenv("Z2R_ADAPTIVE_RULES_FILE") or "/tmp/z2r-adaptive/rules.tsv"
 local ADAPTIVE_RULES_SNAPSHOT_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/rules.tsv"
+local ADAPTIVE_BROWSER_TRIALS_PATH = os.getenv("Z2R_ADAPTIVE_BROWSER_TRIALS_FILE") or "/tmp/z2r-adaptive/browser/trials.tsv"
 local ADAPTIVE_MODE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/mode"
 local ADAPTIVE_DEFAULT_SCOPE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/apply-default-scope"
 local ADAPTIVE_MODE = "OFF"
@@ -90,6 +91,9 @@ local ADAPTIVE_RULES = {}
 local ADAPTIVE_RULE_CONFLICTS = {}
 local ADAPTIVE_TEST_LINES = nil
 local ADAPTIVE_TEST_RUNTIME_STAMP = nil
+local ADAPTIVE_BROWSER_TRIALS = {}
+local ADAPTIVE_BROWSER_TEST_LINES = nil
+local ADAPTIVE_BROWSER_TEST_NOW = nil
 local function adaptive_runtime_stat_stamp(path)
   if type(stat) ~= "function" then return nil end
   local info = stat(path)
@@ -410,6 +414,78 @@ local function adaptive_rule_key(rule)
   return table.concat({rule.host, rule.ip, rule.profile, rule.proto, rule.scope}, "\0")
 end
 
+local function adaptive_browser_trial_parse_line(line, now)
+  if ADAPTIVE_MODE ~= "AGENT_BETA" or type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  local ver, id, generation, client_id, client_ip, scope, host, ip, profile, proto, strategy, fingerprint, created, expires =
+    line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)$")
+  if not ver then return nil end
+  generation, profile, strategy, created, expires = tonumber(generation), tonumber(profile), tonumber(strategy), tonumber(created), tonumber(expires)
+  if ver ~= "1" or not id:match("^[0-9a-f]+$") or #id ~= 32 or not generation or generation < 1 or
+    not client_id:match("^[0-9a-f]+$") or #client_id ~= 32 or not host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") or #host > 253 then return nil end
+  local function valid_ip(value, public)
+    local octets = {}
+    for part in (value .. "."):gmatch("(.-)%.") do octets[#octets + 1] = part end
+    if #octets ~= 4 then return false end
+    local n = {}
+    for i, part in ipairs(octets) do
+      n[i] = tonumber(part)
+      if not part:match("^%d%d?%d?$") or (#part > 1 and part:sub(1, 1) == "0") or not n[i] or n[i] > 255 then return false end
+    end
+    if public and (n[1] == 0 or n[1] == 10 or n[1] == 127 or n[1] >= 224 or
+      (n[1] == 100 and n[2] >= 64 and n[2] <= 127) or (n[1] == 169 and n[2] == 254) or
+      (n[1] == 172 and n[2] >= 16 and n[2] <= 31) or (n[1] == 192 and (n[2] == 168 or (n[2] == 0 and (n[3] == 0 or n[3] == 2)) or (n[2] == 88 and n[3] == 99))) or
+      (n[1] == 198 and (n[2] == 18 or n[2] == 19 or (n[2] == 51 and n[3] == 100))) or (n[1] == 203 and n[2] == 0 and n[3] == 113)) then return false end
+    return true
+  end
+  local function valid_client_ip(value)
+    if not valid_ip(value, false) then return false end
+    local a, b = value:match("^(%d+)%.(%d+)%.")
+    a, b = tonumber(a), tonumber(b)
+    return a == 10 or (a == 192 and b == 168) or (a == 172 and b >= 16 and b <= 31)
+  end
+  if not valid_client_ip(client_ip) or not valid_ip(ip, true) or
+    (scope ~= "default" and not scope:match("^mark:[1-9]%d?%d?%d?%d?$")) or
+    (profile < 1 or profile > 4 or profile % 1 ~= 0) or
+    (proto ~= "tls" and not (proto == "googlevideo-tcp" and profile == 2 and host:match("^[a-z0-9%-]+%.googlevideo%.com$"))) or
+    (strategy < 1 or strategy > 999 or strategy % 1 ~= 0) or
+    (fingerprint ~= "-" and (not fingerprint:match("^sha256:[0-9a-f]+$") or #fingerprint ~= 71)) or
+    not created or not expires or expires <= (now or os.time()) or expires > (now or os.time()) + 90 then return nil end
+  if scope == "default" and not ADAPTIVE_DEFAULT_SCOPE_APPLY then return nil end
+  return {id=id, generation=generation, client_id=client_id, client_ip=client_ip, scope=scope,
+    host=host, ip=ip, profile=tostring(profile), proto=proto, strategy=strategy,
+    fingerprint=fingerprint, created=created, expires=expires}
+end
+
+local function adaptive_browser_trials_load(lines, now)
+  ADAPTIVE_BROWSER_TRIALS = {}
+  local conflicts, count = {}, 0
+  now = now or os.time()
+  for _, line in ipairs(lines or {}) do
+    count = count + 1
+    if count > 64 then break end
+    local trial = adaptive_browser_trial_parse_line(line, now)
+    if trial then
+      local key = table.concat({trial.host, trial.ip, trial.profile, trial.proto, trial.scope}, "\0")
+      if ADAPTIVE_BROWSER_TRIALS[key] then ADAPTIVE_BROWSER_TRIALS[key] = nil; conflicts[key] = true
+      elseif not conflicts[key] then ADAPTIVE_BROWSER_TRIALS[key] = trial end
+    end
+  end
+end
+
+local function load_adaptive_browser_trials_file(path)
+  local f = io.open(path, "r")
+  local lines = {}
+  if f then
+    for line in f:lines() do
+      lines[#lines + 1] = line
+      if #lines >= 64 then break end
+    end
+    f:close()
+  end
+  adaptive_browser_trials_load(lines)
+end
+
 local function adaptive_rules_load(lines, now)
   ADAPTIVE_RULES, ADAPTIVE_RULE_CONFLICTS = {}, {}
   now = now or os.time()
@@ -445,7 +521,7 @@ local function load_adaptive_rules_file(path)
 end
 
 local function load_locked_tables()
-  local now = os.time()
+  local now = ADAPTIVE_BROWSER_TEST_NOW or os.time()
   if now and (now - last_load) < cache_ttl then return end
   last_load = now or 0
   LOCKED_TLS = {}
@@ -472,6 +548,8 @@ local function load_locked_tables()
     load_clone_size_file(CLONESIZE_PATH)
     load_adaptive_rules_file(ADAPTIVE_RULES_PATH)
   end
+  if ADAPTIVE_BROWSER_TEST_LINES then adaptive_browser_trials_load(ADAPTIVE_BROWSER_TEST_LINES, now)
+  else load_adaptive_browser_trials_file(ADAPTIVE_BROWSER_TRIALS_PATH) end
 end
 
 function locked_strategy_for_profile(profile, proto, scope)
@@ -513,6 +591,20 @@ function locked_load_adaptive_lines_for_tests(lines, now, runtime_stamp)
   adaptive_rules_load(lines or {}, now)
 end
 
+function locked_load_browser_trials_for_tests(lines, now)
+  ADAPTIVE_BROWSER_TEST_LINES = lines or {}
+  ADAPTIVE_BROWSER_TEST_NOW = now
+  if not ADAPTIVE_TEST_LINES then ADAPTIVE_TEST_LINES = {} end
+  last_load = 0
+  adaptive_browser_trials_load(ADAPTIVE_BROWSER_TEST_LINES, now)
+end
+
+function locked_browser_trial_count_for_tests()
+  local count = 0
+  for _ in pairs(ADAPTIVE_BROWSER_TRIALS) do count = count + 1 end
+  return count
+end
+
 function locked_adaptive_runtime_stamp_for_tests()
   return ADAPTIVE_RUNTIME_STAMP
 end
@@ -531,6 +623,18 @@ function locked_adaptive_strategy_for_tuple(host, ip, profile, proto, scope, now
   local runtime_stamp = ADAPTIVE_TEST_RUNTIME_STAMP or ADAPTIVE_RUNTIME_STAMP
   if not runtime_stamp or rule.runtime_stamp ~= runtime_stamp then return nil end
   return rule.strategy, rule.fingerprint, rule.catalog, rule.expires
+end
+
+function locked_browser_trial_for_tuple(host, ip, profile, proto, scope, now)
+  if not host or not ip or not profile then return nil end
+  if not ADAPTIVE_TEST_LINES then load_locked_tables() end
+  host = string.lower(tostring(host):gsub("%.$", ""))
+  ip, profile = tostring(ip), tostring(profile)
+  proto, scope = string.lower(tostring(proto or "tcp")), string.lower(tostring(scope or "default"))
+  local key = table.concat({host, ip, profile, proto, scope}, "\0")
+  local trial = ADAPTIVE_BROWSER_TRIALS[key]
+  if not trial or trial.expires <= (now or os.time()) then return nil end
+  return trial
 end
 
 -- Тестовый загрузчик per-mark файла: чистые таблицы + один файл под своим скоупом.
@@ -1628,6 +1732,7 @@ function circular_locked(ctx, desync)
   end
 
   local adaptive_strategy
+  local adaptive_trial
   local adaptive_proto = proto
   if base_profile == "2" and host and host:match("^[a-z0-9%-]+%.googlevideo%.com$") then
     adaptive_proto = "googlevideo-tcp"
@@ -1644,10 +1749,14 @@ function circular_locked(ctx, desync)
       local state = desync.track.lua_state
       if state.adaptive_rule_checked and state.adaptive_rule_key == tuple_key then
         adaptive_strategy = state.adaptive_rule_strategy or nil
+        adaptive_trial = state.adaptive_browser_trial or nil
       else
-        adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope)
+        adaptive_trial = locked_browser_trial_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope)
+        if adaptive_trial then adaptive_strategy = adaptive_trial.strategy
+        else adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope) end
         state.adaptive_rule_key = tuple_key
         state.adaptive_rule_strategy = adaptive_strategy or false
+        state.adaptive_browser_trial = adaptive_trial or false
         state.adaptive_rule_checked = true
       end
     end
@@ -1723,6 +1832,11 @@ function circular_locked(ctx, desync)
   if desync.track and type(desync.track.lua_state) == "table" and desync.track.lua_state.adaptive_observe_context then
     desync.track.lua_state.adaptive_observe_context.adaptive_rule_applied =
       adaptive_strategy ~= nil and selected_strategy == adaptive_strategy
+  end
+  if adaptive_trial and desync.track and type(desync.track.lua_state) == "table" and selected_strategy == adaptive_trial.strategy then
+    desync.track.lua_state.adaptive_browser_trial_id = adaptive_trial.id
+    desync.track.lua_state.adaptive_browser_trial_generation = adaptive_trial.generation
+    desync.track.lua_state.adaptive_browser_trial_strategy = adaptive_trial.strategy
   end
 
   local verdict = VERDICT_PASS

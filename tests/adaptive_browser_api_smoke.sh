@@ -75,6 +75,14 @@ if adaptive_browser_attempt_transition "$attempt" WAIT_NEW_FLOW CANCELLED; then 
 if adaptive_browser_attempt_transition "$attempt" WAIT_BROWSER_RESULT WAIT_NEW_FLOW; then exit 1; fi
 if adaptive_browser_attempt_write ../bad "$client_id" 192.168.1.42 mark:7 example.org - 1 tls main_frame_network_failure WAIT_NEW_FLOW 2 - 1 2 1; then exit 1; fi
 
+trial_id=99999999999999999999999999999999
+trial_now="$(date +%s)"
+adaptive_browser_trial_add "$trial_id" 1 "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls 2 - "$trial_now" "$((trial_now + 45))"
+[[ "$(awk -F '\t' 'END {print NF}' "$(adaptive_browser_trials_file)")" = 14 ]]
+if adaptive_browser_trial_add 88888888888888888888888888888888 1 "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls 3 - "$trial_now" "$((trial_now + 45))"; then exit 1; else [[ "$?" = 3 ]]; fi
+adaptive_browser_trial_remove "$trial_id" 1
+if grep -q "$trial_id" "$(adaptive_browser_trials_file)"; then exit 1; fi
+
 bash -n "$ROOT/webui/cgi-bin/adaptive-browser.cgi" "$ROOT/lib/adaptive_browser.sh" "$ROOT/tools/adaptive-browser-pair.sh"
 grep -q 'browser_hello' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 grep -q 'browser_cancel_attempt' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"

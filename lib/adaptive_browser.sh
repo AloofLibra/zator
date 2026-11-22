@@ -100,6 +100,68 @@ adaptive_browser_attempt_file() {
   printf '%s/%s.tsv\n' "$(adaptive_browser_state_dir)/attempts" "$1"
 }
 
+adaptive_browser_trials_file() { printf '%s/trials.tsv\n' "$(adaptive_browser_state_dir)"; }
+
+adaptive_browser_trial_add() {
+  [[ $# = 13 ]] || return 2
+  local id="$1" generation="$2" client_id="$3" client_ip="$4" scope="$5" host="$6" ip="$7"
+  local profile="$8" proto="$9" strategy="${10}" fingerprint="${11}" created="${12}" expires="${13}"
+  local file lock dir tmp row ver old_id old_gen old_client old_client_ip old_scope old_host old_ip old_profile old_proto old_strategy old_fp old_created old_expires extra now count=0 tries=0
+  [[ "$id" =~ ^[a-f0-9]{32}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ && "$client_id" =~ ^[a-f0-9]{32}$ &&
+     "$client_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+     "$(adaptive_browser_host_valid "$host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "${host,,}" &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) &&
+     "$strategy" =~ ^[1-9][0-9]{0,2}$ && ( "$fingerprint" = - || "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ) &&
+     "$created" =~ ^[0-9]{1,10}$ && "$expires" =~ ^[0-9]{1,10}$ ]] || return 2
+  now="$(date +%s)"; (( expires > now && expires <= now + 90 && created <= now + 5 )) || return 2
+  file="$(adaptive_browser_trials_file)"; dir="$(dirname "$file")"; lock="$file.lock"
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$file" && ! -L "$lock" ]] || return 1
+  mkdir -p "$dir" || return 1
+  while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries + 1)); (( tries < 20 )) || return 1; sleep 0.05; done
+  tmp="$(mktemp "$dir/.trials.XXXXXX")" || { rmdir "$lock"; return 1; }
+  if [[ -r "$file" ]]; then
+    [[ $(wc -c < "$file") -le 16384 ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    while IFS= read -r row || [[ -n "$row" ]]; do
+      IFS=$'\t' read -r ver old_id old_gen old_client old_client_ip old_scope old_host old_ip old_profile old_proto old_strategy old_fp old_created old_expires extra <<< "$row"
+      [[ "$ver" = 1 && "$old_id" =~ ^[a-f0-9]{32}$ && "$old_gen" =~ ^[1-9][0-9]{0,8}$ &&
+         "$old_client" =~ ^[a-f0-9]{32}$ && "$old_scope" =~ ^(default|mark:[1-9][0-9]{0,4})$ &&
+         "$old_host" =~ ^[a-z0-9.-]+$ && "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$old_profile" =~ ^[1-4]$ &&
+         ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 ) ) && "$old_strategy" =~ ^[1-9][0-9]{0,2}$ &&
+         ( "$old_fp" = - || "$old_fp" =~ ^sha256:[a-f0-9]{64}$ ) && "$old_created" =~ ^[0-9]{1,10}$ && "$old_expires" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+      (( old_expires > now )) || continue
+      count=$((count + 1)); (( count <= 63 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+      if [[ "$old_client" = "$client_id" && "$old_scope" = "$scope" && "$old_host" = "$host" ]]; then
+        rm -f "$tmp"; rmdir "$lock"; return 3
+      fi
+      printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    done < "$file"
+  fi
+  printf '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$id" "$generation" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$strategy" "$fingerprint" "$created" "$expires" >> "$tmp" || {
+      rm -f "$tmp"; rmdir "$lock"; return 1;
+    }
+  chmod 644 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock"
+}
+
+adaptive_browser_trial_remove() {
+  [[ $# = 2 && "$1" =~ ^[a-f0-9]{32}$ && "$2" =~ ^[1-9][0-9]{0,8}$ ]] || return 2
+  local wanted="$1" generation="$2" file lock dir tmp row ver id gen rest removed=0 tries=0
+  file="$(adaptive_browser_trials_file)"; dir="$(dirname "$file")"; lock="$file.lock"
+  [[ -f "$file" && ! -L "$file" && ! -L "$lock" ]] || return 0
+  while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries + 1)); (( tries < 20 )) || return 1; sleep 0.05; done
+  tmp="$(mktemp "$dir/.trials.XXXXXX")" || { rmdir "$lock"; return 1; }
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    IFS=$'\t' read -r ver id gen rest <<< "$row"
+    if [[ "$ver" = 1 && "$id" = "$wanted" && "$gen" = "$generation" ]]; then removed=1; continue; fi
+    printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  done < "$file"
+  if (( removed )); then chmod 644 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  else rm -f "$tmp"; fi
+  rmdir "$lock" || return 1
+  return 0
+}
+
 # Bounded tmpfs idempotency and per-host retry budget. Output is one of:
 # accepted, duplicate, budget; event rows never contain a URL or LAN history.
 adaptive_browser_event_claim() {
