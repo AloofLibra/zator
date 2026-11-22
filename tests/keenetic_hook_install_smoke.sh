@@ -9,6 +9,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 function_body="$(sed -n '/^z2r_install_keenetic_ndm_hook() {/,/^}/p' "$REPO_DIR/z2r.sh")"
 [ -n "$function_body" ] || { echo 'FAIL: NDM hook installer function is missing' >&2; exit 1; }
 eval "$function_body"
+migration_body="$(sed -n '/^z2r_migrate_keenetic_ndm_hook() {/,/^}/p' "$REPO_DIR/z2r.sh")"
+[ -n "$migration_body" ] || { echo 'FAIL: legacy NDM hook migration function is missing' >&2; exit 1; }
+eval "$migration_body"
 
 z2r_download_project_file() {
   local dest="$1" rel="$2"
@@ -63,5 +66,17 @@ if HOOK_DOWNLOAD_MODE=invalid z2r_install_keenetic_ndm_hook "$fresh"; then
   echo 'FAIL: invalid initial hook payload was accepted' >&2; exit 1
 fi
 [ ! -e "$fresh" ] || { echo 'FAIL: invalid initial hook was installed' >&2; exit 1; }
+
+legacy="$TMP_DIR/legacy/000-zapret.sh"
+new="$TMP_DIR/legacy/000-zapret2.sh"
+mkdir -p "$(dirname -- "$legacy")"
+printf '%s\n' '#!/bin/sh' 'zapret2 restart-fw' > "$legacy"
+if HOOK_DOWNLOAD_MODE=fail z2r_migrate_keenetic_ndm_hook "$new" "$legacy"; then
+  echo 'FAIL: migration accepted a failed replacement download' >&2; exit 1
+fi
+[ -f "$legacy" ] || { echo 'FAIL: migration removed the legacy hook before replacement install' >&2; exit 1; }
+HOOK_DOWNLOAD_MODE=valid z2r_migrate_keenetic_ndm_hook "$new" "$legacy"
+[ -x "$new" ] || { echo 'FAIL: migration did not install the replacement hook' >&2; exit 1; }
+[ ! -e "$legacy" ] || { echo 'FAIL: migration left the legacy hook after replacement install' >&2; exit 1; }
 
 echo 'Keenetic hook install smoke ok: validation, atomic replace, failure preservation'

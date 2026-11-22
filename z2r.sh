@@ -1789,17 +1789,26 @@ z2r_install_keenetic_ndm_hook() {
  fi
 }
 
+# Keep a legacy NDM hook until its replacement has been downloaded, validated,
+# and installed successfully. A transient network failure must not leave the
+# router without any firewall-rebuild hook.
+z2r_migrate_keenetic_ndm_hook() {
+ local dest="${1:-/opt/etc/ndm/netfilter.d/000-zapret2.sh}"
+ local legacy="${2:-/opt/etc/ndm/netfilter.d/000-zapret.sh}"
+
+ z2r_install_keenetic_ndm_hook "$dest" || return 1
+ if [ -f "$legacy" ] && grep -q 'zapret2' "$legacy" 2>/dev/null; then
+  rm -f "$legacy" || return 1
+ fi
+}
+
 #Для Entware Keenetic + merlin
 entware_fixes() {
  if [ "$hardware" = "keenetic" ]; then
   z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/zapret2" "Entware/zapret" || return 1
   chmod +x "$ZAPRET2_ROOT/init.d/sysv/zapret2"
   echo "Права выданы $ZAPRET2_ROOT/init.d/sysv/zapret2"
-  if [ -f /opt/etc/ndm/netfilter.d/000-zapret.sh ] \
-     && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
-    rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
-  fi
-  z2r_install_keenetic_ndm_hook || return 1
+  z2r_migrate_keenetic_ndm_hook || return 1
   echo "Права выданы /opt/etc/ndm/netfilter.d/000-zapret2.sh"
   z2r_download_project_file /opt/etc/init.d/S00fix "Entware/S00fix" || return 1
   chmod +x /opt/etc/init.d/S00fix

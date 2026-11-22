@@ -769,11 +769,16 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: содержимое NDM hook не проверяется до замены"
   grep -q 'mv -f "\$staged" "\$dest"' "$REPO_DIR/z2r.sh" \
     || fail "сценарий 14e: проверенный NDM hook не устанавливается атомарно"
-  grep -q 'z2r_install_keenetic_ndm_hook || return 1' "$REPO_DIR/z2r.sh" \
+  grep -q 'z2r_migrate_keenetic_ndm_hook || return 1' "$REPO_DIR/z2r.sh" \
     || fail "сценарий 14e: entware_fixes продолжает работу при некорректном hook"
-  mig="$(grep -c "grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh" "$REPO_DIR/z2r.sh" || true)"
-  [ "$mig" -ge 2 ] \
-    || fail "сценарий 14e: миграция старого имени хука должна быть и в entware_fixes, и в remove_zapret"
+  grep -q 'z2r_install_keenetic_ndm_hook "\$dest" || return 1' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: migration удаляет старый hook до установки проверенной замены"
+  grep -q 'local legacy="${2:-/opt/etc/ndm/netfilter.d/000-zapret.sh}"' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: мигратор не проверяет старое имя хука"
+  grep -q 'rm -f "\$legacy" || return 1' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: мигратор не удаляет legacy hook после успешной замены"
+  grep -q 'rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: полное удаление больше не очищает legacy hook"
 )
 
 # == 15. WebUI-обёртка: JSON с вердиктом и деталями ==
