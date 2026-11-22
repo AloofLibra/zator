@@ -225,7 +225,12 @@ case "${f[action]:-}" in
     # No DNS lookup or synthetic request is performed before the first trial.
     events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
     [[ -r "$events" && ! -L "$events" ]] || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
-    now="$(date +%s)"; matches="$(adaptive_browser_resolve_observation "$host" "$scope" "$events" "$now" "${f[failure_transport]:-unknown}" 2>/dev/null)" || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
+    now="$(date +%s)"; matches="$(adaptive_browser_resolve_observation "$host" "$scope" "$events" "$now" "${f[failure_transport]:-unknown}" 2>/dev/null)"; resolve_rc=$?
+    case "$resolve_rc" in
+      0) ;;
+      3) send '200 OK' '{"schema_version":1,"status":"UNKNOWN","state":"UNKNOWN","reason":"ambiguous_recent_flows"}' ;;
+      *) send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}' ;;
+    esac
     IFS=$'\t' read -r obs_host obs_ip obs_profile obs_proto obs_scope obs_seen <<< "$matches"
     if [[ "$obs_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$obs_profile" = 2 ]]; then
       obs_proto=googlevideo-tcp

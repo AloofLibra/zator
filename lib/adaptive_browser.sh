@@ -70,7 +70,7 @@ adaptive_browser_resolve_observation() {
     awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || continue
     printf -v tuple '%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$scope" "$seen"
     rows+=("$tuple")
-    (( ${#rows[@]} <= 1 )) || return 1
+    (( ${#rows[@]} <= 1 )) || return 3
   done < "$file"
   (( ${#rows[@]} == 1 )) || return 1
   printf '%s\n' "${rows[0]}"

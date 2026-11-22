@@ -67,7 +67,7 @@ printf '1\tseen\texample.org\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$now" > "$events"
 resolved="$(adaptive_browser_resolve_observation example.org mark:7 "$events" "$now")"
 [[ "$resolved" = $'example.org\t8.8.8.8\t1\ttls\tmark:7\t'"$now" ]]
 printf '1\tseen\texample.org\t1.1.1.1\t1\ttls\tmark:7\t%s\n' "$now" >> "$events"
-if adaptive_browser_resolve_observation example.org mark:7 "$events" "$now"; then exit 1; fi
+if adaptive_browser_resolve_observation example.org mark:7 "$events" "$now"; then exit 1; else [[ "$?" = 3 ]]; fi
 printf '1\tseen\twww.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$now" > "$events"
 printf '1\tseen\twww.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t%s\n' "$now" >> "$events"
 if adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now"; then exit 1; fi
@@ -152,6 +152,19 @@ main_response="$(printf '%s' "$main_body" | env PATH="$tmp/mock-diagnostics:$PAT
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"WAIT_NEW_FLOW"' <<< "$main_response"
 [[ ! -e "$tmp/diagnostics-called" ]]
+# Multiple eligible production observations are ambiguous, not unmanaged, and
+# must not create a trial.
+ambiguous_now="$(date +%s)"
+ambiguous_host=r1---sn.googlevideo.com
+printf '1\tseen\t%s\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t%s\n1\tseen\t%s\t1.1.1.1\t5\tquic\tmark:7\t%s\n' \
+  "$ambiguous_host" "$ambiguous_now" "$ambiguous_host" "$ambiguous_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+ambiguous_event=13131313131313131313131313131313
+ambiguous_body="schema_version=1&action=browser_report_failure&browser_event_id=$ambiguous_event&trigger=main_frame_network_failure&request_class=main_frame&hostname=$ambiguous_host&method=GET&failure_class=network_failure&failure_count=1&observed_at=$((ambiguous_now * 1000))"
+ambiguous_response="$(printf '%s' "$ambiguous_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#ambiguous_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"status":"UNKNOWN"' <<< "$ambiguous_response"
+grep -q '"reason":"ambiguous_recent_flows"' <<< "$ambiguous_response"
+! grep -q '"attempt_id"' <<< "$ambiguous_response"
 printf 'Example ISP - Test City\n' > "$ZATOR_ROOT/extra_strats/cache/provider.txt"
 printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in"
 adaptive_browser_rankings_opted_in

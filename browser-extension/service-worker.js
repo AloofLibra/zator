@@ -158,6 +158,7 @@
     const latest = await loadState();
     latest.events = latest.events.map(row => row.id === event.id
       ? { ...row, router_status: result.data.state || result.data.status || (result.ok ? "received" : result.status),
+          router_reason: result.data.reason || null,
           attempt_id: result.data.attempt_id || row.attempt_id || null,
           attempt_expires_at: result.data.expires_at || row.attempt_expires_at || null,
           pending_result: row.pending_result || null }

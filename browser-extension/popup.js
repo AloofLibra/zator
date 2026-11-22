@@ -43,7 +43,7 @@ async function render() {
   })[row.router_status] || row.router_status;
   latest.textContent = attemptActive
     ? `${row.hostname} · ${status}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : ""}`
-    : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}`;
+    : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}${row.router_reason === "ambiguous_recent_flows" ? " · multiple recent connections match; no trial started" : ""}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
   cancel.hidden = !attemptActive;
 }
