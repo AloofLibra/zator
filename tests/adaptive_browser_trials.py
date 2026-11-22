@@ -62,7 +62,7 @@ assert(locked_browser_record_flow_for_tests({track=track}, trial_obj, "cdn.examp
 local flow_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".1.tsv", "r"))
 local flow_line = flow_file:read("*l")
 flow_file:close()
-assert(flow_line and flow_line:match("^1\t" .. id .. "\t1\t" .. client .. "\tmark:7\tcdn%.example%.org\t8%.8%.8%.8\t1\ttls\t2\t" .. fingerprint .. "\t1000\t1000$"),
+assert(flow_line and flow_line:match("^1\t" .. id .. "\t1\t" .. client .. "\tmark:7\tcdn%.example%.org\t8%.8%.8%.8\t1\ttls\t2\t" .. fingerprint .. "\t1000\t1000\tnot_applicable$"),
   "flow proof fields do not bind the new SYN and selected strategy")
 local no_syn = {track={}}
 assert(not locked_browser_record_flow_for_tests(no_syn, trial_obj, "cdn.example.org", "8.8.8.8", "1", "tls", "mark:7", 2),
@@ -86,6 +86,28 @@ assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "m
 local default_trial = trial("8.8.8.8", "default", "tls", 1, 2, 1045)
 locked_load_browser_trials_for_tests({default_trial}, now)
 assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "default", now), "explicitly consented default trial rejected")
+
+local video_host = "rr1---sn-a.googlevideo.com"
+local video_trial = table.concat({"1", id, "3", client, "192.168.1.42", "mark:7", video_host,
+  "8.8.8.8", "2", "googlevideo-tcp", "4", fingerprint, "990", "1045"}, "\t")
+locked_load_browser_trials_for_tests({video_trial}, now)
+local video_match = locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now)
+local video_track = {lua_state={adaptive_browser_syn={ip="8.8.8.8",profile="2",proto="tcp",scope="mark:7",seen=1000},
+  wssize_ramp_treatment="applied"}}
+assert(locked_browser_record_flow_for_tests({track=video_track}, video_match, video_host, "8.8.8.8", "2", "googlevideo-tcp", "mark:7", 4),
+  "Googlevideo production flow did not record the Ramp treatment")
+local video_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".3.tsv", "r"))
+local video_line = video_file:read("*l"); video_file:close()
+assert(video_line and video_line:match("\t1000\t1000\tapplied$"), "Googlevideo Ramp treatment was not serialized: " .. tostring(video_line))
+local bypass_trial = {id=id,generation=4,client_id=client,created=990,expires=1045,host=video_host,ip="8.8.8.8",
+  profile="2",proto="googlevideo-tcp",scope="mark:7",strategy=4,fingerprint=fingerprint}
+local bypass_track = {lua_state={adaptive_browser_syn={ip="8.8.8.8",profile="2",proto="tcp",scope="mark:7",seen=1000},
+  wssize_ramp_treatment="bypassed"}}
+assert(locked_browser_record_flow_for_tests({track=bypass_track}, bypass_trial, video_host, "8.8.8.8", "2", "googlevideo-tcp", "mark:7", 4),
+  "Googlevideo bypass flow was not recorded")
+video_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".4.tsv", "r"))
+video_line = video_file:read("*l"); video_file:close()
+assert(video_line and video_line:match("\tbypassed$"), "Googlevideo Ramp bypass was not serialized")
 
 local qhost = "rr1---sn-a.googlevideo.com"
 local qtrial = table.concat({"1", id, "2", client, "192.168.1.42", "mark:7", qhost,

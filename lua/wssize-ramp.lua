@@ -113,6 +113,7 @@ function wssize_ramp(ctx, desync)
 		local dst = dis_ipdst(dis)
 		if dst and z2r_wssize_ramp_exempt_for_new_flow(ntop(dst)) then
 			state.wssize_ramp_exempt = true
+			state.wssize_ramp_treatment = "bypassed"
 			instance_cutoff_shim(ctx, desync, true)
 			return
 		end
@@ -125,6 +126,7 @@ function wssize_ramp(ctx, desync)
 	if bitand(tcp.th_flags, TH_SYN) ~= 0 then
 		local i = find_tcp_option(tcp.options, TCP_KIND_SCALE)
 		if not i then
+			if state.wssize_ramp_treatment == nil then state.wssize_ramp_treatment = "no_window_scale" end
 			instance_cutoff_shim(ctx, desync)
 			return
 		end
@@ -150,6 +152,9 @@ function wssize_ramp(ctx, desync)
 		local changed = false
 		if original > scale then tcp.options[i].data = bu8(scale); changed = true end
 		if tcp.th_win ~= state.wssize_ramp_wsize then tcp.th_win = state.wssize_ramp_wsize; changed = true end
+		if state.wssize_ramp_treatment == nil then
+			state.wssize_ramp_treatment = changed and "applied" or "unchanged"
+		end
 		if changed then
 			adaptive_ramp_audit("syn")
 			return VERDICT_MODIFY

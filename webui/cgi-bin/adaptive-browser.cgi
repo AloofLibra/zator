@@ -129,14 +129,15 @@ browser_start_trial() {
 }
 
 browser_confirm_flow() {
-  local row ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at extra now
+  local row ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment extra now
   row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || return 1
-  IFS=$'\t' read -r ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at extra <<< "$row"
+  IFS=$'\t' read -r ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment extra <<< "$row"
   now="$(date +%s)"
   [[ "$ver" = 1 && "$flow_id" = "$attempt_id" && "$flow_generation" = "$generation" && "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" &&
      "$flow_host" = "$host" && "$flow_ip" = "$ip" && "$flow_profile" = "$profile" && "$flow_proto" = "$proto" &&
      "$flow_strategy" = "$strategy" && "$fingerprint" = "$attempt_fingerprint" &&
      "$syn_at" -ge "$created" && "$selected_at" -ge "$syn_at" && "$selected_at" -le "$expires" && "$now" -le "$expires" && -z "${extra:-}" ]] || return 2
+  BROWSER_FLOW_RAMP_TREATMENT="${ramp_treatment:-unknown}"
   if [[ "$state" = WAIT_NEW_FLOW ]]; then
     adaptive_browser_attempt_transition "$attempt_id" WAIT_NEW_FLOW FLOW_CONFIRMED || return 3
     state=FLOW_CONFIRMED
@@ -274,6 +275,14 @@ case "${f[action]:-}" in
     case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || : ;;
     esac
+    if [[ "$proto" = googlevideo-tcp ]]; then
+      BROWSER_FLOW_RAMP_TREATMENT=unknown
+      if flow_row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)"; then
+        IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_ramp_treatment flow_extra <<< "$flow_row"
+        [[ "${flow_ramp_treatment:-}" =~ ^(unknown|applied|bypassed|unchanged|no_window_scale)$ ]] && BROWSER_FLOW_RAMP_TREATMENT="$flow_ramp_treatment"
+      fi
+      send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires,\"ramp_treatment\":\"$BROWSER_FLOW_RAMP_TREATMENT\"}"
+    fi
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
     ;;
   browser_report_result)

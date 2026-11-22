@@ -199,7 +199,11 @@
     });
     if (!status.ok) return { ok: false, state: status.status };
     let latest = await loadState();
-    latest.events = latest.events.map(row => row.id === eventId ? { ...row, router_status: status.data.state || row.router_status } : row);
+    latest.events = latest.events.map(row => row.id === eventId ? {
+      ...row,
+      router_status: status.data.state || row.router_status,
+      ramp_treatment: status.data.ramp_treatment || row.ramp_treatment
+    } : row);
     await chrome.storage.local.set({ events: latest.events });
     const current = latest.events.find(row => row && row.id === eventId);
     if (!current?.pending_result || !["FLOW_CONFIRMED", "PROVISIONAL_SUCCESS"].includes(status.data.state)) {

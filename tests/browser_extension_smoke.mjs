@@ -36,6 +36,8 @@ const fakeRouter = createServer(async (request, response) => {
   }
   const result = action === 'browser_report_failure' && new URLSearchParams(body).get('hostname') === 'video.example.test'
     ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'a'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
+    : action === 'browser_attempt_status'
+      ? { schema_version: 1, state: 'FLOW_CONFIRMED', ramp_treatment: 'applied' }
     : { schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
 })
@@ -173,6 +175,13 @@ assert.equal(cancelled.ok, true)
 assert.equal(cancelled.state, 'CANCELLED')
 assert.equal(new URLSearchParams(sent.at(-1).body).get('action'), 'browser_cancel_attempt')
 assert.equal(stored.events.at(-1).router_status, 'CANCELLED')
+
+stored.events.push({ id: 'e'.repeat(32), hostname: 'rr1---sn-a.googlevideo.com', tab_id: 2,
+  attempt_id: 'f'.repeat(32), router_status: 'WAIT_NEW_FLOW' })
+await api.syncAttempt('e'.repeat(32))
+assert.equal(stored.events.at(-1).router_status, 'FLOW_CONFIRMED')
+assert.equal(stored.events.at(-1).ramp_treatment, 'applied', 'Ramp SYN evidence was not retained for the popup')
+assert.match(popupScript, /applied on SYN/)
 
 for (const file of ['popup.js', 'options.js']) {
   assert.doesNotThrow(() => new vm.Script(readFileSync(resolve(root, `browser-extension/${file}`), 'utf8'), { filename: file }))

@@ -41,8 +41,11 @@ async function render() {
     MANUAL_LOCKED: "manual lock prevents a trial",
     COOLDOWN: "trial cooldown is active"
   })[row.router_status] || row.router_status;
+  const rampEvidence = row.ramp_treatment
+    ? ` · Ramp ${({ applied: "applied on SYN", bypassed: "bypassed for exact target", unchanged: "no SYN change", no_window_scale: "no window-scale option", unknown: "not observed" })[row.ramp_treatment] || "not observed"}`
+    : "";
   latest.textContent = attemptActive
-    ? `${row.hostname} · ${status}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : ""}`
+    ? `${row.hostname} · ${status}${rampEvidence}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : ""}`
     : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}${row.router_reason === "ambiguous_recent_flows" ? " · multiple recent connections match; no trial started" : ""}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
   cancel.hidden = !attemptActive;

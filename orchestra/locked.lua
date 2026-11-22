@@ -1721,10 +1721,16 @@ local function adaptive_browser_record_flow(desync, trial, host, ip, profile, pr
       return false
     end
   end
+  local ramp_treatment = "not_applicable"
+  if proto == "googlevideo-tcp" then
+    ramp_treatment = desync.track.lua_state.wssize_ramp_treatment or "unknown"
+    if ramp_treatment ~= "applied" and ramp_treatment ~= "bypassed" and ramp_treatment ~= "unchanged"
+      and ramp_treatment ~= "no_window_scale" then ramp_treatment = "unknown" end
+  end
   local f = io.open(path, "w")
   if not f then return false end
   local ok = f:write(table.concat({"1", trial.id, tostring(trial.generation), trial.client_id, scope,
-    host, ip, tostring(profile), proto, tostring(strategy), trial.fingerprint, tostring(syn.seen), tostring(now)}, "\t"), "\n")
+    host, ip, tostring(profile), proto, tostring(strategy), trial.fingerprint, tostring(syn.seen), tostring(now), ramp_treatment}, "\t"), "\n")
   f:close()
   return ok ~= nil
 end

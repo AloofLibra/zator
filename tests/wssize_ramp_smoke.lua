@@ -40,6 +40,7 @@ d.dis.ip = {ip_dst=string.char(188,244,8,77)}
 assert(wssize_ramp({}, d) == VERDICT_MODIFY)
 assert(d.dis.tcp.th_win == 1 and u8(d.dis.tcp.options[1].data) == 1)
 assert(state.wssize_ramp_shift == 7)
+assert(state.wssize_ramp_treatment == "applied", "Ramp did not mark a changed SYN as applied")
 if os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH") then
   local f = assert(io.open(os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH"), "r"))
   assert(f:read("*l") == "1\t1\t0", "Ramp SYN change was not recorded")
@@ -130,7 +131,7 @@ local function new_syn()
 end
 local exempt_flow = new_syn()
 assert(wssize_ramp({}, exempt_flow) == nil and exempt_flow.dis.tcp.th_win == 64240 and
-  exempt_flow.track.lua_state.wssize_ramp_exempt and lite_cutoffs == 2,
+  exempt_flow.track.lua_state.wssize_ramp_exempt and exempt_flow.track.lua_state.wssize_ramp_treatment == "bypassed" and lite_cutoffs == 2,
   "confirmed exact-IP Ramp exemption did not bypass only the Ramp callback: " .. tostring(exempt_flow.track.lua_state.wssize_ramp_exempt) .. "/" .. tostring(exempt_flow.dis.tcp.th_win) .. "/" .. tostring(lite_cutoffs))
 local exempt_ack = {dis={ip={ip_dst=string.char(188,244,8,77)},tcp={th_flags=TH_ACK,th_ack=1002,th_win=500}},
   track={lua_state=exempt_flow.track.lua_state},outgoing=true,arg={mode="full"}}
