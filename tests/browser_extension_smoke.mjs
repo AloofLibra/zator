@@ -24,8 +24,11 @@ assert.ok(manifest.permissions.includes('scripting'))
 assert.ok(!manifest.permissions.includes('webNavigation'), 'extension must not request an unused navigation permission')
 assert.ok(manifest.optional_host_permissions.includes('<all_urls>'))
 assert.match(options, /Allow media quality sampling during active Googlevideo trials/)
+assert.match(options, /Allow a short Googlevideo Ramp canary/)
 assert.match(optionsScript, /config\.mediaQualityOptIn === true/, 'media sampling must default off unless explicitly enabled')
+assert.match(optionsScript, /config\.rampCanaryOptIn === true/, 'Ramp canary consent must default off')
 assert.match(optionsScript, /mediaQualityOptIn: mediaQualityOptIn\.checked/)
+assert.match(optionsScript, /rampCanaryOptIn: rampCanaryOptIn\.checked/)
 
 const listeners = { failure: null, completed: null, message: null }
 const routerToken = 'a'.repeat(48)
@@ -236,6 +239,8 @@ const resourceFailureRequest = resourceResultRequests[1]
 assert.equal(new URLSearchParams(resourceResultRequest.body).get('result'), 'network_success', 'the first outcome must be serialized first')
 assert.equal(new URLSearchParams(resourceResultRequest.body).get('request_class'), 'xmlhttprequest')
 assert.equal(new URLSearchParams(resourceResultRequest.body).get('browser_ip'), '8.8.8.8')
+assert.equal(new URLSearchParams(resourceResultRequest.body).has('ramp_canary_opt_in'), false,
+  'ordinary trial results must not carry Ramp canary consent')
 assert.ok(!resourceResultRequest.body.includes('/chunk') && !resourceResultRequest.body.includes('private'),
   'resource URLs must not be sent to the router')
 assert.equal(new URLSearchParams(resourceFailureRequest.body).get('result'), 'network_failure')
@@ -254,6 +259,7 @@ const googlevideoHash = Array.from(new Uint8Array(await webcrypto.subtle.digest(
   x => x.toString(16).padStart(2, '0')).join('')
 const googlevideoAttempt = '4'.repeat(32)
 const googlevideoEvent = '5'.repeat(32)
+stored.config.rampCanaryOptIn = true
 stored.events.push({ id: googlevideoEvent, hostname: 'rr1---sn-a5mekn6e.googlevideo.com', tab_id: 42, attempt_id: googlevideoAttempt,
   router_status: 'WAIT_NEW_FLOW', candidate_protocol: 'googlevideo-tcp', attempt_expires_at: Math.floor(Date.now() / 1000) + 40,
   trigger: 'critical_resource_repeated_failure', request_class: 'media', resource_identity: googlevideoHash })
@@ -264,6 +270,7 @@ const googlevideoResult = sent.map(row => new URLSearchParams(row.body)).findLas
   params.get('action') === 'browser_report_result' && params.get('attempt_id') === googlevideoAttempt)
 assert.ok(googlevideoResult, 'active Googlevideo trial did not report its result')
 assert.equal(googlevideoResult.get('media_quality'), 'healthy')
+assert.equal(googlevideoResult.get('ramp_canary_opt_in'), '1')
 assert.equal(googlevideoResult.get('media_sample_ms'), '8000')
 assert.equal(googlevideoResult.get('media_progress_ms'), '7000')
 assert.equal(googlevideoResult.get('media_stall_ms'), '0')

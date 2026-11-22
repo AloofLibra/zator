@@ -65,6 +65,24 @@ canary_session="$(adaptive_browser_ramp_canary_session_file)"
 [[ "$(cut -f10 "$canary_session")" = complete && "$(cut -f12 "$canary_session")" = "${ids[0]},$plain1,$plain2,$ramp2" ]]
 adaptive_browser_ramp_canary_session_clear "$session"
 [[ ! -e "$canary_session" ]] || { echo 'completed canary session was not cleared' >&2; exit 1; }
+adaptive_browser_ramp_canary_cooldown_set "$now" 3600
+adaptive_browser_ramp_canary_cooldown_active "$now"
+if adaptive_browser_ramp_canary_cooldown_set "$now" 3600; then
+  echo 'Ramp canary ignored its router-wide cooldown' >&2; exit 1
+fi
+if adaptive_browser_ramp_canary_cooldown_active "$((now + 3601))"; then
+  echo 'expired Ramp canary cooldown remained active' >&2; exit 1
+fi
+
+canary_trial=99999999999999999999999999999999
+trial_now="$(date +%s)"
+adaptive_browser_trial_add "$canary_trial" 1 "$client" 192.168.1.42 "$scope" "$host" "$ip" 2 googlevideo-tcp \
+  "$strategy" "$fingerprint" "$trial_now" "$((trial_now + 300))" ramp_canary
+if adaptive_browser_trial_add aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2 "$client" 192.168.1.42 "$scope" "$host" "$ip" 2 googlevideo-tcp \
+  "$strategy" "$fingerprint" "$trial_now" "$((trial_now + 301))" ramp_canary; then
+  echo 'canary trial exceeded its five-minute flow window' >&2; exit 1
+fi
+adaptive_browser_trial_remove "$canary_trial" 1
 
 evidence="$(adaptive_browser_state_dir)/media-quality/evidence.tsv"
 sed -i $'3s/\\thealthy\\t/\\tdegraded\\t/' "$evidence"

@@ -3,6 +3,7 @@ const tokenInput = document.querySelector("#token");
 const saveState = document.querySelector("#save-state");
 const permissionState = document.querySelector("#permission-state");
 const mediaQualityOptIn = document.querySelector("#media-quality-opt-in");
+const rampCanaryOptIn = document.querySelector("#ramp-canary-opt-in");
 
 async function routerHello(origin, token) {
   const response = await fetch(new URL("/cgi-bin/adaptive-browser.cgi", origin), {
@@ -30,6 +31,7 @@ async function load() {
   routerInput.value = config.router || "";
   tokenInput.value = config.token || "";
   mediaQualityOptIn.checked = config.mediaQualityOptIn === true;
+  rampCanaryOptIn.checked = config.rampCanaryOptIn === true;
   permissionState.textContent = await chrome.permissions.contains({ origins: ["http://*/*", "https://*/*"] }) ? "Monitoring permission enabled." : "Monitoring permission is not enabled.";
 }
 
@@ -53,7 +55,9 @@ document.querySelector("#settings").addEventListener("submit", async event => {
     const token = tokenInput.value.trim();
     if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("The browser token must be the 64-character token created by Zator.");
     if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) throw new Error("Allow the router address first.");
-    await chrome.storage.local.set({ config: { router: `${origin}/`, token, mediaQualityOptIn: mediaQualityOptIn.checked } });
+    if (rampCanaryOptIn.checked && !mediaQualityOptIn.checked) throw new Error("Ramp canary also needs media quality sampling consent.");
+    await chrome.storage.local.set({ config: { router: `${origin}/`, token, mediaQualityOptIn: mediaQualityOptIn.checked,
+      rampCanaryOptIn: rampCanaryOptIn.checked } });
     saveState.textContent = "Pairing saved.";
   } catch (error) { saveState.textContent = error.message; }
 });

@@ -15,6 +15,8 @@
       <h2>Googlevideo media evidence</h2>
       <p>Optional and off by default. During an active Googlevideo trial, the extension can sample whether one visible video is progressing or stalling. It sends only coarse playback metrics to the paired router; it does not read video URLs, page paths, titles, or content. These metrics never create or remove a Ramp exemption by themselves.</p>
       <label><input id="media-quality-opt-in" type="checkbox"> Allow media quality sampling during active Googlevideo trials</label>
+      <p>A Ramp canary may temporarily bypass Ramp for new connections and can disrupt playback. It is a separate opt-in and requires media quality sampling above. The router also requires Ramp pool consent and supported hardware.</p>
+      <label><input id="ramp-canary-opt-in" type="checkbox"> Allow a short Googlevideo Ramp canary</label>
     </section>
     <form id="settings">
       <h2>Paired router</h2>

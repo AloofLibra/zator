@@ -627,9 +627,10 @@ adaptive_browser_result_claim() {
 }
 
 adaptive_browser_trial_add() {
-  [[ $# = 13 ]] || return 2
+  [[ $# = 13 || $# = 14 ]] || return 2
   local id="$1" generation="$2" client_id="$3" client_ip="$4" scope="$5" host="$6" ip="$7"
   local profile="$8" proto="$9" strategy="${10}" fingerprint="${11}" created="${12}" expires="${13}"
+  local trigger="${14:-standard}"
   local file lock dir tmp row ver old_id old_gen old_client old_client_ip old_scope old_host old_ip old_profile old_proto old_strategy old_fp old_created old_expires extra now count=0 tries=0
   [[ "$id" =~ ^[a-f0-9]{32}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ && "$client_id" =~ ^[a-f0-9]{32}$ &&
      "$client_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
@@ -638,7 +639,13 @@ adaptive_browser_trial_add() {
      "$strategy" =~ ^[1-9][0-9]{0,2}$ && ( "$fingerprint" = - || "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ) &&
      "$created" =~ ^[0-9]{1,10}$ && "$expires" =~ ^[0-9]{1,10}$ ]] || return 2
   [[ "$proto" != quic ]] || adaptive_browser_quic_host_valid "$host" || return 2
-  now="$(date +%s)"; (( expires > now && expires <= now + 90 && created <= now + 5 )) || return 2
+  now="$(date +%s)"
+  [[ "$trigger" = standard || "$trigger" = ramp_canary ]] || return 2
+  if [[ "$trigger" = ramp_canary ]]; then
+    (( expires > now && expires <= now + 300 && created <= now + 5 )) || return 2
+  else
+    (( expires > now && expires <= now + 90 && created <= now + 5 )) || return 2
+  fi
   file="$(adaptive_browser_trials_file)"; dir="$(dirname "$file")"; lock="$file.lock"
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$file" && ! -L "$lock" ]] || return 1
   mkdir -p "$dir" || return 1
@@ -695,7 +702,7 @@ adaptive_browser_trial_remove() {
 adaptive_browser_event_claim() {
   [[ $# = 5 && "$1" =~ ^[a-f0-9]{32}$ && "$2" =~ ^[a-f0-9]{32}$ &&
      "$(adaptive_browser_host_valid "$3" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "${3,,}" &&
-     "$4" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ && "$5" =~ ^[0-9]{10}$ ]] || return 2
+     "$4" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix|ramp_canary)$ && "$5" =~ ^[0-9]{10}$ ]] || return 2
   local client_id="$1" event_id="$2" host="$3" trigger="$4" now="$5"
   local dir file lock tmp row ver old_id old_host old_trigger old_seen extra count=0 same_host=0 tries=0 outcome=accepted
   dir="$(adaptive_browser_state_dir)/events"
@@ -713,7 +720,7 @@ adaptive_browser_event_claim() {
       IFS=$'\t' read -r ver old_id old_host old_trigger old_seen extra <<< "$row"
       [[ "$ver" = 1 && "$old_id" =~ ^[a-f0-9]{32}$ &&
          "$(adaptive_browser_host_valid "$old_host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "$old_host" &&
-         "$old_trigger" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
+         "$old_trigger" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix|ramp_canary)$ &&
          "$old_seen" =~ ^[0-9]{10}$ && -z "${extra:-}" ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
       (( old_seen >= now - 300 && old_seen <= now + 5 )) || continue
       count=$((count + 1)); (( count <= 127 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
@@ -751,7 +758,7 @@ adaptive_browser_attempt_write() {
      ( "$host" = - || "$(adaptive_browser_host_valid "$host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "${host,,}" ) &&
      ( "$ip" = - || "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ) &&
      "$profile" =~ ^[0-5]$ && ( "$proto" = tls || "$proto" = googlevideo-tcp || "$proto" = quic || "$proto" = unknown ) &&
-     "$trigger" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
+     "$trigger" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix|ramp_canary)$ &&
      "$state" =~ ^(QUEUED|TEST_ONLY|TARGET_NOT_MANAGED|WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
      "$strategy" =~ ^(-|0|[1-9][0-9]{0,2})$ &&
      ( "$fingerprint" = - || "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ) &&
@@ -1011,6 +1018,36 @@ adaptive_browser_ramp_canary_session_clear() {
   IFS=$'\t' read -r v id rest < "$file"
   [[ "$v" = 1 && "$id" = "$1" ]] || { rmdir "$lock"; return 3; }
   rm -f "$file" && rmdir "$lock"
+}
+
+adaptive_browser_ramp_canary_cooldown_active() {
+  [[ $# = 1 && "$1" =~ ^[0-9]{10}$ ]] || return 2
+  local file="$(adaptive_browser_state_dir)/ramp-canary/cooldown.tsv" ver until extra
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$(dirname "$file")" && ! -L "$file" ]] || return 3
+  [[ -f "$file" ]] || return 1
+  (( $(wc -c < "$file") <= 64 )) || return 3
+  IFS=$'\t' read -r ver until extra < "$file"
+  [[ "$ver" = 1 && "$until" =~ ^[0-9]{10}$ && -z "${extra:-}" ]] || return 3
+  (( until > $1 ))
+}
+
+adaptive_browser_ramp_canary_cooldown_set() {
+  [[ $# = 2 && "$1" =~ ^[0-9]{10}$ && "$2" =~ ^[1-9][0-9]{1,4}$ ]] || return 2
+  local now="$1" ttl="$2" dir="$(adaptive_browser_state_dir)/ramp-canary"
+  local file="$dir/cooldown.tsv" lock="$dir/cooldown.lock" tmp until
+  (( ttl <= 86400 )) || return 2
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$dir" && ! -L "$file" && ! -L "$lock" ]] || return 1
+  mkdir -p "$dir" && chmod 700 "$dir" || return 1
+  (umask 077; mkdir "$lock") 2>/dev/null || return 4
+  local cooldown_rc=0
+  adaptive_browser_ramp_canary_cooldown_active "$now" || cooldown_rc=$?
+  case "$cooldown_rc" in 0) rmdir "$lock"; return 4 ;; 1) ;; *) rmdir "$lock"; return 1 ;; esac
+  until=$((now + ttl))
+  tmp="$(mktemp "$dir/.cooldown.XXXXXX")" || { rmdir "$lock"; return 1; }
+  printf '1\t%s\n' "$until" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$file" || {
+    rm -f "$tmp"; rmdir "$lock"; return 1;
+  }
+  rmdir "$lock"
 }
 
 adaptive_browser_ramp_canary_lease_apply() {

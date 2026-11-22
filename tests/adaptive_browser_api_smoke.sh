@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+trap 'rc=$?; printf "adaptive browser API smoke failed at line %s: %s (rc=%s)\\n" "$LINENO" "$BASH_COMMAND" "$rc" >&2; exit "$rc"' ERR
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -7,6 +8,7 @@ export ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2"
 export Z2R_ADAPTIVE_BROWSER_CLIENTS_FILE="$tmp/zator/extra_strats/cache/adaptive/browser-clients.tsv"
 export Z2R_ADAPTIVE_BROWSER_DIR="$tmp/runtime/browser" Z2R_ADAPTIVE_DIR="$tmp/runtime"
 export CLIENT_SCOPE_MAP_FILE="$tmp/zator/extra_strats/cache/client_scope.tsv"
+export Z2R_ADAPTIVE_SNAPSHOT_DELAY=0
 mkdir -p "$tmp/zator/extra_strats/cache/adaptive" "$tmp/zapret2" "$tmp/runtime"
 mkdir -p "$tmp/bin"
 printf '#!/bin/sh\nexit 127\n' > "$tmp/bin/od"
@@ -178,6 +180,11 @@ NFQWS2_OPT="
 --lua-desync=fake:strategy=1
 --lua-desync=multisplit:strategy=2
 #Z2R_AUTO_STANDARD_1_END
+--new
+#Z2R_AUTO_STANDARD_2_BEGIN
+--lua-desync=fake:strategy=1
+--lua-desync=multisplit:strategy=2
+#Z2R_AUTO_STANDARD_2_END
 --new
 "
 EOF
@@ -527,4 +534,91 @@ h3_response="$(printf '%s' "$h3_body" | env REQUEST_METHOD=POST CONTENT_TYPE=app
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"PROVISIONAL_SUCCESS"' <<< "$h3_response"
 ! grep -q '"status":"PROTOCOL_UNKNOWN"' <<< "$h3_response"
+adaptive_browser_trial_remove "$h3_attempt" "$h3_generation"
+
+# A separately opted-in, healthy Ramp flow arms a bounded natural-flow canary.
+# The staged test exercises the full Ramp -> Plain -> Plain -> Ramp transaction
+# against temporary files and fake nfqws2 metadata only.
+canary_host=rr1---sn-a5mekn6e.googlevideo.com
+canary_ip=142.250.72.3
+canary_ipset="$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-ipset.txt"
+mkdir -p "$(dirname "$canary_ipset")"
+printf '%s\n' "$canary_ip" > "$canary_ipset"
+config_set_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_ENABLE 1
+config_set_var "$ZAPRET2_ROOT/config" Z2R_WSSIZE_RAMP_IPSET /opt/zator/extra_strats/cache/adaptive/ramp-ipset.txt
+printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
+printf '1\tpreexisting\tmanual_unverified\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
+export Z2R_ADAPTIVE_NDM_ROOT="$tmp/no-ndm" Z2R_ADAPTIVE_RAMP_TARGETS_FILE="$tmp/runtime/ramp-targets.tsv"
+export Z2R_ADAPTIVE_RAMP_EXEMPT_FILE="$tmp/runtime/ramp-exempt.tsv"
+canary_now="$(date +%s)"
+printf '1\t%s\t%s\tmark:7\t%s\ttls-observed\tgv1:r:r1---sn-a5mekn6e\tpending\t0\tunknown\n' \
+  "$canary_host" "$canary_ip" "$canary_now" > "$Z2R_ADAPTIVE_RAMP_TARGETS_FILE"
+FWTYPE=nft DESYNC_MARK=0x40000000; export FWTYPE DESYNC_MARK
+Z2R_SUPERSWEEP_DIR="$tmp/canary-plan"; export Z2R_SUPERSWEEP_DIR
+supersweep_probe_config 2 "$ZAPRET2_ROOT/config" standard "$canary_ip" googlevideo-tcp-media-v1
+canary_strategy=2
+canary_fingerprint="$(adaptive_strategy_fingerprint 2 "$canary_strategy" "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args" \
+  "$ZAPRET2_ROOT/nfq2/nfqws2" standard googlevideo-tcp-media-v1)"
+[[ "$canary_fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]]
+canary_flow_dir="$(adaptive_browser_flow_dir)"
+mkdir -p "$canary_flow_dir"
+canary_attempt=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1
+canary_generation=41
+canary_now="$(date +%s)"
+canary_expires=$((canary_now + 45))
+adaptive_browser_attempt_write "$canary_attempt" "$client_id" 192.168.1.42 mark:7 "$canary_host" "$canary_ip" 2 googlevideo-tcp \
+  critical_resource_repeated_failure WAIT_NEW_FLOW "$canary_strategy" "$canary_fingerprint" "$canary_now" "$canary_expires" "$canary_generation"
+adaptive_browser_trial_add "$canary_attempt" "$canary_generation" "$client_id" 192.168.1.42 mark:7 "$canary_host" "$canary_ip" 2 googlevideo-tcp \
+  "$canary_strategy" "$canary_fingerprint" "$canary_now" "$canary_expires"
+printf '1\t%s\t%s\t%s\tmark:7\t%s\t%s\t2\tgooglevideo-tcp\t%s\t%s\t%s\t%s\tapplied\tconfirmed\n' \
+  "$canary_attempt" "$canary_generation" "$client_id" "$canary_host" "$canary_ip" "$canary_strategy" "$canary_fingerprint" "$canary_now" "$canary_now" \
+  > "$canary_flow_dir/$canary_attempt.$canary_generation.tsv"
+browser_attempt_post browser_attempt_status "$canary_attempt" >/dev/null
+canary_result() {
+  local attempt_id="$1" event_id="$2" quality_fields="${3:-}" result_body
+  local observed_at="$(( $(date +%s) * 1000 ))"
+  result_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_id&browser_event_id=$event_id&result=network_success&request_class=media&browser_ip=$canary_ip&observed_at=$observed_at&ramp_canary_opt_in=1$quality_fields"
+  printf '%s' "$result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#result_body}" \
+    HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
+}
+canary_first_quality='&media_quality=healthy&media_sample_ms=8000&media_progress_ms=7000&media_stall_ms=0&media_dropped_frames=2&media_total_frames=240'
+first_sample="$(canary_result "$canary_attempt" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$canary_first_quality")"
+grep -q '"state":"PROVISIONAL_SUCCESS"' <<< "$first_sample"
+first_confirm="$(canary_result "$canary_attempt" cccccccccccccccccccccccccccccccc)"
+grep -q '"ramp_canary":"plain1_armed"' <<< "$first_confirm"
+next_canary_attempt="$(sed -n 's/.*"next_attempt":{"schema_version":1,"status":"WAIT_NEW_FLOW","state":"WAIT_NEW_FLOW","attempt_id":"\([a-f0-9]\{32\}\)".*/\1/p' <<< "$first_confirm")"
+[[ "$next_canary_attempt" =~ ^[a-f0-9]{32}$ && -s "$Z2R_ADAPTIVE_RAMP_EXEMPT_FILE" ]]
+for stage in plain1 plain2 ramp2; do
+  canary_attempt="$next_canary_attempt"
+  attempt_row="$(adaptive_browser_attempt_read "$canary_attempt")"
+  canary_generation="$(cut -f16 <<< "$attempt_row")"
+  canary_expires="$(cut -f15 <<< "$attempt_row")"
+  canary_now="$(date +%s)"
+  if [[ "$stage" = ramp2 ]]; then flow_treatment=applied; flow_ack=confirmed
+  else flow_treatment=bypassed; flow_ack=unknown; fi
+  printf '1\t%s\t%s\t%s\tmark:7\t%s\t%s\t2\tgooglevideo-tcp\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$canary_attempt" "$canary_generation" "$client_id" "$canary_host" "$canary_ip" "$canary_strategy" "$canary_fingerprint" \
+    "$canary_now" "$canary_now" "$flow_treatment" "$flow_ack" > "$canary_flow_dir/$canary_attempt.$canary_generation.tsv"
+  status_response="$(browser_attempt_post browser_attempt_status "$canary_attempt")"
+  grep -q '"state":"FLOW_CONFIRMED"' <<< "$status_response"
+  first_event="$(printf '%032x' "$((canary_generation + 1000))")"
+  second_event="$(printf '%032x' "$((canary_generation + 2000))")"
+  sample_response="$(canary_result "$canary_attempt" "$first_event" "$canary_first_quality")"
+  grep -q '"state":"PROVISIONAL_SUCCESS"' <<< "$sample_response"
+  confirm_response="$(canary_result "$canary_attempt" "$second_event")"
+  if [[ "$stage" = ramp2 ]]; then
+    grep -q '"ramp_canary":"short_lease_applied"' <<< "$confirm_response"
+    [[ ! -e "$Z2R_ADAPTIVE_BROWSER_DIR/ramp-canary/session.tsv" ]]
+  else
+    [[ "$stage" = plain1 ]] && expected_stage=plain2 || expected_stage=ramp2
+    grep -q "\"ramp_canary\":\"${expected_stage}_armed\"" <<< "$confirm_response" || {
+      echo "Ramp canary $stage confirmation was unexpected: $confirm_response" >&2; exit 1;
+    }
+    next_canary_attempt="$(sed -n 's/.*"next_attempt":{"schema_version":1,"status":"WAIT_NEW_FLOW","state":"WAIT_NEW_FLOW","attempt_id":"\([a-f0-9]\{32\}\)".*/\1/p' <<< "$confirm_response")"
+    [[ "$next_canary_attempt" =~ ^[a-f0-9]{32}$ ]]
+  fi
+done
+[[ ! -e "$Z2R_ADAPTIVE_BROWSER_DIR/ramp-canary/session.tsv" ]]
+[[ "$(awk -F '\t' 'NR==1 {print $5+0}' "$Z2R_ADAPTIVE_RAMP_EXEMPT_FILE")" -ge "$(( $(date +%s) + 800 ))" ]]
+adaptive_browser_ramp_canary_cooldown_active "$(date +%s)"
 echo 'adaptive browser API smoke: OK'

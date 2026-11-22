@@ -38,7 +38,7 @@ for pair in "${pairs[@]}"; do
   [[ "$pair" = *=* && "$pair" != *%* && "$pair" != *+* ]] || fail '400 Bad Request' 'invalid form encoding'
   key="${pair%%=*}"; value="${pair#*=}"
   [[ "$key" =~ ^[a-z_]+$ && "$value" =~ ^[a-zA-Z0-9_.:-]*$ ]] || fail '400 Bad Request' 'invalid form field'
-  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_transport|failure_count|observed_at|attempt_id|result|browser_ip|browser_protocol|media_quality|media_sample_ms|media_progress_ms|media_stall_ms|media_dropped_frames|media_total_frames) ;;
+  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_transport|failure_count|observed_at|attempt_id|result|browser_ip|browser_protocol|media_quality|media_sample_ms|media_progress_ms|media_stall_ms|media_dropped_frames|media_total_frames|ramp_canary_opt_in) ;;
     *) fail '400 Bad Request' 'unknown form field' ;; esac
   [[ -n "$key" && ! ${f[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
   f[$key]="$value"
@@ -59,8 +59,9 @@ adaptive_browser_presence_touch "$client_id" >/dev/null 2>&1 || :
 
 browser_start_trial() {
   local target="$1" trigger="$2" client_id="$3" client_ip="$4" scope="$5"
+  local fixed_strategy="${6:-}" fixed_fingerprint="${7:-}"
   local host ip profile proto seen nfqws orch_dir now expires generation raw_id id
-  local candidate_dir args_file candidate fingerprint recipe config_value flow_dir flow_user flow_uid flow_gid flow_owner
+  local candidate_dir args_file candidate fingerprint recipe config_value flow_dir flow_user flow_uid flow_gid flow_owner trial_kind=standard
   IFS=$'\t' read -r host ip profile proto target_scope seen <<< "$target"
   [[ "$target_scope" = "$scope" && "$client_ip" = "$REMOTE_ADDR" ]] || return 2
   [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 5
@@ -96,6 +97,7 @@ browser_start_trial() {
   raw_id="$(adaptive_browser_random_hex 16)"
   [[ "$raw_id" =~ ^[a-f0-9]{32}$ ]] || return 1
   id="$raw_id"; now="$(date +%s)"; expires=$((now + 45))
+  if [[ "$trigger" = ramp_canary ]]; then expires=$((now + 300)); trial_kind=ramp_canary; fi
   raw_id="$(adaptive_browser_random_hex 4)"
   [[ "$raw_id" =~ ^[a-f0-9]{8}$ ]] || return 1
   generation=$((16#$raw_id % 999999999 + 1))
@@ -112,8 +114,19 @@ browser_start_trial() {
     rm -rf "$candidate_dir"; return 3
   fi
   args_file="$candidate_dir/probe/nfqws2.args"
-  candidate="$(adaptive_browser_candidate_select "$host" "$ip" "$profile" "$proto" "$scope" "$args_file" "$nfqws" "$ORCH_DIR" "$client_id")"
-  if [[ $? -ne 0 || -z "$candidate" ]]; then rm -rf "$candidate_dir"; return 3; fi
+  if [[ -n "$fixed_strategy" || -n "$fixed_fingerprint" ]]; then
+    [[ "$trigger" = ramp_canary && "$fixed_strategy" =~ ^[1-9][0-9]{0,2}$ && "$fixed_fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+      rm -rf "$candidate_dir"; return 3;
+    }
+    candidate_fingerprint="$(adaptive_strategy_fingerprint "$profile" "$fixed_strategy" "$args_file" "$nfqws" standard "$recipe")" || {
+      rm -rf "$candidate_dir"; return 3;
+    }
+    [[ "$candidate_fingerprint" = "$fixed_fingerprint" ]] || { rm -rf "$candidate_dir"; return 3; }
+    candidate="$fixed_strategy"$'\t'"$fixed_fingerprint"
+  else
+    candidate="$(adaptive_browser_candidate_select "$host" "$ip" "$profile" "$proto" "$scope" "$args_file" "$nfqws" "$ORCH_DIR" "$client_id")"
+    if [[ $? -ne 0 || -z "$candidate" ]]; then rm -rf "$candidate_dir"; return 3; fi
+  fi
   IFS=$'\t' read -r strategy fingerprint <<< "$candidate"
   rm -rf "$candidate_dir" || return 1
   adaptive_browser_attempt_gc "$now" "$id"
@@ -123,7 +136,7 @@ browser_start_trial() {
     return 1
   fi
   adaptive_browser_attempt_reservation_release "$id" >/dev/null 2>&1 || :
-  if ! adaptive_browser_trial_add "$id" "$generation" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$strategy" "$fingerprint" "$now" "$expires"; then
+  if ! adaptive_browser_trial_add "$id" "$generation" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$strategy" "$fingerprint" "$now" "$expires" "$trial_kind"; then
     adaptive_browser_attempt_transition "$id" QUEUED TARGET_NOT_MANAGED >/dev/null 2>&1 || :
     return 7
   fi
@@ -131,8 +144,10 @@ browser_start_trial() {
     adaptive_browser_trial_remove "$id" "$generation" || :
     return 1
   }
-  printf '{"schema_version":1,"status":"WAIT_NEW_FLOW","state":"WAIT_NEW_FLOW","attempt_id":"%s","candidate":{"profile_id":%s,"strategy":%s,"protocol":"%s","treatment_variant":"standard"},"scope":"%s","expires_at":%s,"retry_hint":"reload_if_safe"}' \
-    "$id" "$profile" "$strategy" "$proto" "$scope" "$expires"
+  local retry_hint=reload_if_safe
+  [[ "$trigger" != ramp_canary ]] || retry_hint=observe_natural_flow
+  printf '{"schema_version":1,"status":"WAIT_NEW_FLOW","state":"WAIT_NEW_FLOW","attempt_id":"%s","candidate":{"profile_id":%s,"strategy":%s,"protocol":"%s","treatment_variant":"standard"},"scope":"%s","expires_at":%s,"retry_hint":"%s"}' \
+    "$id" "$profile" "$strategy" "$proto" "$scope" "$expires" "$retry_hint"
 }
 
 browser_confirm_flow() {
@@ -151,6 +166,221 @@ browser_confirm_flow() {
   elif [[ "$state" != FLOW_CONFIRMED && "$state" != WAIT_BROWSER_RESULT && "$state" != PROVISIONAL_SUCCESS ]]; then
     return 3
   fi
+}
+
+browser_ramp_canary_target_allowed() {
+  local host="$1" ip="$2" target_scope="$3" now mode marker ramp_state config ramp_enable ramp_ipset target_file
+  local row ver row_host row_ip row_scope seen provenance group state dns_expiry media extra exact=0
+  [[ "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+     ( "$target_scope" = default || "$target_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 1
+  if [[ "$target_scope" = mark:* ]]; then (( ${target_scope#mark:} <= 65535 )) || return 1; fi
+  awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || return 1
+  mode="$ROOT/extra_strats/cache/adaptive/mode"
+  marker="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
+  ramp_state="$ROOT/extra_strats/cache/adaptive/ramp-pool"
+  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$marker" 2>/dev/null)" = 1 &&
+     -f "$ramp_state" && ! -L "$ramp_state" && $(wc -c < "$ramp_state") -le 256 ]] || return 1
+  awk -F '\t' 'NR==1 && ((($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4~/^[a-f0-9]{64}$/ && NF==4) || ($1==1 && $2=="managed" && $3=="proof_verified" && $4~/^[a-f0-9]{64}$/ && $5~/^[a-f0-9]{64}$/ && NF==5))) {ok=1} END {exit !ok}' "$ramp_state" || return 1
+  [[ ! -d "${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}" ]] || return 1
+  config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  ramp_enable="$(config_get_var "$config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
+  ramp_ipset="$(config_get_var "$config" Z2R_WSSIZE_RAMP_IPSET 2>/dev/null | tr -d '"\047')"
+  case "$ramp_ipset" in
+    /opt/zator/*) ramp_ipset="$ROOT/${ramp_ipset#/opt/zator/}" ;;
+    /opt/zapret2/*) ramp_ipset="${ZAPRET2_ROOT:-/opt/zapret2}/${ramp_ipset#/opt/zapret2/}" ;;
+  esac
+  [[ "$ramp_enable" = 1 && -r "$ramp_ipset" && ! -L "$ramp_ipset" ]] && grep -Fqx -- "$ip" "$ramp_ipset" || return 1
+  now="$(date +%s)" || return 1
+  target_file="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/ramp-targets.tsv}"
+  [[ -r "$target_file" && ! -L "$target_file" ]] || return 1
+  while IFS=$'\t' read -r ver row_host row_ip row_scope seen provenance group state dns_expiry media extra || [[ -n "$ver$row_host$row_ip" ]]; do
+    [[ "$ver" = 1 && "$provenance" = tls-observed && "$seen" =~ ^[0-9]{1,10}$ ]] || continue
+    (( seen >= now - 86400 && seen <= now + 60 )) || continue
+    [[ "$dns_expiry" =~ ^[0-9]{1,10}$ ]] && (( dns_expiry == 0 || dns_expiry > now )) || continue
+    if [[ "$row_ip" = "$ip" && "$row_host" != "$host" ]] || [[ "$row_host" = "$host" && "$row_ip" != "$ip" ]] ||
+       [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$target_scope" && "$state" = conflict ]]; then return 1; fi
+    [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$target_scope" ]] && exact=1
+  done < "$target_file"
+  (( exact ))
+}
+
+browser_ramp_canary_abort() {
+  local attempt="$1" file row ver session owner client_ip attempt_scope host ip strategy fp stage current ids lease created expires extra
+  file="$(adaptive_browser_ramp_canary_session_file)"
+  [[ -r "$file" && ! -L "$file" ]] || return 1
+  IFS=$'\t' read -r ver session owner client_ip attempt_scope host ip strategy fp stage current ids lease created expires extra < "$file"
+  [[ "$ver" = 1 && "$owner" = "$client_id" && "$attempt_scope" = "$scope" &&
+     ( "$attempt" = - || "$current" = "$attempt" ) && -z "${extra:-}" ]] || return 1
+  adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$attempt_scope" "$lease" >/dev/null 2>&1 || :
+  adaptive_browser_ramp_canary_session_clear "$session"
+}
+
+browser_ramp_canary_start_next() {
+  local host="$1" ip="$2" strategy="$3" fp="$4" target
+  target="$(printf '%s\t%s\t2\tgooglevideo-tcp\t%s\t%s' "$host" "$ip" "$scope" "$(date +%s)")"
+  browser_start_trial "$target" ramp_canary "$client_id" "${REMOTE_ADDR:-}" "$scope" "$strategy" "$fp"
+}
+
+browser_ramp_canary_start() {
+  local attempt="$1" host="$2" ip="$3" strategy="$4" fp="$5" now session lease expires next_json next_attempt attempt_row generation
+  browser_ramp_canary_target_allowed "$host" "$ip" "$scope" || return 1
+  now="$(date +%s)"
+  cooldown_rc=0
+  adaptive_browser_ramp_canary_cooldown_active "$now" || cooldown_rc=$?
+  [[ "$cooldown_rc" = 1 ]] || return 1
+  session="$(adaptive_browser_random_hex 16)"
+  [[ "$session" =~ ^[a-f0-9]{32}$ ]] || return 1
+  lease="$(printf '%s|%s|%s|%s|%s' "$session" "$client_id" "$host" "$ip" "$scope" | sha256sum | awk '{print $1}')"
+  [[ "$lease" =~ ^[a-f0-9]{64}$ ]] || return 1
+  expires=$((now + 900))
+  adaptive_browser_ramp_canary_lease_apply "$host" "$ip" "$scope" "$lease" "$expires" || return 1
+  next_json="$(browser_ramp_canary_start_next "$host" "$ip" "$strategy" "$fp")" || {
+    adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$scope" "$lease" >/dev/null 2>&1 || :
+    return 1
+  }
+  next_attempt="$(printf '%s' "$next_json" | sed -n 's/.*"attempt_id":"\([a-f0-9]\{32\}\)".*/\1/p')"
+  [[ "$next_attempt" =~ ^[a-f0-9]{32}$ ]] || {
+    adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$scope" "$lease" >/dev/null 2>&1 || :
+    return 1
+  }
+  if ! adaptive_browser_ramp_canary_session_begin "$session" "$client_id" "${REMOTE_ADDR:-}" "$scope" "$host" "$ip" \
+      "$strategy" "$fp" plain1 "$next_attempt" "$attempt" "$lease" "$now"; then
+    attempt_row="$(adaptive_browser_attempt_read "$next_attempt" 2>/dev/null)" || attempt_row=""
+    [[ -z "$attempt_row" ]] || {
+      adaptive_browser_attempt_transition "$next_attempt" WAIT_NEW_FLOW CANCELLED >/dev/null 2>&1 || :
+      IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ generation _ <<< "$attempt_row"
+      [[ "$generation" =~ ^[1-9][0-9]{0,8}$ ]] && adaptive_browser_trial_remove "$next_attempt" "$generation" >/dev/null 2>&1 || :
+    }
+    adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$scope" "$lease" >/dev/null 2>&1 || :
+    return 1
+  fi
+  if ! adaptive_browser_ramp_canary_cooldown_set "$now" 3600; then
+    browser_ramp_canary_abort "$next_attempt" >/dev/null 2>&1 || :
+    adaptive_browser_attempt_transition "$next_attempt" WAIT_NEW_FLOW CANCELLED >/dev/null 2>&1 || :
+    attempt_row="$(adaptive_browser_attempt_read "$next_attempt" 2>/dev/null)" || attempt_row=""
+    if [[ -n "$attempt_row" ]]; then
+      IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ generation <<< "$attempt_row"
+      [[ "$generation" =~ ^[1-9][0-9]{0,8}$ ]] && adaptive_browser_trial_remove "$next_attempt" "$generation" >/dev/null 2>&1 || :
+    fi
+    return 1
+  fi
+  BROWSER_RAMP_CANARY_RESPONSE="{\"ramp_canary\":\"plain1_armed\",\"next_attempt\":$next_json}"
+}
+
+browser_ramp_canary_handle_result() {
+  local attempt="$1" state="$2" opted_in="$3" trigger="$4" flow_treatment="$5" flow_ack="$6" attempt_generation="$7"
+  local evidence row ver id generation owner attempt_scope e_host e_ip e_profile e_proto e_strategy e_fp e_treatment e_ack quality sample progress stall dropped total observed extra
+  local session_file session_owner session_ip session_scope session_host session_dst session_strategy session_fp stage current ids lease created expires
+  local now next_json next_attempt next_stage proof final_expires lease_removed=0 session_row next_generation
+  BROWSER_RAMP_CANARY_RESPONSE=""
+  session_file="$(adaptive_browser_ramp_canary_session_file)"
+  if [[ "$trigger" = ramp_canary ]]; then
+    [[ "$state" != PROVISIONAL_SUCCESS ]] || return 0
+    [[ "$opted_in" = 1 && "$state" = CONFIRMED_SUCCESS ]] || {
+      browser_ramp_canary_abort "$attempt" || :
+      BROWSER_RAMP_CANARY_RESPONSE='{"ramp_canary":"aborted"}'
+      return 0
+    }
+    [[ -r "$session_file" && ! -L "$session_file" ]] || return 1
+    IFS=$'\t' read -r ver session session_owner session_ip session_scope session_host session_dst session_strategy session_fp stage current ids lease created expires extra < "$session_file"
+    [[ "$ver" = 1 && "$session_owner" = "$client_id" && "$session_ip" = "${REMOTE_ADDR:-}" &&
+       "$session_scope" = "$scope" && "$current" = "$attempt" && "$session_host" = "$host" && "$session_dst" = "$ip" &&
+       "$session_strategy" = "$strategy" && "$session_fp" = "$attempt_fingerprint" && -z "${extra:-}" ]] || {
+      browser_ramp_canary_abort "$attempt" || :
+      return 1
+    }
+  else
+    [[ "$trigger" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
+       "$state" = CONFIRMED_SUCCESS && "$opted_in" = 1 && "$proto" = googlevideo-tcp && "$profile" = 2 &&
+       "$flow_treatment" = applied && "$flow_ack" = confirmed ]] || return 1
+    if [[ -r "$session_file" ]]; then
+      IFS=$'\t' read -r ver session session_owner session_ip session_scope session_host session_dst session_strategy session_fp stage current ids lease created expires extra < "$session_file"
+      [[ "$expires" =~ ^[0-9]{10}$ ]] || return 1
+      now="$(date +%s)"
+      (( expires <= now )) || return 1
+      adaptive_browser_ramp_canary_lease_revoke "$session_host" "$session_dst" "$session_scope" "$lease" >/dev/null 2>&1 || :
+      adaptive_browser_ramp_canary_session_clear "$session" || return 1
+    fi
+  fi
+  evidence="$(adaptive_browser_state_dir)/media-quality/evidence.tsv"
+  [[ -r "$evidence" && ! -L "$evidence" && $(wc -c < "$evidence") -le 32768 ]] || {
+    [[ "$trigger" != ramp_canary ]] || browser_ramp_canary_abort "$attempt" || :
+    return 1
+  }
+  row="$(awk -F '\t' -v id="$attempt" -v gen="$attempt_generation" '$2==id && $3==gen {row=$0; n++} END {if(n==1) print row}' "$evidence")"
+  [[ -n "$row" ]] || { [[ "$trigger" != ramp_canary ]] || browser_ramp_canary_abort "$attempt" || :; return 1; }
+  IFS=$'\t' read -r ver id generation owner attempt_scope e_host e_ip e_profile e_proto e_strategy e_fp e_treatment e_ack quality sample progress stall dropped total observed extra <<< "$row"
+  [[ "$ver" = 1 && "$owner" = "$client_id" && "$attempt_scope" = "$scope" && "$e_host" = "$host" &&
+     "$e_ip" = "$ip" && "$e_profile" = 2 && "$e_proto" = googlevideo-tcp &&
+     "$e_strategy" = "$strategy" && "$e_fp" = "$attempt_fingerprint" &&
+     "$e_treatment" = "$flow_treatment" && "$e_ack" = "$flow_ack" ]] || {
+    [[ "$trigger" != ramp_canary ]] || browser_ramp_canary_abort "$attempt" || :
+    return 1
+  }
+  [[ "$quality" = healthy && "$sample" -ge 7500 && "$progress" -ge 5000 && "$stall" -lt 1000 && -z "${extra:-}" ]] || {
+    [[ "$trigger" != ramp_canary ]] || browser_ramp_canary_abort "$attempt" || :
+    return 1
+  }
+  if [[ "$trigger" != ramp_canary ]]; then
+    browser_ramp_canary_target_allowed "$e_host" "$e_ip" "$scope" || return 1
+    browser_ramp_canary_start "$attempt" "$e_host" "$e_ip" "$e_strategy" "$e_fp" || return 1
+    return 0
+  fi
+  treatment="$e_treatment"; ack="$e_ack"
+  browser_ramp_canary_target_allowed "$e_host" "$e_ip" "$scope" || { browser_ramp_canary_abort "$attempt" || :; return 1; }
+  now="$(date +%s)"
+  case "$stage" in
+    plain1) next_stage=plain2 ;;
+    plain2) next_stage=ramp2 ;;
+    ramp2)
+      [[ "$(adaptive_browser_ramp_canary_session_advance "$session" "$attempt" - "$treatment" "$ack" healthy)" = complete ]] || {
+        browser_ramp_canary_abort "$attempt" || :; return 1;
+      }
+      session_row="$(cat "$session_file" 2>/dev/null)" || session_row=""
+      IFS=$'\t' read -r ver session session_owner session_ip session_scope session_host session_dst session_strategy session_fp stage current ids lease created expires extra <<< "$session_row"
+      adaptive_browser_ramp_canary_lease_revoke "$e_host" "$e_ip" "$scope" "$lease" >/dev/null 2>&1 || :
+      browser_ramp_canary_target_allowed "$e_host" "$e_ip" "$scope" || { adaptive_browser_ramp_canary_session_clear "$session" || :; return 1; }
+      proof="$(adaptive_browser_ramp_canary_validate "$e_host" "$e_ip" "$scope" "$ids" "$now" "$client_id")" || {
+        adaptive_browser_ramp_canary_session_clear "$session" || :; return 1;
+      }
+      final_expires=$((now + 900))
+      if adaptive_browser_ramp_canary_lease_apply "$e_host" "$e_ip" "$scope" "$proof" "$final_expires"; then
+        BROWSER_RAMP_CANARY_RESPONSE="{\"ramp_canary\":\"short_lease_applied\",\"expires_at\":$final_expires}"
+      else
+        BROWSER_RAMP_CANARY_RESPONSE='{"ramp_canary":"evidence_accepted_no_lease"}'
+      fi
+      adaptive_browser_ramp_canary_session_clear "$session" || :
+      return 0
+      ;;
+    *) browser_ramp_canary_abort "$attempt" || :; return 1 ;;
+  esac
+  [[ "$stage" != plain2 ]] || {
+    adaptive_browser_ramp_canary_lease_revoke "$e_host" "$e_ip" "$scope" "$lease" >/dev/null 2>&1 || :
+    lease_removed=1
+  }
+  next_json="$(browser_ramp_canary_start_next "$e_host" "$e_ip" "$e_strategy" "$e_fp")" || {
+    [[ "$lease_removed" = 1 ]] || adaptive_browser_ramp_canary_lease_revoke "$e_host" "$e_ip" "$scope" "$lease" >/dev/null 2>&1 || :
+    adaptive_browser_ramp_canary_session_clear "$session" || :
+    return 1
+  }
+  next_attempt="$(printf '%s' "$next_json" | sed -n 's/.*"attempt_id":"\([a-f0-9]\{32\}\)".*/\1/p')"
+  [[ "$next_attempt" =~ ^[a-f0-9]{32}$ ]] || {
+    [[ "$lease_removed" = 1 ]] || adaptive_browser_ramp_canary_lease_revoke "$e_host" "$e_ip" "$scope" "$lease" >/dev/null 2>&1 || :
+    adaptive_browser_ramp_canary_session_clear "$session" || :; return 1;
+  }
+  if ! adaptive_browser_ramp_canary_session_advance "$session" "$attempt" "$next_attempt" "$treatment" "$ack" healthy >/dev/null; then
+    adaptive_browser_attempt_transition "$next_attempt" WAIT_NEW_FLOW CANCELLED >/dev/null 2>&1 || :
+    attempt_row="$(adaptive_browser_attempt_read "$next_attempt" 2>/dev/null)" || attempt_row=""
+    if [[ -n "$attempt_row" ]]; then
+      IFS=$'\t' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ next_generation <<< "$attempt_row"
+      [[ "$next_generation" =~ ^[1-9][0-9]{0,8}$ ]] && adaptive_browser_trial_remove "$next_attempt" "$next_generation" >/dev/null 2>&1 || :
+    fi
+    adaptive_browser_ramp_canary_session_clear "$session" || :
+    [[ "$lease_removed" = 1 ]] || adaptive_browser_ramp_canary_lease_revoke "$e_host" "$e_ip" "$scope" "$lease" >/dev/null 2>&1 || :
+    return 1
+  fi
+  BROWSER_RAMP_CANARY_RESPONSE="{\"ramp_canary\":\"${next_stage}_armed\",\"next_attempt\":$next_json}"
 }
 
 browser_promote_attempt() {
@@ -277,6 +507,12 @@ case "${f[action]:-}" in
       adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
       state=CANCELLED
     fi
+    if [[ "$trigger" = ramp_canary && "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" != AGENT_BETA &&
+          "$state" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS)$ ]]; then
+      adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || :
+      adaptive_browser_trial_remove "$attempt_id" "$generation" || :
+      state=UNKNOWN
+    fi
     if [[ "$state" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS)$ ]]; then
       if browser_confirm_flow; then :
       else
@@ -285,6 +521,9 @@ case "${f[action]:-}" in
         else adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || :; state=UNKNOWN; adaptive_browser_trial_remove "$attempt_id" "$generation" || :
         fi
       fi
+    fi
+    if [[ "$trigger" = ramp_canary && "$state" =~ ^(UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ ]]; then
+      browser_ramp_canary_abort "$attempt_id" || :
     fi
     case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || : ;;
@@ -302,10 +541,11 @@ case "${f[action]:-}" in
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
     ;;
   browser_report_result)
-    [[ ${#f[@]} -ge 8 && ${#f[@]} -le 15 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
+    [[ ${#f[@]} -ge 8 && ${#f[@]} -le 16 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
        "${f[result]:-}" =~ ^(network_success|network_failure)$ && "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ &&
        "${f[browser_ip]:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ &&
-       ( -z "${f[browser_protocol]:-}" || "${f[browser_protocol]}" =~ ^(h3|tcp)$ ) ]] || fail '400 Bad Request' 'invalid browser result'
+       ( -z "${f[browser_protocol]:-}" || "${f[browser_protocol]}" =~ ^(h3|tcp)$ ) &&
+       ( -z "${f[ramp_canary_opt_in]:-}" || "${f[ramp_canary_opt_in]}" =~ ^[01]$ ) ]] || fail '400 Bad Request' 'invalid browser result'
     media_fields=0
     for media_key in media_quality media_sample_ms media_progress_ms media_stall_ms media_dropped_frames media_total_frames; do
       [[ ${f[$media_key]+present} ]] && media_fields=$((media_fields + 1))
@@ -330,7 +570,8 @@ case "${f[action]:-}" in
     IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy attempt_fingerprint created expires generation extra <<< "$row"
     [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
     if [[ "${f[request_class]}" != main_frame ]]; then
-      [[ "$trigger" = critical_resource_repeated_failure && "${f[request_class]}" =~ ^(script|xmlhttprequest|media)$ ]] || fail '400 Bad Request' 'critical-resource result does not match this attempt'
+      [[ ( "$trigger" = critical_resource_repeated_failure && "${f[request_class]}" =~ ^(script|xmlhttprequest|media)$ ) ||
+         ( "$trigger" = ramp_canary && "${f[request_class]}" = media ) ]] || fail '400 Bad Request' 'critical-resource result does not match this attempt'
     fi
     [[ "${f[observed_at]}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid result time'
     now_ms="$(( $(date +%s) * 1000 ))"
@@ -352,7 +593,17 @@ case "${f[action]:-}" in
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
       send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"TCP_FALLBACK\",\"status\":\"TCP_FALLBACK\",\"reason\":\"browser_negotiated_tcp\"}"
     fi
-    if [[ "$state" = WAIT_NEW_FLOW ]]; then browser_confirm_flow || fail '409 Conflict' 'new production flow with selected strategy is not confirmed'; state=FLOW_CONFIRMED; fi
+    if [[ "$state" = WAIT_NEW_FLOW ]]; then
+      if browser_confirm_flow; then state=FLOW_CONFIRMED
+      else
+        if [[ "$trigger" = ramp_canary ]]; then
+          adaptive_browser_attempt_transition "$attempt_id" WAIT_NEW_FLOW UNKNOWN >/dev/null 2>&1 || :
+          adaptive_browser_trial_remove "$attempt_id" "$generation" >/dev/null 2>&1 || :
+          browser_ramp_canary_abort "$attempt_id" >/dev/null 2>&1 || :
+        fi
+        fail '409 Conflict' 'new production flow with selected strategy is not confirmed'
+      fi
+    fi
     if [[ "$state" = FLOW_CONFIRMED ]]; then
       adaptive_browser_attempt_transition "$attempt_id" FLOW_CONFIRMED WAIT_BROWSER_RESULT || fail '409 Conflict' 'attempt changed concurrently'
       state=WAIT_BROWSER_RESULT
@@ -391,6 +642,7 @@ case "${f[action]:-}" in
       if [[ "${f[media_quality]}" != healthy ]]; then
         adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || fail '409 Conflict' 'attempt changed concurrently'
         adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+        [[ "$trigger" != ramp_canary ]] || browser_ramp_canary_abort "$attempt_id" >/dev/null 2>&1 || :
         adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
         send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"UNKNOWN\",\"reason\":\"media_quality_inconclusive\",\"media_quality\":\"${f[media_quality]}\"}"
       fi
@@ -425,7 +677,13 @@ case "${f[action]:-}" in
     case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || : ;;
     esac
-    if [[ "$state" = CONFIRMED_FAILURE ]]; then
+    ramp_canary_json=""
+    if [[ "$proto" = googlevideo-tcp && ( "$trigger" = ramp_canary || "${f[ramp_canary_opt_in]:-0}" = 1 ) ]]; then
+      browser_ramp_canary_handle_result "$attempt_id" "$state" "${f[ramp_canary_opt_in]:-0}" "$trigger" \
+        "$flow_ramp_treatment" "$flow_ramp_ack_evidence" "$generation" || :
+      ramp_canary_json=",$BROWSER_RAMP_CANARY_RESPONSE"
+    fi
+    if [[ "$state" = CONFIRMED_FAILURE && "$trigger" != ramp_canary ]]; then
       next_claim="$(adaptive_browser_event_claim "$client_id" "${f[browser_event_id]}" "$host" "$trigger" "$(date +%s)")" || next_claim=unavailable
       if [[ "$next_claim" = accepted ]]; then
         next_target="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$(date +%s)")"
@@ -436,7 +694,7 @@ case "${f[action]:-}" in
         fi
       fi
     fi
-    send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\"$media_quality_json}"
+    send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\"$media_quality_json$ramp_canary_json}"
     ;;
   *) fail '400 Bad Request' 'unknown browser action' ;;
 esac

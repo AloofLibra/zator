@@ -322,6 +322,9 @@
       browser_event_id: pending.id, result: pending.result, request_class: pending.request_class,
       browser_ip: pending.browser_ip, observed_at: String(pending.observed_at),
       ...(pending.browser_protocol ? { browser_protocol: pending.browser_protocol } : {}),
+      ...(latest.config.rampCanaryOptIn === true && latest.config.mediaQualityOptIn === true &&
+          current.candidate_protocol === "googlevideo-tcp" && pending.request_class === "media"
+        ? { ramp_canary_opt_in: "1" } : {}),
       ...(pending.media_quality ? {
         media_quality: pending.media_quality.quality,
         media_sample_ms: String(pending.media_quality.sample_ms),
@@ -337,7 +340,9 @@
       const queue = Array.isArray(row.pending_results)
         ? row.pending_results
         : row.pending_result ? [row.pending_result] : [];
-      const remaining = result.ok ? queue.filter(item => item.id !== pending.id) : queue;
+      const remaining = result.ok
+        ? result.data.next_attempt?.attempt_id ? [] : queue.filter(item => item.id !== pending.id)
+        : queue;
       return {
         ...row,
         attempt_id: result.data.next_attempt?.attempt_id || row.attempt_id,
@@ -352,7 +357,8 @@
     });
     await chrome.storage.local.set({ events: latest.events });
     const nextAttempt = result.data.next_attempt;
-    if (result.ok && nextAttempt?.state === "WAIT_NEW_FLOW" && typeof nextAttempt.attempt_id === "string") {
+    if (result.ok && nextAttempt?.state === "WAIT_NEW_FLOW" && nextAttempt.retry_hint !== "observe_natural_flow" &&
+        typeof nextAttempt.attempt_id === "string") {
       const retryEvent = latest.events.find(row => row && row.id === eventId);
       await retryFailedGetOnce(retryEvent, { ok: true, data: { state: nextAttempt.state, attempt_id: nextAttempt.attempt_id } });
     }
