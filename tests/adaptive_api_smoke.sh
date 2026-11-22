@@ -510,6 +510,9 @@ rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
 no_lan_consent="$(call_api "$proof_body")"
 [[ "$no_lan_consent" == *'403 Forbidden'* ]] || { echo "Ramp exemption applied without explicit LAN consent: $no_lan_consent" >&2; exit 1; }
 printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
+# Keep this full apply/revoke proof on the Linux/VPS path: the NDM fixture is
+# created later to verify that only Keenetic gates automatic exemptions.
+[[ ! -d "$Z2R_ADAPTIVE_NDM_ROOT" ]] || { echo 'Linux Ramp exemption proof unexpectedly has an NDM root' >&2; exit 1; }
 proof_applied="$(call_api "$proof_body")"
 [[ "$proof_applied" == *'"status":"ramp_exempt"'* && "$proof_applied" == *"$proof_ip"* ]] || {
   echo "verified Ramp proof did not apply an exact exemption: $proof_applied" >&2; exit 1;
