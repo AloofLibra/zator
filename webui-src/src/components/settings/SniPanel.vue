@@ -264,8 +264,9 @@ async function removeSet(s: SniSetInfo) {
           </template>
           <template v-if="userSets.length">
             <strong>ваши:</strong>
-            <span v-for="s in userSets" :key="s.name" class="chip chip-button"
-              :class="{ 'is-target': editName === s.name }" @click="startEdit(s)">{{ s.name }} · {{ s.domains.length }}</span>
+            <button v-for="s in userSets" :key="s.name" type="button" class="chip chip-button"
+              :class="{ 'is-target': editName === s.name }" :disabled="busyActive"
+              :title="`Редактировать набор «${s.name}»`" @click="startEdit(s)">{{ s.name }} · {{ s.domains.length }}</button>
           </template>
         </div>
 
