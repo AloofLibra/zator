@@ -25,6 +25,7 @@ MAX_BATCH_RESULTS = 50
 MAX_FAILURE_CONFIRMATIONS = 5
 MAX_DIMENSIONS = 2048
 MAX_SOURCE_DAILY = 12
+MAX_BROWSER_SOURCE_DAILY = 24
 MAX_CLIENT_TOKENS = 10000
 AGGREGATE_TTL = 8 * 86400
 REQUEST_TTL = 6 * 3600
@@ -33,6 +34,10 @@ RANKING_TTL = 1800
 _HEX32 = re.compile(r"^[a-f0-9]{32}$")
 _HEX64 = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_PROFILE = re.compile(r"^[1-4]$")
+_BROWSER_PROTOCOLS = {1: "tls", 2: "googlevideo-tcp", 3: "tls", 4: "tls", 5: "quic"}
+_BROWSER_STATES = {"PROVISIONAL_SUCCESS", "CONFIRMED_SUCCESS", "CONFIRMED_FAILURE", "UNKNOWN",
+                   "NOT_TESTED", "TCP_FALLBACK", "PROTOCOL_UNKNOWN", "CANCELLED"}
+_BROWSER_TREATMENTS = {"standard", "gv_tcp_plain", "gv_tcp_ramp", "gv_tcp_ramp_syndata"}
 
 
 def _json_bytes(payload):
@@ -185,6 +190,142 @@ def validate_batch(payload, secret, aliases=None, now=None, source_digest=None):
                      "verdict": verdict, "day": day})
     return {"request_id": request_id, "request_hash": hashlib.sha256(_json_bytes(payload)).hexdigest(),
             "source": source, "provider_hash": phash, "day": day, "rows": rows}
+
+
+def validate_browser_batch(payload, secret, aliases=None, now=None, source_digest=None):
+    """Validate privacy-minimized browser-flow outcomes, kept outside probe rankings."""
+    _json_bytes(payload)
+    if (not isinstance(payload, dict) or payload.get("schema_version") != 1
+            or payload.get("source") != "browser_flow" or payload.get("client_profile") != "chromium-v1"
+            or "source_id" in payload):
+        raise ValueError("unsupported browser evidence schema")
+    allowed = {"schema_version", "source", "client_profile", "request_id", "provider", "observed_at", "results"}
+    if set(payload) != allowed:
+        raise ValueError("invalid browser evidence fields")
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not _HEX32.fullmatch(request_id):
+        raise ValueError("invalid request id")
+    if not isinstance(secret, str) or len(secret) < 32:
+        raise ValueError("ingest secret unavailable")
+    if source_digest is None or not isinstance(source_digest, str) or not _HEX64.fullmatch(source_digest):
+        raise ValueError("authenticated browser source required")
+    provider = canonical(validate_provider(payload.get("provider")), aliases)
+    observed = payload.get("observed_at")
+    if isinstance(observed, bool) or not isinstance(observed, int):
+        raise ValueError("invalid timestamp")
+    now = int(time.time()) if now is None else int(now)
+    if observed < now - 7 * 86400 or observed > now + 300:
+        raise ValueError("timestamp outside retention window")
+    results = payload.get("results")
+    if not isinstance(results, list) or not 1 <= len(results) <= MAX_BATCH_RESULTS:
+        raise ValueError("invalid result count")
+    phash = hashlib.sha256(provider.casefold().encode("utf-8")).hexdigest()[:24]
+    day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y%m%d")
+    rows, seen = [], set()
+    row_fields = {"profile_id", "protocol", "fingerprint", "state", "treatment_variant", "protocol_proven", "confidence"}
+    for row in results:
+        if not isinstance(row, dict) or set(row) != row_fields:
+            raise ValueError("invalid browser result fields")
+        profile, protocol = row["profile_id"], row["protocol"]
+        fingerprint, state = row["fingerprint"], row["state"]
+        treatment, proven, confidence = row["treatment_variant"], row["protocol_proven"], row["confidence"]
+        if (isinstance(profile, bool) or not isinstance(profile, int) or profile not in _BROWSER_PROTOCOLS
+                or not isinstance(protocol, str) or protocol != _BROWSER_PROTOCOLS[profile] or not isinstance(fingerprint, str)
+                or not re.fullmatch(r"sha256:[a-f0-9]{64}", fingerprint)
+                or not isinstance(state, str) or state not in _BROWSER_STATES
+                or not isinstance(treatment, str) or treatment not in _BROWSER_TREATMENTS
+                or not isinstance(proven, bool) or confidence not in ("low", "medium", "high")):
+            raise ValueError("invalid browser outcome")
+        if (protocol == "quic" and treatment != "standard"
+                or protocol != "googlevideo-tcp" and treatment != "standard"):
+            raise ValueError("treatment does not match browser protocol")
+        if state == "CONFIRMED_SUCCESS" and not proven:
+            raise ValueError("browser success requires protocol proof")
+        if protocol == "quic" and state == "CONFIRMED_SUCCESS" and confidence != "high":
+            raise ValueError("QUIC success requires high confidence")
+        dim = f"{phash}|{profile}|{protocol}|{fingerprint[7:]}|{treatment}|{state}|{int(proven)}|{confidence}"
+        if dim in seen:
+            raise ValueError("duplicate browser result dimension")
+        seen.add(dim)
+        rows.append({"dimension": dim, "state": state})
+    source = hmac.new(secret.encode("utf-8"), source_digest.encode("ascii"), hashlib.sha256).hexdigest()
+    return {"request_id": request_id, "request_hash": hashlib.sha256(_json_bytes(payload)).hexdigest(),
+            "source": source, "provider_hash": phash, "day": day, "rows": rows}
+
+
+_BROWSER_INGEST_SCRIPT = r"""
+-- adaptive-browser-flow-ingest
+if redis.call('GET', KEYS[1]) then
+  if redis.call('GET', KEYS[1]) == ARGV[1] then return 0 else return -2 end
+end
+local count = tonumber(ARGV[2])
+local maxdims = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+local maxsource = tonumber(ARGV[5])
+local newdims = {}
+local accepted = {}
+local dimcount = redis.call('SCARD', KEYS[3])
+for i = 1, count do
+  local dimension = ARGV[5 + i]
+  if redis.call('SISMEMBER', KEYS[2], dimension) == 0 then
+    accepted[i] = true
+    if redis.call('SISMEMBER', KEYS[3], dimension) == 0 and not newdims[dimension] then
+      newdims[dimension] = true
+      dimcount = dimcount + 1
+    end
+  end
+end
+if redis.call('SCARD', KEYS[2]) + (function() local n=0; for i=1,count do if accepted[i] then n=n+1 end end; return n end)() > maxsource then return -3 end
+if dimcount > maxdims then return -1 end
+local accepted_count = 0
+for i = 1, count do
+  if accepted[i] then
+    local dimension = ARGV[5 + i]
+    local state = ARGV[5 + count + i]
+    redis.call('SADD', KEYS[2], dimension)
+    redis.call('SADD', KEYS[3], dimension)
+    redis.call('HINCRBY', KEYS[3 + i], state, 1)
+    redis.call('PFADD', KEYS[3 + count + i], ARGV[5 + count * 2 + i])
+    redis.call('EXPIRE', KEYS[3 + i], ttl)
+    redis.call('EXPIRE', KEYS[3 + count + i], ttl)
+    accepted_count = accepted_count + 1
+  end
+end
+redis.call('EXPIRE', KEYS[2], 172800)
+redis.call('EXPIRE', KEYS[3], ttl)
+redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[6 + count * 3]))
+return accepted_count
+"""
+
+
+def ingest_browser_batch(rdb, payload, secret, aliases=None, now=None, max_dimensions=MAX_DIMENSIONS,
+                         source_digest=None):
+    """Store browser-flow metrics separately; never feed them into probe rankings."""
+    batch = validate_browser_batch(payload, secret, aliases, now, source_digest)
+    max_dimensions = max(1, min(int(max_dimensions), MAX_DIMENSIONS))
+    day, count = batch["day"], len(batch["rows"])
+    req_key = f"z4r:adaptive:v2:browser:req:{batch['source']}:{batch['request_id']}"
+    source_key = f"z4r:adaptive:v2:browser:source:{batch['source']}:{day}"
+    dimset_key = f"z4r:adaptive:v2:browser:dimensions:{day}"
+    keys = [req_key, source_key, dimset_key]
+    for row in batch["rows"]:
+        keys.append(f"z4r:adaptive:v2:browser:agg:{day}:{row['dimension']}")
+    for row in batch["rows"]:
+        keys.append(f"z4r:adaptive:v2:browser:sources:{day}:{row['dimension']}")
+    args = [batch["request_hash"], str(count), str(max_dimensions), str(AGGREGATE_TTL),
+            str(MAX_BROWSER_SOURCE_DAILY)]
+    args.extend(row["dimension"] for row in batch["rows"])
+    args.extend(row["state"] for row in batch["rows"])
+    args.extend(batch["source"] for row in batch["rows"])
+    args.append(str(REQUEST_TTL))
+    result = int(rdb.eval(_BROWSER_INGEST_SCRIPT, len(keys), *keys, *args))
+    if result == -1:
+        raise ValueError("browser evidence dimension budget is full")
+    if result == -2:
+        raise ValueError("request id was reused with a different payload")
+    if result == -3:
+        raise ValueError("browser source daily contribution budget is full")
+    return result
 
 
 _INGEST_SCRIPT = r"""

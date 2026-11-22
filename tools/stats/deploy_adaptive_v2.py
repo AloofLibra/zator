@@ -43,6 +43,42 @@ GET_ROUTE = '''        if parsed.path in ("/adaptive-v2/rankings", "/adaptive-v2
                 self.send_json(200, result)
             return
 '''
+POST_BROWSER_FLOW_ROUTE = '''        parsed = urlparse(self.path)
+        if parsed.path == "/adaptive-v2/browser-flow":
+            expected = os.environ.get("Z4R_ADAPTIVE_V2_INGEST_TOKEN", "")
+            auth = self.headers.get("Authorization", "")
+            supplied = auth[7:] if auth.startswith("Bearer ") else ""
+            try:
+                length = int(self.headers.get("content-length", "0"))
+            except ValueError:
+                length = 0
+            if not expected:
+                self.send_json(503, {"ok": False, "error": "adaptive ingestion unavailable"})
+                return
+            if not supplied:
+                self.send_json(403, {"ok": False, "error": "forbidden"})
+                return
+            if length < 1 or length > 32768:
+                self.send_json(413, {"ok": False, "error": "invalid or oversized batch"})
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                source = authenticate_adaptive_client(rdb, supplied, expected)
+                if source is None:
+                    self.send_json(403, {"ok": False, "error": "forbidden"})
+                    return
+                accepted = ingest_browser_flow_batch(rdb, payload, expected, aliases=adaptive_aliases(), source_digest=source)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                message = str(exc)
+                status = 429 if "budget" in message else (409 if "request id" in message else 400)
+                self.send_json(status, {"ok": False, "error": "invalid browser evidence batch"})
+                return
+            except Exception:
+                self.send_json(503, {"ok": False, "error": "browser evidence ingestion unavailable"})
+                return
+            self.send_json(200, {"ok": True, "accepted": accepted, "source": "browser_flow"})
+            return
+'''
 POST_ROUTE = '''        parsed = urlparse(self.path)
         if parsed.path == "/adaptive-v2/results":
             expected = os.environ.get("Z4R_ADAPTIVE_V2_INGEST_TOKEN", "")
@@ -96,11 +132,12 @@ def patch_server(server):
         names = set(adaptive_import.group(1).split(", "))
         names.update(("authenticate_client_token as authenticate_adaptive_client", "get_rankings as get_adaptive_rankings",
                       "ingest_batch as ingest_adaptive_batch", "load_aliases",
+                      "ingest_browser_batch as ingest_browser_flow_batch",
                       "render_rankings_tsv as render_adaptive_rankings_tsv"))
         server = server[:adaptive_import.start()] + "from adaptive_results import " + ", ".join(sorted(names)) + server[adaptive_import.end():]
     else:
         server, count = re.subn(r"(?m)^(import redis\n)",
-            r"\1from adaptive_results import authenticate_client_token as authenticate_adaptive_client, get_rankings as get_adaptive_rankings, ingest_batch as ingest_adaptive_batch, load_aliases, render_rankings_tsv as render_adaptive_rankings_tsv\n",
+            r"\1from adaptive_results import authenticate_client_token as authenticate_adaptive_client, get_rankings as get_adaptive_rankings, ingest_batch as ingest_adaptive_batch, ingest_browser_batch as ingest_browser_flow_batch, load_aliases, render_rankings_tsv as render_adaptive_rankings_tsv\n",
             server, count=1)
         if count != 1:
             raise RuntimeError("cannot find redis import in stats server")
@@ -131,6 +168,11 @@ def adaptive_aliases():
         if server.count(anchor) != 1:
             raise RuntimeError("cannot find unique GET insertion point")
         server = server.replace(anchor, anchor + GET_ROUTE, 1)
+    if 'parsed.path == "/adaptive-v2/browser-flow"' not in server:
+        anchor = "    def do_POST(self):\n"
+        if server.count(anchor) != 1:
+            raise RuntimeError("cannot find unique POST insertion point")
+        server = server.replace(anchor, anchor + POST_BROWSER_FLOW_ROUTE, 1)
     if 'parsed.path == "/adaptive-v2/results"' not in server:
         anchor = "    def do_POST(self):\n"
         if server.count(anchor) != 1:
@@ -156,6 +198,12 @@ def patch_nginx(config):
 }
 
 '''
+    browser_flow = '''location = /z4r/adaptive-v2/browser-flow {
+    client_max_body_size 32k;
+    proxy_pass http://127.0.0.1:17683/adaptive-v2/browser-flow;
+}
+
+'''
     if "/z4r/adaptive-v2/rankings" not in config:
         anchor = "location = /z4r/recommendations.tsv {"
         if config.count(anchor) != 1:
@@ -171,6 +219,11 @@ def patch_nginx(config):
         if config.count(anchor) != 1:
             raise RuntimeError("cannot find recommendations nginx route")
         config = config.replace(anchor, ingest + anchor, 1)
+    if "/z4r/adaptive-v2/browser-flow" not in config:
+        anchor = "location = /z4r/recommendations.tsv {"
+        if config.count(anchor) != 1:
+            raise RuntimeError("cannot find recommendations nginx route")
+        config = config.replace(anchor, browser_flow + anchor, 1)
     return config
 
 

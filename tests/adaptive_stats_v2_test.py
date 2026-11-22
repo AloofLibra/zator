@@ -63,6 +63,31 @@ class FakeRedis:
     def eval(self, script, key_count, *args):
         keys = args[:key_count]
         argv = args[key_count:]
+        if "adaptive-browser-flow-ingest" in script:
+            request_key, source_key, dimension_set = keys[:3]
+            request_hash, count, maxdims, ttl, max_source = argv[:5]
+            count, maxdims = int(count), int(maxdims)
+            if request_key in self.strings:
+                return 0 if self.strings[request_key] == request_hash else -2
+            dimensions = argv[5:5 + count]
+            states = argv[5 + count:5 + 2 * count]
+            sources = argv[5 + 2 * count:5 + 3 * count]
+            accepted = [i for i, dim in enumerate(dimensions) if dim not in self.sets.get(source_key, set())]
+            if len(self.sets.get(source_key, set())) + len(accepted) > int(max_source):
+                return -3
+            newdims = set(dimensions[i] for i in accepted) - self.sets.get(dimension_set, set())
+            if len(self.sets.get(dimension_set, set())) + len(newdims) > maxdims:
+                return -1
+            self.sets.setdefault(source_key, set()).update(dimensions[i] for i in accepted)
+            self.sets.setdefault(dimension_set, set()).update(dimensions[i] for i in accepted)
+            agg_keys, hll_keys = keys[3:3 + count], keys[3 + count:3 + count * 2]
+            for i in accepted:
+                metric = self.hashes.setdefault(agg_keys[i], {})
+                metric[states[i]] = metric.get(states[i], 0) + 1
+                self.hlls.setdefault(hll_keys[i], set()).add(sources[i])
+            self.strings[request_key] = request_hash
+            assert int(ttl) > 0 and int(argv[5 + count * 3]) > 0
+            return len(accepted)
         if "adaptive-token-issue" in script:
             registry = self.hashes.setdefault(keys[0], {})
             if argv[0] in registry:
@@ -164,8 +189,41 @@ def batch(source, request, verdicts=("SUCCESS",), fingerprints=(FP1,), observed=
             "client_profile": adaptive.RECIPES[recipe][0], "results": rows}
 
 
+def browser_batch(request="e" * 32, results=None):
+    if results is None:
+        results = [{"profile_id": 5, "protocol": "quic", "fingerprint": FP1,
+                    "state": "PROTOCOL_UNKNOWN", "treatment_variant": "standard",
+                    "protocol_proven": False, "confidence": "low"}]
+    return {"schema_version": 1, "source": "browser_flow", "client_profile": "chromium-v1",
+            "request_id": request, "provider": "Example ISP", "observed_at": NOW, "results": results}
+
+
 valid = batch(1, 1)
 assert len(adaptive.validate_batch(valid, SECRET, now=NOW)["rows"]) == 1
+browser_source = "d" * 64
+browser = browser_batch()
+browser_validated = adaptive.validate_browser_batch(browser, SECRET, now=NOW, source_digest=browser_source)
+assert browser_validated["rows"][0]["state"] == "PROTOCOL_UNKNOWN"
+browser_db = FakeRedis()
+assert adaptive.ingest_browser_batch(browser_db, browser, SECRET, now=NOW, source_digest=browser_source) == 1
+assert adaptive.ingest_browser_batch(browser_db, browser, SECRET, now=NOW, source_digest=browser_source) == 0
+assert not browser_db.sets.get("z4r:adaptive:v2:dimensions:active"), "browser feedback leaked into probe rankings"
+browser_conflict = browser_batch(results=[{"profile_id": 5, "protocol": "quic", "fingerprint": FP1,
+    "state": "CONFIRMED_SUCCESS", "treatment_variant": "standard", "protocol_proven": False, "confidence": "high"}])
+try:
+    adaptive.validate_browser_batch(browser_conflict, SECRET, now=NOW, source_digest=browser_source)
+except ValueError:
+    pass
+else:
+    raise AssertionError("QUIC browser success without H3 proof was accepted")
+browser_pii = browser_batch()
+browser_pii["results"][0]["hostname"] = "private.example"
+try:
+    adaptive.validate_browser_batch(browser_pii, SECRET, now=NOW, source_digest=browser_source)
+except ValueError:
+    pass
+else:
+    raise AssertionError("browser host telemetry was accepted")
 for recipe, profile, protocol, treatment in (
     ("googlevideo-tcp-media-v1", 2, "tcp-media", "gv_tcp_plain"),
     ("googlevideo-tcp-media-v1", 2, "tcp-media", "gv_tcp_ramp"),

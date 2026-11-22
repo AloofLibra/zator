@@ -43,11 +43,13 @@ assert 'get_rankings as get_adaptive_rankings' in patched
 assert 'authenticate_client_token as authenticate_adaptive_client' in patched
 assert '"/adaptive-v2/rankings.tsv"' in patched
 assert 'parsed.path == "/adaptive-v2/results"' in patched
+assert 'parsed.path == "/adaptive-v2/browser-flow"' in patched
 assert 'source_digest=source' in patched
 assert deploy.patch_server(patched) == patched
 nginx = 'location = /z4r/recommendations.tsv {\n    proxy_pass http://127.0.0.1:17683/recommendations.tsv$is_args$args;\n}\n'
 patched_nginx = deploy.patch_nginx(nginx)
-assert '/z4r/adaptive-v2/rankings' in patched_nginx and '/z4r/adaptive-v2/rankings.tsv' in patched_nginx and '/z4r/adaptive-v2/results' in patched_nginx
+assert ('/z4r/adaptive-v2/rankings' in patched_nginx and '/z4r/adaptive-v2/rankings.tsv' in patched_nginx
+        and '/z4r/adaptive-v2/results' in patched_nginx and '/z4r/adaptive-v2/browser-flow' in patched_nginx)
 assert deploy.patch_nginx(patched_nginx) == patched_nginx
 
 # Exercise the patched handler over a real loopback HTTP socket. The narrow
@@ -139,6 +141,19 @@ try:
     conflict["provider"] = "Other ISP"
     assert request("/adaptive-v2/results", conflict, client_token)[0] == 409
     assert request("/adaptive-v2/results", b"x" * 32769, client_token)[0] == 413
+    browser_payload = {"schema_version": 1, "source": "browser_flow", "client_profile": "chromium-v1",
+                       "request_id": "c" * 32, "provider": "Example ISP", "observed_at": time.time_ns() // 1_000_000_000,
+                       "results": [{"profile_id": 5, "protocol": "quic", "fingerprint": "sha256:" + "d" * 64,
+                                    "state": "PROTOCOL_UNKNOWN", "treatment_variant": "standard",
+                                    "protocol_proven": False, "confidence": "low"}]}
+    assert request("/adaptive-v2/browser-flow", browser_payload)[0] == 403
+    status, _, body = request("/adaptive-v2/browser-flow", browser_payload, client_token)
+    assert status == 200 and json.loads(body) == {"ok": True, "accepted": 1, "source": "browser_flow"}
+    status, _, body = request("/adaptive-v2/browser-flow", browser_payload, client_token)
+    assert status == 200 and json.loads(body)["accepted"] == 0
+    browser_pii = dict(browser_payload)
+    browser_pii["results"] = [dict(browser_payload["results"][0], hostname="private.example")]
+    assert request("/adaptive-v2/browser-flow", browser_pii, client_token)[0] == 400
 finally:
     server.shutdown()
     server.server_close()
@@ -159,6 +174,7 @@ with tempfile.TemporaryDirectory(prefix="adaptive-v2-deploy-") as directory:
     assert len(backups) == 8
     installed = (root / "opt/z4r-stats/server_redis.py").read_text(encoding="utf-8")
     assert 'parsed.path == "/adaptive-v2/results"' in installed
+    assert 'parsed.path == "/adaptive-v2/browser-flow"' in installed
     assert (root / "etc/systemd/system/z4r-adaptive-v2-refresh.timer").is_file()
     assert (root / "opt/z4r-stats/adaptive_client_token.py").is_file()
 print("adaptive stats V2 deployment and HTTP smoke: ok")
