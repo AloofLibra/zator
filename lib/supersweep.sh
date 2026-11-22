@@ -1223,6 +1223,17 @@ supersweep_sanitize_domains() {
     printf '%s\n' "$out"
 }
 
+# Пин SNI-пула ИЗОЛИРОВАННОГО прогона: свой файл в probe/, глобальный
+# sni_pool.pin рабочего nfqws2 не трогаем — обычный трафик крутит пул как
+# раньше. Пробный nfqws2 читает этот пин своей копией sni-pool.lua
+# (supersweep_probe_config переписывает пути). PIN_AGE=900 с — поэтому
+# drain-цикл прогона обновляет его наравне с глобальным пином обычного.
+_supersweep_sni_pin_probe() {
+    local dir="${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}/probe"
+    [ -d "$dir" ] || return 0
+    printf '%s\n' "$(date +%s)" > "$dir/sni_pool.pin" 2>/dev/null || true
+}
+
 # Общая оценка меню/прогона: сумма фаз (проба ≈6 с + пауза) и межфазовых пауз.
 # РКН — по доменам; settle входит в паузу. GREEN_PAUSE не учитываем (худший случай).
 # QUIC-фаза: $9 = max профиля 5 (0 = фаза выключена), $10 = повторы круга,
@@ -1246,7 +1257,9 @@ _supersweep_estimate_total() {
 _supersweep_cleanup() {
     # Пин SNI-пула прогонa снимаем первым и безусловно: дальше возможен ранний
     # return (не убранные правила firewall), ротация не должна зависнуть.
+    # PR83-REVIEW(3/6) [ответ AloofLibra, supersweep.sh:1290]: изолированный прогон глобальный пин больше не ставит (морожил ротацию SNI рабочего nfqws2, хотя пробник пул не грузил); глобальный unpin остаётся страховкой от более ранних прогонов, свой пин пробника снимаем отдельно. Удалить после проверки.
     type sni_pool_unpin >/dev/null 2>&1 && sni_pool_unpin
+    rm -f "${Z2R_SUPERSWEEP_DIR:-/tmp/z2r-supersweep}/probe/sni_pool.pin" 2>/dev/null || true
     if [ -n "${Z2R_SUPERSWEEP_WORKER_PID:-}" ]; then
         touch "$Z2R_SUPERSWEEP_DIR/cancel"
         kill "$Z2R_SUPERSWEEP_WORKER_PID" 2>/dev/null || true
@@ -1287,7 +1300,12 @@ _supersweep_run() {
     printf '%s\n' "${BASHPID:-$$}" > "$Z2R_SUPERSWEEP_DIR.lock/pid" || return 1
     # Пин SNI-пула на время суперавтопрогона: round-robin раздал бы разным
     # стратегиям разные SNI; снимает _supersweep_cleanup (EXIT-ловушка).
-    type sni_pool_pin >/dev/null 2>&1 && sni_pool_pin
+    # PR83-REVIEW(3/6) [ответ AloofLibra, supersweep.sh:1290]: изолированный фон глобальный пин НЕ ставит — пул грузит и пинит только пробный экземпляр (свой probe/sni_pool.pin), рабочий nfqws2 ротирует как обычно. Удалить после проверки.
+    if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+        _supersweep_sni_pin_probe
+    else
+        type sni_pool_pin >/dev/null 2>&1 && sni_pool_pin
+    fi
     shift 5
     local domains="$*"
     local dir="$Z2R_SUPERSWEEP_DIR"
@@ -1522,8 +1540,14 @@ _supersweep_run() {
                 last_alive="$alive_names"
                 last_st=$SECONDS
                 # заодно обновляем пин SNI-пула прогонa (rkn-фаза идёт часами,
-                # одиночный пин истёк бы по TTL)
-                type sni_pool_pin >/dev/null 2>&1 && sni_pool_pin
+                # одиночный пин истёк бы по TTL); изолированный прогон
+                # обновляет только свой пробный пин — глобальный не трогаем
+                # PR83-REVIEW(3/6): см. комментарий у старта прогона. Удалить после проверки.
+                if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+                    _supersweep_sni_pin_probe
+                else
+                    type sni_pool_pin >/dev/null 2>&1 && sni_pool_pin
+                fi
             fi
             sleep "$poll"
         done
