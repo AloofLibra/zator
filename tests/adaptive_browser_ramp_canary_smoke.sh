@@ -25,6 +25,19 @@ done
 id_list="$(IFS=,; printf '%s' "${ids[*]}")"
 proof="$(adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now")"
 [[ "$proof" =~ ^[a-f0-9]{64}$ ]] || { echo 'healthy ordered Ramp/Plain/Plain/Ramp evidence was rejected' >&2; exit 1; }
+expires=$((now + 600))
+adaptive_browser_ramp_canary_lease_apply "$host" "$ip" "$scope" "$proof" "$expires"
+lease="${Z2R_ADAPTIVE_DIR}/ramp-exempt.tsv"
+[[ "$(wc -l < "$lease")" -eq 1 && "$(stat -c '%a' "$lease")" = 644 ]] ||
+  { echo 'short Ramp canary lease was not written for the Lua worker' >&2; exit 1; }
+if adaptive_browser_ramp_canary_lease_apply "$host" "$ip" "$scope" "$(printf '%064d' 9)" "$expires"; then
+  echo 'Ramp canary replaced an independently owned exact exemption' >&2; exit 1
+fi
+if adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$scope" "$(printf '%064d' 9)"; then
+  echo 'stale canary proof revoked a newer exact exemption' >&2; exit 1
+fi
+adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$scope" "$proof"
+[[ ! -s "$lease" ]] || { echo 'matching canary proof did not revoke its own lease' >&2; exit 1; }
 
 evidence="$(adaptive_browser_state_dir)/media-quality/evidence.tsv"
 sed -i $'3s/\\thealthy\\t/\\tdegraded\\t/' "$evidence"

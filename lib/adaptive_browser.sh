@@ -923,3 +923,85 @@ adaptive_browser_ramp_canary_validate() {
   (( first_at >= now - 1200 && last_at <= now + 5 && last_at - first_at <= 1200 )) || return 1
   printf '%s' "$ids|$host|$ip|$scope|$first_strategy|$first_fp" | sha256sum | awk '{print $1}'
 }
+
+adaptive_browser_ramp_canary_lease_apply() {
+  [[ $# = 5 ]] || return 2
+  local host="$1" ip="$2" scope="$3" proof="$4" expires="$5"
+  local root="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file="${Z2R_ADAPTIVE_RAMP_EXEMPT_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/ramp-exempt.tsv}"
+  local lock="${file}.lock" now tmp row ver old_host old_ip old_scope old_expires old_proof extra count=0
+  [[ "$(adaptive_browser_host_valid "$host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "$host" &&
+     "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+     ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+     "$proof" =~ ^[a-f0-9]{64}$ && "$expires" =~ ^[1-9][0-9]{9}$ ]] || return 2
+  if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 2; fi
+  awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || return 2
+  now="$(date +%s)" || return 1
+  (( expires > now && expires <= now + 900 )) || return 2
+  [[ ! -L "$root" && ! -L "$file" && ! -L "$lock" ]] || return 1
+  mkdir -p "$root" || return 1
+  (umask 077; mkdir "$lock") 2>/dev/null || return 4
+  tmp="$(mktemp "${file}.tmp.XXXXXX")" || { rmdir "$lock"; return 1; }
+  if [[ -r "$file" ]]; then
+    [[ $(wc -c < "$file") -le 16384 ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    while IFS= read -r row || [[ -n "$row" ]]; do
+      IFS=$'\t' read -r ver old_host old_ip old_scope old_expires old_proof extra <<< "$row"
+      [[ "$ver" = 1 && "$old_host" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ &&
+         "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+         ( "$old_scope" = default || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+         "$old_expires" =~ ^[1-9][0-9]{9}$ && "$old_proof" =~ ^[a-f0-9]{64}$ && -z "${extra:-}" ]] || {
+           rm -f "$tmp"; rmdir "$lock"; return 1;
+         }
+      (( old_expires > now )) || continue
+      if [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_scope" = "$scope" ]]; then
+        rm -f "$tmp"; rmdir "$lock"
+        [[ "$old_proof" = "$proof" ]] && return 3 || return 4
+      fi
+      count=$((count + 1)); (( count < 128 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+      printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    done < "$file"
+  fi
+  printf '1\t%s\t%s\t%s\t%s\t%s\n' "$host" "$ip" "$scope" "$expires" "$proof" >> "$tmp" || {
+    rm -f "$tmp"; rmdir "$lock"; return 1;
+  }
+  chmod 644 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock" || return 1
+}
+
+adaptive_browser_ramp_canary_lease_revoke() {
+  [[ $# = 4 ]] || return 2
+  local host="$1" ip="$2" scope="$3" proof="$4"
+  local root="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file="${Z2R_ADAPTIVE_RAMP_EXEMPT_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/ramp-exempt.tsv}"
+  local lock="${file}.lock" now tmp row ver old_host old_ip old_scope old_expires old_proof extra count=0 found=0
+  [[ "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+     ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+     "$proof" =~ ^[a-f0-9]{64}$ ]] || return 2
+  if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 2; fi
+  awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || return 2
+  [[ ! -L "$root" && ! -L "$file" && ! -L "$lock" && -f "$file" && -r "$file" ]] || return 1
+  now="$(date +%s)" || return 1
+  (umask 077; mkdir "$lock") 2>/dev/null || return 4
+  tmp="$(mktemp "${file}.tmp.XXXXXX")" || { rmdir "$lock"; return 1; }
+  [[ $(wc -c < "$file") -le 16384 ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    IFS=$'\t' read -r ver old_host old_ip old_scope old_expires old_proof extra <<< "$row"
+    [[ "$ver" = 1 && "$old_host" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ &&
+       "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+       ( "$old_scope" = default || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+       "$old_expires" =~ ^[1-9][0-9]{9}$ && "$old_proof" =~ ^[a-f0-9]{64}$ && -z "${extra:-}" ]] || {
+         rm -f "$tmp"; rmdir "$lock"; return 1;
+       }
+    if [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_scope" = "$scope" ]]; then
+      [[ "$old_proof" = "$proof" ]] || { rm -f "$tmp"; rmdir "$lock"; return 4; }
+      found=1
+      continue
+    fi
+    (( old_expires > now )) || continue
+    count=$((count + 1)); (( count < 128 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  done < "$file"
+  (( found )) || { rm -f "$tmp"; rmdir "$lock"; return 3; }
+  chmod 644 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock" || return 1
+}
