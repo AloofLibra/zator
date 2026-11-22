@@ -378,7 +378,7 @@ if [ "$action" = ramp-pool-on ]; then
 fi
 if [ "$action" = ramp-pool-off ]; then
   adaptive_ramp_pool_restore || exit 1
-  echo 'Ramp-first consent disabled.'
+  echo 'Ramp-first consent disabled. Restart zapret2 to apply any restored Ramp config.'
   exit 0
 fi
 if [ "$action" = pause ]; then

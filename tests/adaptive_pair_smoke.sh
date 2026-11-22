@@ -115,9 +115,10 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "
    "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/ramp-pool")" = 600 ]] || {
   echo 'explicit Ramp-first did not enable the configured pool with private manual_unverified state' >&2; exit 1;
 }
-PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-off >/dev/null
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-off > "$tmp/ramp-off.out"
 [[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=0 &&
-   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool" ]] || {
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool" &&
+   "$(cat "$tmp/ramp-off.out")" == *'Restart zapret2 to apply any restored Ramp config'* ]] || {
   echo 'Ramp-first opt-out did not restore the preexisting disabled state' >&2; exit 1;
 }
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null
