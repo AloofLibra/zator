@@ -179,6 +179,9 @@ grep -Fq '"resources":{' <<< "$adaptive_status" || fail 'adaptive router capacit
 grep -Fq '"agent_online":true' <<< "$adaptive_status" || fail 'adaptive status did not report a recent Windows agent heartbeat'
 assert_not_contains "$adaptive_status" 'sha256:' 'adaptive GET exposed internal fingerprints'
 assert_not_contains "$adaptive_status" paired-token 'adaptive GET exposed bearer token'
+linux_adaptive_status="$(Z2R_ADAPTIVE_NDM_ROOT="$TMP_DIR/no-ndm" Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"ramp_audit_supported":true' <<< "$linux_adaptive_status" || fail 'adaptive panel disabled Ramp auditing on Linux/VPS'
+grep -Fq '"ramp_exemptions_supported":true' <<< "$linux_adaptive_status" || fail 'adaptive panel disabled automatic Ramp exemptions outside the Keenetic-specific gate'
 mkdir -p "$TMP_DIR/ndm"
 keenetic_adaptive_status="$(Z2R_ADAPTIVE_NDM_ROOT="$TMP_DIR/ndm" Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -Fq '"ramp_audit_supported":true' <<< "$keenetic_adaptive_status" || fail 'adaptive panel disabled Ramp auditing on Keenetic'
