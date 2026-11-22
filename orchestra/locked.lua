@@ -1672,6 +1672,21 @@ local function adaptive_browser_capture_syn(desync, profile, scope)
   return true
 end
 
+local function adaptive_browser_mark_flow_ambiguous(path)
+  local existing = io.open(path, "r")
+  if existing then
+    local first = existing:read("*l")
+    local second = existing:read("*l")
+    existing:close()
+    if first == "AMBIGUOUS" and second == nil then return true end
+  end
+  local f = io.open(path, "w")
+  if not f then return false end
+  local ok = f:write("AMBIGUOUS\n")
+  f:close()
+  return ok ~= nil
+end
+
 local function adaptive_browser_capture_quic_initial(desync, host, profile, scope)
   if ADAPTIVE_MODE ~= "AGENT_BETA" or tostring(profile) ~= "5" or not adaptive_quic_host_allowed(host)
     or type(desync) ~= "table" or desync.outgoing ~= true or desync.l7payload ~= "quic_initial"
@@ -1683,9 +1698,10 @@ local function adaptive_browser_capture_quic_initial(desync, host, profile, scop
     if state.adaptive_browser_syn.proto == "quic" then
       state.adaptive_browser_syn.quic_repeated = true
       local id, generation = state.adaptive_browser_trial_id, state.adaptive_browser_trial_generation
-      if type(id) == "string" and id:match("^[0-9a-f]+$") and #id == 32 and tonumber(generation) then
-        local f = io.open(ADAPTIVE_BROWSER_FLOW_DIR .. "/" .. id .. "." .. tostring(generation) .. ".tsv", "a")
-        if f then f:write("AMBIGUOUS\n"); f:close() end
+      if not state.adaptive_browser_flow_ambiguous_recorded and type(id) == "string"
+        and id:match("^[0-9a-f]+$") and #id == 32 and tonumber(generation) then
+        state.adaptive_browser_flow_ambiguous_recorded = adaptive_browser_mark_flow_ambiguous(
+          ADAPTIVE_BROWSER_FLOW_DIR .. "/" .. id .. "." .. tostring(generation) .. ".tsv")
       end
     end
     return false, "already-seen"
@@ -1713,11 +1729,11 @@ local function adaptive_browser_record_flow(desync, trial, host, ip, profile, pr
   local path = ADAPTIVE_BROWSER_FLOW_DIR .. "/" .. trial.id .. "." .. tostring(trial.generation) .. ".tsv"
   local existing = io.open(path, "r")
   if existing then
-    local has_proof = existing:read("*l") ~= nil
+    local first = existing:read("*l")
+    local second = existing:read("*l")
     existing:close()
-    if has_proof then
-      local ambiguous = io.open(path, "a")
-      if ambiguous then ambiguous:write("AMBIGUOUS\n"); ambiguous:close() end
+    if first ~= nil then
+      if first ~= "AMBIGUOUS" or second ~= nil then adaptive_browser_mark_flow_ambiguous(path) end
       return false
     end
   end

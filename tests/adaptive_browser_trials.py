@@ -64,6 +64,14 @@ local flow_line = flow_file:read("*l")
 flow_file:close()
 assert(flow_line and flow_line:match("^1\t" .. id .. "\t1\t" .. client .. "\tmark:7\tcdn%.example%.org\t8%.8%.8%.8\t1\ttls\t2\t" .. fingerprint .. "\t1000\t1000\tnot_applicable\tnot_applicable$"),
   "flow proof fields do not bind the new SYN and selected strategy")
+local conflict_track = {lua_state={adaptive_browser_syn={ip="8.8.8.8",profile="1",proto="tcp",scope="mark:7",seen=1000}}}
+for i = 1, 100 do
+  assert(not locked_browser_record_flow_for_tests({track=conflict_track}, trial_obj, "cdn.example.org", "8.8.8.8", "1", "tls", "mark:7", 2),
+    "a second flow was accepted for a single attempt")
+end
+flow_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".1.tsv", "r"))
+local ambiguous_flow = flow_file:read("*a"); flow_file:close()
+assert(ambiguous_flow == "AMBIGUOUS\n", "repeated competing TCP flows must keep a single bounded ambiguity marker")
 local no_syn = {track={}}
 assert(not locked_browser_record_flow_for_tests(no_syn, trial_obj, "cdn.example.org", "8.8.8.8", "1", "tls", "mark:7", 2),
   "strategy selection without a SYN was accepted")
@@ -136,10 +144,13 @@ qtrack.lua_state.adaptive_browser_trial_generation = 2
 local qagain = {outgoing=true, l7payload="quic_initial", hostname=qhost, track=qtrack,
   dis={dst="8.8.8.8", udp={th_dport=443}}}
 assert(not locked_browser_capture_quic_for_tests(qagain, qhost, "5", "mark:7"), "repeat QUIC Initial was treated as a new flow")
+for i = 1, 100 do
+  assert(not locked_browser_capture_quic_for_tests(qagain, qhost, "5", "mark:7"), "repeat QUIC Initial was treated as a new flow")
+end
 local qambiguous = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".2.tsv", "r"))
 local qcontents = qambiguous:read("*a")
 qambiguous:close()
-assert(qcontents:match("AMBIGUOUS"), "repeated QUIC Initial did not invalidate its proof")
+assert(qcontents == "AMBIGUOUS\n", "repeated QUIC Initial must invalidate its proof with one bounded marker")
 local nonvideo = qtrial:gsub(qhost, "example.org")
 locked_load_browser_trials_for_tests({nonvideo}, now)
 assert(locked_browser_trial_for_tuple("example.org", "8.8.8.8", 5, "quic", "mark:7", now) == nil,
