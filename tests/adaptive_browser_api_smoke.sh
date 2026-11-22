@@ -90,9 +90,11 @@ grep -q 'browser_hello' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 grep -q 'browser_cancel_attempt' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 ! grep -q 'TOKEN_FILE=.*adaptive/token$' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 
-cat > "$ZAPRET2_ROOT/config" <<'EOF'
+ws_user="$(id -un)"
+cat > "$ZAPRET2_ROOT/config" <<EOF
 CLIENT_SCOPE_ENABLE=1
 NFQWS2_ENABLE=1
+WS_USER=$ws_user
 FWTYPE=nft
 DESYNC_MARK=0x40000000
 NFQWS2_OPT="
@@ -168,4 +170,23 @@ result_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_f
 result_response="$(printf '%s' "$result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#result_body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$result_response"
+
+# A failed post-trial main-frame request chooses exactly the next candidate,
+# bounded by the same per-host event budget and a fresh production flow.
+attempt_failed=ffffffffffffffffffffffffffffffff
+failed_generation=9
+failed_now="$(date +%s)"
+failed_expires=$((failed_now + 30))
+adaptive_browser_attempt_write "$attempt_failed" "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls main_frame_network_failure WAIT_NEW_FLOW "$selected_strategy" "$selected_fingerprint" "$failed_now" "$failed_expires" "$failed_generation"
+adaptive_browser_trial_add "$attempt_failed" "$failed_generation" "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls "$selected_strategy" "$selected_fingerprint" "$failed_now" "$failed_expires"
+printf '1\t%s\t%s\t%s\tmark:7\texample.org\t8.8.8.8\t1\ttls\t%s\t%s\t%s\t%s\n' \
+  "$attempt_failed" "$failed_generation" "$client_id" "$selected_strategy" "$selected_fingerprint" "$failed_now" "$failed_now" > "$flow_dir/$attempt_failed.$failed_generation.tsv"
+rm -f "$tmp/runtime/browser/events/$client_id.tsv"
+failed_result_ms="$(( $(date +%s) * 1000 ))"
+failed_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_failed&browser_event_id=99999999999999999999999999999999&result=network_failure&request_class=main_frame&browser_ip=8.8.8.8&observed_at=$failed_result_ms"
+failed_response="$(printf '%s' "$failed_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#failed_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"NEXT_CANDIDATE"' <<< "$failed_response"
+grep -q '"attempt_id":"[a-f0-9]\{32\}"' <<< "$failed_response"
+grep -q '"strategy":1' <<< "$failed_response"
 echo 'adaptive browser API smoke: OK'

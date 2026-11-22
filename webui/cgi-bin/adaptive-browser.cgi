@@ -58,7 +58,7 @@ client_id="$ADAPTIVE_BROWSER_CLIENT_ID"; scope="$ADAPTIVE_BROWSER_CLIENT_SCOPE"
 browser_start_trial() {
   local target="$1" trigger="$2" client_id="$3" client_ip="$4" scope="$5"
   local host ip profile proto seen nfqws orch_dir now expires generation raw_id id
-  local candidate_dir args_file candidate fingerprint recipe config_value flow_dir flow_user flow_uid flow_gid
+  local candidate_dir args_file candidate fingerprint recipe config_value flow_dir flow_user flow_uid flow_gid flow_owner
   IFS=$'\t' read -r host ip profile proto target_scope seen <<< "$target"
   [[ "$target_scope" = "$scope" && "$client_ip" = "$REMOTE_ADDR" ]] || return 2
   [[ ! -d "${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}" ]] || return 4
@@ -82,7 +82,13 @@ browser_start_trial() {
   [[ "$flow_uid" =~ ^[0-9]+$ && "$flow_gid" =~ ^[0-9]+$ ]] || return 3
   flow_dir="$(adaptive_browser_flow_dir)"
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$flow_dir" ]] || return 1
-  mkdir -p "$flow_dir" && chown "$flow_uid:$flow_gid" "$flow_dir" && chmod 700 "$flow_dir" || return 1
+  mkdir -p "$flow_dir" || return 1
+  flow_owner="$(stat -c %u "$flow_dir" 2>/dev/null)"
+  if [[ "$flow_owner" != "$flow_uid" ]]; then
+    chown "$flow_uid:$flow_gid" "$flow_dir" && chmod 700 "$flow_dir" || return 1
+  elif [[ "$(id -u)" = 0 ]]; then
+    chmod 700 "$flow_dir" || return 1
+  fi
   raw_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   [[ "$raw_id" =~ ^[a-f0-9]{32}$ ]] || return 1
   id="$raw_id"; now="$(date +%s)"; expires=$((now + 45))
@@ -308,6 +314,17 @@ case "${f[action]:-}" in
         ;;
       *) fail '409 Conflict' 'attempt is not waiting for this result' ;;
     esac
+    if [[ "$state" = CONFIRMED_FAILURE ]]; then
+      next_claim="$(adaptive_browser_event_claim "$client_id" "${f[browser_event_id]}" "$host" "$trigger" "$(date +%s)")" || next_claim=unavailable
+      if [[ "$next_claim" = accepted ]]; then
+        next_target="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$(date +%s)")"
+        next_trial_json="$(browser_start_trial "$next_target" "$trigger" "$client_id" "${REMOTE_ADDR:-}" "$attempt_scope")"
+        next_trial_rc=$?
+        if [[ "$next_trial_rc" = 0 ]]; then
+          send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"NEXT_CANDIDATE\",\"next_attempt\":$next_trial_json}"
+        fi
+      fi
+    fi
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\"}"
     ;;
   *) fail '400 Bad Request' 'unknown browser action' ;;
