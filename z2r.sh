@@ -1764,6 +1764,31 @@ install_zapret_reboot() {
  fi
 }
 
+# Обновляет NDM hook только после проверки временного файла. Существующий
+# hook остаётся рабочим, если загрузчик вернул некорректный payload.
+z2r_install_keenetic_ndm_hook() {
+ local dest="${1:-/opt/etc/ndm/netfilter.d/000-zapret2.sh}"
+ local rel="Entware/000-zapret2.sh"
+ local staged="${dest}.stage.$$"
+
+ rm -f "$staged"
+ if ! z2r_download_project_file "$staged" "$rel"; then
+  rm -f "$staged"
+  return 1
+ fi
+ if [ ! -f "$staged" ] || [ -L "$staged" ] || [ ! -s "$staged" ] \
+    || ! sh -n "$staged" >/dev/null 2>&1 \
+    || ! grep -Fq '/opt/zapret2/init.d/sysv/zapret2 restart-fw' "$staged"; then
+  echo "Некорректный NDM hook в payload $rel; текущий файл не заменён." >&2
+  rm -f "$staged"
+  return 1
+ fi
+ if ! chmod +x "$staged" || ! mv -f "$staged" "$dest"; then
+  rm -f "$staged"
+  return 1
+ fi
+}
+
 #Для Entware Keenetic + merlin
 entware_fixes() {
  if [ "$hardware" = "keenetic" ]; then
@@ -1774,8 +1799,7 @@ entware_fixes() {
      && grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh 2>/dev/null; then
     rm -fv /opt/etc/ndm/netfilter.d/000-zapret.sh
   fi
-  z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret2.sh "Entware/000-zapret2.sh" || return 1
-  chmod +x /opt/etc/ndm/netfilter.d/000-zapret2.sh
+  z2r_install_keenetic_ndm_hook || return 1
   echo "Права выданы /opt/etc/ndm/netfilter.d/000-zapret2.sh"
   z2r_download_project_file /opt/etc/init.d/S00fix "Entware/S00fix" || return 1
   chmod +x /opt/etc/init.d/S00fix

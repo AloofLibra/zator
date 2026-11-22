@@ -759,8 +759,18 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
     || fail "сценарий 14e: нет Entware/000-zapret2.sh"
   grep -q 'zapret2 restart-fw' "$REPO_DIR/Entware/000-zapret2.sh" \
     || fail "сценарий 14e: хук не дёргает zapret2 restart-fw"
-  grep -q 'z2r_download_project_file /opt/etc/ndm/netfilter.d/000-zapret2.sh "Entware/000-zapret2.sh"' "$REPO_DIR/z2r.sh" \
-    || fail "сценарий 14e: хук деплоится не под именем 000-zapret2.sh"
+  grep -q '^z2r_install_keenetic_ndm_hook()' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: нет проверяемой установки NDM hook"
+  grep -q 'z2r_download_project_file "\$staged" "\$rel"' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: NDM hook не скачивается во временный файл"
+  grep -q 'sh -n "\$staged"' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: shell-синтаксис NDM hook не проверяется до замены"
+  grep -q 'grep -Fq .*restart-fw.*"\$staged"' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: содержимое NDM hook не проверяется до замены"
+  grep -q 'mv -f "\$staged" "\$dest"' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: проверенный NDM hook не устанавливается атомарно"
+  grep -q 'z2r_install_keenetic_ndm_hook || return 1' "$REPO_DIR/z2r.sh" \
+    || fail "сценарий 14e: entware_fixes продолжает работу при некорректном hook"
   mig="$(grep -c "grep -q 'zapret2' /opt/etc/ndm/netfilter.d/000-zapret.sh" "$REPO_DIR/z2r.sh" || true)"
   [ "$mig" -ge 2 ] \
     || fail "сценарий 14e: миграция старого имени хука должна быть и в entware_fixes, и в remove_zapret"
