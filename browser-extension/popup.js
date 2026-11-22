@@ -28,9 +28,22 @@ async function render() {
   activeEvent = row;
   const attemptActive = row.attempt_id && ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status);
   const autoRetryStarted = attemptActive && (state.autoRetriedAttempts || []).includes(row.attempt_id);
+  const status = ({
+    WAIT_NEW_FLOW: "waiting for a new connection",
+    FLOW_CONFIRMED: "new connection and strategy confirmed",
+    WAIT_BROWSER_RESULT: "waiting for browser result",
+    PROVISIONAL_SUCCESS: "provisional recovery",
+    CONFIRMED_SUCCESS: "recovery confirmed",
+    CONFIRMED_FAILURE: "failure confirmed",
+    UNKNOWN: "outcome unknown; no candidate advanced",
+    NOT_TESTED: "not counted; no confirmed new flow",
+    TARGET_NOT_MANAGED: "target is not managed by Zator",
+    MANUAL_LOCKED: "manual lock prevents a trial",
+    COOLDOWN: "trial cooldown is active"
+  })[row.router_status] || row.router_status;
   latest.textContent = attemptActive
-    ? `${row.hostname} · ${row.router_status}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : " · waiting for a new connection"}`
-    : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${row.router_status}` : ""}`;
+    ? `${row.hostname} · ${status}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : ""}`
+    : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
   cancel.hidden = !attemptActive;
 }

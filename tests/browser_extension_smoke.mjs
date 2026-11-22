@@ -8,7 +8,13 @@ import { dirname, resolve } from 'node:path'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const manifest = JSON.parse(readFileSync(resolve(root, 'browser-extension/manifest.json'), 'utf8'))
+const popup = readFileSync(resolve(root, 'browser-extension/popup.html'), 'utf8')
+const popupScript = readFileSync(resolve(root, 'browser-extension/popup.js'), 'utf8')
 assert.equal(manifest.manifest_version, 3)
+assert.match(popup, /failed main-frame GET may retry once/i)
+assert.doesNotMatch(popup, /No automatic reloads/i)
+assert.match(popupScript, /UNKNOWN: "outcome unknown; no candidate advanced"/)
+assert.match(popupScript, /NOT_TESTED: "not counted; no confirmed new flow"/)
 assert.ok(manifest.permissions.includes('webRequest'))
 assert.ok(manifest.optional_host_permissions.includes('<all_urls>'))
 
