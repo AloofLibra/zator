@@ -388,6 +388,12 @@ case "${f[action]:-}" in
       else
         media_quality_json=',"media_quality":"unknown"'
       fi
+      if [[ "${f[media_quality]}" != healthy ]]; then
+        adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || fail '409 Conflict' 'attempt changed concurrently'
+        adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+        adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
+        send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"UNKNOWN\",\"reason\":\"media_quality_inconclusive\",\"media_quality\":\"${f[media_quality]}\"}"
+      fi
     fi
     case "$state:${f[result]}" in
       WAIT_BROWSER_RESULT:network_failure)

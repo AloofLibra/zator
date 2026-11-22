@@ -392,6 +392,23 @@ weak_media_response="$(printf '%s' "$weak_media_body" | env REQUEST_METHOD=POST 
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q 'healthy media evidence is too weak' <<< "$weak_media_response"
 
+video_unknown_attempt=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+video_unknown_event=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
+adaptive_browser_attempt_write "$video_unknown_attempt" "$client_id" 192.168.1.42 mark:7 "$video_host" 8.8.8.8 2 googlevideo-tcp \
+  critical_resource_repeated_failure WAIT_NEW_FLOW 4 "$video_fingerprint" "$video_media_now" "$video_media_expires" 13
+printf '1\t%s\t13\t%s\tmark:7\t%s\t8.8.8.8\t2\tgooglevideo-tcp\t4\t%s\t%s\t%s\tapplied\tconfirmed\n' \
+  "$video_unknown_attempt" "$client_id" "$video_host" "$video_fingerprint" "$video_media_now" "$video_media_now" > "$flow_dir/$video_unknown_attempt.13.tsv"
+video_unknown_status_body="schema_version=1&action=browser_attempt_status&attempt_id=$video_unknown_attempt"
+printf '%s' "$video_unknown_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_unknown_status_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi" >/dev/null
+video_unknown_result_body="schema_version=1&action=browser_report_result&attempt_id=$video_unknown_attempt&browser_event_id=$video_unknown_event&result=network_success&request_class=media&browser_ip=8.8.8.8&observed_at=$((video_media_now * 1000))&media_quality=degraded&media_sample_ms=8000&media_progress_ms=1000&media_stall_ms=3500&media_dropped_frames=40&media_total_frames=240"
+video_unknown_result="$(printf '%s' "$video_unknown_result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_unknown_result_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"UNKNOWN"' <<< "$video_unknown_result"
+grep -q '"reason":"media_quality_inconclusive"' <<< "$video_unknown_result"
+! grep -q 'PROVISIONAL_SUCCESS\|NEXT_CANDIDATE' <<< "$video_unknown_result"
+[[ "$(adaptive_browser_attempt_read "$video_unknown_attempt" | cut -f11)" = UNKNOWN ]]
+
 observed_result_ms="$(( $(date +%s) * 1000 ))"
 wrong_ip_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_flow&browser_event_id=dddddddddddddddddddddddddddddddd&result=network_success&request_class=main_frame&browser_ip=1.1.1.1&observed_at=$observed_result_ms"
 wrong_ip_response="$(printf '%s' "$wrong_ip_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#wrong_ip_body}" \
