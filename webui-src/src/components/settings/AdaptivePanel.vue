@@ -71,6 +71,8 @@ function probeReason(reason: string) {
 async function act(action: string, rule?: { hostname: string; destination_ip: string; profile_id: number; protocol: 'tls' | 'googlevideo-tcp'; scope: string }) {
   if (action === 'disable' && !window.confirm('Отключить adaptive agent, отменить пробы и удалить его правила?')) return
   if (action === 'beta-lan' && !window.confirm('Разрешить проверенным точным adaptive-правилам действовать для всего LAN (scope default), включая устройства без отдельной маркировки?')) return
+  if (action === 'ramp-pool-on' && !window.confirm('Включить Ramp-first для настроенного Googlevideo IPv4-пула? Это глобальное изменение для новых TCP-соединений Googlevideo, использует текущие параметры Ramp и помечается как manual_unverified. Beta должна быть включена для всего LAN.')) return
+  if (action === 'ramp-pool-off' && !window.confirm('Отозвать Beta-согласие на Ramp-first? Если Beta сама включила Ramp и параметры не менялись, восстановится прежнее выключенное состояние. Ручные изменения будут сохранены.')) return
   if (action === 'rotate' && !window.confirm('Отозвать старый токен и выпустить новый?')) return
   try {
     await withBusy(`adaptive-${action}`, async () => {
@@ -78,6 +80,8 @@ async function act(action: string, rule?: { hostname: string; destination_ip: st
       if (result.restarted) announceRestart()
       const message = action === 'test-only' ? 'Пробный режим включён.' : action === 'beta' ? 'Beta включена: применяются только правила с точной client scope.' : action === 'beta-lan' ? 'Beta включена с явным разрешением на применение к LAN.' : action === 'request-probe'
         ? 'Проверка поставлена в очередь. Windows watcher должен быть запущен.'
+        : action === 'ramp-pool-on' ? 'Ramp-first согласие сохранено.'
+        : action === 'ramp-pool-off' ? 'Ramp-first согласие отозвано.'
         : action === 'reset-rule' ? 'Точное adaptive-правило сброшено.' : 'Настройка adaptive обновлена.'
       showToast(message + restartSuffix(result))
       await refresh()
@@ -125,9 +129,18 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
       <span v-if="status.agent_status.pc_cpu_percent !== null">Windows: CPU {{ status.agent_status.pc_cpu_percent }}% · свободно RAM {{ (status.agent_status.pc_free_memory_bytes! / 1073741824).toFixed(1) }} GiB · сеть всех интерфейсов {{ (status.agent_status.pc_network_bytes_per_second! / 1048576).toFixed(2) }} MiB/s</span>
       <span v-if="status.agent_status.router_load1_per_core !== null">Роутер: load/core {{ status.agent_status.router_load1_per_core!.toFixed(2) }} · доступно RAM {{ Math.floor(status.agent_status.router_memory_available_kib! / 1024) }} MiB · активные пробы {{ status.agent_status.router_active_probes }}</span>
     </div>
-    <p v-if="status && status.ramp_audit_supported === false" class="settings-alert" role="status">
-      Проверка Ramp и автоматические IP-исключения недоступны на этом Keenetic: live gate не подтвердил поздний ACK. Обычная TCP-проверка Googlevideo остаётся доступна.
+    <p v-if="status && status.ramp_exemptions_supported === false" class="settings-alert" role="status">
+      Ramp-пробы и Ramp-first остаются доступны при явном согласии. Автоматические IP-исключения пока выключены: на этом Keenetic не пройден отдельный live gate позднего ACK.
     </p>
+    <div v-if="status?.mode === 'AGENT_BETA' && status.ramp_audit_supported !== false" class="adaptive-ramp-pool" aria-live="polite">
+      <strong>Ramp-first по Googlevideo IP-пулу</strong>
+      <span v-if="!status.default_scope_apply">Сначала включите Beta для всего LAN: Ramp применяется по destination IP и не может быть ограничен отмеченным клиентским scope на SYN.</span>
+      <span v-else-if="status.ramp_pool_consent">Включено по явному согласию · основание manual_unverified · параметры Ramp сохранены из текущего конфига.</span>
+      <span v-else-if="status.ramp_pool_enabled">Ramp уже включён вручную. Beta-аудит не запустится, пока вы отдельно не разрешите использовать его как Ramp-first политику.</span>
+      <span v-else>Выключено. Включение использует текущий настроенный Googlevideo IP-пул и параметры Ramp; при паузе Beta вернёт прежнее выключенное состояние, если вы не меняли настройки вручную.</span>
+      <button v-if="status.default_scope_apply && status.ramp_pool_consent" class="ghost" :disabled="busyActive" @click="act('ramp-pool-off')">Отключить Ramp-first</button>
+      <button v-else-if="status.default_scope_apply" class="danger" :disabled="busyActive" @click="act('ramp-pool-on')">Разрешить Ramp-first для пула</button>
+    </div>
     <div v-if="status?.last_probe" class="adaptive-last-probe" aria-live="polite">
       <strong>Последняя проверка · {{ probeCategory(status.last_probe.recipe_id) }}</strong>
       <span>{{ probeOutcome(status.last_probe.overall) }} · {{ probeReason(status.last_probe.reason) }} · профиль {{ status.last_probe.profile_id }} · {{ status.last_probe.scope }} · {{ status.last_probe.strategy_number === 0 ? 'DIRECT' : `стратегия ${status.last_probe.strategy_number}` }} · {{ status.last_probe.treatment_variant }}</span>
@@ -177,6 +190,8 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
 .adaptive-status span, .form-hint { color: var(--muted); }
 .adaptive-last-probe { display: grid; gap: 5px; margin: 12px 0 16px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
 .adaptive-last-probe span { color: var(--muted); font-size: .9em; overflow-wrap: anywhere; }
+.adaptive-ramp-pool { display: grid; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.adaptive-ramp-pool span { color: var(--muted); font-size: .9em; }
 .adaptive-events { display: grid; gap: 8px; max-height: 280px; overflow: auto; margin: 0 0 16px; padding: 0; list-style: none; }
 .adaptive-events li { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; }
 .adaptive-events span { color: var(--muted); font-size: .9em; }

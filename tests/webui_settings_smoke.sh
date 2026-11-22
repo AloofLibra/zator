@@ -181,8 +181,9 @@ assert_not_contains "$adaptive_status" 'sha256:' 'adaptive GET exposed internal 
 assert_not_contains "$adaptive_status" paired-token 'adaptive GET exposed bearer token'
 mkdir -p "$TMP_DIR/ndm"
 keenetic_adaptive_status="$(Z2R_ADAPTIVE_NDM_ROOT="$TMP_DIR/ndm" Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
-grep -Fq '"ramp_audit_supported":false' <<< "$keenetic_adaptive_status" || fail 'adaptive panel did not mark the unverified Keenetic Ramp gate unsupported'
-grep -Fq 'keenetic_late_ack_gate_unverified' <<< "$keenetic_adaptive_status" || fail 'adaptive panel omitted the reason for the Keenetic Ramp gate'
+grep -Fq '"ramp_audit_supported":true' <<< "$keenetic_adaptive_status" || fail 'adaptive panel disabled Ramp auditing on Keenetic'
+grep -Fq '"ramp_exemptions_supported":false' <<< "$keenetic_adaptive_status" || fail 'adaptive panel did not mark automatic Ramp exemptions unsupported on Keenetic'
+grep -Fq 'keenetic_late_ack_gate_unverified' <<< "$keenetic_adaptive_status" || fail 'adaptive panel omitted the reason for the Keenetic exemption gate'
 printf 'AGENT_BETA\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode"
 beta_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -Fq '"automatic_apply":true' <<< "$beta_status" || fail 'adaptive Beta status omitted enabled exact-rule application'

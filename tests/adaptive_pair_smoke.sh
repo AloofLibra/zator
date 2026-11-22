@@ -91,6 +91,29 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pa
    "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope")" = 600 ]] || {
   echo 'explicit LAN-wide Beta consent was not stored privately' >&2; exit 1;
 }
+mkdir -p "$tmp/zator/lua" "$tmp/zator/lists"
+printf 'return {}\n' > "$tmp/zator/lua/wssize-ramp.lua"
+printf '142.250.72.14\n' > "$tmp/zator/lists/googlevideo-ipv4.txt"
+cat >> "$tmp/zapret2/config" <<'RAMP_CONFIG'
+Z2R_WSSIZE_RAMP_ENABLE=0
+Z2R_WSSIZE_RAMP_MODE=adaptive
+Z2R_WSSIZE_RAMP_WSIZE=1
+Z2R_WSSIZE_RAMP_SCALE=3
+Z2R_WSSIZE_RAMP_OPEN=1
+Z2R_WSSIZE_RAMP_IPSET=/opt/zator/lists/googlevideo-ipv4.txt
+--lua-desync=wssize_ramp
+RAMP_CONFIG
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=1 &&
+   "$(cut -f3 "$tmp/zator/extra_strats/cache/adaptive/ramp-pool")" = manual_unverified &&
+   "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/ramp-pool")" = 600 ]] || {
+  echo 'explicit Ramp-first did not enable the configured pool with private manual_unverified state' >&2; exit 1;
+}
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-off >/dev/null
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=0 &&
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool" ]] || {
+  echo 'Ramp-first opt-out did not restore the preexisting disabled state' >&2; exit 1;
+}
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" test-only >/dev/null
 [[ ! -e "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope" ]] || {
   echo 'leaving Beta retained LAN-wide scope consent' >&2; exit 1;

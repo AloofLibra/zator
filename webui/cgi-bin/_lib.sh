@@ -135,7 +135,7 @@ api_adaptive_get() {
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   local events_file="${Z2R_ADAPTIVE_EVENTS_FILE:-$base/events.tsv}"
   local requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$base/requests.tsv}"
-  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null
+  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state
   mode="$(cat "$mode_file" 2>/dev/null || printf OFF)"
   case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) ;; *) mode=OFF ;; esac
   if [ "$mode" = AGENT_BETA ]; then
@@ -143,8 +143,20 @@ api_adaptive_get() {
     [ "$(cat "$default_scope_file" 2>/dev/null || true)" != 1 ] || default_scope_apply=true
   fi
   if [ -d "${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}" ]; then
-    ramp_audit_supported=false
-    ramp_audit_unsupported_reason='"keenetic_late_ack_gate_unverified"'
+    ramp_exemptions_supported=false
+    ramp_exemptions_unsupported_reason='"keenetic_late_ack_gate_unverified"'
+  fi
+  ramp_config_enabled="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
+  ramp_pool_state="$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
+  if [ "$ramp_config_enabled" = 1 ]; then
+    ramp_pool_enabled=true
+    ramp_pool_basis=manual
+    if [ "$mode" = AGENT_BETA ] && [ "$default_scope_apply" = true ] && [ -f "$ramp_pool_state" ] && [ ! -L "$ramp_pool_state" ] &&
+       (( $(wc -c < "$ramp_pool_state") <= 256 )) &&
+       awk -F '\t' 'NR==1 && (($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4 ~ /^[a-f0-9]{64}$/ && NF==4)) {ok=1} END {exit !ok}' "$ramp_pool_state"; then
+      ramp_pool_consent=true
+      ramp_pool_basis=manual_unverified
+    fi
   fi
   token_expiry="$(cat "$token_expiry_file" 2>/dev/null)"
   now="$(date +%s)"
@@ -225,7 +237,7 @@ api_adaptive_get() {
     done
   fi
   printf 'Cache-Control: no-store\r\n'
-  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason}"
+  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason,\"ramp_exemptions_supported\":$ramp_exemptions_supported,\"ramp_exemptions_unsupported_reason\":$ramp_exemptions_unsupported_reason,\"ramp_pool_enabled\":$ramp_pool_enabled,\"ramp_pool_consent\":$ramp_pool_consent,\"ramp_pool_basis\":\"$ramp_pool_basis\"}"
 }
 
 api_adaptive_action() {
@@ -260,7 +272,7 @@ api_adaptive_action() {
     adaptive_rule_remove "$host" "$ip" "$profile" "$scope" "$proto" || send_error '404 Not Found' 'Adaptive-правило уже удалено или недоступно'
     send_json '200 OK' '{"ok":true,"action":"reset-rule","restarted":false,"message":"Правило удалено"}'
   fi
-  case "$action" in observe|test-only|beta|beta-lan|pause|clear-events|disable) ;; *) send_error '400 Bad Request' 'Некорректное действие adaptive rotation' ;; esac
+  case "$action" in observe|test-only|beta|beta-lan|ramp-pool-on|ramp-pool-off|pause|clear-events|disable) ;; *) send_error '400 Bad Request' 'Некорректное действие adaptive rotation' ;; esac
   local origin="${HTTP_ORIGIN:-}" host="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}"
   [[ -n "$host" && ( "$origin" = "http://$host" || "$origin" = "https://$host" ) ]] || \
     send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'

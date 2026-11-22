@@ -134,6 +134,8 @@ candidate_cache="$Z2R_ADAPTIVE_DIR/catalog-cache/p1-tls-http1-v1.tsv"
 }
 candidate_cache_key="$(head -n 1 "$candidate_cache")"
 printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
+printf '1\tpreexisting\tmanual_unverified\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
 beta_candidates="$(call_api 'action=candidates&hostname=beta.example.org&destination_ip=93.184.216.34&profile_id=1&scope=mark%3A4')"
 [[ "$beta_candidates" == *'Status: 200 OK'* && "$beta_candidates" == *'"candidate_numbers":[1,2,3,4,5,6,7,8,9,10]'* ]] || {
   echo "AGENT_BETA did not keep local verification available: $beta_candidates" >&2; exit 1;
@@ -469,6 +471,8 @@ events="$(call_api 'action=events')"
   echo "events API returned invalid observation data: $events" >&2; exit 1;
 }
 printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
+printf '1\tpreexisting\tmanual_unverified\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
 printf '1\trr2-index.googlevideo.com\t142.250.72.14\tmark:4\t%s\ttls-observed\tgv1:rr:index\tpending\t0\tunknown\n1\tbad.googlevideo.com.evil.org\t142.250.72.15\tdefault\t%s\ttls-observed\tgv1:exact:bad.googlevideo.com.evil.org\tpending\t0\tunknown\n1\tprivate.googlevideo.com\t192.168.1.1\tdefault\t%s\ttls-observed\tgv1:exact:private.googlevideo.com\tpending\t0\tunknown\n1\tstale.googlevideo.com\t142.250.72.16\tdefault\t%s\ttls-observed\tgv1:exact:stale.googlevideo.com\tpending\t0\tunknown\n' \
   "$now" "$now" "$now" "$(( now - 604801 ))" > "$Z2R_ADAPTIVE_DIR/ramp-targets.tsv"
 mkdir -p "$ZATOR_ROOT/lists"
@@ -502,6 +506,7 @@ for i in 0 1 2 3; do
 done
 proof_id_csv="$(IFS=,; printf '%s' "${proof_ids[*]}")"
 proof_body="action=ramp_exempt_apply&hostname=$proof_host&destination_ip=$proof_ip&scope=mark%3A4&test_ids=$proof_id_csv"
+rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
 no_lan_consent="$(call_api "$proof_body")"
 [[ "$no_lan_consent" == *'403 Forbidden'* ]] || { echo "Ramp exemption applied without explicit LAN consent: $no_lan_consent" >&2; exit 1; }
 printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
@@ -561,24 +566,28 @@ ramp_disabled_targets="$(call_api 'action=ramp_targets')"
   echo 'disabled Ramp config was advertised as Ramp default or exemption' >&2; exit 1;
 }
 printf 'TEST_ONLY\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
 ramp_targets_test_only="$(call_api 'action=ramp_targets')"
 [[ "$ramp_targets_test_only" == *'403 Forbidden'* ]] || { echo 'Ramp target API was available outside AGENT_BETA' >&2; exit 1; }
 mkdir -p "$Z2R_ADAPTIVE_NDM_ROOT"
 printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
 ramp_targets_unsupported="$(call_api 'action=ramp_targets')"
-[[ "$ramp_targets_unsupported" == *'"supported":false'* && "$ramp_targets_unsupported" == *'keenetic_late_ack_gate_unverified'* && "$ramp_targets_unsupported" == *'"targets":[]'* ]] || {
-  echo "Keenetic Ramp audit was not reported unsupported: $ramp_targets_unsupported" >&2; exit 1;
+[[ "$ramp_targets_unsupported" == *'"supported":false'* && "$ramp_targets_unsupported" == *'ramp_pool_consent_required'* && "$ramp_targets_unsupported" == *'"targets":[]'* ]] || {
+  echo "Ramp target API did not require explicit pool consent: $ramp_targets_unsupported" >&2; exit 1;
 }
-ramp_lease_unsupported="$(call_api 'action=lease&hostname=rr4-index.googlevideo.com&destination_ip=142.250.72.17&profile_id=2&local_strategy_number=7&recipe_id=googlevideo-tcp-media-v1&treatment_variant=gv_tcp_ramp')"
-[[ "$ramp_lease_unsupported" == *'403 Forbidden'* && "$ramp_lease_unsupported" == *'late-ACK gate'* ]] || {
-  echo "Keenetic AGENT_BETA accepted a Ramp lease: $ramp_lease_unsupported" >&2; exit 1;
+printf '1\tpreexisting\tmanual_unverified\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
+ramp_targets_consented="$(call_api 'action=ramp_targets')"
+[[ "$ramp_targets_consented" == *'"supported":true'* ]] || { echo "Keenetic Ramp audit was disabled after consent: $ramp_targets_consented" >&2; exit 1; }
+ramp_lease_consented="$(call_api 'action=lease&hostname=rr4-index.googlevideo.com&destination_ip=142.250.72.17&profile_id=2&local_strategy_number=7&recipe_id=googlevideo-tcp-media-v1&treatment_variant=gv_tcp_ramp')"
+[[ "$ramp_lease_consented" == *'Status: 200 OK'* ]] || {
+  echo "Keenetic AGENT_BETA blocked Ramp probing after explicit consent: $ramp_lease_consented" >&2; exit 1;
 }
 ramp_apply_unsupported="$(call_api "$proof_body")"
-[[ "$ramp_apply_unsupported" == *'403 Forbidden'* && "$ramp_apply_unsupported" == *'late-ACK gate'* ]] || {
+[[ "$ramp_apply_unsupported" == *'403 Forbidden'* && "$ramp_apply_unsupported" == *'late-ACK evidence gate'* ]] || {
   echo "Keenetic Ramp exemption apply was not blocked: $ramp_apply_unsupported" >&2; exit 1;
 }
 ramp_revoke_unsupported="$(call_api "$revoke_body")"
-[[ "$ramp_revoke_unsupported" == *'403 Forbidden'* && "$ramp_revoke_unsupported" == *'late-ACK gate'* ]] || {
+[[ "$ramp_revoke_unsupported" == *'403 Forbidden'* && "$ramp_revoke_unsupported" == *'late-ACK evidence gate'* ]] || {
   echo "Keenetic Ramp exemption revoke was not blocked: $ramp_revoke_unsupported" >&2; exit 1;
 }
 agent_status="$(call_api 'action=agent_status&stage=deep_search&statistics_enabled=true&rankings_enabled=false&search_outcome=deep_scheduled&candidates_checked=12&fast_candidates=10&deep_candidates=2&search_duration_ms=123456&time_to_first_success_ms=0&pc_cpu_percent=23&pc_free_memory_bytes=8589934592&pc_network_bytes_per_second=4096&router_load_milli=320&router_memory_available_kib=65536&router_active_probes=0&revalidation_recoveries=4&revalidation_failures=1&cooldown_targets=2')"

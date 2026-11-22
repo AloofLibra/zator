@@ -1676,6 +1676,8 @@ class FakeRouterState:
             ],
             "event_capacity": 128, "pending_requests": 0, "rules": [], "active_probes": 0,
             "cleanup_failures": 0,
+            "ramp_audit_supported": True, "ramp_exemptions_supported": True,
+            "ramp_pool_enabled": False, "ramp_pool_consent": False, "ramp_pool_basis": "off",
             "resources": {"load1_per_core": 0.12, "cores": 4, "mem_available_kib": 524288, "active_probes": 0},
             "automatic_apply": False,
         }
@@ -3388,7 +3390,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                             return
                         self._send_json({"ok": True, "action": action, "restarted": False, "message": "Правило удалено"})
                     return
-                if action not in ("observe", "test-only", "pause", "clear-events", "disable"):
+                if action not in ("observe", "test-only", "beta", "beta-lan", "ramp-pool-on", "ramp-pool-off", "pause", "clear-events", "disable"):
                     self._send_error_json(400, "Некорректное действие adaptive rotation")
                     return
                 with self.state.lock:
@@ -3397,8 +3399,22 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                         status["mode"] = "OBSERVE"
                     elif action == "test-only":
                         status["mode"] = "TEST_ONLY"
+                    elif action in ("beta", "beta-lan"):
+                        status["mode"] = "AGENT_BETA"
+                        status["default_scope_apply"] = action == "beta-lan"
+                    elif action == "ramp-pool-on":
+                        status["ramp_pool_enabled"] = True
+                        status["ramp_pool_consent"] = True
+                        status["ramp_pool_basis"] = "manual_unverified"
+                    elif action == "ramp-pool-off":
+                        status["ramp_pool_consent"] = False
+                        status["ramp_pool_basis"] = "manual" if status.get("ramp_pool_enabled") else "off"
                     elif action in ("pause", "clear-events"):
                         status["mode"] = "OFF"
+                        status["default_scope_apply"] = False
+                        if status.get("ramp_pool_basis") == "manual_unverified":
+                            status["ramp_pool_enabled"] = False
+                            status["ramp_pool_basis"] = "off"
                         if action == "clear-events":
                             status["event_count"] = 0
                             status["events"] = []

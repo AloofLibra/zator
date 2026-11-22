@@ -17,9 +17,18 @@ send_json() {
 
 fail() { send_json "$1" "{\"error\":\"$2\"}"; }
 
-adaptive_ramp_hardware_supported() {
+adaptive_ramp_exemptions_supported() {
   local ndm_root="${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}"
   [[ ! -d "$ndm_root" ]]
+}
+
+adaptive_ramp_pool_consent_active() {
+  local mode="$ROOT/extra_strats/cache/adaptive/mode"
+  local lan="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
+  local state="$ROOT/extra_strats/cache/adaptive/ramp-pool"
+  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$lan" 2>/dev/null)" = 1 &&
+     -f "$state" && ! -L "$state" && $(wc -c < "$state") -le 256 ]] || return 1
+  awk -F '\t' 'NR==1 && (($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4 ~ /^[a-f0-9]{64}$/ && NF==4)) {ok=1} END {exit !ok}' "$state"
 }
 
 json_escape() {
@@ -164,6 +173,10 @@ json_ramp_targets() {
   local e_ver e_host e_ip e_scope e_expires e_hash
   local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" ramp_enable ramp_ipset
   local -A hosts_by_ip=() ips_by_host=() ramp_conflicts=()
+  adaptive_ramp_pool_consent_active || {
+    printf '{"schema_version":1,"supported":false,"reason":"ramp_pool_consent_required","targets":[]}'
+    return 0
+  }
   [[ ! -L "$file" && -r "$file" ]] || { printf '{"schema_version":1,"targets":[]}'; return 0; }
   [[ -r "$config" && ! -L "$config" ]] || config=""
   if [[ -n "$config" ]]; then
@@ -232,7 +245,7 @@ adaptive_ramp_exemption_apply() {
   local row ver row_host row_ip row_scope seen provenance group state dns_expiry media extra exact=0
   local id expected_treatment json url_hash observed strategy bytes min_bytes=1048576 first_hash="" first_strategy="" first_seen=0 last_seen=0
   local lock tmp count=0
-  adaptive_ramp_hardware_supported || fail '403 Forbidden' 'Ramp exemptions are unsupported on this Keenetic hardware until the late-ACK gate passes'
+  adaptive_ramp_exemptions_supported || fail '403 Forbidden' 'Automatic Ramp exemptions remain disabled until the late-ACK evidence gate passes on this hardware'
   [[ "${#fields[@]}" -eq 5 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
      ${#host} -le 253 ]] || fail '400 Bad Request' 'invalid Ramp exemption target'
   _adaptive_lan_public_ipv4_valid "$ip" || fail '400 Bad Request' 'invalid Ramp exemption IP'
@@ -244,6 +257,7 @@ adaptive_ramp_exemption_apply() {
      "${test_ids[1]}" != "${test_ids[2]}" && "${test_ids[1]}" != "${test_ids[3]}" && "${test_ids[2]}" != "${test_ids[3]}" ]] || fail '400 Bad Request' 'Ramp proof IDs must be unique'
   mode="$ROOT/extra_strats/cache/adaptive/mode"; marker="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
   [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$marker" 2>/dev/null)" = 1 ]] || fail '403 Forbidden' 'Ramp exemptions require AGENT_BETA LAN consent'
+  adaptive_ramp_pool_consent_active || fail '403 Forbidden' 'Ramp exemptions require explicit Ramp-first pool consent'
   config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   ramp_enable="$(config_get_var "$config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
   ramp_ipset="$(config_get_var "$config" Z2R_WSSIZE_RAMP_IPSET 2>/dev/null | tr -d '"\047')"
@@ -336,7 +350,8 @@ adaptive_ramp_exemption_revoke() {
   local host="${fields[hostname]:-}" ip="${fields[destination_ip]:-}" scope="${fields[scope]:-}" ids="${fields[test_ids]:-}"
   local exempt_file="${Z2R_ADAPTIVE_RAMP_EXEMPT_FILE:-$BASE/ramp-exempt.tsv}" now id json stage hash observed strategy bytes speed reason
   local lock tmp ver row_host row_ip row_scope expires row_hash extra found=0 count=0 first_hash="" first_strategy="" first_seen=0 last_seen=0
-  adaptive_ramp_hardware_supported || fail '403 Forbidden' 'Ramp exemptions are unsupported on this Keenetic hardware until the late-ACK gate passes'
+  adaptive_ramp_exemptions_supported || fail '403 Forbidden' 'Automatic Ramp exemption changes remain disabled until the late-ACK evidence gate passes on this hardware'
+  adaptive_ramp_pool_consent_active || fail '403 Forbidden' 'Ramp revocation requires explicit Ramp-first pool consent'
   [[ "${#fields[@]}" -eq 5 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ && ${#host} -le 253 ]] ||
     fail '400 Bad Request' 'invalid Ramp revocation target'
   _adaptive_lan_public_ipv4_valid "$ip" || fail '400 Bad Request' 'invalid Ramp revocation IP'
@@ -639,8 +654,8 @@ case "$action" in
     [[ "${#fields[@]}" -eq 1 ]] || fail '400 Bad Request' 'ramp_targets accepts no parameters'
     [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || \
       fail '403 Forbidden' 'Ramp audit targets are available only in AGENT_BETA'
-    if ! adaptive_ramp_hardware_supported; then
-      send_json '200 OK' '{"schema_version":1,"supported":false,"reason":"keenetic_late_ack_gate_unverified","targets":[]}'
+    if ! adaptive_ramp_pool_consent_active; then
+      send_json '200 OK' '{"schema_version":1,"supported":false,"reason":"ramp_pool_consent_required","targets":[]}'
     fi
     target_json="$(json_ramp_targets)" || fail '503 Service Unavailable' 'Ramp observation catalog is unavailable'
     send_json '200 OK' "$target_json"
@@ -746,7 +761,7 @@ case "$action" in
           fail '400 Bad Request' 'Googlevideo media recipe requires a profile-2 Googlevideo hostname'
         case "$treatment" in standard|gv_tcp_plain|gv_tcp_ramp|gv_tcp_ramp_syndata) ;; *) fail '400 Bad Request' 'invalid Googlevideo treatment' ;; esac
         if [[ "$mode" = AGENT_BETA && "$treatment" =~ ^gv_tcp_ramp ]]; then
-          adaptive_ramp_hardware_supported || fail '403 Forbidden' 'Ramp probing is unsupported on this Keenetic hardware until the late-ACK gate passes'
+          adaptive_ramp_pool_consent_active || fail '403 Forbidden' 'Ramp probes require explicit Ramp-first pool consent'
         fi ;;
       googlevideo-quic-h3-media-v1)
         [[ "$profile" = 5 && "$treatment" = standard && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ ]] || \

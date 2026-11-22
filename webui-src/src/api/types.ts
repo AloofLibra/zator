@@ -152,6 +152,11 @@ export interface AdaptiveStatus {
   cleanup_failures: number
   ramp_audit_supported?: boolean
   ramp_audit_unsupported_reason?: string | null
+  ramp_exemptions_supported?: boolean
+  ramp_exemptions_unsupported_reason?: string | null
+  ramp_pool_enabled?: boolean
+  ramp_pool_consent?: boolean
+  ramp_pool_basis?: 'off' | 'manual' | 'manual_unverified'
   resources?: {
     load1_per_core: number
     cores: number

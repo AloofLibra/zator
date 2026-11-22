@@ -8,6 +8,7 @@ TOKEN_FILE="$TOKEN_DIR/token"
 TOKEN_EXPIRY_FILE="$TOKEN_DIR/token.expires"
 MODE_FILE="$TOKEN_DIR/mode"
 DEFAULT_SCOPE_FILE="$TOKEN_DIR/apply-default-scope"
+RAMP_POOL_FILE="$TOKEN_DIR/ramp-pool"
 BASE="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
 EVENTS_FILE="${Z2R_ADAPTIVE_EVENTS_FILE:-$BASE/events.tsv}"
 RAMP_TARGETS_FILE="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}"
@@ -23,7 +24,7 @@ if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transpor
 fi
 Z2R_ADAPTIVE_LOCK_DIR="${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}"
 action="${1:-create}"
-case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|pause|events|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|pause|events|clear-events]' >&2; exit 2 ;; esac
+case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-on|ramp-pool-off|pause|events|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-on|ramp-pool-off|pause|events|clear-events]' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root on the router.' >&2; exit 1; }
 [ ! -L "$TOKEN_DIR" ] || { echo 'Refusing a symlinked adaptive token directory.' >&2; exit 1; }
 adaptive_mode() {
@@ -33,6 +34,9 @@ adaptive_mode() {
 }
 adaptive_set_mode() {
   local mode="$1" tmp
+  if [ "$mode" != AGENT_BETA ] && [ "$(adaptive_mode)" = AGENT_BETA ]; then
+    adaptive_ramp_pool_restore || return 1
+  fi
   mkdir -p "$TOKEN_DIR" || return 1
   if [ "$mode" != AGENT_BETA ]; then rm -f "$DEFAULT_SCOPE_FILE" || return 1; fi
   tmp="$(mktemp "$TOKEN_DIR/.mode.XXXXXX")" || return 1
@@ -48,6 +52,121 @@ adaptive_set_default_scope() {
   printf '1\n' > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$DEFAULT_SCOPE_FILE" || {
     rm -f "$tmp"; return 1;
   }
+}
+adaptive_ramp_pool_supported() {
+  local config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -r "$config" ] && [ ! -L "$config" ] || return 1
+  [ "$(config_get_var "$config" NFQWS2_ENABLE 2>/dev/null | tr -d '"\047')" = 1 ] || return 1
+  grep -q -- '--lua-desync=wssize_ramp' "$config" || return 1
+  [ -s "$ROOT/lua/wssize-ramp.lua" ] && [ ! -L "$ROOT/lua/wssize-ramp.lua" ] || return 1
+  local ipset path ip valid=0
+  ipset="$(config_get_var "$config" Z2R_WSSIZE_RAMP_IPSET 2>/dev/null | tr -d '"\047')"
+  case "$ipset" in
+    /opt/zator/*) path="$ROOT/${ipset#/opt/zator/}" ;;
+    /opt/zapret2/*) path="${ZAPRET2_ROOT:-/opt/zapret2}/${ipset#/opt/zapret2/}" ;;
+    /*) path="$ipset" ;;
+    *) return 1 ;;
+  esac
+  [ -s "$path" ] && [ ! -L "$path" ] || return 1
+  while IFS= read -r ip || [ -n "$ip" ]; do
+    _adaptive_lan_public_ipv4_valid "$ip" && { valid=1; break; }
+  done < "$path"
+  [ "$valid" = 1 ]
+}
+adaptive_ramp_pool_fingerprint() {
+  local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" key value
+  [ -r "$config" ] && [ ! -L "$config" ] || return 1
+  for key in NFQWS2_ENABLE Z2R_WSSIZE_RAMP_MODE Z2R_WSSIZE_RAMP_WSIZE Z2R_WSSIZE_RAMP_SCALE \
+    Z2R_WSSIZE_RAMP_OPEN Z2R_WSSIZE_RAMP_SYNDATA Z2R_WSSIZE_RAMP_SYN_BLOB Z2R_WSSIZE_RAMP_IPSET Z2R_WSSIZE_MARK; do
+    value="$(config_get_var "$config" "$key" 2>/dev/null | tr -d '"\047')" || return 1
+    printf '%s=%s\n' "$key" "$value"
+  done | sha256sum | awk '{print $1}'
+}
+adaptive_ramp_pool_write_state() {
+  local ownership="$1" fingerprint="${2:-}" tmp
+  [[ "$ownership" = managed || "$ownership" = preexisting ]] || return 1
+  if [ "$ownership" = managed ]; then [[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || return 1
+  else [ -z "$fingerprint" ] || return 1; fi
+  mkdir -p "$TOKEN_DIR" || return 1
+  [ ! -L "$TOKEN_DIR" ] && [ ! -L "$RAMP_POOL_FILE" ] || return 1
+  tmp="$(mktemp "$TOKEN_DIR/.ramp-pool.XXXXXX")" || return 1
+  (umask 077; if [ "$ownership" = managed ]; then
+    printf '1\tmanaged\tmanual_unverified\t%s\n' "$fingerprint" > "$tmp"
+  else
+    printf '1\tpreexisting\tmanual_unverified\n' > "$tmp"
+  fi) && chmod 600 "$tmp" && mv -f "$tmp" "$RAMP_POOL_FILE" || { rm -f "$tmp"; return 1; }
+}
+adaptive_ramp_pool_enabled() {
+  local version ownership basis fingerprint extra
+  [ -f "$RAMP_POOL_FILE" ] && [ ! -L "$RAMP_POOL_FILE" ] && [ "$(wc -c < "$RAMP_POOL_FILE")" -le 256 ] || return 1
+  IFS=$'\t' read -r version ownership basis fingerprint extra < "$RAMP_POOL_FILE" || return 1
+  [ "$basis" = manual_unverified ] || return 1
+  if [ "$ownership" = managed ]; then [[ "$version" = 1 && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]]
+  else [[ "$version" = 1 && "$ownership" = preexisting && -z "$fingerprint" && -z "$extra" ]]; fi
+}
+adaptive_ramp_pool_set_config() {
+  local enabled="$1" config="${ZAPRET2_ROOT:-/opt/zapret2}/config" tmp
+  [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || return 1
+  [ -f "$config" ] && [ ! -L "$config" ] || return 1
+  tmp="$(mktemp "${config}.adaptive.XXXXXX")" || return 1
+  cp -p "$config" "$tmp" && config_set_var "$tmp" Z2R_WSSIZE_RAMP_ENABLE "$enabled" && mv -f "$tmp" "$config" || {
+    rm -f "$tmp"
+    return 1
+  }
+}
+adaptive_ramp_pool_enable() {
+  local current fingerprint
+  [ "$(adaptive_mode)" = AGENT_BETA ] && [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || {
+    echo 'Ramp-first requires AGENT_BETA with explicit LAN-wide scope consent.' >&2; return 1;
+  }
+  adaptive_ramp_pool_supported || { echo 'Ramp-first is unavailable on this platform or its Googlevideo pool is not ready.' >&2; return 1; }
+  if [ -e "$RAMP_POOL_FILE" ]; then
+    adaptive_ramp_pool_enabled || { echo 'Ramp pool state is invalid; refusing to overwrite it.' >&2; return 1; }
+    echo 'Ramp-first is already enabled with explicit manual_unverified consent.'
+    return 0
+  fi
+  current="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
+  case "$current" in 0|1) ;; *) echo 'Ramp enable flag is missing or invalid.' >&2; return 1 ;; esac
+  if [ "$current" = 1 ]; then
+    adaptive_ramp_pool_write_state preexisting || return 1
+    echo 'Ramp-first consent recorded; the existing manual Ramp setting was not changed.'
+    return 0
+  fi
+  adaptive_ramp_pool_set_config 1 || { echo 'Could not atomically enable the Googlevideo Ramp pool.' >&2; return 1; }
+  fingerprint="$(adaptive_ramp_pool_fingerprint)" || fingerprint=
+  if ! adaptive_ramp_pool_write_state managed "$fingerprint"; then
+    adaptive_ramp_pool_set_config 0 || echo 'WARNING: Ramp rollback failed; inspect the config before continuing.' >&2
+    echo 'Could not save Ramp-first ownership state.' >&2
+    return 1
+  fi
+  echo 'Ramp-first enabled for the configured Googlevideo IP pool (basis: manual_unverified). Restart zapret2 to apply it.'
+}
+adaptive_ramp_pool_restore() {
+  local version ownership basis fingerprint extra current current_fingerprint
+  [ -e "$RAMP_POOL_FILE" ] || return 0
+  [ -f "$RAMP_POOL_FILE" ] && [ ! -L "$RAMP_POOL_FILE" ] && [ "$(wc -c < "$RAMP_POOL_FILE")" -le 256 ] || {
+    echo 'Ramp-first state file is unsafe; it was not removed.' >&2; return 1;
+  }
+  IFS=$'\t' read -r version ownership basis fingerprint extra < "$RAMP_POOL_FILE" || return 1
+  [ "$basis" = manual_unverified ] || { echo 'Ramp-first state is invalid; config was left unchanged.' >&2; return 1; }
+  if [ "$ownership" = managed ]; then
+    [[ "$version" = 1 && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] || { echo 'Ramp-first state is invalid.' >&2; return 1; }
+    current="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
+    if [ "$current" = 1 ]; then
+      current_fingerprint="$(adaptive_ramp_pool_fingerprint 2>/dev/null || true)"
+      if [ "$current_fingerprint" = "$fingerprint" ]; then
+        adaptive_ramp_pool_set_config 0 || { echo 'Could not restore the pre-Beta Ramp setting.' >&2; return 1; }
+        echo 'Ramp-first changes were rolled back to the pre-Beta disabled state.'
+      else
+        echo 'Ramp settings changed after Beta enabled them; preserving the current manual config.'
+      fi
+    fi
+  elif [[ "$version" = 1 && "$ownership" = preexisting && -z "$fingerprint" && -z "$extra" ]]; then
+    echo 'The Ramp setting predated Beta; preserving the manual config.'
+  else
+    echo 'Ramp-first state is invalid; config was left unchanged.' >&2; return 1
+  fi
+  rm -f "$RAMP_POOL_FILE" || { echo 'Could not clear Ramp-first ownership state.' >&2; return 1; }
 }
 adaptive_token_valid() {
   local token expiry now
@@ -73,6 +192,7 @@ adaptive_prepare_events() {
 adaptive_pause_mode() {
   local tmp run run_id
   [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
+  adaptive_ramp_pool_restore || return 1
   mkdir -p "$TOKEN_DIR"
   tmp="$(mktemp "$TOKEN_DIR/.mode.XXXXXX")" || return 1
   printf 'OFF\n' > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$MODE_FILE" || { rm -f "$tmp"; return 1; }
@@ -136,6 +256,12 @@ if [ "$action" = status ]; then
     if [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ]; then echo 'Beta application: exact rules including default/LAN scope'
     else echo 'Beta application: exact marked-client scopes only; default/LAN scope disabled'; fi
   else echo 'Automatic strategy application: disabled'; fi
+  if adaptive_ramp_pool_enabled; then
+    IFS=$'\t' read -r _ramp_version _ramp_owner _ramp_basis _ramp_fingerprint < "$RAMP_POOL_FILE" || :
+    printf 'Ramp-first Googlevideo pool: enabled (%s)\n' "$_ramp_basis"
+  else
+    echo 'Ramp-first Googlevideo pool: disabled'
+  fi
   BASE="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   active=0; cleanup_failed=0
   if [ -d "$BASE" ] && [ ! -L "$BASE" ]; then
@@ -235,6 +361,7 @@ if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
   if [ "$action" = beta-lan ]; then
     adaptive_set_default_scope 1 || { echo 'Could not save the explicit LAN-wide scope consent.' >&2; exit 1; }
   else
+    adaptive_ramp_pool_restore || { echo 'Could not restore Ramp before removing LAN-wide consent.' >&2; exit 1; }
     adaptive_set_default_scope 0 || { echo 'Could not clear LAN-wide scope consent.' >&2; exit 1; }
   fi
   adaptive_set_mode AGENT_BETA || { echo 'Could not enable AGENT_BETA.' >&2; exit 1; }
@@ -243,6 +370,16 @@ if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
   else
     echo 'AGENT_BETA enabled. Verified exact rules may apply only to explicitly marked client scopes; default/LAN scope stays test-only. Restart zapret2 to activate.'
   fi
+  exit 0
+fi
+if [ "$action" = ramp-pool-on ]; then
+  adaptive_token_valid || { echo 'Pair the Windows agent first with: adaptive-pair.sh create' >&2; exit 1; }
+  adaptive_ramp_pool_enable || exit 1
+  exit 0
+fi
+if [ "$action" = ramp-pool-off ]; then
+  adaptive_ramp_pool_restore || exit 1
+  echo 'Ramp-first consent disabled.'
   exit 0
 fi
 if [ "$action" = pause ]; then
@@ -277,7 +414,7 @@ if [ "$action" = clear-events ]; then
   exit 0
 fi
 if [ "$action" = disable ]; then
-  adaptive_pause_mode || true
+  adaptive_pause_mode || { echo 'Could not safely disable adaptive mode or restore Ramp.' >&2; exit 1; }
   adaptive_set_default_scope 0 || { echo 'Could not clear LAN-wide scope consent.' >&2; exit 1; }
   adaptive_wait_probe_cleanup || { echo 'Probe cleanup did not finish; check the adaptive probe state before uninstalling.' >&2; exit 1; }
   if type adaptive_queue_clear >/dev/null 2>&1; then adaptive_queue_clear || { echo 'Could not clear queued probe requests.' >&2; exit 1; }; fi
