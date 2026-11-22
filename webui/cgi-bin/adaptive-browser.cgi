@@ -265,6 +265,9 @@ case "${f[action]:-}" in
         fi
       fi
     fi
+    case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
+      adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || : ;;
+    esac
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
     ;;
   browser_report_result)
@@ -292,6 +295,7 @@ case "${f[action]:-}" in
     if [[ "$proto" = quic ]]; then
       adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || fail '409 Conflict' 'attempt changed concurrently'
       adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+      adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
       send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"UNKNOWN\",\"status\":\"PROTOCOL_UNKNOWN\"}"
     fi
     result_claim="$(adaptive_browser_result_claim "$client_id" "$attempt_id" "${f[browser_event_id]}" "${f[result]}" "$(date +%s)")" || {
@@ -325,6 +329,9 @@ case "${f[action]:-}" in
         state=CONFIRMED_FAILURE
         ;;
       *) fail '409 Conflict' 'attempt is not waiting for this result' ;;
+    esac
+    case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
+      adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || : ;;
     esac
     if [[ "$state" = CONFIRMED_FAILURE ]]; then
       next_claim="$(adaptive_browser_event_claim "$client_id" "${f[browser_event_id]}" "$host" "$trigger" "$(date +%s)")" || next_claim=unavailable

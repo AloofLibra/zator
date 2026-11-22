@@ -146,7 +146,10 @@ eval "$(sed -n '/^z2r_backup_state_files()/,/^}/p' "$ROOT/lib/actions.sh")"
 backup_state="$(z2r_backup_state_files)"
 [[ "$backup_state" == *'extra_strats/cache/adaptive/rules.tsv'* &&
    "$backup_state" == *'extra_strats/cache/adaptive/ramp-pool'* &&
-   "$backup_state" != *'extra_strats/cache/adaptive/token'* ]] || {
+   "$backup_state" != *'extra_strats/cache/adaptive/token'* &&
+   "$backup_state" != *'browser-flow-upload'* &&
+   "$backup_state" != *'browser-flow-queue'* &&
+   "$backup_state" != *'browser-rankings-opt-in'* ]] || {
   echo 'backup must preserve adaptive rules and Ramp ownership without copying the pairing secret' >&2; exit 1;
 }
 for _ in $(seq 1 30); do [[ -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] && break; sleep 0.1; done

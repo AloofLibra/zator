@@ -284,6 +284,157 @@ adaptive_browser_presence_touch() {
   (umask 077; printf '%s\n' "$now" > "$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
 }
 
+adaptive_browser_stats_opted_in() {
+  local root="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive"
+  [[ -f "$root/browser-flow-upload-opt-in" && ! -L "$root/browser-flow-upload-opt-in" &&
+     "$(cat "$root/browser-flow-upload-opt-in" 2>/dev/null)" = 1 ]]
+}
+
+adaptive_browser_stats_queue_attempt() {
+  [[ $# = 1 && "$1" =~ ^[a-f0-9]{32}$ ]] || return 2
+  adaptive_browser_stats_opted_in || return 0
+  local row ver id client client_ip scope host ip profile proto trigger state strategy fingerprint created expires generation extra
+  local protocol treatment=standard proven=false confidence=low queue_dir queue lock tmp oldrow oldver oldid observed oldprofile oldproto oldfp oldstate oldtreatment oldproven oldconfidence count=0
+  local -a rows=()
+  row="$(adaptive_browser_attempt_read "$1")" || return 1
+  IFS=$'\t' read -r ver id client client_ip scope host ip profile proto trigger state strategy fingerprint created expires generation extra <<< "$row"
+  [[ "$ver" = 1 && "$id" = "$1" && "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+     "$created" =~ ^[0-9]{10}$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ && -z "${extra:-}" ]] || return 0
+  case "$proto:$profile" in tls:[1-4]) protocol=tls ;; googlevideo-tcp:2) protocol=googlevideo-tcp ;; quic:5) protocol=quic ;; *) return 0 ;; esac
+  case "$state:$protocol" in
+    CONFIRMED_SUCCESS:tls|CONFIRMED_SUCCESS:googlevideo-tcp) proven=true; confidence=high ;;
+    CONFIRMED_FAILURE:tls|CONFIRMED_FAILURE:googlevideo-tcp) proven=true; confidence=medium ;;
+  esac
+  queue_dir="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive"
+  queue="$queue_dir/browser-flow-queue.tsv"
+  lock="$(adaptive_browser_state_dir)/stats-queue.lock"
+  [[ ! -L "$queue_dir" && ! -L "$queue" && ! -L "$(adaptive_browser_state_dir)" && ! -L "$lock" ]] || return 1
+  mkdir -p "$queue_dir" "$(adaptive_browser_state_dir)" || return 1
+  local tries=0
+  while ! (umask 077; mkdir "$lock") 2>/dev/null; do
+    tries=$((tries + 1)); (( tries < 20 )) || return 1
+    sleep 0.05
+  done
+  if [[ -f "$queue" ]]; then
+    [[ -r "$queue" && $(wc -c < "$queue") -le 65536 ]] || { rmdir "$lock"; return 1; }
+    while IFS= read -r oldrow || [[ -n "$oldrow" ]]; do
+      IFS=$'\t' read -r oldver oldid observed oldprofile oldproto oldfp oldstate oldtreatment oldproven oldconfidence extra <<< "$oldrow"
+      [[ "$oldver" = 1 && "$oldid" =~ ^[a-f0-9]{32}$ && "$observed" =~ ^[0-9]{10}$ && "$oldprofile" =~ ^[1-5]$ &&
+         "$oldproto" =~ ^(tls|googlevideo-tcp|quic)$ && "$oldfp" =~ ^sha256:[a-f0-9]{64}$ &&
+         "$oldstate" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+         "$oldtreatment" = standard && "$oldproven" =~ ^(true|false)$ && "$oldconfidence" =~ ^(low|medium|high)$ && -z "${extra:-}" ]] || continue
+      [[ "$oldid" != "$id" ]] || continue
+      rows+=("$oldrow")
+    done < "$queue"
+  fi
+  printf -v row '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    "$id" "$created" "$profile" "$protocol" "$fingerprint" "$state" "$treatment" "$proven" "$confidence"
+  rows+=("$row")
+  if (( ${#rows[@]} > 256 )); then rows=("${rows[@]: -256}"); fi
+  tmp="$(mktemp "$queue_dir/.browser-flow-queue.XXXXXX")" || { rmdir "$lock"; return 1; }
+  printf '%s\n' "${rows[@]}" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$queue" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock"
+}
+
+adaptive_browser_stats_flush() {
+  adaptive_browser_stats_opted_in || return 0
+  local root="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive"
+  local token_file="$root/browser-flow-upload-token" queue="$root/browser-flow-queue.tsv"
+  local provider_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/provider.txt"
+  local upload_lock="$(adaptive_browser_state_dir)/stats-upload.lock" queue_lock="$(adaptive_browser_state_dir)/stats-queue.lock"
+  local token provider now row ver id observed profile protocol fingerprint state treatment proven confidence extra key comma='' results='' count=0
+  local snapshot payload response curl_cfg sent_id
+  local -a selected_ids=()
+  local -A seen_dimensions=()
+  [[ -e "$queue" ]] || return 0
+  [[ -f "$queue" && ! -L "$queue" ]] || return 1
+  [[ -f "$token_file" && ! -L "$token_file" && -r "$token_file" && $(wc -c < "$token_file") -le 64 &&
+     -r "$queue" && $(wc -c < "$queue") -le 65536 &&
+     -f "$provider_file" && ! -L "$provider_file" && -r "$provider_file" && $(wc -c < "$provider_file") -le 256 &&
+     ! -L "$(adaptive_browser_state_dir)" && ! -L "$upload_lock" && ! -L "$queue_lock" ]] || return 1
+  token="$(cat "$token_file")"
+  [[ "$token" =~ ^[A-Za-z0-9_-]{40,64}$ ]] || return 1
+  provider="$(head -n1 "$provider_file" | tr -d '\r')"; provider="${provider%% - *}"
+  [[ -n "$provider" && ${#provider} -le 120 && "$provider" != 'Не определён' && "$provider" != 'Не удалось определить' &&
+     "$provider" != *'"'* && "$provider" != *'\'* && "$provider" != *[[:cntrl:]]* ]] || return 1
+  mkdir -p "$(adaptive_browser_state_dir)" || return 1
+  (umask 077; mkdir "$upload_lock") 2>/dev/null || return 0
+  printf '%s\n' "$$" > "$upload_lock/pid"
+  local tries=0
+  while ! (umask 077; mkdir "$queue_lock") 2>/dev/null; do
+    tries=$((tries + 1)); (( tries < 20 )) || { rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 0; }
+    sleep 0.05
+  done
+  snapshot="$(mktemp /tmp/z2r-browser-flow-snapshot.XXXXXX)" || { rmdir "$queue_lock"; rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  cp "$queue" "$snapshot" && chmod 600 "$snapshot" || { rm -f "$snapshot"; rmdir "$queue_lock"; rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  rmdir "$queue_lock"
+  now="$(date +%s)" || { rm -f "$snapshot" "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  while IFS=$'\t' read -r ver id observed profile protocol fingerprint state treatment proven confidence extra; do
+    [[ "$ver" = 1 && "$id" =~ ^[a-f0-9]{32}$ && "$observed" =~ ^[0-9]{10}$ && "$profile" =~ ^[1-5]$ &&
+       "$protocol" =~ ^(tls|googlevideo-tcp|quic)$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
+       "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+       "$treatment" = standard && "$proven" =~ ^(true|false)$ && "$confidence" =~ ^(low|medium|high)$ && -z "${extra:-}" ]] || continue
+    (( observed >= now - 604800 && observed <= now + 300 )) || continue
+    key="$profile|$protocol|$fingerprint|$state|$treatment|$proven|$confidence"
+    if [[ ${seen_dimensions[$key]+yes} ]]; then
+      selected_ids+=("$id")
+      continue
+    fi
+    seen_dimensions["$key"]=1
+    [[ -z "$results" ]] || comma=','
+    results+="$comma{\"profile_id\":$profile,\"protocol\":\"$protocol\",\"fingerprint\":\"$fingerprint\",\"state\":\"$state\",\"treatment_variant\":\"$treatment\",\"protocol_proven\":$proven,\"confidence\":\"$confidence\"}"
+    selected_ids+=("$id")
+    count=$((count + 1))
+    (( count < 24 )) || break
+  done < "$snapshot"
+  rm -f "$snapshot"
+  if (( count == 0 )); then rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 0; fi
+  local request_id
+  request_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [[ "$request_id" =~ ^[a-f0-9]{32}$ ]] || { rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  payload="$(mktemp /tmp/z2r-browser-flow-payload.XXXXXX)" || { rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  response="$(mktemp /tmp/z2r-browser-flow-response.XXXXXX)" || { rm -f "$payload" "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  curl_cfg="$(mktemp /tmp/z2r-browser-flow-curl.XXXXXX)" || { rm -f "$payload" "$response" "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  (umask 077; printf '{"schema_version":1,"source":"browser_flow","client_profile":"chromium-v1","request_id":"%s","provider":"%s","observed_at":%s,"results":[%s]}\n' \
+    "$request_id" "$provider" "$now" "$results" > "$payload" &&
+    printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "$token" > "$curl_cfg") || {
+      rm -f "$payload" "$response" "$curl_cfg" "$upload_lock/pid"; rmdir "$upload_lock"; return 1;
+    }
+  chmod 600 "$payload" "$curl_cfg" || { rm -f "$payload" "$response" "$curl_cfg" "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  if ! curl -4 -fsS --connect-timeout 2 --max-time 4 --max-filesize 32768 --config "$curl_cfg" \
+      --data-binary "@$payload" -o "$response" 'https://alooflibra.fun/z4r/adaptive-v2/browser-flow' 2>/dev/null ||
+      ! grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$response" || ! grep -Eq '"source"[[:space:]]*:[[:space:]]*"browser_flow"' "$response"; then
+    rm -f "$payload" "$response" "$curl_cfg" "$upload_lock/pid"; rmdir "$upload_lock"; return 1
+  fi
+  tries=0
+  while ! (umask 077; mkdir "$queue_lock") 2>/dev/null; do
+    tries=$((tries + 1)); (( tries < 20 )) || { rm -f "$payload" "$response" "$curl_cfg" "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+    sleep 0.05
+  done
+  snapshot="$(mktemp "$root/.browser-flow-queue.XXXXXX")" || { rmdir "$queue_lock"; rm -f "$payload" "$response" "$curl_cfg" "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
+  while IFS=$'\t' read -r ver id observed profile protocol fingerprint state treatment proven confidence extra; do
+    [[ "$ver" = 1 && "$id" =~ ^[a-f0-9]{32}$ && "$observed" =~ ^[0-9]{10}$ && "$profile" =~ ^[1-5]$ &&
+       "$protocol" =~ ^(tls|googlevideo-tcp|quic)$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
+       "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+       "$treatment" = standard && "$proven" =~ ^(true|false)$ && "$confidence" =~ ^(low|medium|high)$ && -z "${extra:-}" ]] || continue
+    sent_id=0
+    for request_id in "${selected_ids[@]}"; do [[ "$request_id" = "$id" ]] && { sent_id=1; break; }; done
+    (( sent_id )) || printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$ver" "$id" "$observed" "$profile" "$protocol" "$fingerprint" "$state" "$treatment" "$proven" "$confidence" >> "$snapshot"
+  done < "$queue"
+  if [[ -s "$snapshot" ]]; then chmod 600 "$snapshot" && mv -f "$snapshot" "$queue" || { rm -f "$snapshot" "$payload" "$response" "$curl_cfg" "$upload_lock/pid"; rmdir "$queue_lock"; rmdir "$upload_lock"; return 1; }
+  else rm -f "$snapshot" "$queue"; fi
+  rmdir "$queue_lock"
+  rm -f "$payload" "$response" "$curl_cfg" "$upload_lock/pid"
+  rmdir "$upload_lock"
+  return 0
+}
+
+adaptive_browser_stats_schedule_flush() {
+  adaptive_browser_stats_opted_in || return 0
+  (adaptive_browser_stats_flush) </dev/null >/dev/null 2>&1 &
+}
+
 adaptive_browser_attempt_file() {
   printf '%s/%s.tsv\n' "$(adaptive_browser_state_dir)/attempts" "$1"
 }

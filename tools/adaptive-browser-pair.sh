@@ -16,9 +16,12 @@ CLIENT_SCOPE_MAP_FILE="${CLIENT_SCOPE_MAP_FILE:-$ROOT/extra_strats/cache/client_
 
 action="${1:-list}"
 RANKINGS_OPT_IN="$TOKEN_DIR/browser-rankings-opt-in"
-case "$action" in create|rotate|revoke|revoke-all|list|rankings-on|rankings-off|rankings-status) ;; *) echo 'Usage: adaptive-browser-pair.sh {create IPv4 mark:N|default|rotate ID|revoke ID|revoke-all|list|rankings-on|rankings-off|rankings-status}' >&2; exit 2 ;; esac
+STATS_OPT_IN="$TOKEN_DIR/browser-flow-upload-opt-in"
+STATS_TOKEN="$TOKEN_DIR/browser-flow-upload-token"
+STATS_QUEUE="$TOKEN_DIR/browser-flow-queue.tsv"
+case "$action" in create|rotate|revoke|revoke-all|list|rankings-on|rankings-off|rankings-status|stats-on|stats-off|stats-status|stats-flush) ;; *) echo 'Usage: adaptive-browser-pair.sh {create IPv4 mark:N|default|rotate ID|revoke ID|revoke-all|list|rankings-on|rankings-off|rankings-status|stats-on|stats-off|stats-status|stats-flush}' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root on the router.' >&2; exit 1; }
-[ ! -L "$TOKEN_DIR" ] && [ ! -L "$CLIENTS_FILE" ] && [ ! -L "$RANKINGS_OPT_IN" ] || { echo 'Refusing symlinked browser pairing state.' >&2; exit 1; }
+[ ! -L "$TOKEN_DIR" ] && [ ! -L "$CLIENTS_FILE" ] && [ ! -L "$RANKINGS_OPT_IN" ] && [ ! -L "$STATS_OPT_IN" ] && [ ! -L "$STATS_TOKEN" ] && [ ! -L "$STATS_QUEUE" ] || { echo 'Refusing symlinked browser pairing state.' >&2; exit 1; }
 mkdir -p "$TOKEN_DIR"
 
 private_lan_ipv4() {
@@ -129,6 +132,35 @@ case "$action" in
   rankings-off)
     rm -f "$RANKINGS_OPT_IN"
     echo 'Shared adaptive rankings disabled.'
+    ;;
+  stats-status)
+    if adaptive_browser_stats_opted_in; then
+      pending=0; [[ ! -f "$STATS_QUEUE" || -L "$STATS_QUEUE" ]] || pending="$(wc -l < "$STATS_QUEUE")"
+      if [[ -f "$STATS_TOKEN" && ! -L "$STATS_TOKEN" ]]; then echo "Browser outcome sharing: enabled; queued rows: $pending."
+      else echo "Browser outcome sharing: enabled but token is missing; queued rows: $pending."; fi
+    else echo 'Browser outcome sharing: disabled.'; fi
+    ;;
+  stats-on)
+    [ -t 0 ] || { echo 'Statistics consent requires an interactive terminal.' >&2; exit 1; }
+    echo 'Only aggregate profile/protocol/strategy fingerprint/outcome dimensions are sent. No hostname, destination IP, browser token, URL, or visit history is uploaded. The stats host sees the router public IP.' >&2
+    echo 'This uses a separate server-issued installation token; it does not enable Redis ranking downloads.' >&2
+    read -r -p 'Type SHARE-BROWSER-STATS to enable upload: ' confirmation
+    [[ "$confirmation" = SHARE-BROWSER-STATS ]] || { echo 'Browser outcome sharing cancelled.' >&2; exit 1; }
+    read -r -s -p 'Paste the separately issued adaptive V2 client token: ' stats_token; printf '\n' >&2
+    [[ "$stats_token" =~ ^[A-Za-z0-9_-]{40,64}$ ]] || { echo 'Invalid installation token format.' >&2; exit 1; }
+    tmp="$STATS_TOKEN.tmp.$$"
+    (umask 077; printf '%s\n' "$stats_token" > "$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$STATS_TOKEN" || { rm -f "$tmp"; echo 'Could not store the installation token.' >&2; exit 1; }
+    printf '1\n' > "$STATS_OPT_IN.tmp.$$" && chmod 600 "$STATS_OPT_IN.tmp.$$" && mv -f "$STATS_OPT_IN.tmp.$$" "$STATS_OPT_IN"
+    echo 'Browser outcome upload enabled. It runs only after browser trial outcomes; pending data can be sent with stats-flush.'
+    ;;
+  stats-off)
+    rm -f "$STATS_OPT_IN"
+    rm -f "$STATS_TOKEN" "$STATS_QUEUE"
+    echo 'Browser outcome sharing disabled; its token and queued results were removed.'
+    ;;
+  stats-flush)
+    if adaptive_browser_stats_flush; then echo 'Browser outcome queue flushed (if the endpoint accepted it).'
+    else echo 'Browser outcome queue remains pending; upload failed or consent/token/provider is unavailable.' >&2; exit 1; fi
     ;;
   create)
     [[ $# = 3 ]] || { echo 'Usage: adaptive-browser-pair.sh create CLIENT_IPV4 mark:N|default' >&2; exit 2; }
