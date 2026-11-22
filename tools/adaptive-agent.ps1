@@ -880,7 +880,7 @@ if ($FastSearch) {
     $expectedStatus = if ($expectedCandidateCount -gt 0) { 'ready' } else { 'complete' }
     if ($candidateSet.status -ne $expectedStatus -or $candidateSet.source -notin @('local-profile-order', 'local-confirmations-first', 'remote-rankings-first', 'active-rule-revalidation') -or
         ($null -ne $candidateSet.active_rule_strategy -and ($candidateSet.active_rule_strategy -notmatch '^(0|[1-9][0-9]{0,2})$' -or $candidateSet.active_rule_fingerprint -notmatch '^sha256:[0-9a-f]{64}$')) -or
-        ($null -eq $candidateSet.active_rule_strategy -and $candidateSet.active_rule_fingerprint -ne '') -or
+        ($null -eq $candidateSet.active_rule_strategy -and -not [string]::IsNullOrEmpty([string]$candidateSet.active_rule_fingerprint)) -or
         $candidateSet.candidate_offset -ne 0 -or
         $candidateSetVersion -notmatch '^sha256:[0-9a-f]{64}$' -or
         $candidateSet.profile_strategy_count -notmatch '^[1-9][0-9]{0,2}$' -or
