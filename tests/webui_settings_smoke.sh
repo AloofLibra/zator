@@ -233,6 +233,43 @@ grep -Fq '"action":"test-only"' <<< "$adaptive_action" || fail 'adaptive control
 grep -Fq '"restarted":true' <<< "$adaptive_action" || fail 'adaptive control did not reload the mode'
 grep -Fxq 'test-only' "$ADAPTIVE_ACTION_LOG" || fail 'adaptive control did not delegate to CLI'
 grep -Fxq 'restart' "$ADAPTIVE_RESTART_LOG" || fail 'adaptive mode change did not restart zapret2'
+# Exercise the actual WebUI -> adaptive-pair CLI path with only a valid browser
+# pairing. The separate Windows-agent token must not be required.
+rm -f "$TMP_DIR/runtime/extra_strats/cache/adaptive/token" "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
+cp "$REPO_DIR/tools/adaptive-pair.sh" "$TMP_DIR/runtime/tools/adaptive-pair.sh"
+cp "$REPO_DIR/lib/config.sh" "$TMP_DIR/runtime/z2r_lib/config.sh"
+cp "$REPO_DIR/lib/adaptive_lan_transport.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_lan_transport.sh"
+cp "$REPO_DIR/lib/adaptive_queue.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_queue.sh"
+mkdir -p "$TMP_DIR/bin"
+cat > "$TMP_DIR/bin/id" <<'ID'
+#!/bin/sh
+if [ "$#" -gt 1 ]; then echo 65534; else echo 0; fi
+ID
+cat > "$TMP_DIR/bin/chown" <<'CHOWN'
+#!/bin/sh
+exit 0
+CHOWN
+chmod +x "$TMP_DIR/bin/id" "$TMP_DIR/bin/chown"
+browser_beta_body='setting=adaptive_action&action=beta'
+browser_beta_action="$(printf '%s' "$browser_beta_body" | env ZATOR_ROOT="$TMP_DIR/runtime" ZAPRET2_ROOT="$TMP_DIR/zapret2" \
+  Z2R_ADAPTIVE_DIR="$TMP_DIR/browser-beta-runtime" PATH="$TMP_DIR/bin:$PATH" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded \
+  CONTENT_LENGTH="${#browser_beta_body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=192.168.1.7 \
+  bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq 'Status: 200 OK' <<< "$browser_beta_action" || fail 'WebUI could not enable Beta from browser-only pairing'
+grep -Fq '"action":"beta"' <<< "$browser_beta_action" || fail 'browser-only WebUI response omitted the Beta action'
+[[ "$(cat "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode")" = AGENT_BETA ]] || fail 'browser-only WebUI action did not persist Beta mode'
+grep -Fq 'Windows agent is optional' <<< "$browser_beta_action" || fail 'browser-only WebUI action response implied an agent requirement'
+printf 'paired-token\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token"
+printf '%s\n' "$pairing_expiry" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
+cat > "$TMP_DIR/runtime/tools/adaptive-pair.sh" <<'ADAPTIVE_CLI'
+#!/bin/sh
+printf '%s\n' "$1" >> "$ADAPTIVE_ACTION_LOG"
+ADAPTIVE_CLI
+chmod +x "$TMP_DIR/runtime/tools/adaptive-pair.sh"
+cat > "$TMP_DIR/runtime/z2r_lib/adaptive_queue.sh" <<'ADAPTIVE_QUEUE'
+. "$LIB_DIR/adaptive_queue.base.sh"
+adaptive_queue_request() { printf '%s|%s|%s|%s\n' "$@" >> "$ADAPTIVE_REQUEST_LOG"; printf '%032d\n' 1; }
+ADAPTIVE_QUEUE
 export ADAPTIVE_RULE_RESET_LOG="$TMP_DIR/adaptive-rule-reset.log"
 reset_body='setting=adaptive_action&action=reset-rule&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=default'
 reset_result="$(printf '%s' "$reset_body" | Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#reset_body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=192.168.1.7 bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
