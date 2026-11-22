@@ -3,6 +3,18 @@ const tokenInput = document.querySelector("#token");
 const saveState = document.querySelector("#save-state");
 const permissionState = document.querySelector("#permission-state");
 
+async function routerHello(origin, token) {
+  const response = await fetch(new URL("/cgi-bin/adaptive-browser.cgi", origin), {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", Authorization: `Bearer ${token}` },
+    body: new URLSearchParams({ schema_version: "1", action: "browser_hello" }),
+    credentials: "omit", cache: "no-store", redirect: "error"
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Router returned HTTP ${response.status}.`);
+  return data;
+}
+
 function routerOrigin(value) {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("Enter a router origin only.");
@@ -37,10 +49,21 @@ document.querySelector("#settings").addEventListener("submit", async event => {
   try {
     const origin = routerOrigin(routerInput.value.trim());
     const token = tokenInput.value.trim();
-    if (!/^[A-Za-z0-9_-]{40,96}$/.test(token)) throw new Error("The browser token format is invalid.");
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("The browser token must be the 64-character token created by Zator.");
     if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) throw new Error("Allow the router address first.");
     await chrome.storage.local.set({ config: { router: `${origin}/`, token } });
     saveState.textContent = "Pairing saved.";
+  } catch (error) { saveState.textContent = error.message; }
+});
+
+document.querySelector("#check-router").addEventListener("click", async () => {
+  try {
+    const origin = routerOrigin(routerInput.value.trim());
+    const token = tokenInput.value.trim();
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("Enter the browser token created by Zator.");
+    if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) throw new Error("Allow the router address first.");
+    const data = await routerHello(origin, token);
+    saveState.textContent = `Paired to ${data.scope}; adaptive mode ${data.mode}.`;
   } catch (error) { saveState.textContent = error.message; }
 });
 

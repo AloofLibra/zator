@@ -213,7 +213,7 @@ add('tools/wssize-ramp-firewall.sh', 'tools/wssize-ramp-firewall.sh', { executab
 for (const name of [
   'adaptive-agent-port.ps1', 'adaptive-agent-state.ps1', 'adaptive-agent-stats.ps1',
   'adaptive-agent-verdict.ps1', 'adaptive-agent.ps1', 'adaptive-controller.sh',
-  'adaptive-pair.sh', 'adaptive-lan-reconcile.sh', 'adaptive-ramp-proof.sh',
+  'adaptive-pair.sh', 'adaptive-browser-pair.sh', 'adaptive-lan-reconcile.sh', 'adaptive-ramp-proof.sh',
 ]) {
   add(`tools/${name}`, `tools/${name}`, { executable: name.endsWith('.sh') })
 }

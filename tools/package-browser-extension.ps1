@@ -54,7 +54,11 @@ try {
     } finally { $check.Dispose() }
 
     Move-Item -LiteralPath $temporaryPath -Destination $OutputPath -Force
-    $hash = (Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha.ComputeHash([System.IO.File]::ReadAllBytes($OutputPath))
+        $hash = ([System.BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
+    } finally { $sha.Dispose() }
     [System.IO.File]::WriteAllText("$OutputPath.sha256", "$hash  $([System.IO.Path]::GetFileName($OutputPath))`n", [System.Text.Encoding]::ASCII)
     Write-Output "Created $OutputPath"
     Write-Output "SHA256 $hash"

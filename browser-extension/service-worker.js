@@ -117,7 +117,7 @@
       const data = await response.json().catch(() => ({}));
       const latest = await loadState();
       latest.events = latest.events.map(row => row.id === event.id
-        ? { ...row, router_status: response.ok ? (data.state || data.status || "received") : `http_${response.status}` }
+        ? { ...row, router_status: data.state || data.status || (response.ok ? "received" : `http_${response.status}`) }
         : row);
       await chrome.storage.local.set({ events: latest.events });
       return { paired: true, ok: response.ok, status: response.status };
