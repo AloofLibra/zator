@@ -57,6 +57,11 @@ assert.equal(api.failureClass('net::ERR_CONNECTION_RESET'), 'network_failure')
 assert.equal(api.failureClass('net::ERR_NAME_NOT_RESOLVED'), '')
 assert.equal(api.failureClass('net::ERR_CERT_DATE_INVALID'), '')
 assert.equal(api.failureClass('net::ERR_CONNECTION_ABORTED'), '')
+assert.equal(api.failureClass('net::ERR_ADDRESS_UNREACHABLE'), '', 'missing route must not trigger strategy rotation')
+assert.equal(api.failureClass('net::ERR_SSL_HANDSHAKE_NOT_COMPLETED'), 'network_failure')
+assert.equal(api.failureClass('net::ERR_SSL_VERSION_OR_CIPHER_MISMATCH'), 'network_failure')
+assert.equal(api.failureClass('net::ERR_QUIC_HANDSHAKE_FAILED'), 'network_failure')
+assert.equal(api.failureClass('net::ERR_SSL_CLIENT_AUTH_CERT_NEEDED'), '')
 assert.equal(api.safeHost('https://router.home.arpa/path'), '')
 
 const main = await api.rememberFailure({ tabId: 2, documentId: 'doc-a', requestId: 'req-a', type: 'main_frame', method: 'GET',
