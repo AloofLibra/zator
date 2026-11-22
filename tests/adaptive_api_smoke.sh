@@ -314,6 +314,14 @@ r_group_candidates="$(call_api 'action=candidates&hostname=r2---sn-abcd.googlevi
 [[ "$r_group_candidates" == *'"candidate_numbers":[5,'* ]] || {
   echo "rN CDN suffix group did not prioritize its local confirmation: $r_group_candidates" >&2; exit 1;
 }
+printf '1\trr1-index.googlevideo.com\t93.184.216.48\t2\tgooglevideo-tcp\tmark:4\t7\tsha256:%064d\tsha256:%064d\t%s\t%s\n' \
+  8 9 "$stamp" "$(( $(date +%s) + 300 ))" > "$Z2R_ADAPTIVE_DIR/rules.tsv"
+printf '1\trr3-index.googlevideo.com\t93.184.216.49\t2\tgooglevideo-tcp\tmark:4\t9\tsha256:%064d\tsha256:%064d\t%s\t%s\n' \
+  10 9 "$stamp" "$(( $(date +%s) + 1800 ))" >> "$Z2R_ADAPTIVE_DIR/rules.tsv"
+rr_recent_candidates="$(call_api 'action=candidates&hostname=rr5-index.googlevideo.com&destination_ip=93.184.216.50&profile_id=2&scope=mark%3A4')"
+[[ "$rr_recent_candidates" == *'"source":"local-confirmations-first"'* && "$rr_recent_candidates" == *'"candidate_numbers":[9,7,1,'* ]] || {
+  echo "fresh CDN group confirmation did not outweigh the older one: $rr_recent_candidates" >&2; exit 1;
+}
 quic_candidates="$(call_api 'action=candidates&hostname=rr1-index.googlevideo.com&destination_ip=93.184.216.45&profile_id=5&scope=mark%3A4')"
 [[ "$quic_candidates" == *'"protocol":"udp"'* && "$quic_candidates" == *'"recipe_id":"googlevideo-quic-h3-media-v1"'* && "$quic_candidates" == *'"candidate_numbers":[1,'* ]] || {
   echo "profile-5 candidates were not isolated to the Googlevideo HTTP/3 recipe: $quic_candidates" >&2; exit 1;

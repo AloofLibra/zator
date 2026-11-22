@@ -538,9 +538,9 @@ adaptive_rules_googlevideo_group_id() {
 adaptive_rules_ranked_candidates() {
   [[ $# = 5 || $# = 6 ]] || return 2
   local profile="$1" proto="$2" scope="$3" stamp="$4" max="$5" identity="${6:-}"
-  local file snapshot row ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now catalog_seen row_identity pair
-  local -A counts=() seen_catalog=() seen_pairs=()
-  local best_count=0 best_ties=0
+  local file snapshot row ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now catalog_seen row_identity pair remaining
+  local -A scores=() seen_catalog=() seen_pairs=()
+  local best_score=0 best_ties=0
   [[ "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ ) && "$stamp" =~ ^[0-9:|]{1,2048}$ && "$max" =~ ^[1-9][0-9]{0,2}$ ]] || return 2
   [[ -z "$identity" || "$identity" =~ ^(gv1:(rr|r):[a-z0-9.-]+|exact:[a-z0-9.-]+)$ ]] || return 2
   file="$(adaptive_rules_file)"; snapshot="$(adaptive_rules_snapshot_file)"
@@ -573,17 +573,21 @@ adaptive_rules_ranked_candidates() {
     pair="$host|$ip"
     [[ ! ${seen_pairs[$pair]+yes} ]] || continue
     seen_pairs[$pair]=1
-    counts["$strategy"]=$(( ${counts[$strategy]:-0} + 1 ))
+    remaining=$((expiry - now))
+    # Rule TTL is currently six hours; remaining lifetime is a bounded proxy
+    # for confirmation recency and keeps old snapshots from dominating groups.
+    (( remaining > 21600 )) && remaining=21600
+    scores["$strategy"]=$(( ${scores[$strategy]:-0} + remaining ))
   done
   # A tied group result is conflicting evidence, not a reason to prefer the
   # numerically smaller strategy. Leave the normal catalog order intact until
   # a distinct fresh host/IP confirmation breaks the tie.
   if [[ -n "$identity" ]]; then
-    for strategy in "${!counts[@]}"; do
-      if (( counts[$strategy] > best_count )); then best_count=${counts[$strategy]}; best_ties=1
-      elif (( counts[$strategy] == best_count )); then best_ties=$((best_ties + 1)); fi
+    for strategy in "${!scores[@]}"; do
+      if (( scores[$strategy] > best_score )); then best_score=${scores[$strategy]}; best_ties=1
+      elif (( scores[$strategy] == best_score )); then best_ties=$((best_ties + 1)); fi
     done
     (( best_ties <= 1 )) || return 0
   fi
-  for strategy in "${!counts[@]}"; do printf '%s\t%s\n' "${counts[$strategy]}" "$strategy"; done | sort -rn -k1,1 -k2,2n | awk -F '\t' -v m="$max" 'NR<=m {print $2}'
+  for strategy in "${!scores[@]}"; do printf '%s\t%s\n' "${scores[$strategy]}" "$strategy"; done | sort -rn -k1,1 -k2,2n | awk -F '\t' -v m="$max" 'NR<=m {print $2}'
 }
