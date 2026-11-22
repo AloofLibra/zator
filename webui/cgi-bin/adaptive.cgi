@@ -28,7 +28,28 @@ adaptive_ramp_pool_consent_active() {
   local state="$ROOT/extra_strats/cache/adaptive/ramp-pool"
   [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$lan" 2>/dev/null)" = 1 &&
      -f "$state" && ! -L "$state" && $(wc -c < "$state") -le 256 ]] || return 1
-  awk -F '\t' 'NR==1 && (($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4 ~ /^[a-f0-9]{64}$/ && NF==4)) {ok=1} END {exit !ok}' "$state"
+  awk -F '\t' 'NR==1 && (($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4 ~ /^[a-f0-9]{64}$/ && NF==4) || ($1==1 && $2=="managed" && $3=="proof_verified" && $4 ~ /^[a-f0-9]{64}$/ && $5 ~ /^[a-f0-9]{64}$/ && NF==5)) {ok=1} END {exit !ok}' "$state"
+}
+
+adaptive_ramp_pool_armed() {
+  local mode="$ROOT/extra_strats/cache/adaptive/mode" lan="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
+  local state="$ROOT/extra_strats/cache/adaptive/ramp-pool-armed" config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  local version status fingerprint extra key value current
+  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$lan" 2>/dev/null)" = 1 &&
+     -f "$state" && ! -L "$state" && $(wc -c < "$state") -le 256 && -r "$config" && ! -L "$config" ]] || return 1
+  IFS=$'\t' read -r version status fingerprint extra < "$state" || return 1
+  [[ "$version" = 1 && "$status" = armed && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" &&
+     "$(config_get_var "$config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')" = 0 ]] || return 1
+  current="$(for key in NFQWS2_ENABLE Z2R_WSSIZE_RAMP_MODE Z2R_WSSIZE_RAMP_WSIZE Z2R_WSSIZE_RAMP_SCALE \
+    Z2R_WSSIZE_RAMP_OPEN Z2R_WSSIZE_RAMP_SYNDATA Z2R_WSSIZE_RAMP_SYN_BLOB Z2R_WSSIZE_RAMP_IPSET Z2R_WSSIZE_MARK; do
+      value="$(config_get_var "$config" "$key" 2>/dev/null | tr -d '"\047')" || return 1
+      printf '%s=%s\n' "$key" "$value"
+    done | sha256sum | awk '{print $1}')" || return 1
+  [[ "$current" = "$fingerprint" ]]
+}
+
+adaptive_ramp_pool_probe_authorized() {
+  adaptive_ramp_pool_consent_active || adaptive_ramp_pool_armed
 }
 
 json_escape() {
@@ -111,6 +132,7 @@ client_ip="${REMOTE_ADDR:-}"
 . "${ROOT}/z2r_lib/adaptive_lan_transport.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive runtime unavailable'
 . "${ROOT}/z2r_lib/adaptive_queue.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive queue unavailable'
 . "${ROOT}/z2r_lib/config.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive config helpers are unavailable'
+. "$ROOT/tools/adaptive-ramp-proof.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive Ramp proof validator is unavailable'
 _adaptive_lan_ipv4_valid "$client_ip" || fail '403 Forbidden' 'LAN IPv4 client required'
 awk -v ip="$client_ip" 'BEGIN {
   split(ip,o,".")
@@ -169,11 +191,13 @@ json_events() {
 }
 json_ramp_targets() {
   local file="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}" exempt_file="${Z2R_ADAPTIVE_RAMP_EXEMPT_FILE:-$BASE/ramp-exempt.tsv}"
-  local now ver host ip scope seen provenance group state dns_expiry media dns_json exempt_json first=1 count=0
+  local now ver host ip scope seen provenance group state dns_expiry media dns_json exempt_json first=1 count=0 in_pool armed
   local e_ver e_host e_ip e_scope e_expires e_hash
   local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" ramp_enable ramp_ipset
   local -A hosts_by_ip=() ips_by_host=() ramp_conflicts=()
-  adaptive_ramp_pool_consent_active || {
+  armed=0
+  adaptive_ramp_pool_armed && armed=1
+  adaptive_ramp_pool_consent_active || (( armed )) || {
     printf '{"schema_version":1,"supported":false,"reason":"ramp_pool_consent_required","targets":[]}'
     return 0
   }
@@ -186,7 +210,7 @@ json_ramp_targets() {
       /opt/zator/*) ramp_ipset="$ROOT/${ramp_ipset#/opt/zator/}" ;;
       /opt/zapret2/*) ramp_ipset="${ZAPRET2_ROOT:-/opt/zapret2}/${ramp_ipset#/opt/zapret2/}" ;;
     esac
-    [[ "$ramp_enable" = 1 && -r "$ramp_ipset" && ! -L "$ramp_ipset" ]] || ramp_ipset=""
+    [[ ( "$ramp_enable" = 1 || "$armed" = 1 ) && -r "$ramp_ipset" && ! -L "$ramp_ipset" ]] || ramp_ipset=""
   else
     ramp_ipset=""
   fi
@@ -215,8 +239,13 @@ json_ramp_targets() {
     # A target is eligible for an isolated Ramp audit only when the installed
     # config explicitly enables Ramp and this exact destination belongs to
     # its configured pool. A stale/absent pool or disabled setting stays pending.
+    in_pool=0
+    [[ -n "$ramp_ipset" ]] && grep -Fqx -- "$ip" "$ramp_ipset" && in_pool=1
     if [[ "$state" != conflict ]]; then
-      if [[ -n "$ramp_ipset" ]] && grep -Fqx -- "$ip" "$ramp_ipset"; then state=ramp_default; else state=pending; fi
+      if (( in_pool )); then
+        if (( armed )) && [[ "$ramp_enable" != 1 ]]; then state=pending; else state=ramp_default; fi
+      else state=uncertain
+      fi
     fi
     exempt_json=null
     if [[ "$state" != conflict && "$state" = ramp_default && -r "$exempt_file" && ! -L "$exempt_file" ]]; then
@@ -237,6 +266,83 @@ json_ramp_targets() {
     count=$((count + 1))
   done < "$file"
   printf ']}'
+}
+
+adaptive_ramp_pool_apply_proof() {
+  local host="${fields[hostname]:-}" ip="${fields[destination_ip]:-}" scope="${fields[scope]:-}" ids="${fields[test_ids]:-}"
+  local now id json stage observed hash strategy bytes reason exact=0 conflict=0
+  local first_hash="" first_strategy="" first_seen=0 last_seen=0 output target_file config ramp_ipset
+  local -a test_ids
+  [[ "${#fields[@]}" -eq 5 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ && ${#host} -le 253 ]] ||
+    fail '400 Bad Request' 'invalid Ramp-first proof target'
+  _adaptive_lan_public_ipv4_valid "$ip" && [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] || fail '400 Bad Request' 'invalid Ramp-first proof tuple'
+  if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || fail '400 Bad Request' 'invalid Ramp-first proof scope'; fi
+  [[ "$ids" =~ ^[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid Ramp-first proof IDs'
+  IFS=, read -r -a test_ids <<< "$ids"
+  [[ "${test_ids[0]}" != "${test_ids[1]}" && "${test_ids[0]}" != "${test_ids[2]}" && "${test_ids[1]}" != "${test_ids[2]}" ]] ||
+    fail '400 Bad Request' 'Ramp-first proof IDs must be unique'
+  adaptive_ramp_pool_armed || fail '403 Forbidden' 'Ramp-first proof arm is missing, stale, or its consent/config changed'
+  now="$(date +%s)" || fail '500 Internal Server Error' 'clock unavailable'
+  [[ "$now" =~ ^[0-9]{1,10}$ ]] || fail '500 Internal Server Error' 'clock unavailable'
+  target_file="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}"
+  [[ -r "$target_file" && ! -L "$target_file" ]] || fail '409 Conflict' 'observed Ramp target is unavailable'
+  while IFS=$'\t' read -r ver row_host row_ip row_scope seen provenance group state dns_expiry media extra || [[ -n "$ver$row_host$row_ip" ]]; do
+    [[ "$ver" = 1 && "$provenance" = tls-observed && "$seen" =~ ^[0-9]{1,10}$ ]] || continue
+    (( seen >= now - 86400 && seen <= now + 60 )) || continue
+    [[ "$dns_expiry" =~ ^[0-9]{1,10}$ ]] && (( dns_expiry == 0 || dns_expiry > now )) || continue
+    if [[ "$row_ip" = "$ip" && "$row_host" != "$host" ]] || [[ "$row_host" = "$host" && "$row_ip" != "$ip" ]] ||
+       [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" != "$scope" ]] || [[ "$row_ip" = "$ip" && "$state" = conflict ]]; then conflict=1; fi
+    [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$scope" ]] && exact=1
+  done < "$target_file"
+  (( exact && ! conflict )) || fail '409 Conflict' 'Ramp-first target is no longer exact or has a hostname, IP, DNS, or scope conflict'
+  config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  ramp_ipset="$(config_get_var "$config" Z2R_WSSIZE_RAMP_IPSET 2>/dev/null | tr -d '"\047')"
+  case "$ramp_ipset" in /opt/zator/*) ramp_ipset="$ROOT/${ramp_ipset#/opt/zator/}" ;; /opt/zapret2/*) ramp_ipset="${ZAPRET2_ROOT:-/opt/zapret2}/${ramp_ipset#/opt/zapret2/}" ;; esac
+  [[ "$(config_get_var "$config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')" = 0 &&
+     -r "$ramp_ipset" && ! -L "$ramp_ipset" ]] && grep -Fqx -- "$ip" "$ramp_ipset" || fail '409 Conflict' 'Ramp target is not in the current configured pool'
+  for i in 0 1 2; do
+    id="${test_ids[$i]}"; stage=gv_tcp_ramp; (( i != 1 )) || stage=gv_tcp_plain
+    [[ -d "$BASE/$id" && ! -L "$BASE/$id" && -f "$BASE/$id/result.json" && ! -L "$BASE/$id/result.json" ]] || fail '409 Conflict' 'Ramp-first proof result is unavailable'
+    (( $(wc -c < "$BASE/$id/result.json") <= 8192 )) || fail '409 Conflict' 'Ramp-first proof result is oversized'
+    IFS= read -r json < "$BASE/$id/result.json" || fail '409 Conflict' 'Ramp-first proof result is unreadable'
+    [[ "$json" = *"\"test_id\":\"$id\""* && "$json" = *'"route_verified":true'* && "$json" = *'"queue_seen":true'* &&
+       "$json" = *'"strategy_ack_seen":true'* && "$json" = *"\"hostname\":\"$host\""* &&
+       "$json" = *"\"destination_ip\":\"$ip\""* && "$json" = *'"profile_id":2'* && "$json" = *"\"scope\":\"$scope\""* &&
+       "$json" = *'"protocol":"tcp"'* && "$json" = *'"recipe_id":"googlevideo-tcp-media-v1"'* &&
+       "$json" = *"\"treatment_variant\":\"$stage\""* ]] || fail '409 Conflict' 'Ramp-first result does not match its exact media probe'
+    [[ "$json" =~ \"media_url_sha256\":\"([a-f0-9]{64})\" ]] || fail '409 Conflict' 'Ramp-first proof lacks the media URL fingerprint'
+    hash="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"observed_at\":([0-9]{1,10}) ]] || fail '409 Conflict' 'Ramp-first proof timestamp is invalid'
+    observed="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"local_number\":([1-9][0-9]{0,2}) ]] || fail '409 Conflict' 'Ramp-first proof strategy is invalid'
+    strategy="${BASH_REMATCH[1]}"
+    [[ "$json" =~ \"media_bytes\":([0-9]{1,8}) ]] || fail '409 Conflict' 'Ramp-first proof media size is invalid'
+    bytes="${BASH_REMATCH[1]}"
+    (( observed >= now - 1200 && observed <= now + 60 )) || fail '409 Conflict' 'Ramp-first proof is stale'
+    if (( i == 1 )); then
+      [[ "$json" = *'"overall":"INCONCLUSIVE"'* && "$json" = *'"application":"UNKNOWN"'* &&
+         "$json" != *'"syn_stage_confirmed":true'* && "$json" != *'"late_ack_stage_confirmed":true'* &&
+         "$json" =~ \"reason\":\"(media_insufficient|transport_timeout|target_unavailable)\" ]] ||
+        fail '409 Conflict' 'plain result does not prove a route-verified media degradation'
+      reason="${BASH_REMATCH[1]}"
+      [[ "$reason" != media_insufficient || "$bytes" -lt 1048576 ]] || fail '409 Conflict' 'plain media result did not fall below the required range'
+      [[ "$json" = *'"transport":"OK"'* || "$json" = *'"transport":"UNKNOWN"'* ]] || fail '409 Conflict' 'plain result has an inconsistent transport verdict'
+    else
+      [[ "$json" = *'"overall":"SUCCESS"'* && "$json" = *'"transport":"OK"'* && "$json" = *'"application":"OK"'* &&
+         "$json" = *'"syn_stage_confirmed":true'* && "$json" = *'"late_ack_stage_confirmed":true'* && "$bytes" -ge 1048576 ]] ||
+        fail '409 Conflict' 'Ramp controls must confirm late ACK and at least 1 MiB of media'
+    fi
+    if (( i == 0 )); then first_hash="$hash"; first_strategy="$strategy"; first_seen="$observed"
+    else [[ "$hash" = "$first_hash" && "$strategy" = "$first_strategy" ]] || fail '409 Conflict' 'Ramp-first proof changed media URL or TLS strategy'
+      (( observed > last_seen )) || fail '409 Conflict' 'Ramp-first proof timestamps are not ordered'
+    fi
+    last_seen="$observed"
+  done
+  (( last_seen - first_seen <= 1200 )) || fail '409 Conflict' 'Ramp-first proof exceeded its bounded comparison window'
+  output="$(ZATOR_ROOT="$ROOT" ZAPRET2_ROOT="${ZAPRET2_ROOT:-/opt/zapret2}" Z2R_ADAPTIVE_DIR="$BASE" bash "$ROOT/tools/adaptive-pair.sh" ramp-pool-proof-on "$host" "$ip" "$scope" "$ids" 2>&1)" || {
+    fail '409 Conflict' 'Ramp-first could not be enabled after proof; inspect adaptive-pair status'
+  }
+  send_json '200 OK' '{"schema_version":1,"status":"ramp_default","basis":"proof_verified","restart_required":true}'
 }
 
 adaptive_ramp_exemption_apply() {
@@ -654,7 +760,7 @@ case "$action" in
     [[ "${#fields[@]}" -eq 1 ]] || fail '400 Bad Request' 'ramp_targets accepts no parameters'
     [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || \
       fail '403 Forbidden' 'Ramp audit targets are available only in AGENT_BETA'
-    if ! adaptive_ramp_pool_consent_active; then
+    if ! adaptive_ramp_pool_probe_authorized; then
       send_json '200 OK' '{"schema_version":1,"supported":false,"reason":"ramp_pool_consent_required","targets":[]}'
     fi
     target_json="$(json_ramp_targets)" || fail '503 Service Unavailable' 'Ramp observation catalog is unavailable'
@@ -662,6 +768,9 @@ case "$action" in
     ;;
   ramp_exempt_apply)
     adaptive_ramp_exemption_apply
+    ;;
+  ramp_pool_apply)
+    adaptive_ramp_pool_apply_proof
     ;;
   ramp_exempt_revoke)
     adaptive_ramp_exemption_revoke
@@ -761,7 +870,7 @@ case "$action" in
           fail '400 Bad Request' 'Googlevideo media recipe requires a profile-2 Googlevideo hostname'
         case "$treatment" in standard|gv_tcp_plain|gv_tcp_ramp|gv_tcp_ramp_syndata) ;; *) fail '400 Bad Request' 'invalid Googlevideo treatment' ;; esac
         if [[ "$mode" = AGENT_BETA && "$treatment" =~ ^gv_tcp_ramp ]]; then
-          adaptive_ramp_pool_consent_active || fail '403 Forbidden' 'Ramp probes require explicit Ramp-first pool consent'
+          adaptive_ramp_pool_probe_authorized || fail '403 Forbidden' 'Ramp probes require explicit Ramp-first pool consent'
         fi ;;
       googlevideo-quic-h3-media-v1)
         [[ "$profile" = 5 && "$treatment" = standard && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ ]] || \

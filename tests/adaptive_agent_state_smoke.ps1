@@ -193,6 +193,16 @@ try {
         $reconfirmTransition.Outcome -ne 'plain_degraded_confirmed' -or $reconfirmTransition.Step -ne 0) {
         throw 'Ramp exemption degradation was not confirmed by the same-URL Ramp/plain/Ramp sequence.'
     }
+    $armedTarget = $transitionAudit.Target | Select-Object *; $armedTarget.ramp_state = 'pending'
+    $armedAudit = [pscustomobject]@{ Target = $armedTarget; Step = 1; Outcome = 'ramp_ok'; TreatmentVariant = 'gv_tcp_plain';
+        StrategyNumber = 7; PlainSuccesses = 0; RampSuccesses = 1; MediaUrlHash = ('d' * 64) }
+    $armedSuspect = Get-AdaptiveRampAuditTransition -Audit $armedAudit -Result $degradedPlain -ProbeStatus complete
+    $armedReconfirmAudit = [pscustomobject]@{ Target = $armedTarget; Step = 3; Outcome = 'plain_suspect'; TreatmentVariant = 'gv_tcp_ramp';
+        StrategyNumber = 7; PlainSuccesses = 0; RampSuccesses = 1; MediaUrlHash = ('d' * 64) }
+    $armedProof = Get-AdaptiveRampAuditTransition -Audit $armedReconfirmAudit -Result $validRampResult -ProbeStatus complete
+    if ($armedSuspect.Outcome -ne 'plain_suspect' -or $armedProof.Outcome -ne 'plain_degraded_confirmed' -or $armedProof.Step -ne 0) {
+        throw 'Armed Ramp-first did not produce a proof-gated Ramp/plain/Ramp transition.'
+    }
     $wrongIpResult = $validPlainResult | Select-Object *; $wrongIpResult.target = [pscustomobject]@{ hostname = 'rr1-index.googlevideo.com'; destination_ip = '142.250.72.15'; profile_id = 2; scope = 'mark:4' }
     if ((Get-AdaptiveRampAuditTransition -Audit $transitionAudit -Result $wrongIpResult -ProbeStatus complete).Outcome -ne 'inconclusive') {
         throw 'Ramp audit accepted a media result for another IP.'
@@ -224,6 +234,11 @@ try {
     if ($null -eq $dueRamp -or $dueRamp.Key -ne $rampKey -or $dueRamp.GroupKey -ne 'gv1:rr:index' -or
         $dueRamp.TreatmentVariant -ne 'gv_tcp_ramp' -or $dueRamp.Step -ne 0) {
         throw 'Ramp audit scheduler did not select only the fresh, observed, media-ready exact target.'
+    }
+    $armedPendingTarget = $rampTarget | Select-Object *; $armedPendingTarget.ramp_state = 'pending'
+    $armedDueRamp = Get-AdaptiveDueRampAuditTarget -Targets @($armedPendingTarget) -State $rampState -Now $rampNow
+    if ($null -eq $armedDueRamp -or $armedDueRamp.TreatmentVariant -ne 'gv_tcp_ramp' -or $armedDueRamp.Step -ne 0) {
+        throw 'Armed Ramp-first did not schedule isolated Ramp-first on a fresh observed pool target.'
     }
     Save-AdaptiveRampAuditAttempt -State $rampState -Key $dueRamp.Key -GroupId $dueRamp.GroupKey -Outcome ramp_ok -RampSuccesses 1 -Step 1 -CandidateSetVersion $rampCatalog -MediaUrlHash ('d' * 64) -ProofTestId ('a' * 32) -StrategyNumber 7
     $rampState = Read-AdaptiveRampAuditState

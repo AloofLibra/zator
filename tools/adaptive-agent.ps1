@@ -640,17 +640,31 @@ if ($Watch) {
                                 $proofIds += [string]$result.test_id
                                 try {
                                     if ($proofIds.Count -ne 3 -or $proofIds -contains '') { throw 'Ramp degradation proof set is incomplete.' }
-                                    $revocation = Invoke-AdaptiveApi @{
-                                        action = 'ramp_exempt_revoke'; hostname = [string]$event.hostname
-                                        destination_ip = [string]$event.destination_ip; scope = [string]$event.scope
-                                        test_ids = ($proofIds -join ',')
+                                    if ($audit.Target.ramp_state -eq 'pending') {
+                                        $pool = Invoke-AdaptiveApi @{
+                                            action = 'ramp_pool_apply'; hostname = [string]$event.hostname
+                                            destination_ip = [string]$event.destination_ip; scope = [string]$event.scope
+                                            test_ids = ($proofIds -join ',')
+                                        }
+                                        if ($pool.status -ne 'ramp_default' -or $pool.basis -ne 'proof_verified' -or $pool.restart_required -ne $true) {
+                                            throw 'Router did not confirm proof-triggered Ramp-first activation.'
+                                        }
+                                        Write-Output 'Ramp-first was enabled for the configured Googlevideo IP pool after local media proof. Restart zapret2 to apply it.'
+                                    } elseif ($audit.Target.ramp_state -eq 'ramp_exempt') {
+                                        $revocation = Invoke-AdaptiveApi @{
+                                            action = 'ramp_exempt_revoke'; hostname = [string]$event.hostname
+                                            destination_ip = [string]$event.destination_ip; scope = [string]$event.scope
+                                            test_ids = ($proofIds -join ',')
+                                        }
+                                        if ($revocation.status -ne 'ramp_default' -or $revocation.destination_ip -ne [string]$event.destination_ip) {
+                                            throw 'Router did not confirm removal of the exact Ramp exemption.'
+                                        }
+                                        Write-Output ("Ramp was restored for {0} ({1}) after a verified Ramp/plain/Ramp comparison." -f $event.hostname, $event.destination_ip)
+                                    } else {
+                                        Write-Output ("Ramp-required media was confirmed for {0} ({1}); Ramp-first is already active." -f $event.hostname, $event.destination_ip)
                                     }
-                                    if ($revocation.status -ne 'ramp_default' -or $revocation.destination_ip -ne [string]$event.destination_ip) {
-                                        throw 'Router did not confirm removal of the exact Ramp exemption.'
-                                    }
-                                    Write-Output ("Ramp was restored for {0} ({1}) after a verified Ramp/plain/Ramp comparison." -f $event.hostname, $event.destination_ip)
                                 } catch {
-                                    Write-Output ("Ramp degradation was confirmed for {0}, but the exception could not be revoked: {1}" -f $event.hostname, $_.Exception.Message)
+                                    Write-Output ("Ramp/plain comparison confirmed for {0}, but the pool transition was not applied: {1}" -f $event.hostname, $_.Exception.Message)
                                 }
                             } elseif ($transition.Outcome -eq 'plain_suspect') {
                                 Write-Output ("Plain media degraded for {0}; running a Ramp control before any exception change." -f $event.hostname)

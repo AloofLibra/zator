@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-for tool in adaptive-agent.ps1 adaptive-agent-state.ps1 adaptive-agent-port.ps1 adaptive-agent-verdict.ps1 adaptive-agent-stats.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh; do
+for tool in adaptive-agent.ps1 adaptive-agent-state.ps1 adaptive-agent-port.ps1 adaptive-agent-verdict.ps1 adaptive-agent-stats.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
   grep -Eq "for tool in .*${tool}" "$ROOT/z2r.sh" || {
     echo "adaptive Windows client dependency is missing from runtime deployment: $tool" >&2; exit 1;
   }
@@ -26,6 +26,7 @@ chmod +x "$tmp/bin/id"
 chmod +x "$tmp/bin/chown"
 chmod +x "$tmp/bin/sleep"
 cp "$ROOT/tools/adaptive-pair.sh" "$tmp/zator/tools/adaptive-pair.sh"
+cp "$ROOT/tools/adaptive-ramp-proof.sh" "$tmp/zator/tools/adaptive-ramp-proof.sh"
 cp "$ROOT/lib/adaptive_rules.sh" "$tmp/zator/z2r_lib/adaptive_rules.sh"
 cp "$ROOT/lib/adaptive_lan_transport.sh" "$tmp/zator/z2r_lib/adaptive_lan_transport.sh"
 cp "$ROOT/lib/supersweep_transport.sh" "$ROOT/lib/config.sh" "$tmp/zator/z2r_lib/"
@@ -109,6 +110,22 @@ if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bas
   echo 'Ramp-first accepted a Googlevideo pool containing a private destination' >&2; exit 1
 fi
 printf '# googlevideo IPv4; generated=test\n142.250.72.14\n' > "$tmp/zator/lists/googlevideo-ipv4.txt"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-arm > "$tmp/ramp-arm.out"
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=0 &&
+   "$(cut -f2 "$tmp/zator/extra_strats/cache/adaptive/ramp-pool-armed")" = armed &&
+   "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/ramp-pool-armed")" = 600 &&
+   "$(cat "$tmp/ramp-arm.out")" == *'Production config is unchanged'* ]] || {
+  echo 'proof-triggered Ramp-first consent changed config or was not private' >&2; exit 1;
+}
+if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null 2>&1; then
+  echo 'manual Ramp-first enable bypassed an armed proof transition' >&2; exit 1
+fi
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-off > "$tmp/ramp-proof-off.out"
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=0 &&
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool" &&
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool-armed" ]] || {
+  echo 'cancelling proof-triggered Ramp-first changed config or left consent behind' >&2; exit 1;
+}
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null
 [[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=1 &&
    "$(cut -f3 "$tmp/zator/extra_strats/cache/adaptive/ramp-pool")" = manual_unverified &&

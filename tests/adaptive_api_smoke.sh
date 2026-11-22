@@ -5,12 +5,20 @@ grep -q 'cgi-bin/adaptive.cgi' "$ROOT/z2r.sh" || { echo 'adaptive API is not dep
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" Z2R_ADAPTIVE_NDM_ROOT="$tmp/no-ndm"
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/id" <<'ROOT_ID'
+#!/bin/sh
+echo 0
+ROOT_ID
+chmod +x "$tmp/bin/id"
 mkdir -p "$ZATOR_ROOT/extra_strats/cache/adaptive" "$ZATOR_ROOT/extra_strats/cache/orchestra" "$ZATOR_ROOT/z2r_lib" "$ZATOR_ROOT/tools" "$ZATOR_ROOT/lua" "$tmp/zapret2/nfq2" "$Z2R_ADAPTIVE_DIR"
+cp "$ROOT/tools/adaptive-ramp-proof.sh" "$ZATOR_ROOT/tools/adaptive-ramp-proof.sh"
+cp "$ROOT/tools/adaptive-pair.sh" "$ZATOR_ROOT/tools/adaptive-pair.sh"
 mkdir -p "$ZATOR_ROOT/files/fake"
 printf 'blob-A' > "$ZATOR_ROOT/files/fake/tls_clienthello_max_ru.bin"
 printf 'Example ISP - Test City\n' > "$ZATOR_ROOT/extra_strats/cache/provider.txt"
 cp "$ROOT/lib/adaptive_lan_transport.sh" "$ZATOR_ROOT/z2r_lib/"
-cp "$ROOT/lib/config.sh" "$ROOT/lib/orchestra_state.sh" "$ROOT/lib/adaptive_rules.sh" "$ROOT/lib/supersweep_probe.sh" "$ZATOR_ROOT/z2r_lib/"
+cp "$ROOT/lib/config.sh" "$ROOT/lib/orchestra_state.sh" "$ROOT/lib/adaptive_rules.sh" "$ROOT/lib/supersweep_probe.sh" "$ROOT/lib/googlevideo_ips.sh" "$ZATOR_ROOT/z2r_lib/"
 cp "$ROOT/lib/adaptive_queue.sh" "$ZATOR_ROOT/z2r_lib/"
 cat >> "$ZATOR_ROOT/z2r_lib/adaptive_lan_transport.sh" <<'RECOVERY_MOCK'
 adaptive_lan_transport_recover_stale() {
@@ -22,6 +30,7 @@ _adaptive_lan_controller_alive() { [[ "${Z2R_RECOVERY_TEST_LIVE_PID:-}" = "$1" ]
 RECOVERY_MOCK
 cp "$ROOT/orchestra/locked.lua" "$ZATOR_ROOT/lua/locked.lua"
 cp "$ROOT/lua/fake-adapt.lua" "$ZATOR_ROOT/lua/"
+cp "$ROOT/lua/wssize-ramp.lua" "$ZATOR_ROOT/lua/"
 cp "$ROOT/config.default" "$tmp/zapret2/config"
 mkdir -p "$tmp/zapret2/lua"
 printf 'module-A' > "$tmp/zapret2/lua/zapret-antidpi.lua"
@@ -476,7 +485,8 @@ printf '1\tpreexisting\tmanual_unverified\n' > "$ZATOR_ROOT/extra_strats/cache/a
 printf '1\trr2-index.googlevideo.com\t142.250.72.14\tmark:4\t%s\ttls-observed\tgv1:rr:index\tpending\t0\tunknown\n1\tbad.googlevideo.com.evil.org\t142.250.72.15\tdefault\t%s\ttls-observed\tgv1:exact:bad.googlevideo.com.evil.org\tpending\t0\tunknown\n1\tprivate.googlevideo.com\t192.168.1.1\tdefault\t%s\ttls-observed\tgv1:exact:private.googlevideo.com\tpending\t0\tunknown\n1\tstale.googlevideo.com\t142.250.72.16\tdefault\t%s\ttls-observed\tgv1:exact:stale.googlevideo.com\tpending\t0\tunknown\n' \
   "$now" "$now" "$now" "$(( now - 604801 ))" > "$Z2R_ADAPTIVE_DIR/ramp-targets.tsv"
 mkdir -p "$ZATOR_ROOT/lists"
-printf '142.250.72.14\n' > "$ZATOR_ROOT/lists/googlevideo-ipv4.txt"
+printf '# googlevideo IPv4; generated=smoke\n142.250.72.14\n' > "$ZATOR_ROOT/lists/googlevideo-ipv4.txt"
+printf '\n--lua-desync=wssize_ramp\n' >> "$ZAPRET2_ROOT/config"
 sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=0$/Z2R_WSSIZE_RAMP_ENABLE=1/' "$ZAPRET2_ROOT/config"
 ramp_targets="$(call_api 'action=ramp_targets')"
 [[ "$ramp_targets" == *'Status: 200 OK'* && "$ramp_targets" == *'"hostname":"rr2-index.googlevideo.com"'* &&
@@ -563,6 +573,38 @@ ramp_conflict_after_apply="$(call_api 'action=ramp_targets')"
 }
 conflict_apply="$(call_api "$proof_body")"
 [[ "$conflict_apply" == *'409 Conflict'* ]] || { echo 'Ramp exception was renewed despite a shared-IP conflict' >&2; exit 1; }
+arm_host=rr6-index.googlevideo.com arm_ip=142.250.72.18 arm_scope=mark:4
+printf '1\t%s\t%s\t%s\t%s\ttls-observed\tgv1:rr:index\tpending\t0\tunknown\n' "$arm_host" "$arm_ip" "$arm_scope" "$now" >> "$Z2R_ADAPTIVE_DIR/ramp-targets.tsv"
+printf '# googlevideo IPv4; generated=smoke\n142.250.72.14\n142.250.72.17\n142.250.72.18\n' > "$ZATOR_ROOT/lists/googlevideo-ipv4.txt"
+sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=1$/Z2R_WSSIZE_RAMP_ENABLE=0/' "$ZAPRET2_ROOT/config"
+rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$ZATOR_ROOT" ZAPRET2_ROOT="$ZAPRET2_ROOT" bash "$ROOT/tools/adaptive-pair.sh" ramp-pool-arm >/dev/null
+armed_targets="$(call_api 'action=ramp_targets')"
+[[ "$armed_targets" == *'"supported":true'* && "$armed_targets" == *"\"hostname\":\"$arm_host\""* &&
+   "$armed_targets" == *'"ramp_state":"pending"'* ]] || { echo "armed Ramp-first did not expose observed pending targets: $armed_targets" >&2; exit 1; }
+armed_lease="$(call_api "action=lease&hostname=$arm_host&destination_ip=$arm_ip&profile_id=2&local_strategy_number=7&scope=mark%3A4&recipe_id=googlevideo-tcp-media-v1&treatment_variant=gv_tcp_ramp")"
+[[ "$armed_lease" == *'Status: 200 OK'* ]] || { echo "armed proof could not start an isolated Ramp probe: $armed_lease" >&2; exit 1; }
+arm_ids=(00000000000000000000000000000008 00000000000000000000000000000009 0000000000000000000000000000000a)
+arm_treatments=(gv_tcp_ramp gv_tcp_plain gv_tcp_ramp)
+for i in 0 1 2; do
+  arm_id="${arm_ids[$i]}" treatment="${arm_treatments[$i]}" observed="$((now - 30 + i * 10))"
+  mkdir -p "$Z2R_ADAPTIVE_DIR/$arm_id"
+  if [[ "$treatment" = gv_tcp_ramp ]]; then
+    printf '{"schema_version":1,"test_id":"%s","route_verified":true,"queue_seen":true,"strategy_ack_seen":true,"syn_stage_confirmed":true,"late_ack_stage_confirmed":true,"transport":"OK","application":"OK","overall":"SUCCESS","reason":"media_ok","observed_at":%s,"target":{"hostname":"%s","destination_ip":"%s","ip_family":"ipv4","protocol":"tcp","port":443,"profile_id":2,"scope":"%s"},"strategy":{"fingerprint":"sha256:%064d","local_number":7,"catalog_version":"sha256:%064d"},"recipe_id":"googlevideo-tcp-media-v1","treatment_variant":"%s","client_profile":"curl-windows-media-v1","media_url_sha256":"%064d","media_bytes":1048576,"media_speed_bps":524288,"media_duration_ms":2000}\n' \
+      "$arm_id" "$observed" "$arm_host" "$arm_ip" "$arm_scope" 1 2 "$treatment" 3 > "$Z2R_ADAPTIVE_DIR/$arm_id/result.json"
+  else
+    printf '{"schema_version":1,"test_id":"%s","route_verified":true,"queue_seen":true,"strategy_ack_seen":true,"syn_stage_confirmed":false,"late_ack_stage_confirmed":false,"transport":"UNKNOWN","application":"UNKNOWN","overall":"INCONCLUSIVE","reason":"media_insufficient","observed_at":%s,"target":{"hostname":"%s","destination_ip":"%s","ip_family":"ipv4","protocol":"tcp","port":443,"profile_id":2,"scope":"%s"},"strategy":{"fingerprint":"sha256:%064d","local_number":7,"catalog_version":"sha256:%064d"},"recipe_id":"googlevideo-tcp-media-v1","treatment_variant":"%s","client_profile":"curl-windows-media-v1","media_url_sha256":"%064d","media_bytes":100,"media_speed_bps":10,"media_duration_ms":2000}\n' \
+      "$arm_id" "$observed" "$arm_host" "$arm_ip" "$arm_scope" 1 2 "$treatment" 3 > "$Z2R_ADAPTIVE_DIR/$arm_id/result.json"
+  fi
+done
+arm_id_csv="$(IFS=,; printf '%s' "${arm_ids[*]}")"
+armed_pool_apply="$(PATH="$tmp/bin:$PATH" call_api "action=ramp_pool_apply&hostname=$arm_host&destination_ip=$arm_ip&scope=mark%3A4&test_ids=$arm_id_csv")"
+[[ "$armed_pool_apply" == *'Status: 200 OK'* && "$armed_pool_apply" == *'"basis":"proof_verified"'* &&
+   "$armed_pool_apply" == *'"restart_required":true'* && "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$ZAPRET2_ROOT/config")" = Z2R_WSSIZE_RAMP_ENABLE=1 &&
+   "$(cut -f3 "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool")" = proof_verified &&
+   ! -e "$ZATOR_ROOT/extra_strats/cache/adaptive/ramp-pool-armed" ]] || { echo "Ramp/plain/Ramp proof did not enable the configured Googlevideo pool: $armed_pool_apply" >&2; exit 1; }
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$ZATOR_ROOT" ZAPRET2_ROOT="$ZAPRET2_ROOT" bash "$ROOT/tools/adaptive-pair.sh" ramp-pool-off >/dev/null
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$ZAPRET2_ROOT/config")" = Z2R_WSSIZE_RAMP_ENABLE=0 ]] || { echo 'proof-enabled Ramp pool did not roll back to the original disabled state' >&2; exit 1; }
 sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=1$/Z2R_WSSIZE_RAMP_ENABLE=0/' "$ZAPRET2_ROOT/config"
 ramp_disabled_targets="$(call_api 'action=ramp_targets')"
 [[ "$ramp_disabled_targets" != *'"ramp_state":"ramp_default"'* && "$ramp_disabled_targets" != *'"ramp_state":"ramp_exempt"'* ]] || {

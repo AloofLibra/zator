@@ -9,10 +9,12 @@ TOKEN_EXPIRY_FILE="$TOKEN_DIR/token.expires"
 MODE_FILE="$TOKEN_DIR/mode"
 DEFAULT_SCOPE_FILE="$TOKEN_DIR/apply-default-scope"
 RAMP_POOL_FILE="$TOKEN_DIR/ramp-pool"
+RAMP_POOL_ARM_FILE="$TOKEN_DIR/ramp-pool-armed"
 BASE="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
 EVENTS_FILE="${Z2R_ADAPTIVE_EVENTS_FILE:-$BASE/events.tsv}"
 RAMP_TARGETS_FILE="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}"
 [ -r "$ROOT/z2r_lib/adaptive_queue.sh" ] && . "$ROOT/z2r_lib/adaptive_queue.sh"
+[ -r "$ROOT/tools/adaptive-ramp-proof.sh" ] && . "$ROOT/tools/adaptive-ramp-proof.sh"
 if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transport.sh" ]; then
   . "$ROOT/z2r_lib/config.sh"
   . "$ROOT/z2r_lib/adaptive_lan_transport.sh"
@@ -25,7 +27,7 @@ if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transpor
 fi
 Z2R_ADAPTIVE_LOCK_DIR="${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}"
 action="${1:-create}"
-case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-on|ramp-pool-off|pause|events|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-on|ramp-pool-off|pause|events|clear-events]' >&2; exit 2 ;; esac
+case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-proof-on|ramp-pool-off|pause|events|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-off|pause|events|clear-events]' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root on the router.' >&2; exit 1; }
 [ ! -L "$TOKEN_DIR" ] || { echo 'Refusing a symlinked adaptive token directory.' >&2; exit 1; }
 adaptive_mode() {
@@ -82,26 +84,102 @@ adaptive_ramp_pool_fingerprint() {
   done | sha256sum | awk '{print $1}'
 }
 adaptive_ramp_pool_write_state() {
-  local ownership="$1" fingerprint="${2:-}" tmp
+  local ownership="$1" basis="${2:-manual_unverified}" fingerprint="${3:-}" proof="${4:-}" tmp
   [[ "$ownership" = managed || "$ownership" = preexisting ]] || return 1
   if [ "$ownership" = managed ]; then [[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || return 1
   else [ -z "$fingerprint" ] || return 1; fi
+  case "$basis" in
+    manual_unverified) [ -z "$proof" ] || return 1 ;;
+    proof_verified) [[ "$ownership" = managed && "$proof" =~ ^[a-f0-9]{64}$ ]] || return 1 ;;
+    *) return 1 ;;
+  esac
   mkdir -p "$TOKEN_DIR" || return 1
   [ ! -L "$TOKEN_DIR" ] && [ ! -L "$RAMP_POOL_FILE" ] || return 1
   tmp="$(mktemp "$TOKEN_DIR/.ramp-pool.XXXXXX")" || return 1
   (umask 077; if [ "$ownership" = managed ]; then
-    printf '1\tmanaged\tmanual_unverified\t%s\n' "$fingerprint" > "$tmp"
+    if [ "$basis" = proof_verified ]; then printf '1\tmanaged\t%s\t%s\t%s\n' "$basis" "$fingerprint" "$proof" > "$tmp"
+    else printf '1\tmanaged\t%s\t%s\n' "$basis" "$fingerprint" > "$tmp"; fi
   else
-    printf '1\tpreexisting\tmanual_unverified\n' > "$tmp"
+    printf '1\tpreexisting\t%s\n' "$basis" > "$tmp"
   fi) && chmod 600 "$tmp" && mv -f "$tmp" "$RAMP_POOL_FILE" || { rm -f "$tmp"; return 1; }
 }
 adaptive_ramp_pool_enabled() {
-  local version ownership basis fingerprint extra
+  local version ownership basis fingerprint extra proof
   [ -f "$RAMP_POOL_FILE" ] && [ ! -L "$RAMP_POOL_FILE" ] && [ "$(wc -c < "$RAMP_POOL_FILE")" -le 256 ] || return 1
   IFS=$'\t' read -r version ownership basis fingerprint extra < "$RAMP_POOL_FILE" || return 1
-  [ "$basis" = manual_unverified ] || return 1
-  if [ "$ownership" = managed ]; then [[ "$version" = 1 && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]]
-  else [[ "$version" = 1 && "$ownership" = preexisting && -z "$fingerprint" && -z "$extra" ]]; fi
+  if [ "$ownership" = managed ]; then
+    if [ "$basis" = manual_unverified ]; then [[ "$version" = 1 && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]]
+    else IFS=$'\t' read -r version ownership basis fingerprint extra proof < "$RAMP_POOL_FILE" || return 1
+      [[ "$version" = 1 && "$ownership" = managed && "$basis" = proof_verified && "$fingerprint" =~ ^[a-f0-9]{64}$ && "$extra" =~ ^[a-f0-9]{64}$ && -z "$proof" ]]
+    fi
+  else [[ "$version" = 1 && "$ownership" = preexisting && "$basis" = manual_unverified && -z "$fingerprint" && -z "$extra" ]]; fi
+}
+adaptive_ramp_pool_armed() {
+  local version state fingerprint extra current
+  [ -f "$RAMP_POOL_ARM_FILE" ] && [ ! -L "$RAMP_POOL_ARM_FILE" ] && [ "$(wc -c < "$RAMP_POOL_ARM_FILE")" -le 256 ] || return 1
+  IFS=$'\t' read -r version state fingerprint extra < "$RAMP_POOL_ARM_FILE" || return 1
+  [[ "$version" = 1 && "$state" = armed && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] || return 1
+  [ "$(adaptive_mode)" = AGENT_BETA ] && [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || return 1
+  [ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')" = 0 ] || return 1
+  current="$(adaptive_ramp_pool_fingerprint)" || return 1
+  [ "$fingerprint" = "$current" ]
+}
+adaptive_ramp_pool_arm() {
+  local current fingerprint tmp
+  [ "$(adaptive_mode)" = AGENT_BETA ] && [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || {
+    echo 'Proof-triggered Ramp-first requires AGENT_BETA with explicit LAN-wide scope consent.' >&2; return 1;
+  }
+  adaptive_ramp_pool_supported || { echo 'Ramp-first is unavailable on this platform or its Googlevideo pool is not ready.' >&2; return 1; }
+  current="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
+  [ "$current" = 0 ] || { echo 'Ramp is already enabled; use ramp-pool-on for explicit manual consent.' >&2; return 1; }
+  [ ! -e "$RAMP_POOL_FILE" ] && [ ! -e "$RAMP_POOL_ARM_FILE" ] || { echo 'Ramp pool consent or proof is already active.' >&2; return 1; }
+  fingerprint="$(adaptive_ramp_pool_fingerprint)" || return 1
+  mkdir -p "$TOKEN_DIR" || return 1
+  tmp="$(mktemp "$TOKEN_DIR/.ramp-pool-armed.XXXXXX")" || return 1
+  printf '1\tarmed\t%s\n' "$fingerprint" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$RAMP_POOL_ARM_FILE" || { rm -f "$tmp"; return 1; }
+  echo 'Ramp-first proof armed for observed Googlevideo targets. Production config is unchanged; Ramp will be enabled only after a route-verified Ramp/plain/Ramp media proof.'
+}
+adaptive_ramp_pool_enable_proven() {
+  local host="$1" ip="$2" scope="$3" ids="$4" proof current fingerprint config ramp_ipset now
+  local ver row_host row_ip row_scope seen provenance group state dns_expiry media extra exact=0 conflict=0
+  proof="$(adaptive_ramp_proof_validate "$ids" "$host" "$ip" "$scope")" || {
+    echo 'Ramp-first controller results did not verify.' >&2; return 1;
+  }
+  adaptive_ramp_pool_armed || { echo 'Ramp-first proof consent or configuration changed; refusing automatic enable.' >&2; return 1; }
+  config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  current="$(config_get_var "$config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
+  [ "$current" = 0 ] || { echo 'Ramp enable flag changed during proof; refusing automatic enable.' >&2; return 1; }
+  _adaptive_lan_public_ipv4_valid "$ip" && [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] || return 1
+  if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 1; fi
+  now="$(date +%s)" || return 1
+  [[ -r "$RAMP_TARGETS_FILE" && ! -L "$RAMP_TARGETS_FILE" ]] || return 1
+  while IFS=$'\t' read -r ver row_host row_ip row_scope seen provenance group state dns_expiry media extra || [[ -n "$ver$row_host$row_ip" ]]; do
+    [[ "$ver" = 1 && "$provenance" = tls-observed && "$seen" =~ ^[0-9]{1,10}$ ]] || continue
+    (( seen >= now - 86400 && seen <= now + 60 )) || continue
+    [[ "$dns_expiry" =~ ^[0-9]{1,10}$ ]] && (( dns_expiry == 0 || dns_expiry > now )) || continue
+    if [[ "$row_ip" = "$ip" && ( "$row_host" != "$host" || "$row_scope" != "$scope" ) ]] ||
+       [[ "$row_host" = "$host" && ( "$row_ip" != "$ip" || "$row_scope" != "$scope" ) ]] ||
+       [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$scope" && "$state" = conflict ]]; then conflict=1; fi
+    [[ "$row_host" = "$host" && "$row_ip" = "$ip" && "$row_scope" = "$scope" ]] && exact=1
+  done < "$RAMP_TARGETS_FILE"
+  (( exact && ! conflict )) || { echo 'Ramp-first proof target is no longer an exact, conflict-free observation.' >&2; return 1; }
+  ramp_ipset="$(config_get_var "$config" Z2R_WSSIZE_RAMP_IPSET 2>/dev/null | tr -d '"\047')"
+  case "$ramp_ipset" in /opt/zator/*) ramp_ipset="$ROOT/${ramp_ipset#/opt/zator/}" ;; /opt/zapret2/*) ramp_ipset="${ZAPRET2_ROOT:-/opt/zapret2}/${ramp_ipset#/opt/zapret2/}" ;; esac
+  [ -r "$ramp_ipset" ] && [ ! -L "$ramp_ipset" ] && grep -Fqx -- "$ip" "$ramp_ipset" || {
+    echo 'Ramp-first proof target is no longer in the configured Googlevideo pool.' >&2; return 1;
+  }
+  fingerprint="$(adaptive_ramp_pool_fingerprint)" || return 1
+  adaptive_ramp_pool_set_config 1 || return 1
+  if ! adaptive_ramp_pool_write_state managed proof_verified "$fingerprint" "$proof"; then
+    adaptive_ramp_pool_set_config 0 || echo 'WARNING: Ramp config rollback failed after proof-state write failure.' >&2
+    return 1
+  fi
+  rm -f "$RAMP_POOL_ARM_FILE" || {
+    adaptive_ramp_pool_set_config 0 || echo 'WARNING: Ramp config rollback failed after arm-state cleanup failure.' >&2
+    rm -f "$RAMP_POOL_FILE"
+    return 1
+  }
+  echo 'Ramp-first enabled for the configured Googlevideo IP pool after local media proof. Restart zapret2 to apply it.'
 }
 adaptive_ramp_pool_set_config() {
   local enabled="$1" config="${ZAPRET2_ROOT:-/opt/zapret2}/config" tmp
@@ -119,6 +197,7 @@ adaptive_ramp_pool_enable() {
     echo 'Ramp-first requires AGENT_BETA with explicit LAN-wide scope consent.' >&2; return 1;
   }
   adaptive_ramp_pool_supported || { echo 'Ramp-first is unavailable on this platform or its Googlevideo pool is not ready.' >&2; return 1; }
+  [ ! -e "$RAMP_POOL_ARM_FILE" ] || { echo 'Proof-triggered Ramp-first is armed; use ramp-pool-off before choosing manual enable.' >&2; return 1; }
   if [ -e "$RAMP_POOL_FILE" ]; then
     adaptive_ramp_pool_enabled || { echo 'Ramp pool state is invalid; refusing to overwrite it.' >&2; return 1; }
     echo 'Ramp-first is already enabled with explicit manual_unverified consent.'
@@ -133,7 +212,7 @@ adaptive_ramp_pool_enable() {
   fi
   adaptive_ramp_pool_set_config 1 || { echo 'Could not atomically enable the Googlevideo Ramp pool.' >&2; return 1; }
   fingerprint="$(adaptive_ramp_pool_fingerprint)" || fingerprint=
-  if ! adaptive_ramp_pool_write_state managed "$fingerprint"; then
+  if ! adaptive_ramp_pool_write_state managed manual_unverified "$fingerprint"; then
     adaptive_ramp_pool_set_config 0 || echo 'WARNING: Ramp rollback failed; inspect the config before continuing.' >&2
     echo 'Could not save Ramp-first ownership state.' >&2
     return 1
@@ -141,15 +220,23 @@ adaptive_ramp_pool_enable() {
   echo 'Ramp-first enabled for the configured Googlevideo IP pool (basis: manual_unverified). Restart zapret2 to apply it.'
 }
 adaptive_ramp_pool_restore() {
-  local version ownership basis fingerprint extra current current_fingerprint
+  local version ownership basis fingerprint extra proof current current_fingerprint
+  if [ -e "$RAMP_POOL_ARM_FILE" ]; then
+    adaptive_ramp_pool_armed || { echo 'Ramp-first proof arm is invalid or stale; it was not removed.' >&2; return 1; }
+    rm -f "$RAMP_POOL_ARM_FILE" || return 1
+  fi
   [ -e "$RAMP_POOL_FILE" ] || return 0
   [ -f "$RAMP_POOL_FILE" ] && [ ! -L "$RAMP_POOL_FILE" ] && [ "$(wc -c < "$RAMP_POOL_FILE")" -le 256 ] || {
     echo 'Ramp-first state file is unsafe; it was not removed.' >&2; return 1;
   }
   IFS=$'\t' read -r version ownership basis fingerprint extra < "$RAMP_POOL_FILE" || return 1
-  [ "$basis" = manual_unverified ] || { echo 'Ramp-first state is invalid; config was left unchanged.' >&2; return 1; }
+  [[ "$basis" = manual_unverified || "$basis" = proof_verified ]] || { echo 'Ramp-first state is invalid; config was left unchanged.' >&2; return 1; }
   if [ "$ownership" = managed ]; then
-    [[ "$version" = 1 && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] || { echo 'Ramp-first state is invalid.' >&2; return 1; }
+    if [ "$basis" = proof_verified ]; then
+      IFS=$'\t' read -r version ownership basis fingerprint extra proof < "$RAMP_POOL_FILE" || return 1
+      [[ "$version" = 1 && "$ownership" = managed && "$basis" = proof_verified && "$fingerprint" =~ ^[a-f0-9]{64}$ && "$extra" =~ ^[a-f0-9]{64}$ && -z "$proof" ]] || { echo 'Ramp-first state is invalid.' >&2; return 1; }
+    else [[ "$version" = 1 && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] || { echo 'Ramp-first state is invalid.' >&2; return 1; }
+    fi
     current="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
     if [ "$current" = 1 ]; then
       current_fingerprint="$(adaptive_ramp_pool_fingerprint 2>/dev/null || true)"
@@ -160,7 +247,7 @@ adaptive_ramp_pool_restore() {
         echo 'Ramp settings changed after Beta enabled them; preserving the current manual config.'
       fi
     fi
-  elif [[ "$version" = 1 && "$ownership" = preexisting && -z "$fingerprint" && -z "$extra" ]]; then
+elif [[ "$version" = 1 && "$ownership" = preexisting && "$basis" = manual_unverified && -z "$fingerprint" && -z "$extra" ]]; then
     echo 'The Ramp setting predated Beta; preserving the manual config.'
   else
     echo 'Ramp-first state is invalid; config was left unchanged.' >&2; return 1
@@ -374,6 +461,17 @@ fi
 if [ "$action" = ramp-pool-on ]; then
   adaptive_token_valid || { echo 'Pair the Windows agent first with: adaptive-pair.sh create' >&2; exit 1; }
   adaptive_ramp_pool_enable || exit 1
+  exit 0
+fi
+if [ "$action" = ramp-pool-arm ]; then
+  adaptive_token_valid || { echo 'Pair the Windows agent first with: adaptive-pair.sh create' >&2; exit 1; }
+  adaptive_ramp_pool_arm || exit 1
+  exit 0
+fi
+if [ "$action" = ramp-pool-proof-on ]; then
+  adaptive_token_valid || { echo 'Pair the Windows agent first with: adaptive-pair.sh create' >&2; exit 1; }
+  [ "$#" = 5 ] || { echo 'Proof activation is reserved for the authenticated adaptive API.' >&2; exit 2; }
+  adaptive_ramp_pool_enable_proven "$2" "$3" "$4" "$5" || exit 1
   exit 0
 fi
 if [ "$action" = ramp-pool-off ]; then

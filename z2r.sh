@@ -697,7 +697,7 @@ circular_runtime_update_from_repo() {
 adaptive_runtime_update_from_repo() {
   local tool
   mkdir -p "$ZATOR_ROOT/tools" || return 1
-  for tool in adaptive-agent-verdict.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-port.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh; do
+  for tool in adaptive-agent-verdict.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-port.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
     z2r_download_project_file "$ZATOR_ROOT/tools/$tool" "tools/$tool" || return 1
     chmod 700 "$ZATOR_ROOT/tools/$tool" || return 1
   done

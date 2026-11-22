@@ -145,7 +145,7 @@ mkdir -p "$STAGE"
 tar -xzf "$DIST/zator-full.tar.gz" -C "$STAGE" || fail "распаковка full"
 grep -q '^ZATOR_VERSION="..*"$' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без версии"
 grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без TRACKING"
-for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh; do
+for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
   [ -s "$STAGE/tools/$tool" ] || fail "full архив без tools/$tool"
   grep -q "^tools/$tool|/opt/zator/tools/$tool|auto|" "$STAGE/extra_strats/cache/deploy/manifest.tsv" \
     || fail "manifest full архива без tools/$tool"
@@ -154,7 +154,7 @@ done
 CORE_STAGE="$WORK/core-unpack"
 mkdir -p "$CORE_STAGE"
 tar -xzf "$DIST/zator-core.tar.gz" -C "$CORE_STAGE" || fail "распаковка core"
-for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh; do
+for tool in adaptive-agent-port.ps1 adaptive-agent-state.ps1 adaptive-agent-stats.ps1 adaptive-agent-verdict.ps1 adaptive-agent.ps1 adaptive-controller.sh adaptive-pair.sh adaptive-lan-reconcile.sh adaptive-ramp-proof.sh; do
   [ -s "$CORE_STAGE/tools/$tool" ] || fail "core архив без tools/$tool"
 done
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"

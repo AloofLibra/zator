@@ -418,7 +418,7 @@ function Get-AdaptiveDueRampAuditTarget {
     }
     $eligible = @()
     foreach ($target in ($Targets | Select-Object -First 128)) {
-        if ($null -eq $target -or $target.provenance -ne 'tls-observed' -or $target.ramp_state -notin @('ramp_default', 'ramp_exempt') -or
+        if ($null -eq $target -or $target.provenance -ne 'tls-observed' -or $target.ramp_state -notin @('ramp_default', 'ramp_exempt', 'pending') -or
             $target.media_recipe_available -notin @('available', 'unknown') -or
             $target.hostname -notmatch '^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\.googlevideo\.com$' -or
             -not (Test-AdaptiveRampPublicIpv4 ([string]$target.destination_ip)) -or
@@ -529,7 +529,7 @@ function Get-AdaptiveRampAuditTransition {
     if (-not $sameTarget -or -not $sameMedia -or $Result.route_verified -ne $true -or $Result.queue_seen -ne $true -or
         $Result.strategy_ack_seen -ne $true) { return $empty }
     if ($expectedTreatment -eq 'gv_tcp_plain' -and $Audit.Step -eq 1 -and
-        $target.ramp_state -eq 'ramp_exempt' -and $Result.syn_stage_confirmed -eq $false -and
+        $target.ramp_state -in @('ramp_exempt', 'pending', 'ramp_default') -and $Result.syn_stage_confirmed -eq $false -and
         $Result.late_ack_stage_confirmed -eq $false -and $Result.overall -ne 'SUCCESS' -and
         $Result.reason -in @('media_insufficient', 'transport_timeout', 'target_unavailable')) {
         return @{ Outcome = 'plain_suspect'; Step = 3; PlainSuccesses = 0; RampSuccesses = [int]$Audit.RampSuccesses; MediaUrlHash = $mediaUrlHash }
