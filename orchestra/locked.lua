@@ -1797,11 +1797,6 @@ function circular_locked(ctx, desync)
   local profile = (host and host ~= "") and host or base_profile
   if quic_initial and host and host ~= "" then
     adaptive_browser_capture_quic_initial(desync, host, base_profile, scope)
-    if type(dis_ipdst) == "function" and type(ntop) == "function" and desync.track then
-      local dst = dis_ipdst(desync.dis)
-      local dst_ip = dst and ntop(dst) or nil
-      if dst_ip and dst_ip ~= "" then adaptive_observe_seen(host, dst_ip, base_profile, "quic", scope, desync.track) end
-    end
   end
   if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, gate_host) then
     DLOG("circular_locked: excluded by hostlist profile="..profile.." host="..tostring(gate_host))
@@ -1817,6 +1812,13 @@ function circular_locked(ctx, desync)
     DLOG("circular_locked: no substring match profile="..profile.." host="..tostring(gate_host))
     if ctx then lua_cutoff(ctx) end
     return circular_locked_passthrough(ctx, desync)
+  end
+
+  -- Only expose QUIC targets to browser trials after every configured list gate.
+  if quic_initial and host and host ~= "" and type(dis_ipdst) == "function" and type(ntop) == "function" and desync.track then
+    local dst = dis_ipdst(desync.dis)
+    local dst_ip = dst and ntop(dst) or nil
+    if dst_ip and dst_ip ~= "" then adaptive_observe_seen(host, dst_ip, base_profile, "quic", scope, desync.track) end
   end
 
   local hrec

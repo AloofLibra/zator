@@ -7,6 +7,10 @@ import tempfile
 from lupa import LuaRuntime
 
 repo = Path(__file__).resolve().parents[1]
+lua_source = (repo / "orchestra/locked.lua").read_text(encoding="utf-8")
+quic_observation = lua_source.index('adaptive_observe_seen(host, dst_ip, base_profile, "quic", scope, desync.track)')
+assert quic_observation > lua_source.index('if hostlist_has_host(desync.arg and desync.arg.exclude_hostlist, gate_host) then')
+assert quic_observation > lua_source.index('if include_substrings and not substring_hostlist_matches_desync(desync, include_substrings, gate_host) then')
 with tempfile.TemporaryDirectory(prefix="zator-browser-trial-") as temp:
     root = Path(temp)
     state = root / "extra_strats/cache/adaptive"
