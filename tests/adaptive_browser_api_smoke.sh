@@ -25,6 +25,13 @@ printf '1\t%s\t%s\t192.168.1.42\tmark:7\t%s\n' "$client_id" "$hash" "$(( $(date 
 chmod 600 "$Z2R_ADAPTIVE_BROWSER_CLIENTS_FILE"
 
 origin=chrome-extension://abcdefghijklmnopabcdefghijklmnop
+browser_attempt_post() {
+  local action="$1" attempt_id="$2"
+  local request="schema_version=1&action=$action&attempt_id=$attempt_id"
+  printf '%s' "$request" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#request}" \
+    HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 \
+    bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
+}
 body='schema_version=1&action=browser_hello'
 response="$(printf '%s' "$body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 \
@@ -275,6 +282,33 @@ for inactive_mode in OFF OBSERVE TEST_ONLY; do
   grep -q '"status":"MODE_DISABLED"' <<< "$mode_response" || { echo "browser API applied a trial while mode=$inactive_mode" >&2; exit 1; }
 done
 printf 'AGENT_BETA\n' > "$mode_file"
+
+# Cancel and expiry are terminal cleanup paths: removing the short-lived trial
+# must return future traffic to the pre-existing policy and never choose a new
+# candidate on its own.
+cancel_attempt=10101010101010101010101010101010
+cancel_generation=101
+cancel_now="$(date +%s)"
+cancel_expires=$((cancel_now + 30))
+adaptive_browser_attempt_write "$cancel_attempt" "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls main_frame_network_failure WAIT_NEW_FLOW 2 - "$cancel_now" "$cancel_expires" "$cancel_generation"
+adaptive_browser_trial_add "$cancel_attempt" "$cancel_generation" "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls 2 - "$cancel_now" "$cancel_expires"
+cancel_response="$(browser_attempt_post browser_cancel_attempt "$cancel_attempt")"
+grep -q '"state":"CANCELLED"' <<< "$cancel_response"
+! grep -q "$cancel_attempt" "$(adaptive_browser_trials_file)"
+[[ ! -e "$(adaptive_browser_flow_dir)/$cancel_attempt.$cancel_generation.tsv" ]]
+
+expired_attempt=20202020202020202020202020202020
+expired_generation=102
+expired_now="$(date +%s)"
+expired_created=$((expired_now - 20))
+expired_expires=$((expired_now - 1))
+adaptive_browser_attempt_write "$expired_attempt" "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls main_frame_network_failure WAIT_NEW_FLOW 3 - "$expired_created" "$expired_expires" "$expired_generation"
+adaptive_browser_trial_add "$expired_attempt" "$expired_generation" "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls 3 - "$expired_created" "$((expired_now + 30))"
+expired_response="$(browser_attempt_post browser_attempt_status "$expired_attempt")"
+grep -q '"state":"EXPIRED"' <<< "$expired_response"
+! grep -q "$expired_attempt" "$(adaptive_browser_trials_file)"
+[[ ! -e "$(adaptive_browser_flow_dir)/$expired_attempt.$expired_generation.tsv" ]]
+
 now="$(date +%s)"
 adaptive_browser_attempt_write aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$client_id" 192.168.1.42 default example.org 8.8.8.8 1 tls main_frame_network_failure CONFIRMED_FAILURE 2 - "$now" "$((now + 45))" 1
 adaptive_browser_candidate_confirmed_failed "$client_id" example.org 8.8.8.8 1 tls default 2 "$now"
