@@ -621,4 +621,41 @@ done
 [[ ! -e "$Z2R_ADAPTIVE_BROWSER_DIR/ramp-canary/session.tsv" ]]
 [[ "$(awk -F '\t' 'NR==1 {print $5+0}' "$Z2R_ADAPTIVE_RAMP_EXEMPT_FILE")" -ge "$(( $(date +%s) + 800 ))" ]]
 adaptive_browser_ramp_canary_cooldown_active "$(date +%s)"
+
+# Cancel and expiry must revoke only the canary-owned interim exemption and
+# clear the bounded session/trial state.
+rm -f "$Z2R_ADAPTIVE_RAMP_EXEMPT_FILE"
+stage_cleanup_canary() {
+  local attempt_id="$1" generation="$2" session_id="$3" expiry="$4"
+  local now lease proof
+  now="$(date +%s)"
+  proof="$(printf '%s' "$session_id|$client_id|$canary_host|$canary_ip|mark:7" | sha256sum | awk '{print $1}')"
+  lease="$proof"
+  adaptive_browser_attempt_write "$attempt_id" "$client_id" 192.168.1.42 mark:7 "$canary_host" "$canary_ip" 2 googlevideo-tcp \
+    ramp_canary WAIT_NEW_FLOW "$canary_strategy" "$canary_fingerprint" "$now" "$expiry" "$generation"
+  adaptive_browser_trial_add "$attempt_id" "$generation" "$client_id" 192.168.1.42 mark:7 "$canary_host" "$canary_ip" 2 googlevideo-tcp \
+    "$canary_strategy" "$canary_fingerprint" "$now" "$expiry" ramp_canary
+  adaptive_browser_ramp_canary_lease_apply "$canary_host" "$canary_ip" mark:7 "$lease" "$((now + 900))"
+  adaptive_browser_ramp_canary_session_begin "$session_id" "$client_id" 192.168.1.42 mark:7 "$canary_host" "$canary_ip" \
+    "$canary_strategy" "$canary_fingerprint" plain1 "$attempt_id" 99999999999999999999999999999999 "$lease" "$now"
+}
+cancel_attempt=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee1
+cancel_session=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2
+cancel_now="$(date +%s)"
+stage_cleanup_canary "$cancel_attempt" 71 "$cancel_session" "$((cancel_now + 300))"
+cancel_canary_response="$(browser_attempt_post browser_cancel_attempt "$cancel_attempt")"
+grep -q '"state":"CANCELLED"' <<< "$cancel_canary_response"
+[[ ! -e "$(adaptive_browser_ramp_canary_session_file)" && ! -s "$Z2R_ADAPTIVE_RAMP_EXEMPT_FILE" ]]
+! grep -q "$cancel_attempt" "$(adaptive_browser_trials_file)"
+
+expired_attempt=fffffffffffffffffffffffffffffff1
+expired_session=fffffffffffffffffffffffffffffff2
+expired_now="$(date +%s)"
+stage_cleanup_canary "$expired_attempt" 72 "$expired_session" "$((expired_now + 300))"
+adaptive_browser_attempt_write "$expired_attempt" "$client_id" 192.168.1.42 mark:7 "$canary_host" "$canary_ip" 2 googlevideo-tcp \
+  ramp_canary WAIT_NEW_FLOW "$canary_strategy" "$canary_fingerprint" "$((expired_now - 301))" "$((expired_now - 1))" 72
+expired_canary_response="$(browser_attempt_post browser_attempt_status "$expired_attempt")"
+grep -q '"state":"EXPIRED"' <<< "$expired_canary_response"
+[[ ! -e "$(adaptive_browser_ramp_canary_session_file)" && ! -s "$Z2R_ADAPTIVE_RAMP_EXEMPT_FILE" ]]
+! grep -q "$expired_attempt" "$(adaptive_browser_trials_file)"
 echo 'adaptive browser API smoke: OK'
