@@ -467,7 +467,7 @@ if ($Watch) {
                     } else {
                         $key = 'event|{0}|{1}|{2}|{3}|{4}' -f $_.hostname, $_.destination_ip, $_.profile_id, $_.scope, $_.observed_at
                     }
-                    if ($_.status -in @('suspected_failure', 'active_rule_degraded')) {
+                    if ($_.status -in @('needs_verify', 'suspected_failure', 'active_rule_degraded')) {
                         $retryKey = Get-AdaptiveFailureRetryKey -Event $_
                         if (-not (Test-AdaptiveFailureRetryDue -State $failureRetryState -Key $retryKey)) { return $false }
                         [void]$processed.Remove($key)
@@ -586,7 +586,7 @@ if ($Watch) {
                     }
                     if ($event.status -ne 'ramp_audit' -and (-not $Explore -or $event.status -ne 'seen')) { [void]$processed.Add($key) }
                     if ($processed.Count -gt 512) { $processed.Clear() }
-                    $eventAckEligible = $event.status -notin @('suspected_failure', 'active_rule_degraded')
+                    $eventAckEligible = $event.status -notin @('needs_verify', 'suspected_failure', 'active_rule_degraded')
                     $eventRetryDelay = 60
                     if ($event.status -eq 'ramp_audit') {
                         Send-AdaptiveAgentStatus -Stage 'ramp_audit'
@@ -742,8 +742,10 @@ if ($Watch) {
                                             -DurationMs ([long]$searchSummary.duration_ms) -TimeToFirstSuccessMs ([long]$searchSummary.time_to_first_success_ms)
                                     }
                                 } catch { }
-                                if ($event.status -in @('suspected_failure', 'active_rule_degraded')) {
+                                if ($event.status -in @('needs_verify', 'suspected_failure', 'active_rule_degraded')) {
                                     $eventAckEligible = Test-AdaptiveFailureEventAckEligible -SearchOutput ([string]$searchRun.output)
+                                }
+                                if ($event.status -in @('suspected_failure', 'active_rule_degraded')) {
                                     try {
                                         $searchSummary = [string]$searchRun.output | ConvertFrom-Json -ErrorAction Stop
                                         if ($searchSummary.schema_version -eq 1 -and $searchSummary.status -eq 'stopped_rate_limit') {
@@ -754,7 +756,7 @@ if ($Watch) {
                             }
                         }
                     } finally {
-                        if ($event.status -in @('suspected_failure', 'active_rule_degraded') -and -not $eventPreempted) {
+                        if ($event.status -in @('needs_verify', 'suspected_failure', 'active_rule_degraded') -and -not $eventPreempted) {
                             try {
                                 if ($eventAckEligible) {
                                     Clear-AdaptiveFailureRetry -State $failureRetryState -Key (Get-AdaptiveFailureRetryKey -Event $event)
@@ -780,7 +782,7 @@ if ($Watch) {
                             }
                             catch { [Console]::Error.WriteLine("Adaptive exploration: could not persist priority cooldown: $($_.Exception.Message)") }
                         }
-                        if ($event.request_id -match '^[a-f0-9]{32}$' -and $event.status -ne 'ramp_audit' -and -not $eventPreempted) {
+                        if ($event.request_id -match '^[a-f0-9]{32}$' -and $event.status -ne 'ramp_audit' -and -not $eventPreempted -and $eventAckEligible) {
                             try { Invoke-AdaptiveApi @{ action = 'ack_request'; request_id = [string]$event.request_id } | Out-Null }
                             catch { [Console]::Error.WriteLine("Adaptive watch: could not acknowledge request: $($_.Exception.Message)") }
                         }

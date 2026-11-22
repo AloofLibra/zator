@@ -106,7 +106,7 @@ function Get-AdaptiveWatchFailureCooldowns {
         [long]$Now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
     $cooldowns = @()
     foreach ($event in $Events) {
-        if ($event.protocol -ne 'tls' -or $event.status -notin @('suspected_failure', 'active_rule_degraded') -or
+        if ($event.protocol -ne 'tls' -or $event.status -notin @('needs_verify', 'suspected_failure', 'active_rule_degraded') -or
             [string]$event.hostname -notmatch '^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$' -or
             [string]$event.destination_ip -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}$' -or
             [int]$event.profile_id -lt 1 -or [int]$event.profile_id -gt 4 -or
@@ -128,7 +128,7 @@ function Test-AdaptiveWatchCooldownPending {
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Events,
         [long]$Now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
     foreach ($event in $Events) {
-        if ($event.protocol -ne 'tls' -or $event.status -notin @('suspected_failure', 'active_rule_degraded') -or
+        if ($event.protocol -ne 'tls' -or $event.status -notin @('needs_verify', 'suspected_failure', 'active_rule_degraded') -or
             [string]$event.hostname -notmatch '^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$' -or
             [string]$event.destination_ip -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}$' -or
             [int]$event.profile_id -lt 1 -or [int]$event.profile_id -gt 4 -or

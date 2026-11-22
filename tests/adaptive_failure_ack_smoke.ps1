@@ -34,11 +34,17 @@ $source = Get-Content -LiteralPath $agentPath -Raw
 if ($source -notmatch '-and \$eventAckEligible\)\s*\{') {
     throw 'Watch does not gate persisted event acknowledgment on the failure retry policy.'
 }
+if ($source -notmatch "event\.status -in @\('needs_verify', 'suspected_failure', 'active_rule_degraded'\)\)\s*\{\s*\`$eventAckEligible = Test-AdaptiveFailureEventAckEligible" -or
+    $source -notmatch "if \(\`$event\.request_id -match .*?-and \`$eventAckEligible\)\s*\{") {
+    throw 'Watch can acknowledge a verification request without a completed search result.'
+}
+$retrySelection = "if (`$_.status -in @('needs_verify', 'suspected_failure', 'active_rule_degraded')) {"
+if (-not $source.Contains($retrySelection)) { throw 'Manual verification requests do not honor their persisted retry deadline.' }
 
 $statePath = Join-Path ([IO.Path]::GetTempPath()) ('zator-revalidation-' + [guid]::NewGuid().ToString('N') + '.tsv')
 $AdaptiveRetryStatePath = $statePath
 . (Join-Path $PSScriptRoot '..\tools\adaptive-agent-state.ps1')
-$event = [pscustomobject]@{ hostname = 'cdn.example.org'; destination_ip = '93.184.216.34'; profile_id = 2; scope = 'mark:4' }
+$event = [pscustomobject]@{ hostname = 'cdn.example.org'; destination_ip = '93.184.216.34'; profile_id = 2; scope = 'mark:4'; protocol = 'tls'; status = 'needs_verify' }
 $retryKey = Get-AdaptiveFailureRetryKey -Event $event
 $retryState = Read-AdaptiveFailureRetryState
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -50,6 +56,10 @@ $retryState = Read-AdaptiveFailureRetryState
 if ((Test-AdaptiveFailureRetryDue -State $retryState -Key $retryKey -Now ($now + 59)) -or
     (-not (Test-AdaptiveFailureRetryDue -State $retryState -Key $retryKey -Now ($now + 60)))) {
     throw 'The first persisted revalidation retry did not observe its 60-second delay.'
+}
+if (-not (Test-AdaptiveWatchCooldownPending -State $retryState -Events @($event) -Now ($now + 59)) -or
+    (Test-AdaptiveWatchCooldownPending -State $retryState -Events @($event) -Now ($now + 60))) {
+    throw 'A transiently busy manual request was not held until its persisted retry became due.'
 }
 Save-AdaptiveFailureRetry -State $retryState -Event $event -Now ($now + 60)
 $retryState = Read-AdaptiveFailureRetryState
