@@ -16,31 +16,44 @@ function Get-AdaptiveAgentMetricsPath {
 
 function Read-AdaptiveAgentMetrics {
     $path = Get-AdaptiveAgentMetricsPath
-    $metrics = @{ Path = $path; RevalidationRecoveries = 0; RevalidationFailures = 0 }
+    $metrics = @{ Path = $path; RevalidationRecoveries = 0; RevalidationFailures = 0; SuccessAfterApply = 0 }
     if (-not (Test-Path -LiteralPath $path)) { return $metrics }
     $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
     if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 128) {
         throw 'Adaptive agent metrics are not a bounded regular file.'
     }
-    $parts = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).TrimEnd("`r", "`n") -split "`t", 3
-    if ($parts.Count -ne 3 -or $parts[0] -ne '1' -or $parts[1] -notmatch '^(0|[1-9][0-9]{0,5})$' -or
-        $parts[2] -notmatch '^(0|[1-9][0-9]{0,5})$') { throw 'Adaptive agent metrics are malformed.' }
+    $parts = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).TrimEnd("`r", "`n") -split "`t", 4
+    if (($parts.Count -ne 3 -and $parts.Count -ne 4) -or $parts[0] -notin @('1', '2') -or
+        ($parts[0] -eq '1' -and $parts.Count -ne 3) -or ($parts[0] -eq '2' -and $parts.Count -ne 4) -or
+        $parts[1] -notmatch '^(0|[1-9][0-9]{0,5})$' -or $parts[2] -notmatch '^(0|[1-9][0-9]{0,5})$' -or
+        ($parts.Count -eq 4 -and $parts[3] -notmatch '^(0|[1-9][0-9]{0,5})$')) { throw 'Adaptive agent metrics are malformed.' }
     $metrics.RevalidationRecoveries = [int]$parts[1]
     $metrics.RevalidationFailures = [int]$parts[2]
+    if ($parts.Count -eq 4) { $metrics.SuccessAfterApply = [int]$parts[3] }
     return $metrics
 }
 
 function Add-AdaptiveAgentMetric {
     param([Parameter(Mandatory = $true)][hashtable]$Metrics,
-        [Parameter(Mandatory = $true)][ValidateSet('revalidation_recovery', 'revalidation_failure')][string]$Kind)
-    $property = if ($Kind -eq 'revalidation_recovery') { 'RevalidationRecoveries' } else { 'RevalidationFailures' }
+        [Parameter(Mandatory = $true)][ValidateSet('revalidation_recovery', 'revalidation_failure', 'success_after_apply')][string]$Kind)
+    $property = switch ($Kind) { 'revalidation_recovery' { 'RevalidationRecoveries' } 'revalidation_failure' { 'RevalidationFailures' } default { 'SuccessAfterApply' } }
     $Metrics[$property] = [Math]::Min(999999, [int]$Metrics[$property] + 1)
     $directory = Split-Path -Parent $Metrics.Path
     [void](New-Item -ItemType Directory -Path $directory -Force)
     $temporary = "$($Metrics.Path).$PID.tmp"
-    $line = "1`t$($Metrics.RevalidationRecoveries)`t$($Metrics.RevalidationFailures)`n"
+    $line = "2`t$($Metrics.RevalidationRecoveries)`t$($Metrics.RevalidationFailures)`t$($Metrics.SuccessAfterApply)`n"
     [IO.File]::WriteAllText($temporary, $line, [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $temporary -Destination $Metrics.Path -Force
+}
+
+function Test-AdaptiveSuccessAfterApply {
+    param([Parameter(Mandatory = $true)]$Summary)
+    if ($Summary.status -notin @('found', 'direct') -or $null -eq $Summary.active_rule_strategy -or
+        [string]$Summary.active_rule_strategy -notmatch '^(0|[1-9][0-9]{0,2})$' -or
+        [string]$Summary.active_rule_fingerprint -notmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]$Summary.winner_fingerprint -ne [string]$Summary.active_rule_fingerprint) { return $false }
+    $winner = if ($Summary.winner_kind -eq 'DIRECT') { '0' } else { [string]$Summary.winner_strategy }
+    return $winner -eq [string]$Summary.active_rule_strategy
 }
 
 function Get-AdaptiveFailureRetryKey {

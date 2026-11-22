@@ -42,10 +42,27 @@ try {
     Add-AdaptiveAgentMetric -Metrics $agentMetrics -Kind revalidation_recovery
     Add-AdaptiveAgentMetric -Metrics $agentMetrics -Kind revalidation_failure
     Add-AdaptiveAgentMetric -Metrics $agentMetrics -Kind revalidation_recovery
+    Add-AdaptiveAgentMetric -Metrics $agentMetrics -Kind success_after_apply
     $agentMetrics = Read-AdaptiveAgentMetrics
     if ($agentMetrics.RevalidationRecoveries -ne 2 -or $agentMetrics.RevalidationFailures -ne 1 -or
+        $agentMetrics.SuccessAfterApply -ne 1 -or
         (Get-Content -LiteralPath $AdaptiveAgentMetricsStatePath -Raw).Contains('cdn.example.org')) {
         throw 'Bounded adaptive revalidation counters did not persist as target-free local metrics.'
+    }
+    [IO.File]::WriteAllText($AdaptiveAgentMetricsStatePath, "1`t7`t2`n")
+    $legacyMetrics = Read-AdaptiveAgentMetrics
+    if ($legacyMetrics.RevalidationRecoveries -ne 7 -or $legacyMetrics.RevalidationFailures -ne 2 -or $legacyMetrics.SuccessAfterApply -ne 0) {
+        throw 'Legacy revalidation metrics did not migrate with a zero success-after-apply counter.'
+    }
+    $sameRule = [pscustomobject]@{ status = 'found'; active_rule_strategy = 7; active_rule_fingerprint = ('sha256:' + ('a' * 64)); winner_strategy = 7; winner_kind = 'STRATEGY'; winner_fingerprint = ('sha256:' + ('a' * 64)) }
+    $differentRule = $sameRule | Select-Object *
+    $differentRule.winner_strategy = 8
+    $differentFingerprint = $sameRule | Select-Object *
+    $differentFingerprint.winner_fingerprint = 'sha256:' + ('b' * 64)
+    $directRule = [pscustomobject]@{ status = 'direct'; active_rule_strategy = 0; active_rule_fingerprint = ('sha256:' + ('c' * 64)); winner_strategy = $null; winner_kind = 'DIRECT'; winner_fingerprint = ('sha256:' + ('c' * 64)) }
+    if (-not (Test-AdaptiveSuccessAfterApply -Summary $sameRule) -or -not (Test-AdaptiveSuccessAfterApply -Summary $directRule) -or
+        (Test-AdaptiveSuccessAfterApply -Summary $differentRule) -or (Test-AdaptiveSuccessAfterApply -Summary $differentFingerprint)) {
+        throw 'Success-after-apply did not require the exact active strategy and fingerprint.'
     }
     $key = Get-ExploreTargetKey -TargetHost 'CDN.Example.org' -TargetIp '93.184.216.34' -TargetProfile 1 -TargetScope 'default'
     $sameKey = Get-ExploreTargetKey -TargetHost 'cdn.example.org' -TargetIp '93.184.216.34' -TargetProfile 1 -TargetScope 'default'

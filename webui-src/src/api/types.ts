@@ -100,6 +100,7 @@ export interface AdaptiveStatus {
     router_active_probes: number | null
     revalidation_recoveries: number
     revalidation_failures: number
+    success_after_apply: number
     cooldown_targets: number
   } | null
   mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY' | 'AGENT_BETA'

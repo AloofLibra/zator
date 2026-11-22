@@ -80,16 +80,18 @@ adaptive_last_probe_json() {
 
 adaptive_agent_status_json() {
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file
-  local version updated stage statistics rankings outcome checked fast deep duration first cpu pc_mem pc_net router_load router_mem router_active revalidation_recoveries revalidation_failures cooldown_targets extra now size
+  local version updated stage statistics rankings outcome checked fast deep duration first cpu pc_mem pc_net router_load router_mem router_active revalidation_recoveries revalidation_failures success_after_apply cooldown_targets extra now size
   local cpu_json pc_mem_json pc_net_json router_load_json router_mem_json router_active_json
   file="$base/agent.status.tsv"
   [[ -d "$base" && ! -L "$base" && -f "$file" && ! -L "$file" && -r "$file" ]] || { printf 'null\n'; return 0; }
   size="$(wc -c < "$file" 2>/dev/null)"
   [[ "$size" =~ ^[0-9]+$ && "$size" -le 512 ]] || { printf 'null\n'; return 0; }
-  IFS=$'\t' read -r version updated stage statistics rankings outcome checked fast deep duration first cpu pc_mem pc_net router_load router_mem router_active revalidation_recoveries revalidation_failures cooldown_targets extra < "$file" || { printf 'null\n'; return 0; }
+  IFS=$'\t' read -r version updated stage statistics rankings outcome checked fast deep duration first cpu pc_mem pc_net router_load router_mem router_active revalidation_recoveries revalidation_failures success_after_apply cooldown_targets extra < "$file" || { printf 'null\n'; return 0; }
+  if [[ "$version" = 3 || "$version" = 4 ]]; then cooldown_targets="${success_after_apply:-0}"; success_after_apply=0; fi
   [[ -n "$cooldown_targets" ]] || cooldown_targets=0
+  [[ -n "$success_after_apply" ]] || success_after_apply=0
   now="$(date +%s)" || { printf 'null\n'; return 0; }
-  [[ -z "$extra" && ( "$version" = 3 || "$version" = 4 ) && "$updated" =~ ^[1-9][0-9]{0,9}$ && "$updated" -le $((now + 60)) && "$updated" -ge $((now - 120)) &&
+  [[ -z "$extra" && ( "$version" = 3 || "$version" = 4 || "$version" = 5 ) && "$updated" =~ ^[1-9][0-9]{0,9}$ && "$updated" -le $((now + 60)) && "$updated" -ge $((now - 120)) &&
      "$stage" =~ ^(idle|fast_search|deep_search|explore|ramp_audit|cooldown)$ && ( "$statistics" = true || "$statistics" = false ) &&
      ( "$rankings" = true || "$rankings" = false ) && "$outcome" =~ ^(none|found|direct|deep_scheduled|all_exhausted|limit_reached|inconclusive|stopped_rate_limit|stopped_infra|cancelled)$ &&
      "$checked" =~ ^[0-9]{1,3}$ && "$checked" -le 999 && "$fast" =~ ^[0-9]{1,3}$ && "$fast" -le 999 &&
@@ -100,6 +102,7 @@ adaptive_agent_status_json() {
      "$router_mem" -le 8796093022208 && "$router_active" =~ ^(-1|[0-9]{1,3})$ && "$router_active" -le 999 &&
      "$revalidation_recoveries" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_recoveries" -le 999999 &&
      "$revalidation_failures" =~ ^(0|[1-9][0-9]{0,5})$ && "$revalidation_failures" -le 999999 &&
+     "$success_after_apply" =~ ^(0|[1-9][0-9]{0,5})$ && "$success_after_apply" -le 999999 &&
      "$cooldown_targets" =~ ^(0|[1-9][0-9]{0,2})$ && "$cooldown_targets" -le 128 ]] || { printf 'null\n'; return 0; }
   cpu_json="$cpu"; pc_mem_json="$pc_mem"; pc_net_json="$pc_net"; router_mem_json="$router_mem"; router_active_json="$router_active"
   router_load_json="$(awk -v value="$router_load" 'BEGIN { if (value < 0) print "null"; else printf "%.3f", value / 1000 }')"
@@ -108,9 +111,9 @@ adaptive_agent_status_json() {
   [[ "$pc_net" != -1 ]] || pc_net_json=null
   [[ "$router_mem" != -1 ]] || router_mem_json=null
   [[ "$router_active" != -1 ]] || router_active_json=null
-  printf '{"updated_at":%s,"stage":"%s","statistics_enabled":%s,"rankings_enabled":%s,"search_outcome":"%s","candidates_checked":%s,"fast_candidates":%s,"deep_candidates":%s,"search_duration_ms":%s,"time_to_first_success_ms":%s,"pc_cpu_percent":%s,"pc_free_memory_bytes":%s,"pc_network_bytes_per_second":%s,"router_load1_per_core":%s,"router_memory_available_kib":%s,"router_active_probes":%s,"revalidation_recoveries":%s,"revalidation_failures":%s,"cooldown_targets":%s}\n' \
+  printf '{"updated_at":%s,"stage":"%s","statistics_enabled":%s,"rankings_enabled":%s,"search_outcome":"%s","candidates_checked":%s,"fast_candidates":%s,"deep_candidates":%s,"search_duration_ms":%s,"time_to_first_success_ms":%s,"pc_cpu_percent":%s,"pc_free_memory_bytes":%s,"pc_network_bytes_per_second":%s,"router_load1_per_core":%s,"router_memory_available_kib":%s,"router_active_probes":%s,"revalidation_recoveries":%s,"revalidation_failures":%s,"success_after_apply":%s,"cooldown_targets":%s}\n' \
     "$updated" "$stage" "$statistics" "$rankings" "$outcome" "$checked" "$fast" "$deep" "$duration" "$first" \
-    "$cpu_json" "$pc_mem_json" "$pc_net_json" "$router_load_json" "$router_mem_json" "$router_active_json" "$revalidation_recoveries" "$revalidation_failures" "$cooldown_targets"
+    "$cpu_json" "$pc_mem_json" "$pc_net_json" "$router_load_json" "$router_mem_json" "$router_active_json" "$revalidation_recoveries" "$revalidation_failures" "$success_after_apply" "$cooldown_targets"
 }
 
 api_adaptive_get() {

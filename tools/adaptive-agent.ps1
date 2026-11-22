@@ -104,7 +104,7 @@ function Send-AdaptiveAgentStatus {
         $script:AdaptiveRuntimeMetrics = @{ Cpu = -1; PcMemory = -1L; PcNetwork = -1L; RouterLoad = -1; RouterMemory = -1L; RouterActive = -1 }
     }
     if ($null -eq $script:AdaptiveRevalidationMetrics) {
-        $script:AdaptiveRevalidationMetrics = @{ RevalidationRecoveries = 0; RevalidationFailures = 0 }
+        $script:AdaptiveRevalidationMetrics = @{ RevalidationRecoveries = 0; RevalidationFailures = 0; SuccessAfterApply = 0 }
     }
     if ($null -eq $script:AdaptiveFailureRetryCooldownTargets) { $script:AdaptiveFailureRetryCooldownTargets = 0 }
     if ($null -ne $script:AdaptiveFailureRetryState) {
@@ -129,6 +129,7 @@ function Send-AdaptiveAgentStatus {
             router_memory_available_kib = [long]$runtime.RouterMemory; router_active_probes = [int]$runtime.RouterActive
             revalidation_recoveries = [int]$script:AdaptiveRevalidationMetrics.RevalidationRecoveries
             revalidation_failures = [int]$script:AdaptiveRevalidationMetrics.RevalidationFailures
+            success_after_apply = [int]$script:AdaptiveRevalidationMetrics.SuccessAfterApply
             cooldown_targets = [int]$script:AdaptiveFailureRetryCooldownTargets
         } | Out-Null
     } catch { [Console]::Error.WriteLine("Adaptive status update: $($_.Exception.Message)") }
@@ -389,7 +390,7 @@ if ($Watch) {
     try { $script:AdaptiveRevalidationMetrics = Read-AdaptiveAgentMetrics }
     catch {
         [Console]::Error.WriteLine("Adaptive revalidation metrics were reset after a state read error: $($_.Exception.Message)")
-        $script:AdaptiveRevalidationMetrics = @{ Path = Get-AdaptiveAgentMetricsPath; RevalidationRecoveries = 0; RevalidationFailures = 0 }
+        $script:AdaptiveRevalidationMetrics = @{ Path = Get-AdaptiveAgentMetricsPath; RevalidationRecoveries = 0; RevalidationFailures = 0; SuccessAfterApply = 0 }
     }
     if ($Explore) { $exploreState = Read-ExploreState }
     $exploreLoadWarningShown = $false
@@ -713,6 +714,9 @@ if ($Watch) {
                                             $metricKind = if ($searchSummary.status -in @('found', 'direct')) { 'revalidation_recovery' } else { 'revalidation_failure' }
                                             Add-AdaptiveAgentMetric -Metrics $script:AdaptiveRevalidationMetrics -Kind $metricKind
                                         }
+                                        if ($event.status -eq 'active_rule_degraded' -and (Test-AdaptiveSuccessAfterApply -Summary $searchSummary)) {
+                                            Add-AdaptiveAgentMetric -Metrics $script:AdaptiveRevalidationMetrics -Kind 'success_after_apply'
+                                        }
                                         Send-AdaptiveAgentStatus -Stage 'idle' -Outcome ([string]$searchSummary.status) `
                                             -CandidatesChecked ([int]$searchSummary.fast_candidate_count + [int]$searchSummary.deep_candidate_count) `
                                             -FastCandidates ([int]$searchSummary.fast_candidate_count) -DeepCandidates ([int]$searchSummary.deep_candidate_count) `
@@ -875,6 +879,8 @@ if ($FastSearch) {
     $expectedCandidateCount = [Math]::Min(10, $candidateCount)
     $expectedStatus = if ($expectedCandidateCount -gt 0) { 'ready' } else { 'complete' }
     if ($candidateSet.status -ne $expectedStatus -or $candidateSet.source -notin @('local-profile-order', 'local-confirmations-first', 'remote-rankings-first', 'active-rule-revalidation') -or
+        ($null -ne $candidateSet.active_rule_strategy -and ($candidateSet.active_rule_strategy -notmatch '^(0|[1-9][0-9]{0,2})$' -or $candidateSet.active_rule_fingerprint -notmatch '^sha256:[0-9a-f]{64}$')) -or
+        ($null -eq $candidateSet.active_rule_strategy -and $candidateSet.active_rule_fingerprint -ne '') -or
         $candidateSet.candidate_offset -ne 0 -or
         $candidateSetVersion -notmatch '^sha256:[0-9a-f]{64}$' -or
         $candidateSet.profile_strategy_count -notmatch '^[1-9][0-9]{0,2}$' -or
@@ -901,6 +907,7 @@ if ($FastSearch) {
     $attempts = [System.Collections.Generic.List[object]]::new()
     $winner = $null
     $winnerKind = $null
+    $winnerFingerprint = $null
     $searchStopped = $false
     $searchStopReason = $null
     $searchStopStatus = $null
@@ -913,6 +920,7 @@ if ($FastSearch) {
         if ($directTransition -eq 'success') {
             $winner = 0
             $winnerKind = 'DIRECT'
+            $winnerFingerprint = [string]$candidateSet.active_rule_fingerprint
             $timeToFirstSuccess = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $searchStartedAt
         } elseif ($directTransition -in @('stop_infra', 'cooldown')) {
             $searchStopped = $true
@@ -929,6 +937,7 @@ if ($FastSearch) {
                 if ($transition -eq 'success') {
                     $winner = [int]$candidate
                     $winnerKind = 'STRATEGY'
+                    $winnerFingerprint = [string]$probeResult.strategy.fingerprint
                     $timeToFirstSuccess = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $searchStartedAt
                     break
                 }
@@ -992,6 +1001,7 @@ if ($FastSearch) {
                 if ($transition -eq 'success') {
                     $winner = [int]$candidate
                     $winnerKind = 'STRATEGY'
+                    $winnerFingerprint = [string]$probeResult.strategy.fingerprint
                     $timeToFirstSuccess = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $searchStartedAt
                     break
                 }
@@ -1061,6 +1071,9 @@ if ($FastSearch) {
         deep_search_limit = if ($DeepSearch -or $resumeDeep) { $DeepSearchMaxCandidates } else { 0 }
         winner_strategy = if ($winnerKind -eq 'STRATEGY') { $winner } else { $null }
         winner_kind = $winnerKind
+        winner_fingerprint = $winnerFingerprint
+        active_rule_strategy = $candidateSet.active_rule_strategy
+        active_rule_fingerprint = [string]$candidateSet.active_rule_fingerprint
         attempts = $attempts
     } | ConvertTo-Json -Compress -Depth 8
     return
