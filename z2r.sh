@@ -493,7 +493,6 @@ fi
 
 # Дефолтный SNI-пул (1/2 -> @google): создаём только когда файла нет вовсе —
 # «убрать пул» из меню оставляет файл (пусть пустой) и дефолт не возвращается.
-# PR83-REVIEW(4/6) [ответ AloofLibra, z2r.sh:496]: сначала mkdir -p $ORCH_DIR (на чистой установке каталога могло ещё не быть), а провал записи больше не глотается молча — предупреждение в stderr. Удалить после проверки.
 if [ ! -f "$ORCH_DIR/sni_pool.tsv" ]; then
   if mkdir -p "$ORCH_DIR" && printf '1\t@google\n2\t@google\n' > "$ORCH_DIR/sni_pool.tsv"; then
     :
@@ -2392,7 +2391,6 @@ webui_remove() {
   webui_stop_service
   case "$OSystem" in
     "WRT")
-      # PR83-CHAT(1) [жалоба автора из личной беседы: баг при удалении на OpenWRT]: procd enable создал симлинки /etc/rc.d/S95z2r-webui и K10z2r-webui; прежний rm только инита оставлял их висеть — rcS спотыкался на dangling symlink при каждой загрузке. Теперь disable перед rm + страховочное удаление самих симлинков (валидатор и watchdog так уже делали). Удалить после проверки.
       if [ -f /etc/init.d/z2r-webui ]; then
         /etc/init.d/z2r-webui disable >/dev/null 2>&1 || true
         rm -f /etc/init.d/z2r-webui

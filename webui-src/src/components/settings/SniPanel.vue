@@ -66,7 +66,6 @@ async function load() {
 // черновики форм в синхроне
 watch(profiles, () => { syncDrafts() })
 
-// PR83-REVIEW(2/6) [ответ на замечание AloofLibra, SniPanel.vue:79]: убрал onMounted(refresh) — первоначальную загрузку делает родитель CustomBlobsView (один blobs.cgi + tls_blob на вкладку); refresh() остался только для кнопки «Обновить» и остаётся в act()-перезагрузках после действий. Удалить после проверки.
 async function refresh() {
   try {
     await withBusy('refresh-sni', async () => {

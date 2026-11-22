@@ -972,7 +972,6 @@ sni_pool_set_write() {
   local -A seen=()
   local d dir f sec tmp
   for d in "$@"; do
-    # PR83-REVIEW(6/6) [ответ AloofLibra, orchestra_state.sh:975]: tr '[:upper:]' '[:lower:]' на роутерном tr (openwrt) заменяет буквы по позициям «класса» как литеральной строки (p->w, u->l: ppp.gogle.com -> www.gogle.com) — встроенный bash ${d,,} без форка, как предлагал автор замечания. Удалить после проверки.
     d="${d,,}"
     sni_override_valid "$d" || return 2
     [ -z "${seen[$d]:-}" ] || continue
@@ -1033,7 +1032,6 @@ sni_pool_set_delete() {
   sni_pool_set_name_valid "$name" || return 2
   f="$Z2R_SNI_USER_FILE"
   [ -f "$f" ] || return 0
-  # PR83-REVIEW(5/6) [ответ AloofLibra, orchestra_state.sh:1035]: было grep -qF "@${name}" — подстрока ловила @google внутри @google2 и запрещала удаление несвязанного набора; теперь сравнение ВТОРОГО ПОЛЯ целиком (строка «profile<TAB>@имя»). Удалить после проверки.
   if [ -f "$ORCH_SNI_POOL_FILE" ] \
      && awk -F '\t' -v s="@$name" '$2==s {found=1} END {exit !found}' "$ORCH_SNI_POOL_FILE"; then
     echo "Set @${name} is referenced by sni_pool.tsv" >&2
@@ -1140,7 +1138,6 @@ sni_pool_set_list() {
   local d tmp
   for d in "$@"; do
     case "$d" in @*) return 2 ;; esac
-    # PR83-REVIEW(6/6) [ответ AloofLibra, orchestra_state.sh:975]: тот же битый tr на openwrt — см. sni_pool_set_write; здесь тоже ${d,,}. Удалить после проверки.
     d="${d,,}"
     sni_override_valid "$d" || return 2
     [ -z "${seen[$d]:-}" ] || continue

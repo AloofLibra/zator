@@ -41,7 +41,6 @@ supersweep_probe_config() {
     for f in blob_override.tsv mode_override.tsv sni_override.tsv clonesize.tsv; do
         [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
     done
-    # PR83-REVIEW(3/6) [ответ AloofLibra, supersweep.sh:1290]: пробный nfqws2 теперь грузит пул — своя копия sni-pool.lua с путями в probe/ (пул/политика/пин), как у копии locked.lua выше; пин тестового экземпляра пишем сюда же, глобальный sni_pool.pin рабочего не трогаем. Модуля нет в дереве (старая установка) — тихий no-op, как у прод-конфига. Удалить после проверки.
     local sni_pool_lua=0
     if [ -f "${ZATOR_ROOT:-/opt/zator}/lua/sni-pool.lua" ]; then
         for f in sni_pool.tsv sni_pool_policy.tsv; do

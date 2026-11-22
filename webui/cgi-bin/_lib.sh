@@ -1025,7 +1025,6 @@ api_tls_blob_get() {
 # дальше значения берутся из карты чистым bash.
 api_tls_blob_profile_blobs_json() {
   local out="" p name val decl nm f
-  # PR83-REVIEW(1/6) [ответ AloofLibra, _lib.sh:1026]: «--blob=» — 7 символов, было RSTART+8/RLENGTH-8 и срезало первую букву имени (z2r_prof_1 -> 2r_prof_1); вторая половина правки — значением был полный путь /opt/.../file.bin, а панель ждёт имя файла (сравнивает с available_blobs), теперь basename как у CLI blob_override_get. Удалить после проверки.
   decl="$(awk '
     {
       l = $0
