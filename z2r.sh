@@ -2392,7 +2392,12 @@ webui_remove() {
   webui_stop_service
   case "$OSystem" in
     "WRT")
-      [ -f /etc/init.d/z2r-webui ] && rm -f /etc/init.d/z2r-webui
+      # PR83-CHAT(1) [жалоба автора из личной беседы: баг при удалении на OpenWRT]: procd enable создал симлинки /etc/rc.d/S95z2r-webui и K10z2r-webui; прежний rm только инита оставлял их висеть — rcS спотыкался на dangling symlink при каждой загрузке. Теперь disable перед rm + страховочное удаление самих симлинков (валидатор и watchdog так уже делали). Удалить после проверки.
+      if [ -f /etc/init.d/z2r-webui ]; then
+        /etc/init.d/z2r-webui disable >/dev/null 2>&1 || true
+        rm -f /etc/init.d/z2r-webui
+      fi
+      rm -f /etc/rc.d/S95z2r-webui /etc/rc.d/K10z2r-webui 2>/dev/null || true
       ;;
     "entware")
       [ -f /opt/etc/init.d/S92z2r-webui ] && rm -f /opt/etc/init.d/S92z2r-webui
