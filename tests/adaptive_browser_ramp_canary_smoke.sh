@@ -42,6 +42,30 @@ fi
 adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$scope" "$proof"
 [[ ! -s "$lease" ]] || { echo 'matching canary proof did not revoke its own lease' >&2; exit 1; }
 
+session=55555555555555555555555555555555
+plain1=66666666666666666666666666666666
+plain2=77777777777777777777777777777777
+ramp2=88888888888888888888888888888888
+adaptive_browser_ramp_canary_session_begin "$session" "$client" 192.168.1.42 "$scope" "$host" "$ip" \
+  "$strategy" "$fingerprint" plain1 "$plain1" "${ids[0]}" "$proof" "$now"
+if adaptive_browser_ramp_canary_session_begin "$session" "$client" 192.168.1.42 "$scope" "$host" "$ip" \
+  "$strategy" "$fingerprint" plain1 "$plain1" "${ids[0]}" "$proof" "$now"; then
+  echo 'overlapping canary replaced the active session' >&2; exit 1
+fi
+if adaptive_browser_ramp_canary_session_advance "$session" "$plain1" "$plain2" applied confirmed healthy >/dev/null 2>&1; then
+  echo 'Ramp treatment advanced a Plain canary stage' >&2; exit 1
+fi
+[[ "$(adaptive_browser_ramp_canary_session_advance "$session" "$plain1" "$plain2" bypassed unknown healthy)" = plain2 ]]
+if adaptive_browser_ramp_canary_session_advance "$session" "$plain1" "$plain2" bypassed unknown healthy >/dev/null 2>&1; then
+  echo 'stale session attempt advanced the canary twice' >&2; exit 1
+fi
+[[ "$(adaptive_browser_ramp_canary_session_advance "$session" "$plain2" "$ramp2" bypassed pending healthy)" = ramp2 ]]
+[[ "$(adaptive_browser_ramp_canary_session_advance "$session" "$ramp2" - applied confirmed healthy)" = complete ]]
+canary_session="$(adaptive_browser_ramp_canary_session_file)"
+[[ "$(cut -f10 "$canary_session")" = complete && "$(cut -f12 "$canary_session")" = "${ids[0]},$plain1,$plain2,$ramp2" ]]
+adaptive_browser_ramp_canary_session_clear "$session"
+[[ ! -e "$canary_session" ]] || { echo 'completed canary session was not cleared' >&2; exit 1; }
+
 evidence="$(adaptive_browser_state_dir)/media-quality/evidence.tsv"
 sed -i $'3s/\\thealthy\\t/\\tdegraded\\t/' "$evidence"
 if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now" "$client" >/dev/null; then

@@ -924,6 +924,95 @@ adaptive_browser_ramp_canary_validate() {
   printf '%s' "$ids|$host|$ip|$scope|$first_strategy|$first_fp" | sha256sum | awk '{print $1}'
 }
 
+# Keep one router-wide canary in flight so overlapping trials cannot race an
+# exact Ramp exemption. Progress is compare-and-swap on the current attempt ID.
+adaptive_browser_ramp_canary_session_file() {
+  printf '%s/ramp-canary/session.tsv' "$(adaptive_browser_state_dir)"
+}
+
+adaptive_browser_ramp_canary_session_begin() {
+  [[ $# = 13 ]] || return 2
+  local session="$1" client="$2" client_ip="$3" scope="$4" host="$5" ip="$6"
+  local strategy="$7" fp="$8" stage="$9" attempt="${10}" ids="${11}" lease="${12}" now="${13}"
+  local dir file lock tmp row v old_session old_client old_ip old_scope old_host old_dst old_strategy old_fp old_stage old_attempt old_ids old_lease created expires extra
+  [[ "$session" =~ ^[a-f0-9]{32}$ && "$client" =~ ^[a-f0-9]{32}$ &&
+     "$client_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
+     "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$strategy" =~ ^[1-9][0-9]{0,2}$ &&
+     "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$stage" = plain1 && "$attempt" =~ ^[a-f0-9]{32}$ &&
+     "$ids" =~ ^[a-f0-9]{32}$ && "$lease" =~ ^[a-f0-9]{64}$ && "$now" =~ ^[0-9]{10}$ ]] || return 2
+  if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 2; fi
+  [[ "$(adaptive_browser_host_valid "$host" && printf '%s' "$ADAPTIVE_BROWSER_HOST")" = "$host" ]] || return 2
+  awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || return 2
+  dir="$(adaptive_browser_state_dir)/ramp-canary"; file="$dir/session.tsv"; lock="$file.lock"
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$dir" && ! -L "$file" && ! -L "$lock" ]] || return 1
+  mkdir -p "$dir" && chmod 700 "$dir" || return 1
+  (umask 077; mkdir "$lock") 2>/dev/null || return 4
+  if [[ -r "$file" ]]; then
+    IFS=$'\t' read -r v old_session old_client old_ip old_scope old_host old_dst old_strategy old_fp old_stage old_attempt old_ids old_lease created expires extra < "$file"
+    [[ "$v" = 1 && "$old_session" =~ ^[a-f0-9]{32}$ && "$old_client" =~ ^[a-f0-9]{32}$ &&
+       "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$old_scope" =~ ^(default|mark:[1-9][0-9]{0,4})$ &&
+       "$old_host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ &&
+       "$old_dst" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$old_strategy" =~ ^[1-9][0-9]{0,2}$ &&
+       "$old_fp" =~ ^sha256:[a-f0-9]{64}$ && "$old_stage" =~ ^(plain1|plain2|ramp2|complete)$ &&
+       ( "$old_attempt" = - || "$old_attempt" =~ ^[a-f0-9]{32}$ ) && "$old_ids" =~ ^[a-f0-9]{32}(,[a-f0-9]{32}){0,3}$ &&
+       "$old_lease" =~ ^[a-f0-9]{64}$ && "$created" =~ ^[0-9]{10}$ && "$expires" =~ ^[0-9]{10}$ && -z "${extra:-}" ]] || {
+         rmdir "$lock"; return 1;
+       }
+    if (( expires > now )); then rmdir "$lock"; return 4; fi
+  fi
+  tmp="$(mktemp "$dir/.session.XXXXXX")" || { rmdir "$lock"; return 1; }
+  expires=$((now + 1200))
+  printf '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$session" "$client" "$client_ip" "$scope" "$host" "$ip" "$strategy" "$fp" "$stage" "$attempt" "$ids" "$lease" "$now" "$expires" > "$tmp" &&
+    chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock"
+}
+
+adaptive_browser_ramp_canary_session_advance() {
+  [[ $# = 6 ]] || return 2
+  local session="$1" expected_attempt="$2" next_attempt="$3" treatment="$4" ack="$5" quality="$6"
+  local dir file lock tmp row v id client client_ip scope host ip strategy fp stage attempt ids lease created expires extra next_stage now
+  file="$(adaptive_browser_ramp_canary_session_file)"; dir="$(dirname "$file")"; lock="$file.lock"
+  [[ "$session" =~ ^[a-f0-9]{32}$ && "$expected_attempt" =~ ^[a-f0-9]{32}$ &&
+     ( "$next_attempt" = - || "$next_attempt" =~ ^[a-f0-9]{32}$ ) && "$treatment" =~ ^(applied|bypassed)$ &&
+     "$ack" =~ ^(unknown|confirmed|pending)$ && "$quality" = healthy &&
+     -f "$file" && ! -L "$file" && ! -L "$lock" && $(wc -c < "$file") -le 2048 ]] || return 2
+  (umask 077; mkdir "$lock") 2>/dev/null || return 4
+  row="$(cat "$file")"
+  IFS=$'\t' read -r v id client client_ip scope host ip strategy fp stage attempt ids lease created expires extra <<< "$row"
+  now="$(date +%s)"
+  [[ "$v" = 1 && "$id" = "$session" && "$attempt" = "$expected_attempt" && -z "${extra:-}" &&
+     "$expires" =~ ^[0-9]{10}$ ]] && (( now <= expires )) || { rmdir "$lock"; return 3; }
+  case "$stage:$treatment:$ack" in
+    plain1:bypassed:unknown|plain1:bypassed:pending) next_stage=plain2 ;;
+    plain2:bypassed:unknown|plain2:bypassed:pending) next_stage=ramp2 ;;
+    ramp2:applied:confirmed) next_stage=complete ;;
+    *) rmdir "$lock"; return 2 ;;
+  esac
+  [[ ",${ids}," != *",${expected_attempt},"* &&
+     ( "$next_attempt" = - || ",${ids}," != *",${next_attempt},"* ) &&
+     ( "$next_stage" = complete && "$next_attempt" = - || "$next_stage" != complete && "$next_attempt" != - ) ]] || { rmdir "$lock"; return 2; }
+  tmp="$(mktemp "$dir/.session.XXXXXX")" || { rmdir "$lock"; return 1; }
+  ids="$ids,$expected_attempt"
+  printf '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$id" "$client" "$client_ip" "$scope" "$host" "$ip" "$strategy" "$fp" "$next_stage" "$next_attempt" "$ids" "$lease" "$created" "$expires" > "$tmp" &&
+    chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock"
+  printf '%s' "$next_stage"
+}
+
+adaptive_browser_ramp_canary_session_clear() {
+  [[ $# = 1 && "$1" =~ ^[a-f0-9]{32}$ ]] || return 2
+  local file="$(adaptive_browser_ramp_canary_session_file)" lock row v id rest
+  lock="$file.lock"
+  [[ -f "$file" && ! -L "$file" && ! -L "$lock" ]] || return 1
+  (umask 077; mkdir "$lock") 2>/dev/null || return 4
+  IFS=$'\t' read -r v id rest < "$file"
+  [[ "$v" = 1 && "$id" = "$1" ]] || { rmdir "$lock"; return 3; }
+  rm -f "$file" && rmdir "$lock"
+}
+
 adaptive_browser_ramp_canary_lease_apply() {
   [[ $# = 5 ]] || return 2
   local host="$1" ip="$2" scope="$3" proof="$4" expires="$5"
