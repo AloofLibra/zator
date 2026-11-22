@@ -337,6 +337,7 @@ quic_result_response="$(printf '%s' "$quic_result_body" | env REQUEST_METHOD=POS
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"UNKNOWN"' <<< "$quic_result_response"
 grep -q '"status":"PROTOCOL_UNKNOWN"' <<< "$quic_result_response"
+grep -q '"reason":"h3_protocol_evidence_unavailable"' <<< "$quic_result_response"
 if grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$quic_result_response"; then
   echo 'browser success on a QUIC trial was incorrectly counted as H3 success' >&2; exit 1;
 fi

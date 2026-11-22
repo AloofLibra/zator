@@ -42,7 +42,9 @@ const fakeRouter = createServer(async (request, response) => {
     : action === 'browser_attempt_status'
       ? { schema_version: 1, state: 'FLOW_CONFIRMED', ramp_treatment: 'applied', ramp_ack_evidence: 'confirmed' }
       : action === 'browser_report_result'
-        ? { schema_version: 1, state: params.get('result') === 'network_failure' ? 'NEXT_CANDIDATE' : 'PROVISIONAL_SUCCESS' }
+        ? params.get('attempt_id') === 'g'.repeat(32)
+          ? { schema_version: 1, state: 'UNKNOWN', status: 'PROTOCOL_UNKNOWN', reason: 'h3_protocol_evidence_unavailable' }
+          : { schema_version: 1, state: params.get('result') === 'network_failure' ? 'NEXT_CANDIDATE' : 'PROVISIONAL_SUCCESS' }
         : { schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
 })
@@ -222,6 +224,14 @@ assert.equal(stored.events.at(-1).ramp_treatment, 'applied', 'Ramp SYN evidence 
 assert.equal(stored.events.at(-1).ramp_ack_evidence, 'confirmed', 'Ramp late-ACK evidence was not retained for the popup')
 assert.match(popupScript, /applied on SYN/)
 assert.match(popupScript, /late ACK/)
+
+stored.events.push({ id: 'h'.repeat(32), hostname: 'rr1---sn-h.googlevideo.com', tab_id: 2,
+  attempt_id: 'g'.repeat(32), router_status: 'FLOW_CONFIRMED',
+  pending_result: { id: 'i'.repeat(32), result: 'network_success', request_class: 'main_frame', browser_ip: '8.8.8.8', observed_at: Date.now() } })
+await api.syncAttempt('h'.repeat(32))
+assert.equal(stored.events.at(-1).router_status, 'UNKNOWN')
+assert.equal(stored.events.at(-1).router_reason, 'h3_protocol_evidence_unavailable')
+assert.match(popupScript, /H3 protocol evidence unavailable; QUIC success not confirmed/)
 
 for (const file of ['popup.js', 'options.js']) {
   assert.doesNotThrow(() => new vm.Script(readFileSync(resolve(root, `browser-extension/${file}`), 'utf8'), { filename: file }))
