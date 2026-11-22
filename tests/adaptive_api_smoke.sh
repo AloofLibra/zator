@@ -128,10 +128,18 @@ candidate_list="$(call_api 'action=candidates&hostname=cdn.example.org&destinati
 [[ "$candidate_list" == *'"candidate_numbers":[1,2,3,4,5,6,7,8,9,10]'* && "$candidate_list" == *'"scope":"mark:4"'* ]] || {
   echo "local candidate ordering is invalid: $candidate_list" >&2; exit 1;
 }
+candidate_cache="$Z2R_ADAPTIVE_DIR/catalog-cache/p1-tls-http1-v1.tsv"
+[[ -f "$candidate_cache" && ! -L "$candidate_cache" && "$(stat -c '%a' "$candidate_cache")" = 600 && "$(wc -l < "$candidate_cache")" = 46 ]] || {
+  echo 'candidate fingerprint cache was not written as a private complete catalog' >&2; exit 1;
+}
+candidate_cache_key="$(head -n 1 "$candidate_cache")"
 printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
 beta_candidates="$(call_api 'action=candidates&hostname=beta.example.org&destination_ip=93.184.216.34&profile_id=1&scope=mark%3A4')"
 [[ "$beta_candidates" == *'Status: 200 OK'* && "$beta_candidates" == *'"candidate_numbers":[1,2,3,4,5,6,7,8,9,10]'* ]] || {
   echo "AGENT_BETA did not keep local verification available: $beta_candidates" >&2; exit 1;
+}
+[[ "$(head -n 1 "$candidate_cache")" = "$candidate_cache_key" ]] || {
+  echo 'equivalent candidate requests did not reuse the catalog cache' >&2; exit 1;
 }
 beta_lease="$(call_api 'action=lease&hostname=beta.example.org&destination_ip=93.184.216.34&profile_id=1&local_strategy_number=1&source_port=62030')"
 [[ "$beta_lease" == *'Status: 200 OK'* && "$beta_lease" == *'"recipe_id":"tls-http1-v1"'* ]] || {
@@ -273,6 +281,9 @@ printf '1\tcdn.example.org\t93.184.216.34\t1\ttls\tmark:4\t7\tsha256:%064d\tsha2
 ranked_candidates="$(call_api 'action=candidates&hostname=other.example.org&destination_ip=93.184.216.35&profile_id=1&scope=mark%3A4')"
 [[ "$ranked_candidates" == *'"source":"local-confirmations-first"}'* && "$ranked_candidates" == *'"candidate_numbers":[7,1,2,3,4,5,6,8,9,10]'* ]] || {
   echo "local confirmations were not prioritized: $ranked_candidates" >&2; exit 1;
+}
+[[ "$(head -n 1 "$candidate_cache")" != "$candidate_cache_key" ]] || {
+  echo 'runtime fingerprint changes did not invalidate the candidate cache' >&2; exit 1;
 }
 known_candidates="$(call_api 'action=candidates&hostname=cdn.example.org&destination_ip=93.184.216.34&profile_id=1&scope=mark%3A4')"
 [[ "$known_candidates" == *'"status":"already_confirmed"'* && "$known_candidates" == *'"strategy_number":7'* ]] || {

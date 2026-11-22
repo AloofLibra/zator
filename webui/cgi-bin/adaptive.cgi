@@ -418,7 +418,7 @@ adaptive_ramp_exemption_revoke() {
 json_candidates() {
   local host="${1,,}" ip="$2" profile="$3" scope="$4" offset="${5:-0}" limit="${6:-10}" order="${7:-ranked}" requested_set="${8:-}" ranked_fingerprints="${9:-}" za_root="${10:-${ZAPRET2_ROOT:-/opt/zapret2}}" force_revalidate="${11:-0}"
   local config="$za_root/config" nfqws="$za_root/nfq2/nfqws2"
-  local max total_max candidate_count locked number count=0 first=1 stamp known known_strategy="" known_fp known_catalog known_expiry ranked source=local-profile-order catalog_dir args_file fingerprint candidate_set_version candidate_set_material remote_matched=0 active_proto=tls group_id="" recipe=tls-http1-v1
+  local max total_max candidate_count locked number count=0 first=1 stamp known known_strategy="" known_fp known_catalog known_expiry ranked source=local-profile-order catalog_dir args_file fingerprint fingerprint_catalog candidate_set_version candidate_set_material remote_matched=0 active_proto=tls group_id="" recipe=tls-http1-v1
   local -a ordered=() preferred=() remote_order=()
   local -A added=() seen_semantics=() strategy_fingerprints=() first_strategy_for_fingerprint=()
   [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
@@ -514,13 +514,16 @@ json_candidates() {
     export Z2R_SUPERSWEEP_DIR DESYNC_MARK
     if ! supersweep_probe_config "$profile" "$config" standard "$ip" "$recipe"; then rm -rf "$catalog_dir"; return 3; fi
     args_file="$catalog_dir/probe/nfqws2.args"
-    for ((number=1; number<=total_max; number++)); do
-      fingerprint="$(adaptive_strategy_fingerprint "$profile" "$number" "$args_file" "$nfqws" standard "$recipe")" || {
+    fingerprint_catalog="$(adaptive_strategy_fingerprint_catalog "$profile" "$total_max" "$args_file" "$nfqws" standard "$recipe" "$stamp" "$BASE/catalog-cache")" || {
+      rm -rf "$catalog_dir"; return 3;
+    }
+    while IFS=$'\t' read -r number fingerprint; do
+      [[ "$number" =~ ^[1-9][0-9]{0,2}$ && "$number" -le "$total_max" && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || {
         rm -rf "$catalog_dir"; return 3;
       }
       strategy_fingerprints[$number]="$fingerprint"
       [[ ${first_strategy_for_fingerprint[$fingerprint]+yes} ]] || first_strategy_for_fingerprint[$fingerprint]="$number"
-    done
+    done <<< "$fingerprint_catalog"
     for number in "${preferred[@]}"; do
       fingerprint="${strategy_fingerprints[$number]}"
       [[ ${seen_semantics[$fingerprint]+yes} ]] && continue

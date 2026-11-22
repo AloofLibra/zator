@@ -112,6 +112,44 @@ adaptive_strategy_fingerprint() {
   printf 'sha256:%s\n' "$fingerprint"
 }
 
+# Reuse numbered fingerprints while their existing runtime stamp is current;
+# candidate ordering and local confirmations are still recomputed per request.
+adaptive_strategy_fingerprint_catalog() {
+  [[ $# = 8 && "$1" =~ ^[1-5]$ && "$2" =~ ^[1-9][0-9]{0,2}$ && -r "$3" && -x "$4" && "$8" = /* ]] || return 2
+  local profile="$1" max="$2" args_file="$3" nfqws="$4" treatment="$5" recipe="$6" stamp="$7" cache_dir="$8"
+  local version key_material key cache_file tmp number fingerprint
+  version="$("$nfqws" --version 2>&1 | head -n 1)" || return 1
+  [[ -n "$version" && ${#version} -le 256 ]] || return 1
+  key_material="profile=$profile|max=$max|treatment=$treatment|recipe=$recipe|stamp=$stamp|nfqws=$version"
+  key="$(printf '%s\n' "$key_material" | sha256sum | awk '{print $1}')" || return 1
+  [[ "$key" =~ ^[a-f0-9]{64}$ ]] || return 1
+  [[ ! -L "$cache_dir" ]] || return 1
+  mkdir -p "$cache_dir" || return 1
+  chmod 700 "$cache_dir" || return 1
+  cache_file="$cache_dir/p${profile}-${recipe}.tsv"
+  if [[ -f "$cache_file" && ! -L "$cache_file" ]]; then
+    if awk -F '\t' -v key="$key" -v max="$max" '
+      NR==1 { if ($0 != key) bad=1; next }
+      NF!=2 || $1 != NR-1 || $2 !~ /^sha256:[a-f0-9]{64}$/ { bad=1 }
+      END { if (NR != max+1 || bad) exit 1 }
+    ' "$cache_file"; then
+      tail -n +2 "$cache_file"
+      return 0
+    fi
+  fi
+  tmp="$(mktemp "$cache_dir/.catalog.XXXXXX")" || return 1
+  chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+  printf '%s\n' "$key" > "$tmp" || { rm -f "$tmp"; return 1; }
+  for ((number=1; number<=max; number++)); do
+    fingerprint="$(adaptive_strategy_fingerprint "$profile" "$number" "$args_file" "$nfqws" "$treatment" "$recipe")" || {
+      rm -f "$tmp"; return 1;
+    }
+    printf '%s\t%s\n' "$number" "$fingerprint" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  done
+  mv -f "$tmp" "$cache_file" || { rm -f "$tmp"; return 1; }
+  tail -n +2 "$cache_file"
+}
+
 # Produce a stable round-robin order across broad desync families for low-
 # priority Explore. Numbered FastSearch keeps its own ranked/local ordering.
 adaptive_exploration_strategy_order() {
