@@ -1025,13 +1025,18 @@ api_tls_blob_get() {
 # дальше значения берутся из карты чистым bash.
 api_tls_blob_profile_blobs_json() {
   local out="" p name val decl nm f
+  # PR83-REVIEW(1/6) [ответ AloofLibra, _lib.sh:1026]: «--blob=» — 7 символов, было RSTART+8/RLENGTH-8 и срезало первую букву имени (z2r_prof_1 -> 2r_prof_1); вторая половина правки — значением был полный путь /opt/.../file.bin, а панель ждёт имя файла (сравнивает с available_blobs), теперь basename как у CLI blob_override_get. Удалить после проверки.
   decl="$(awk '
     {
       l = $0
       while (match(l, /--blob=[A-Za-z0-9_]+:@\/opt\/(zapret2|zator)\/files\/fake\/[^ \t]+/)) {
-        tok = substr(l, RSTART + 8, RLENGTH - 8)
+        tok = substr(l, RSTART + 7, RLENGTH - 7)
         ci = index(tok, ":@/")
-        if (ci > 0) print substr(tok, 1, ci - 1) "\t" substr(tok, ci + 2)
+        if (ci > 0) {
+          f = substr(tok, ci + 2)
+          sub(/.*\//, "", f)
+          print substr(tok, 1, ci - 1) "\t" f
+        }
         l = substr(l, RSTART + RLENGTH)
       }
     }

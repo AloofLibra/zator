@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { sni } from '../../api/endpoints'
 import type { SniProfileInfo, SniSetInfo } from '../../api/types'
 import { busyActive, busyButton, withBusy } from '../../stores/busy'
@@ -66,6 +66,7 @@ async function load() {
 // черновики форм в синхроне
 watch(profiles, () => { syncDrafts() })
 
+// PR83-REVIEW(2/6) [ответ на замечание AloofLibra, SniPanel.vue:79]: убрал onMounted(refresh) — первоначальную загрузку делает родитель CustomBlobsView (один blobs.cgi + tls_blob на вкладку); refresh() остался только для кнопки «Обновить» и остаётся в act()-перезагрузках после действий. Удалить после проверки.
 async function refresh() {
   try {
     await withBusy('refresh-sni', async () => {
@@ -75,8 +76,6 @@ async function refresh() {
     showToast((error as Error).message, 'error')
   }
 }
-
-onMounted(refresh)
 
 async function act(key: string, fn: () => Promise<unknown>, okText: string) {
   try {
