@@ -230,7 +230,17 @@ printf '%s\n' "$body" | grep -q 'webui_stop_service' \
   || fail "remove_zapret не останавливает сервис Web-панели на время сноса zapret2"
 printf '%s\n' "$body" | grep -q 'S90-zapret2' \
   || fail "remove_zapret не удаляет симлинк автозапуска S90-zapret2 (после п.44 останется dangling symlink)"
-ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса); S90-zapret2 чистится"
+
+# OpenWRT (procd): webui_remove обязан снять enable-симлинки /etc/rc.d —
+# иначе после полного удаления (п.4) при каждой загрузке rcS спотыкается
+# о dangling symlink (жалоба автора PR #83 из личной беседы).
+WEBUI_REMOVE_BLOCK="$(sed -n '/^webui_remove()/,/^}/p' "$REPO_DIR/z2r.sh")"
+[ -n "$WEBUI_REMOVE_BLOCK" ] || fail "не найдена webui_remove в z2r.sh"
+printf '%s\n' "$WEBUI_REMOVE_BLOCK" | grep -q 'z2r-webui disable' \
+  || fail "webui_remove (WRT): нет disable перед rm инита — dangling /etc/rc.d/S95z2r-webui"
+printf '%s\n' "$WEBUI_REMOVE_BLOCK" | grep -q '/etc/rc.d/S95z2r-webui' \
+  || fail "webui_remove (WRT): не чистит симлинки /etc/rc.d/S95|K10z2r-webui"
+ok "бэкап предлагается до удаления zapret2; файлы Web-панели не удаляются (только stop сервиса); S90-zapret2 чистится; WRT: rc.d-симлинки панели снимаются"
 
 # ===========================================================================
 # 5. post-install меню: Enter→5 из него снова запускает переустановку

@@ -650,12 +650,13 @@ QUIC), `apply` назначает номера 101+ и вызывает штат
 
 ### Пользовательские блобы — `blobs.cgi`
 
-Страница «Свои блобы»: файлы блобов загружаются через браузер в
+Страница «Блобы и SNI»: файлы блобов загружаются через браузер в
 `/opt/zator/files/fake/custom_blob/` (каталог и `extra_strats/cache/orchestra/custom_blobs.tsv`
 едут в бэкапах), декларации `--blob=ИМЯ:@…` инжектятся в config между
 `#Z2R_CUSTOM_BLOBS_BEGIN/END` (сразу после штатных деклараций). Валидация имён/файлов —
 на бэкенде (`lib/custom_blobs.sh`); имя не должно совпадать со штатным; переименование
-правит ссылки на имя в «Своих стратегиях» (только пользовательские записи).
+правит ссылки на имя в «Своих стратегиях» (только пользовательские записи). Здесь же
+живут SNI-настройки клон-режима (пул с автосменой, пин одного SNI, наборы имён).
 
 `GET /cgi-bin/blobs.cgi`:
 
@@ -666,7 +667,19 @@ QUIC), `apply` назначает номера 101+ и вызывает штат
                "comment": "загружен из панели", "refs": 2 } ],
   "files": [ "my_fake.bin" ],   // что уже лежит в custom_blob/
   "stock": [ "maxru", "…" ],    // занятые (штатные) имена
-  "config_dirty": true          // TSV != секция #Z2R_CUSTOM_BLOBS в config
+  "config_dirty": true,         // TSV != секция #Z2R_CUSTOM_BLOBS в config
+  "sni": {                      // null на Core без lib-хелперов пула (503 для POST)
+    "profiles": [ { "id": "1", "title": "Профиль 1 — YouTube TCP",
+                    "pin": "",                       // пин sni_override.tsv (побеждает пул)
+                    "pool": "набор google (9 имён, по кругу, автосмена)",
+                    "set": "google",                 // текущая @ссылка ("" = свой список/нет пула)
+                    "policy": "rr",                  // rr (по кругу) | rand (случайно, без двух подряд)
+                    "effective": [ "www.google.com", "…" ] } ],
+    "sets": [ { "name": "google", "origin": "zator",   // sni_zator.txt — только просмотр
+                "domains": [ "www.google.com", "…" ] },
+              { "name": "my", "origin": "user",        // sni_user.txt — правится, в бэкапах
+                "domains": [ "example.com" ] } ]
+  }
 }
 ```
 
@@ -679,12 +692,22 @@ QUIC), `apply` назначает номера 101+ и вызывает штат
 | `edit` | `id=<N>&value=&file=&comment=` | изменить; смена имени правит ссылки в `custom_strategies.tsv` |
 | `delete` | `id=<N>` | удалить запись + файл; блоб, на который ссылаются стратегии, — 400 |
 | `apply` | — | инжект деклараций в config (`#Z2R_CUSTOM_BLOBS`) + переинжект «Своих стратегий» + авто-рестарт |
+| `sni_pin` | `profile=<1..8>&value=<домен\|"">` | пин одного SNI (`sni_override.tsv`): пусто — сброс (снова работает пул). Без рестарта |
+| `sni_pool_assign` | `profile&value=<имя набора>` | назначить набор профилю (строка `@имя` в `sni_pool.tsv`); набор — любой из sni_zator/sni_user |
+| `sni_pool_custom` | `profile&list=<домены через \n/пробел>` | свой список профиля (полная замена строк, до 32) |
+| `sni_pool_clear` | `profile` | убрать пул профиля (один SNI: пин или дефолт) |
+| `sni_pool_policy` | `profile&value=rr\|rand` | политика чередования (`sni_pool_policy.tsv`): по кругу / случайно без двух подряд |
+| `sni_set_write` | `name=<имя>&list=<домены>` | создать/заменить СВОЮ секцию `# set: имя` в sni_user.txt (одноимённая перекрывает проектную) |
+| `sni_set_delete` | `name=<имя>` | удалить свою секцию; занятая @ссылкой или проектная — 400 |
 
 Успех: `{ "ok": true, "apply_required": true }` (apply: `+ "restarted": true|false,
-"restart_required": true`).
+"restart_required": true`); SNI-действия — `{ "ok": true, "restarted": false,
+"restart_required": false }` (TTL-кэш lua/sni-pool.lua ~2с, рестарт не нужен).
 
 **Dev:** fake-router держит `FakeRouterState.custom_blobs`/`custom_blob_files`
-(по умолчанию пусто), `apply` вызывает штатный `_apply_restart`.
+(по умолчанию пусто), `apply` вызывает штатный `_apply_restart`; SNI-стейт —
+`sni_pins`/`sni_pools`/`sni_custom`/`sni_policy`/`sni_user_sets` (дефолт 1/2 →
+`@google`), zator-наборы google/rkn — константы мока.
 
 ### POST — применение настроек
 

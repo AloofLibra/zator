@@ -610,6 +610,32 @@ button.primary.is-busy::after,
   word-break: keep-all;
 }
 
+/* кликабельный чип-набор пользователя («Наборы SNI»): выглядит как кнопка —
+   рамка, ховер, нажатие, фокус с клавиатуры; is-target — открыт в редакторе */
+button.chip.chip-button {
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  background: var(--surface-strong);
+  color: var(--accent-strong);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+button.chip.chip-button:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow);
+}
+button.chip.chip-button:not(:disabled):active { transform: translateY(1px); }
+button.chip.chip-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+button.chip.chip-button:disabled { cursor: not-allowed; opacity: 0.6; }
+button.chip.chip-button.is-target {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .meta { display: grid; gap: 6px; }
 
 .meta-line {

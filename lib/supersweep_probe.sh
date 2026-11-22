@@ -41,6 +41,18 @@ supersweep_probe_config() {
     for f in blob_override.tsv mode_override.tsv sni_override.tsv clonesize.tsv; do
         [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
     done
+    local sni_pool_lua=0
+    if [ -f "${ZATOR_ROOT:-/opt/zator}/lua/sni-pool.lua" ]; then
+        for f in sni_pool.tsv sni_pool_policy.tsv; do
+            [ ! -f "$ORCH_DIR/$f" ] || cp "$ORCH_DIR/$f" "$dir/$f" || return 1
+        done
+        sed -e "s#^local POOL_TSV = .*#local POOL_TSV = \"$dir/sni_pool.tsv\"#" \
+            -e "s#^local POOL_POLICY = .*#local POOL_POLICY = \"$dir/sni_pool_policy.tsv\"#" \
+            -e "s#^local POOL_PIN = .*#local POOL_PIN = \"$dir/sni_pool.pin\"#" \
+            "${ZATOR_ROOT:-/opt/zator}/lua/sni-pool.lua" > "$dir/sni-pool.lua" || return 1
+        printf '%s\n' "$(date +%s)" > "$dir/sni_pool.pin" || return 1
+        sni_pool_lua=1
+    fi
     # --autoexclude есть не во всех сборках: неизвестная опция валит бинарник,
     # поэтому поддержка проверяется по --help и кешируется на процесс.
     local binary="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
@@ -65,7 +77,9 @@ supersweep_probe_config() {
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-lib.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-antidpi.lua" \
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
-            "--lua-init=@$dir/locked.lua" \
+            "--lua-init=@$dir/locked.lua"
+        [ "$sni_pool_lua" != 1 ] || printf '%s\n' "--lua-init=@$dir/sni-pool.lua"
+        printf '%s\n' \
             "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
         awk -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" '
             /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
@@ -122,6 +136,7 @@ supersweep_probe_config() {
         END { if (!found || !seen || !plan) exit 1 }
     ' "$cfg" >> "$dir/nfqws2.args" || return 1
     chmod 644 "$dir"/*.lua "$dir"/*.tsv "$dir/nfqws2.args"
+    [ ! -f "$dir/sni_pool.pin" ] || chmod 644 "$dir/sni_pool.pin"
 }
 
 supersweep_probe_stop() {

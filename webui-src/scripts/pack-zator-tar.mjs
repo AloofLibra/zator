@@ -165,6 +165,7 @@ const KEEP_IF_EXISTS = new Set([
   'lists/googlevideo-ipv4.txt', // runtime feed, retain the router's current list
   'extra_strats/TCP_Custom.txt',
   'extra_strats/TCP_RKN_domains_by_substring.txt',
+  'extra_strats/sni_user.txt', // пользовательские SNI-наборы, правится на устройстве
   'files/fake/custom_tls.bin',
 ])
 

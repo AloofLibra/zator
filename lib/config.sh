@@ -660,24 +660,44 @@ config_update_pending() {
 # self-built 'self-built Aug 25 2026 17:08:09'. Пустая строка, если
 # бинарника нет. Никогда не падает (вызывается из шапки меню и WebUI).
 zapret2_version_short() {
-  local bin out v
+  local bin out v cache key
   bin="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
   [ -x "$bin" ] || bin="$(command -v nfqws2 2>/dev/null)"
   [ -n "$bin" ] || return 0
+  # Кеш по mtime бинаря: запуск nfqws2 --version — тяжёлый форк (~0.3 с на
+  # слабых роутерах), а версия меняется только при обновлении zapret2.
+  # Шапка меню и state.cgi зовут это на каждом открытии.
+  cache="${TMPDIR:-/tmp}/z2r_z2ver_cache"
+  # ключ кеша = размер.mtime бинаря. GNU stat (-c) есть не везде :
+  # BusyBox stat (keenetic) его не знает и без фолбэка ключ вырождался
+  # в путь к файлу - не менялся при обновлении бинаря, и шапка меню
+  # вечно показывала версию с первого запуска. Фолбэк собирает тот же
+  # размер.mtime средствами BusyBox (wc -c + date -r).
+  key="$(stat -c '%s.%Y' "$bin" 2>/dev/null)"
+  [ -n "$key" ] || key="$(wc -c <"$bin" 2>/dev/null | tr -d ' ').$(date -r "$bin" +%s 2>/dev/null)"
+  [ -n "$key" ] || key="$bin"
+  if [ -f "$cache" ] && [ "$(head -n1 "$cache" 2>/dev/null)" = "$key" ]; then
+    tail -n +2 "$cache" 2>/dev/null
+    return 0
+  fi
   out="$("$bin" --version 2>/dev/null | head -n 1)"
   case "$out" in
     *"github version "*)
       v="${out##*github version }"
       v="${v%% (*}"
       v="${v%% lua_compat*}"
-      printf '%s' "${v% }"
+      v="${v% }"
       ;;
     *"self-built version "*)
       v="self-built ${out##*self-built version }"
       v="${v%% lua_compat*}"
-      printf '%s' "$v"
+      ;;
+    *)
+      return 0
       ;;
   esac
+  printf '%s\n%s\n' "$key" "$v" > "$cache" 2>/dev/null || true
+  printf '%s' "$v"
   return 0
 }
 

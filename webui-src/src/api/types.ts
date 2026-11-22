@@ -117,6 +117,36 @@ export interface CustomBlobsPayload {
   // Серверный признак «TSV ≠ секция #Z2R_CUSTOM_BLOBS в конфиге» —
   // переживает обновление страницы (Vue-флаг needsApply был только в памяти)
   config_dirty?: boolean
+  // SNI-блок вкладки «Блобы и SNI»; null на Core без lib-хелперов пула
+  sni?: SniState | null
+}
+
+// SNI-пул: назначение профилей (sni_pool.tsv) + наборы имён
+export interface SniState {
+  profiles?: SniProfileInfo[]
+  sets?: SniSetInfo[]
+}
+
+export interface SniProfileInfo {
+  id: string
+  title: string
+  // Пин одного SNI (sni_override.tsv); пусто = работает пул
+  pin?: string
+  // Человекочитаемый статус пула («набор google (9 имён, по кругу, автосмена)»)
+  pool?: string
+  // Текущая @ссылка на набор (пусто = свой список/нет пула)
+  set?: string
+  // Политика чередования: rr (по кругу) | rand (случайно, без двух подряд)
+  policy?: string
+  // Эффективный список SNI в порядке ротации
+  effective?: string[]
+}
+
+export interface SniSetInfo {
+  name: string
+  // user — секция sni_user.txt (правится), zator — sni_zator.txt (просмотр)
+  origin: 'user' | 'zator'
+  domains: string[]
 }
 
 export interface CustomImportResult {

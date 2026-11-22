@@ -948,6 +948,12 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   local mode = profile_key and MODE_OVERRIDES[tostring(profile_key)]
   local name = profile_key and BLOB_OVERRIDES[tostring(profile_key)]
   local sni = profile_key and SNI_OVERRIDES[tostring(profile_key)]
+  -- zator sni-pool (lua/sni-pool.lua): пул невинных SNI с автосменой; явный
+  -- пин sni_override.tsv выше приоритетом. Модуля нет (старая установка или
+  -- изолированный прогон) -> тихий no-op, прежнее поведение.
+  if sni == nil and type(z2r_sni_pool_pick) == "function" then
+    sni = z2r_sni_pool_pick(desync, profile_key)
+  end
   local fake_arg = (instance and instance.arg and z2r_fake_blob_arg(instance.func)) or nil
   local native_clone = instance and instance.func == "tls_client_hello_clone"
   if (not mode and not name and not sni and not fake_arg and not native_clone) or not instance or not instance.arg then

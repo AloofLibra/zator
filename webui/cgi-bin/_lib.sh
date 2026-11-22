@@ -12,15 +12,16 @@ CONFIG_FILE="$ZAPRET_ROOT/config"
 ORCH_DIR="$ZATOR_ROOT/extra_strats/cache/orchestra"
 LIB_DIR=""
 
+# Чистый bash без fork: прежний вариант гнал awk на КАЖДЫЙ вызов (~55 мс
+# на слабых роутерах), а GET-ответы зовут его десятки раз — только на
+# json_escape tls_blob/blobs отвечали по 2-4 лишних секунды.
 json_escape() {
-  printf '%s' "$1" | awk 'BEGIN{ORS=""}
-  {
-    gsub(/\\/, "\\\\")
-    gsub(/"/, "\\\"")
-    gsub(/\r/, "")
-    if (NR>1) printf "\\n"
-    printf "%s", $0
-  }'
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\r'/}"
+  s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
 }
 
 send_json() {
@@ -325,18 +326,23 @@ profile_json() {
   _json_esc "$label"; local jlabel="$REPLY"
   _json_esc "$desc"; local jdesc="$REPLY"
   _json_esc "$current"; local jcurrent="$REPLY"
+  # булевы без $( ): сабшелл-форк на профиль × профили ел ~0.3 с на MIPS
+  local fb_on=false ug_on=false dns_desync_on=false
+  [ "$MENU_FALLBACK" = "включен" ] && fb_on=true
+  [ "$MENU_UDP_GAMES" = "Включен" ] && ug_on=true
+  [ "$MENU_DNS_DESINC" = "Включен" ] && dns_desync_on=true
   case "$kind" in
     fallback)
       printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_fallback":true,"fallback_enabled":%s}' \
-        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)"
+        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$fb_on"
       ;;
     udp-games)
       printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_udp_games":true,"udp_games_enabled":%s}' \
-        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false)"
+        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$ug_on"
       ;;
     dns)
       printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s","is_dns_desync":true,"dns_desync_enabled":%s}' \
-        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$([ "$MENU_DNS_DESINC" = "Включен" ] && echo true || echo false)"
+        "$id" "$jlabel" "$jdesc" "$jcurrent" "${max:-0}" "$scope" "$source" "$dns_desync_on"
       ;;
     *)
       printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"scope":"%s","lock_source":"%s"}' \
@@ -655,6 +661,44 @@ _csv_tokens_json() {
   printf '%s' "$out"
 }
 
+# Кеш-читалки version.env/latest.env: deploy_version_field/deploy_latest_field
+# — grep-форк на каждое поле (×14 в state.cgi ≈ полсекунды на слабых MIPS).
+# Оба файла — key=value по строке; читаем один раз в ассоц-массивы.
+_Z2R_STATE_VER_LOADED=""
+declare -A _Z2R_STATE_VER
+declare -A _Z2R_STATE_LAT
+
+_z2r_state_env_load() {
+  [ -n "$_Z2R_STATE_VER_LOADED" ] && return 0
+  local f k v
+  for f in \
+    "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/deploy/version.env" \
+    "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/deploy/latest.env"; do
+    # version.env первым; latest.env дополняет (приоритет у latest для LATEST_*)
+    while IFS='=' read -r k v; do
+      case "$k" in
+        ''|'#'*) continue ;;
+      esac
+      # значения в env пишутся в кавычках — deploy_version_field их сдирает
+      v="${v#\"}"; v="${v%\"}"
+      if [ "${f##*/}" = "latest.env" ]; then _Z2R_STATE_LAT["$k"]="$v"
+      else _Z2R_STATE_VER["$k"]="$v"; fi
+    done < "$f" 2>/dev/null
+  done
+  _Z2R_STATE_VER_LOADED=1
+  return 0
+}
+
+_z2r_ver_field() {
+  _z2r_state_env_load
+  printf '%s' "${_Z2R_STATE_VER[$1]:-}"
+}
+
+_z2r_lat_field() {
+  _z2r_state_env_load
+  printf '%s' "${_Z2R_STATE_LAT[$1]:-}"
+}
+
 api_state() {
   parse_params
   scope_param_valid "${PARAM_SCOPE:-default}" || send_error "400 Bad Request" "Некорректный scope"
@@ -721,14 +765,14 @@ api_state() {
     v_cfg_pending=true
   fi
   local cfg_json="\"config_date\":\"$j_cfgdate\",\"config_default_date\":\"$j_cfgddate\",\"config_update_pending\":$v_cfg_pending"
-  if type deploy_version_field >/dev/null 2>&1; then
+  if type _z2r_ver_field >/dev/null 2>&1; then
     local v_zator_ver v_zator_date v_webui_ver v_webui_date v_tracking
     local v_lz_date v_lw_date v_update=false
-    v_zator_ver="$(deploy_version_field ZATOR_VERSION)"
-    v_zator_date="$(deploy_version_field ZATOR_DATE)"
-    v_webui_ver="$(deploy_version_field WEBUI_VERSION)"
-    v_webui_date="$(deploy_version_field WEBUI_DATE)"
-    v_tracking="$(deploy_version_field TRACKING)"
+    v_zator_ver="$(_z2r_ver_field ZATOR_VERSION)"
+    v_zator_date="$(_z2r_ver_field ZATOR_DATE)"
+    v_webui_ver="$(_z2r_ver_field WEBUI_VERSION)"
+    v_webui_date="$(_z2r_ver_field WEBUI_DATE)"
+    v_tracking="$(_z2r_ver_field TRACKING)"
     # raw-установки до первого запуска z2r.sh живут без version.env:
     # пустые поля в панели выглядят как поломка, показываем «неизвестно»
     # (значения появится после deploy_version_bootstrap или tar-деплоя).
@@ -737,14 +781,14 @@ api_state() {
     [ -n "$v_webui_ver" ] || v_webui_ver="неизвестно"
     [ -n "$v_webui_date" ] || v_webui_date="неизвестно"
     [ -n "$v_tracking" ] || v_tracking="latest"
-    v_lz_date="$(deploy_latest_field LATEST_ZATOR_DATE)"
-    v_lw_date="$(deploy_latest_field LATEST_WEBUI_DATE)"
-    v_lrel="$(deploy_latest_field LATEST_RELEASE)"
+    v_lz_date="$(_z2r_lat_field LATEST_ZATOR_DATE)"
+    v_lw_date="$(_z2r_lat_field LATEST_WEBUI_DATE)"
+    v_lrel="$(_z2r_lat_field LATEST_RELEASE)"
     local v_zs v_ws v_lz v_lw
-    v_zs="$(deploy_version_field ZATOR_SHA)"
-    v_ws="$(deploy_version_field WEBUI_SHA)"
-    v_lz="$(deploy_latest_field LATEST_ZATOR_SHA)"
-    v_lw="$(deploy_latest_field LATEST_WEBUI_SHA)"
+    v_zs="$(_z2r_ver_field ZATOR_SHA)"
+    v_ws="$(_z2r_ver_field WEBUI_SHA)"
+    v_lz="$(_z2r_lat_field LATEST_ZATOR_SHA)"
+    v_lw="$(_z2r_lat_field LATEST_WEBUI_SHA)"
     if { [ -n "$v_lz" ] && [ -n "$v_zs" ] && [ "$v_zs" != "$v_lz" ]; } \
       || { [ -n "$v_lw" ] && [ -n "$v_ws" ] && [ "$v_ws" != "$v_lw" ]; }; then
       v_update=true
@@ -761,8 +805,28 @@ api_state() {
   else
     version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_release\":\"\",\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
   fi
+  # булевы и вложенные блоки — в переменные БЕЗ $( ): каждый сабшелл-форк
+  # на MIPS ~30 мс, а тут их было ~15 на каждый запрос главной страницы
+  local wg_on=false fb_on=false ug_on=false am_on=false hl_auto=false
+  local rst_on=false reasm_on=false rst_lua=false
+  [ "$MENU_WG_STATE_RAW" = "1" ] && wg_on=true
+  [ "$MENU_FALLBACK" = "включен" ] && fb_on=true
+  [ "$MENU_UDP_GAMES" = "Включен" ] && ug_on=true
+  [ "$MENU_AUTO_MODE" = "включен" ] && am_on=true
+  [ "$MENU_HOSTLIST" = "авто" ] && hl_auto=true
+  [ "$MENU_RST_GUARD" = "включен" ] && rst_on=true
+  [ "$MENU_REASM" = "включено" ] && reasm_on=true
+  [ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && rst_lua=true
+  local quic_list_json scopes_block provider_block backups_block
+  quic_list_json="$(api_quic_blobs_json)"
+  scopes_block="$(client_scopes_json)"
+  provider_block="$(_state_capture api_provider_get)"
+  backups_block="$(_state_capture api_backups_list)"
+  local tcp_user_json udp_user_json
+  tcp_user_json="$(_csv_tokens_json "$tcp_user")"
+  udp_user_json="$(_csv_tokens_json "$udp_user")"
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"quic_blobs":[$(api_quic_blobs_json)],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$scopes_block,"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"quic_blobs":[$quic_list_json],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$wg_on},"fallback":{"state":"$MENU_FALLBACK","enabled":$fb_on},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$ug_on,"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$am_on},"hostlist":{"state":"$MENU_HOSTLIST","auto":$hl_auto},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$rst_on,"lua_available":$rst_lua},"reasm":{"state":"$MENU_REASM","enabled":$reasm_on},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$tcp_user_json],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$udp_user_json],"base":"$udp_base"}},"provider":$provider_block,"backups":$backups_block}
 EOF
 )"
 }
@@ -903,26 +967,17 @@ api_update_check() {
 # держать синхронно при изменении любого из трёх.
 api_quic_blobs_json() {
   local fake_dir="${Z2R_BLOB_FAKE_DIR:-/opt/zator/files/fake}" f out=""
-  [ -d "$fake_dir" ] || { printf ''; return 0; }
-  if sort -z </dev/null >/dev/null 2>&1; then
-    while IFS= read -r -d '' f; do
-      f="$(basename "$f")"
-      case "$f" in
-        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
-          out="${out}${out:+,}\"$(json_escape "$f")\""
-          ;;
-      esac
-    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
-  else
-    while IFS= read -r f; do
-      f="$(basename "$f")"
-      case "$f" in
-        quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
-          out="${out}${out:+,}\"$(json_escape "$f")\""
-          ;;
-      esac
-    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' | sort)
-  fi
+  # bash-глоб вместо find|sort (+проба sort -z): глоббинг и сортировка —
+  # внутри bash, ноль форков; на слабых роутерах find+sort стоили ~0.4 с
+  for f in "$fake_dir"/*.bin; do
+    [ -f "$f" ] || continue
+    f="${f##*/}"
+    case "$f" in
+      quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin)
+        out="${out}${out:+,}\"$f\""
+        ;;
+    esac
+  done
   printf '%s' "$out"
 }
 
@@ -938,26 +993,18 @@ api_tls_blob_get() {
   [ -z "$current_blob" ] && current_blob=""
   current_mode="$(config_tls_blob_mode_value "$cfg")"
 
+  # bash-глоб: сортировка и обход без форков (find|sort на слабых роутерах
+  # стоили ~0.4 с на сотню файлов)
   available_blobs=""
-  if sort -z </dev/null >/dev/null 2>&1; then
-    while IFS= read -r -d '' f; do
-      f="$(basename "$f")"
-      case "$f" in
-        tls_*.bin|custom_tls.bin)
-          available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
-          ;;
-      esac
-    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
-  else
-    while IFS= read -r f; do
-      f="$(basename "$f")"
-      case "$f" in
-        tls_*.bin|custom_tls.bin)
-          available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
-          ;;
-      esac
-    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' | sort)
-  fi
+  for f in "$fake_dir"/*.bin; do
+    [ -f "$f" ] || continue
+    f="${f##*/}"
+    case "$f" in
+      tls_*.bin|custom_tls.bin)
+        available_blobs="${available_blobs}${available_blobs:+,}\"$f\""
+        ;;
+    esac
+  done
 
   send_json "200 OK" "{
     \"current_mode\":\"$(json_escape "$current_mode")\",
@@ -972,10 +1019,39 @@ api_tls_blob_get() {
 }
 
 # JSON-объект «профиль -> текущее переопределение» ("" = глобальный) для GET-ответов.
+# Один проход по конфигу вместо sed'а на каждый профиль: на слабых MIPS
+# каждый полный скан 37-КБ конфига — сотни миллисекунд (живой кейс: tls_blob
+# GET ~7 с). Здесь собираются ВСЕ декларации --blob=ИМЯ:@.../files/fake/…,
+# дальше значения берутся из карты чистым bash.
 api_tls_blob_profile_blobs_json() {
-  local out="" p
+  local out="" p name val decl nm f
+  decl="$(awk '
+    {
+      l = $0
+      while (match(l, /--blob=[A-Za-z0-9_]+:@\/opt\/(zapret2|zator)\/files\/fake\/[^ \t]+/)) {
+        tok = substr(l, RSTART + 7, RLENGTH - 7)
+        ci = index(tok, ":@/")
+        if (ci > 0) {
+          f = substr(tok, ci + 2)
+          sub(/.*\//, "", f)
+          print substr(tok, 1, ci - 1) "\t" f
+        }
+        l = substr(l, RSTART + RLENGTH)
+      }
+    }
+  ' "$cfg")"
   while read -r p; do
-    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(blob_override_get "$p" "$cfg")")\""
+    name="$(blob_override_name "$p")"
+    val=""
+    if [ "$name" = fake_default_tls ]; then
+      val="fake_default_tls"
+    elif [ -n "$name" ]; then
+      while IFS=$'\t' read -r nm f; do
+        [ "$nm" = "$name" ] && { val="$f"; break; }
+      done <<< "$decl"
+      [ -n "$val" ] || val="$name"
+    fi
+    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$val")\""
   done < <(blob_override_supported_profiles)
   printf '%s' "$out"
 }
@@ -1070,7 +1146,7 @@ api_tls_blob_profile_set() {
 api_fake_mode_modes_json() {
   local out="" p v
   while read -r p; do
-    v="$(mode_override_get "$p")"
+    v="$(sni_pool_mode_of "$p")"
     [ -n "$v" ] || v=classic
     out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$v")\""
   done < <(mode_override_supported_profiles)
@@ -1081,7 +1157,7 @@ api_fake_mode_modes_json() {
 api_fake_mode_snis_json() {
   local out="" p
   while read -r p; do
-    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(sni_override_get "$p")")\""
+    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$(sni_pool_pin_of "$p")")\""
   done < <(sni_override_supported_profiles)
   printf '%s' "$out"
 }
@@ -1157,19 +1233,14 @@ api_wg_blob_get() {
   current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
   [ -z "$current_repeats" ] && current_repeats=""
 
-  # Только файлы вида wg_initial_fake_* (как в menu_action_set_wg_blob)
+  # Только файлы вида wg_initial_fake_* (как в menu_action_set_wg_blob).
+  # bash-глоб + имя без $( ): find|sort|basename|$(json_escape) — по форку
+  # на файл, на слабых роутерах это стояло ~0.3 с
   available_blobs=""
-  if sort -z </dev/null >/dev/null 2>&1; then
-    while IFS= read -r -d '' f; do
-      f="$(basename "$f")"
-      available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
-    done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' -print0 | sort -z)
-  else
-    while IFS= read -r f; do
-      f="$(basename "$f")"
-      available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
-    done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' | sort)
-  fi
+  for f in "$fake_dir"/wg_initial_fake_*; do
+    [ -f "$f" ] || continue
+    available_blobs="${available_blobs}${available_blobs:+,}\"${f##*/}\""
+  done
 
   send_json "200 OK" "{
     \"current_blob\":\"$(json_escape "$current_blob")\",
@@ -1679,29 +1750,32 @@ api_provider_redetect() {
 }
 
 api_backups_list() {
-  local list_file f items="" first=1 name size date_str d
-  if ! type backup_build_list_file >/dev/null 2>&1; then
-    send_error "500 Internal Server Error" "Модуль бэкапов недоступен"
+  local f items="" first=1 name size date_str d
+  local dir="${Z2R_BACKUP_DIR:-/opt/zator/backups}"
+  # bash-глоб + ОДИН wc на все файлы: прежний find|sort|wc-конвейер и форки
+  # на бэкап стоили ~0.5 с на слабых роутерах; дата парсится из имени
+  # средствами bash. Глоб сортирован лексикографически — как sort.
+  local -a files=()
+  for f in "$dir"/z2r_backup_*.tar; do
+    [ -f "$f" ] && files+=("$f")
+  done
+  if [ "${#files[@]}" -gt 0 ]; then
+    # shellcheck disable=SC2086
+    while read -r size f; do
+      [ -n "$f" ] || continue
+      [ "$f" = "total" ] && continue
+      name="${f##*/}"
+      case "$name" in
+        z2r_backup_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9].tar)
+          d="${name#z2r_backup_}"; d="${d%.tar}"
+          date_str="${d:0:4}-${d:4:2}-${d:6:2} ${d:9:2}:${d:11:2}:${d:13:2}"
+          ;;
+        *) date_str="" ;;
+      esac
+      if [ "$first" = "1" ]; then first=0; else items="${items},"; fi
+      items="${items}{\"name\":\"${name}\",\"size\":${size:-0},\"date\":\"${date_str}\"}"
+    done < <(wc -c "${files[@]}" 2>/dev/null)
   fi
-  list_file="/tmp/z2r_webui_backups_$$"
-  backup_build_list_file "$list_file"
-  # Размеры одним wc на все файлы: форк на каждый бэкап слишком дорог на
-  # слабых роутерах; дата парсится из имени средствами самого bash.
-  while read -r size f; do
-    [ -n "$f" ] || continue
-    [ "$f" = "total" ] && continue
-    name="${f##*/}"
-    case "$name" in
-      z2r_backup_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9].tar)
-        d="${name#z2r_backup_}"; d="${d%.tar}"
-        date_str="${d:0:4}-${d:4:2}-${d:6:2} ${d:9:2}:${d:11:2}:${d:13:2}"
-        ;;
-      *) date_str="" ;;
-    esac
-    if [ "$first" = "1" ]; then first=0; else items="${items},"; fi
-    items="${items}{\"name\":\"${name}\",\"size\":${size:-0},\"date\":\"${date_str}\"}"
-  done < <(wc -c $(cat "$list_file") 2>/dev/null)
-  rm -f "$list_file"
   send_json "200 OK" "{\"items\":[${items}]}"
 }
 

@@ -1676,6 +1676,13 @@ class FakeRouterState:
         # Пользовательские блобы (blobs.cgi): файлы + декларации --blob=.
         self.custom_blob_files = []
         self.custom_blobs = []
+        # SNI-блок вкладки «Блобы и SNI» (blobs.cgi): пины sni_override,
+        # назначения/политики пула, наборы sni_user (zator-наборы read-only).
+        self.sni_pins = {"1": "", "2": "", "3": "", "4": "", "8": ""}
+        self.sni_pools = {"1": "@google", "2": "@google", "3": "", "4": "", "8": ""}
+        self.sni_custom = {"1": "", "2": "", "3": "", "4": "", "8": ""}
+        self.sni_policy = {"1": "rr", "2": "rr", "3": "rr", "4": "rr", "8": "rr"}
+        self.sni_user_sets = {}  # name -> [domains]
         self.supersweep_report = {
             "available": False, "state": "idle", "active": False, "source": "none",
             "started": 0, "updated": 0, "scope": "default", "phase": "",
@@ -3646,6 +3653,59 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 out_groups.append(":".join(toks))
             return " --lua-desync=".join(out_groups)
 
+        def sni_sets():
+            """Наборы: zator (read-only, google/rkn) + пользовательские."""
+            zator = [
+                {"name": "google", "origin": "zator", "domains": [
+                    "www.google.com", "developers.google.com",
+                    "codelabs.developers.google.com", "www.gstatic.com",
+                    "accounts.google.com", "fonts.gstatic.com", "google.com",
+                    "lh3.google.com", "fonts.googleapis.com"]},
+                {"name": "rkn", "origin": "zator", "domains": [
+                    "300.ya.ru", "ya.ru", "max.ru", "vk.com", "mail.ru",
+                    "hcaptcha.com"]},
+            ]
+            user = [{"name": n, "origin": "user", "domains": list(d)}
+                    for n, d in sorted(st.sni_user_sets.items())]
+            return user + zator
+
+        def sni_state():
+            """Поле sni payload blobs.cgi (как _blobs_sni_json в CGI)."""
+            titles = {"1": "Профиль 1 — YouTube TCP", "2": "Профиль 2 — Googlevideo",
+                      "3": "Профиль 3 — RKN", "4": "Профиль 4 — Discord (TCP)",
+                      "8": "Профиль 8 — безразборный TLS"}
+            profiles = []
+            sets_map = {s["name"]: s["domains"] for s in sni_sets()}
+            for pid in ("1", "2", "3", "4", "8"):
+                pool = st.sni_pools.get(pid, "")
+                custom = st.sni_custom.get(pid, "")
+                if pool.startswith("@"):
+                    name = pool[1:].lower()
+                    effective = list(sets_map.get(name, [])) + custom.split()
+                else:
+                    effective = custom.split()
+                label = ""
+                if pool.startswith("@"):
+                    kind = "набор %s" % pool[1:]
+                elif effective:
+                    kind = "свой список"
+                else:
+                    kind = ""
+                if kind:
+                    pol = "по кругу" if st.sni_policy.get(pid, "rr") == "rr" else "случайно"
+                    label = "%s (%d имён, %s, автосмена)" % (kind, len(effective), pol)
+                else:
+                    label = "нет пула (один SNI)"
+                profiles.append({
+                    "id": pid, "title": titles[pid],
+                    "pin": st.sni_pins.get(pid, ""),
+                    "pool": label,
+                    "set": pool[1:].lower() if pool.startswith("@") else "",
+                    "policy": st.sni_policy.get(pid, "rr"),
+                    "effective": effective,
+                })
+            return {"profiles": profiles, "sets": sni_sets()}
+
         if self.command == "GET":
             with st.lock:
                 blobs = [{"id": b["id"], "name": b["name"], "file": b["file"],
@@ -3657,6 +3717,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     "blobs": blobs,
                     "files": list(st.custom_blob_files),
                     "stock": list(self._STOCK_BLOBS),
+                    "sni": sni_state(),
                 })
             return
 
@@ -3761,6 +3822,96 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     self._log("POST {0} | blobs apply".format(parsed.path))
                     self._send_json({"ok": True, "restarted": restarted,
                                      "restart_required": True})
+                    return
+
+                # --- SNI-действия (те же, что в blobs.cgi на роутере) ----------
+                domain_re = _re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?"
+                                        r"(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?){0,4}$")
+                setname_re = _re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
+
+                def sni_profile():
+                    pid = params.get("profile", "")
+                    if pid not in ("1", "2", "3", "4", "8"):
+                        raise ValueError("Некорректный профиль: {0}".format(pid))
+                    return pid
+
+                def sni_ok():
+                    self._send_json({"ok": True, "restarted": False,
+                                     "restart_required": False})
+
+                def sni_domains_list(raw):
+                    items, seen = [], set()
+                    for d in (raw or "").replace("\r", " ").replace("\n", " ").split():
+                        d = d.lower()
+                        if not domain_re.match(d) or len(d) > 254:
+                            raise ValueError("Некорректный домен: {0}".format(d))
+                        if d not in seen:
+                            seen.add(d)
+                            items.append(d)
+                    if not 1 <= len(items) <= 32:
+                        raise ValueError("Список: 1…32 домена.")
+                    return items
+
+                if action == "sni_pin":
+                    pid = sni_profile()
+                    value = params.get("value", "").strip().lower()
+                    if value and (not domain_re.match(value) or len(value) > 254):
+                        raise ValueError("Некорректный домен.")
+                    st.sni_pins[pid] = value
+                    sni_ok()
+                    return
+
+                if action == "sni_pool_assign":
+                    pid = sni_profile()
+                    name = params.get("value", "").lower()
+                    if not setname_re.match(name) or name not in {
+                            s["name"] for s in sni_sets()}:
+                        raise ValueError("Набор «{0}» не найден.".format(name))
+                    st.sni_pools[pid] = "@" + name
+                    sni_ok()
+                    return
+
+                if action == "sni_pool_custom":
+                    pid = sni_profile()
+                    st.sni_custom[pid] = " ".join(sni_domains_list(params.get("list", "")))
+                    st.sni_pools[pid] = ""
+                    sni_ok()
+                    return
+
+                if action == "sni_pool_clear":
+                    pid = sni_profile()
+                    st.sni_pools[pid] = ""
+                    st.sni_custom[pid] = ""
+                    sni_ok()
+                    return
+
+                if action == "sni_pool_policy":
+                    pid = sni_profile()
+                    value = params.get("value", "")
+                    if value not in ("rr", "rand"):
+                        raise ValueError("Политика: rr или rand.")
+                    st.sni_policy[pid] = value
+                    sni_ok()
+                    return
+
+                if action == "sni_set_write":
+                    name = params.get("name", "").lower()
+                    if not setname_re.match(name):
+                        raise ValueError("Имя набора: строчные латиница/цифры/_, 1..32.")
+                    st.sni_user_sets[name] = sni_domains_list(params.get("list", ""))
+                    sni_ok()
+                    return
+
+                if action == "sni_set_delete":
+                    name = params.get("name", "").lower()
+                    if name in ("google", "rkn"):
+                        raise ValueError("Проектный набор удалить нельзя.")
+                    if any(p.startswith("@" + name) for p in st.sni_pools.values()):
+                        raise ValueError("Набор занят в пулах профилей.")
+                    if name not in st.sni_user_sets:
+                        raise ValueError("Набор «{0}» не найден.".format(name))
+                    del st.sni_user_sets[name]
+                    sni_ok()
                     return
 
                 raise ValueError("Неизвестное действие: {0}".format(action))

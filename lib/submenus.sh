@@ -1585,7 +1585,7 @@ tls_blob_profile_pick() {
 tls_blob_submenu() {
   local cfg="/opt/zapret2/config"
   [ ! -f "$cfg" ] && cfg="/opt/zapret2/config.default"
-  local p t ans i idx
+  local p t ans i idx tag v vcol
   local profiles=() titles=()
   while read -r p; do
     profiles+=("$p")
@@ -1593,24 +1593,42 @@ tls_blob_submenu() {
   done < <(blob_override_supported_profiles)
 
   while true; do
+    sni_pool_cache_reset
     clear -x
-    echo -e "${cyan}--- Blob профилей: TLS ClientHello / QUIC Initial ---${plain}"
+    echo -e "${cyan}--- Блобы, клоны и SNI профилей ---${plain}"
+    echo ""
+    echo -e "${green}[blob]${plain}${yellow} — штатные блобы конфига · ${plain}${green}[clone-solo]${plain}${yellow} — клон CH с одним SNI · ${plain}${green}[clone-pool]${plain}${yellow} — клон с пулом (автосмена)${plain}"
     echo ""
     submenu_status_item "1" "Глобальный TLS блоб — все профили" "$(config_tls_blob_menu_value "$cfg")" green
     echo ""
-    echo -e "${yellow}Переопределения по профилям (TLS: blob=maxru|fake_default_tls; профиль 5 QUIC: quic/stun/discord-блобы):${plain}"
+    echo -e "${yellow}Профили (TLS: blob=maxru|fake_default_tls; профиль 5 QUIC: quic/stun/discord-блобы):${plain}"
     i=2
     for idx in "${!profiles[@]}"; do
       p="$(blob_override_get "${profiles[$idx]}" "$cfg")"
+      tag="$(fake_mode_profile_tag "${profiles[$idx]}")"
+      # каждая часть своим цветом: тег-ярлык зелёный, блоб зелёный только
+      # при переопределении (глобальный — жёлтый), SNI-часть зелёная при
+      # пине/пуле (дефолт — жёлтый). Цвет блоба не тянется на SNI-хвост.
       if [ -n "$p" ]; then
-        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "$p" green
+        v="${green}${p}${plain}"
       else
-        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "глобальный" yellow
+        v="${yellow}глобальный${plain}"
       fi
+      # профиль 5 (QUIC) — без SNI-части (клоны/SNI не про UDP); у классики
+      # сводка пуста, пока не задан ни пин, ни пул; сводка приходит уже
+      # раскрашенной (слова жёлтым, значение зелёным)
+      if [ "${profiles[$idx]}" != "5" ]; then
+        t="$(fake_mode_sni_summary_colored "${profiles[$idx]}")"
+        [ -n "$t" ] && v="${v}${yellow} · ${plain}${t}"
+      fi
+      submenu_status_item_raw "$i" "${green}${tag}${plain} Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v"
       i=$((i+1))
     done
     submenu_item "$i" "SNI клон-стратегий — по профилям"
     local sni_item=$i
+    i=$((i+1))
+    submenu_item "$i" "SNI-пул — наборы невинных имён с автосменой"
+    local sni_pool_item=$i
     i=$((i+1))
     submenu_item "$i" "Режим фейков — классика/клоны по профилям"
     local mode_item=$i
@@ -1634,6 +1652,9 @@ tls_blob_submenu() {
         ;;
       "$sni_item")
         sni_submenu
+        ;;
+      "$sni_pool_item")
+        sni_pool_submenu
         ;;
       "$mode_item")
         fake_mode_submenu
@@ -1778,15 +1799,452 @@ sni_submenu() {
   done
 }
 
+# --- SNI-пул: наборы невинных имён с автосменой (sni_pool.tsv + sni_zator/user) ---
+# На каждое НОВОЕ соединение клон берёт следующий SNI набора (lua/sni-pool.lua,
+# ~2с, без рестарта); внутри соединения имя не меняется. Наборы — секции
+# «# set: имя» в sni_zator.txt (проектные: google, rkn, …) и sni_user.txt
+# (пользовательские, в бэкапах; одноимённый перекрывает проектный). Назначение
+# — строка «profile<TAB>@имя» в sni_pool.tsv. Пин одного SNI (меню «SNI
+# клон-стратегий» выше) побеждает пул.
+
+sni_pool_profile_pick() {
+  local profile="$1" title="$2" choice name i n origin
+  local -a sets=() cur=() items=()
+
+  while true; do
+    sni_pool_cache_reset
+    clear -x
+    sets=()
+    while IFS= read -r name; do
+      [ -n "$name" ] && sets+=("$name")
+    done < <(sni_pool_sets_list)
+
+    echo -e "${cyan}--- Профиль $profile ($title): SNI-пул (автосмена) ---${plain}"
+    echo ""
+    echo -e "${yellow}Сейчас: ${plain}${green}$(sni_pool_display "$profile")${plain}"
+    if [ -n "$(sni_override_get "$profile")" ]; then
+      echo -e "${yellow}Задан один SNI: ${plain}${green}$(sni_override_get "$profile")${plain}${yellow} — он побеждает пул (сброс в меню «SNI клон-стратегий»).${plain}"
+    fi
+    echo -e "${yellow}Каждое новое соединение берёт следующий SNI набора; в соединении имя не меняется.${plain}"
+    echo -e "${yellow}Свои наборы создаются в «Наборы SNI» из списка профилей.${plain}"
+    echo ""
+    cur=()
+    while IFS= read -r name; do
+      [ -n "$name" ] && cur+=("$name")
+    done < <(sni_pool_effective "$profile")
+    if [ "${#cur[@]}" -gt 0 ]; then
+      echo -e "${cyan}Список (порядок = порядок ротации):${plain}"
+      i=1
+      for name in "${cur[@]}"; do
+        echo -e "  ${i}) ${name}"
+        i=$((i+1))
+      done
+      echo ""
+    fi
+    i=1
+    for name in "${sets[@]}"; do
+      n="$(sni_pool_set_read "$name" | grep -c . || true)"
+      [ -n "$n" ] || n=0
+      if [ "$(sni_pool_set_origin "$name")" = "user" ]; then
+        submenu_item "$i" "Набор: $name ($n имён) — ваш"
+      else
+        submenu_item "$i" "Набор: $name ($n имён) — zator"
+      fi
+      i=$((i+1))
+    done
+    local sets_cnt="${#sets[@]}"
+    local custom_idx=$(( sets_cnt + 1 ))
+    local clear_idx=$(( sets_cnt + 2 ))
+    local policy_idx=$(( sets_cnt + 3 ))
+    submenu_item "$custom_idx" "Свой список… (ввод построчно)"
+    submenu_item "$clear_idx" "Убрать пул профиля (один SNI — меню SNI/дефолт)"
+    submenu_item "$policy_idx" "Чередование: $(sni_pool_policy_label "$(sni_pool_policy_get "$profile")") — сменить"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice || choice=""
+    if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+      return
+    elif ui_is_number_in_range "$choice" 1 "$sets_cnt"; then
+      name="${sets[$((choice-1))]}"
+      if sni_pool_assign_set "$profile" "$name"; then
+        echo -e "${green}Профиль $profile: пул = набор ${name}.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось назначить набор ${name}.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$custom_idx" ]; then
+      items=()
+      echo -e "${yellow}Вводите домены по одному, Enter после каждого. Пустая строка — закончить, 0 — отмена.${plain}"
+      while true; do
+        read -re -p "Домен: " domain || domain=""
+        [ -z "$domain" ] && break
+        [ "$domain" = "0" ] && { items=(); break; }
+        domain="$(z2r_normalize_domain "$domain" 2>/dev/null)" || domain=""
+        if [ -z "$domain" ]; then
+          echo -e "${red}Не удалось распознать домен. Пример: www.example.com${plain}"
+        elif ! sni_override_valid "$domain"; then
+          echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}"
+        else
+          items+=("$domain")
+        fi
+      done
+      if [ "${#items[@]}" -eq 0 ]; then
+        echo -e "${yellow}Список пуст — ничего не изменено.${plain}"
+      elif sni_pool_set_list "$profile" "${items[@]}"; then
+        echo -e "${green}Профиль $profile: свой список (${#items[@]} имён) сохранён.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сохранить пул (проверьте количество — до ${Z2R_SNI_POOL_MAX} имён).${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$clear_idx" ]; then
+      if sni_pool_clear "$profile"; then
+        echo -e "${green}Пул профиля $profile убран; профиль берёт один SNI (меню «SNI клон-стратегий» или дефолт).${plain}"
+      else
+        echo -e "${red}Не удалось убрать пул.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$policy_idx" ]; then
+      local pol pol_choice
+      pol="$(sni_pool_policy_get "$profile")"
+      [ -n "$pol" ] || pol="rr"
+      echo -e "${yellow}Чередование профиля $profile: сейчас — $(sni_pool_policy_label "$pol").${plain}"
+      echo -e "${yellow}1 - по кругу (следующее имя набора на каждое соединение),${plain}"
+      echo -e "${yellow}2 - случайно, без двух одинаковых подряд (осмысленно при >3 имён),${plain}"
+      read -re -p "Ваш выбор (0 - отмена): " pol_choice || pol_choice=""
+      case "$pol_choice" in
+        1) pol="rr" ;;
+        2) pol="rand" ;;
+        *) pol="" ;;
+      esac
+      if [ -n "$pol" ]; then
+        if sni_pool_policy_set "$profile" "$pol"; then
+          echo -e "${green}Профиль $profile: чередование — $(sni_pool_policy_label "$pol").${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сохранить политику чередования.${plain}"
+        fi
+      fi
+      pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+# Контракт orch_ask_*: stdout — ТОЛЬКО домены (по строке), весь рендер — в
+# stderr: вызывающий захватывает вывод $(...) и подсказки не должны попадать
+# в список (живой кейс: «Не удалось сохранить набор» из-за слов подсказки).
+# Пустая строка — закончить ввод и СОХРАНИТЬ, 0 — отмена без сохранения.
+sni_pool_domains_dialog() {
+  local prompt_prefix="$1" domain
+  local -a items=()
+  echo -e "${yellow}${prompt_prefix}${plain}" >&2
+  echo -e "${yellow}Вводите домены по одному, Enter после каждого. Пустая строка — закончить и сохранить, 0 — отмена.${plain}" >&2
+  while true; do
+    read -re -p "Домен: " domain || domain=""
+    [ -z "$domain" ] && break
+    [ "$domain" = "0" ] && { items=(); break; }
+    domain="$(z2r_normalize_domain "$domain" 2>/dev/null)" || domain=""
+    if [ -z "$domain" ]; then
+      echo -e "${red}Не удалось распознать домен. Пример: www.example.com${plain}" >&2
+    elif ! sni_override_valid "$domain"; then
+      echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}" >&2
+    else
+      items+=("$domain")
+    fi
+  done
+  if [ "${#items[@]}" -eq 0 ]; then
+    return 1
+  fi
+  printf '%s\n' "${items[@]}"
+}
+
+sni_pool_sets_edit() {
+  local name="$1" origin mode choice d
+  local -a cur=() items=()
+  origin="$(sni_pool_set_origin "$name")"
+  while IFS= read -r d; do
+    [ -n "$d" ] && cur+=("$d")
+  done < <(sni_pool_set_read "$name")
+  echo -e "${yellow}Набор «${name}», текущие имена:${plain}"
+  [ "${#cur[@]}" -gt 0 ] && printf '  %s\n' "${cur[@]}"
+  echo ""
+  if [ "$origin" = "zator" ]; then
+    echo -e "${yellow}Это проектный набор (sni_zator.txt): ваш вариант станет его перекрытием в sni_user.txt.${plain}"
+  fi
+  if [ "${#cur[@]}" -gt 0 ]; then
+    # правка существующего набора: затирать молча нельзя — спрашиваем режим
+    echo -e "${yellow}1 - добавить домены к текущим · 2 - заменить список целиком · 0 - отмена.${plain}"
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in
+      1) mode="append" ;;
+      2) mode="replace" ;;
+      *) return 0 ;;
+    esac
+  else
+    mode="replace"
+  fi
+  if [ "$mode" = "append" ]; then
+    if items=($(sni_pool_domains_dialog "Домены для ДОБАВЛЕНИЯ к «${name}»:")); then :; else
+      echo -e "${yellow}Список пуст — набор не изменён.${plain}"
+      pause_enter
+      return
+    fi
+    # sni_pool_set_write сам дедупнит и ограничит лимит
+    items=("${cur[@]}" "${items[@]}")
+  else
+    if items=($(sni_pool_domains_dialog "Новые имена набора «${name}» (текущий список будет ЗАМЕНЁН):")); then :; else
+      echo -e "${yellow}Список пуст — набор не изменён.${plain}"
+      pause_enter
+      return
+    fi
+  fi
+  if sni_pool_set_write "$name" "${items[@]}"; then
+    if [ "$mode" = "append" ]; then
+      echo -e "${green}Набор «${name}» дополнен (имен: ${#items[@]}) в sni_user.txt.${plain}"
+    else
+      echo -e "${green}Набор «${name}» сохранён (имен: ${#items[@]}) в sni_user.txt.${plain}"
+    fi
+    echo -e "${yellow}Профили с этим набором подхватят изменения в течение ~2 секунд.${plain}"
+    telemetry_notify
+  else
+    echo -e "${red}Не удалось сохранить набор «${name}» (до ${Z2R_SNI_POOL_MAX} имён).${plain}"
+  fi
+  pause_enter
+}
+
+sni_pool_sets_view() {
+  local name="$1"
+  echo -e "${yellow}Проектный набор «${name}» (sni_zator.txt, обновляется zator):${plain}"
+  sni_pool_set_read "$name" | sed 's/^/  /'
+  echo ""
+  echo -e "${yellow}Изменить нельзя; свой вариант с тем же именем создайте в «Создать/заменить набор…».${plain}"
+  pause_enter
+}
+
+sni_pool_sets_submenu() {
+  local ans i idx name n origin
+  local -a sets=()
+  while true; do
+    sni_pool_cache_reset
+    clear -x
+    sets=()
+    while IFS= read -r name; do
+      [ -n "$name" ] && sets+=("$name")
+    done < <(sni_pool_sets_list)
+
+    echo -e "${cyan}--- Наборы SNI (секции «# set: имя» в файлах) ---${plain}"
+    echo ""
+    echo -e "${yellow}Проектные живут в sni_zator.txt (только просмотр), ваши — в${plain}"
+    echo -e "${yellow}sni_user.txt: создаются/правятся здесь, едут в бэкапах, обновления${plain}"
+    echo -e "${yellow}не трогают; одноимённый ваш набор перекрывает проектный.${plain}"
+    echo ""
+    i=1
+    for name in "${sets[@]}"; do
+      n="$(sni_pool_set_read "$name" | grep -c . || true)"
+      [ -n "$n" ] || n=0
+      if [ "$(sni_pool_set_origin "$name")" = "user" ]; then
+        submenu_status_item "$i" "Набор ${name}" "${n} имён, ваш" green
+      else
+        submenu_status_item "$i" "Набор ${name}" "${n} имён, zator" yellow
+      fi
+      i=$((i+1))
+    done
+    local sets_cnt="${#sets[@]}"
+    local create_idx=$(( sets_cnt + 1 ))
+    local delete_idx=$(( sets_cnt + 2 ))
+    submenu_item "$create_idx" "Создать/заменить набор… (в sni_user.txt)"
+    submenu_item "$delete_idx" "Удалить свой набор…"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans || ans=""
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$sets_cnt"; then
+      idx=$((ans-1))
+      name="${sets[$idx]}"
+      if [ "$(sni_pool_set_origin "$name")" = "user" ]; then
+        sni_pool_sets_edit "$name"
+      else
+        sni_pool_sets_view "$name"
+      fi
+    elif [ "$ans" = "$create_idx" ]; then
+      read -re -p "Имя набора (латиница/цифры/подчёркивание, 0 - отмена): " name || name=""
+      if [ "$name" = "0" ] || [ -z "$name" ]; then
+        :
+      elif ! sni_pool_set_name_valid "$name"; then
+        echo -e "${red}Некорректное имя: строчные латиница/цифры/подчёркивание, 1..32 символа.${plain}"
+        pause_enter
+      else
+        sni_pool_sets_edit "$name"
+      fi
+    elif [ "$ans" = "$delete_idx" ]; then
+      read -re -p "Имя своего набора для удаления (0 - отмена): " name || name=""
+      if [ "$name" = "0" ] || [ -z "$name" ]; then
+        :
+      elif ! sni_pool_set_name_valid "$name"; then
+        echo -e "${red}Некорректное имя набора.${plain}"
+        pause_enter
+      else
+        sni_pool_set_delete "$name"
+        case $? in
+          0) echo -e "${green}Набор «${name}» удалён из sni_user.txt.${plain}" ;;
+          3) echo -e "${yellow}Нельзя: набор занят в sni_pool.tsv или не является вашим.${plain}" ;;
+          *) echo -e "${red}Не удалось удалить набор «${name}».${plain}" ;;
+        esac
+        pause_enter
+      fi
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+sni_pool_submenu() {
+  local p ans i idx v pin
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(sni_pool_supported_profiles)
+  local sets_idx=$(( ${#profiles[@]} + 1 ))
+
+  while true; do
+    sni_pool_cache_reset
+    clear -x
+    echo -e "${cyan}--- SNI-пул: наборы невинных имён с автосменой ---${plain}"
+    echo ""
+    echo -e "${yellow}Клон профиля берёт следующий SNI набора на каждое новое соединение.${plain}"
+    echo -e "${yellow}Пул игнорируется, если в меню «SNI клон-стратегий» задан один домен.${plain}"
+    echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(sni_pool_display "${profiles[$idx]}")"
+      pin="$(sni_override_get "${profiles[$idx]}")"
+      if [ -n "$pin" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "пин: $pin" yellow
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v" green
+      fi
+      i=$((i+1))
+    done
+    submenu_item "$sets_idx" "Наборы SNI — создание/правка/удаление"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans || ans=""
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      sni_pool_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
+    elif [ "$ans" = "$sets_idx" ]; then
+      sni_pool_sets_submenu
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
 # --- Режим фейков: классика / клоны по профилям (mode_override.tsv) ---
 # clone — блоб стратегии (maxru|fake_default_tls) строится в рантайме из
-# ClientHello пользователя, SNI клона — из меню SNI или невинный дефолт;
-# classic — штатные блобы конфига (текущее поведение). Меняется на лету.
+# ClientHello пользователя, SNI клона — из меню SNI, SNI-пула или невинный
+# дефолт; classic — штатные блобы конфига (текущее поведение). Меняется на лету.
+
+# Ярлык режима профиля для списков меню: [blob] — штатные блобы конфига
+# (классика; профиль 5 QUIC — всегда он, клоны/SNI не про UDP),
+# [clone-solo] — клон ClientHello с одним SNI (пин sni_override или дефолт
+# www.google.com), [clone-pool] — клон с пулом (автосмена набора).
+fake_mode_profile_tag() {
+  local profile="$1"
+  if [ "$(sni_pool_mode_of "$profile")" != "clone" ]; then
+    printf '[blob]'
+    return 0
+  fi
+  if [ -n "$(sni_pool_pin_of "$profile")" ] || [ -z "$(sni_pool_list "$profile")" ]; then
+    printf '[clone-solo]'
+  else
+    printf '[clone-pool]'
+  fi
+}
+
+# Короткая SNI-сводка профиля для строки «Сейчас:» списков меню. У классики
+# ([blob]) без пина/пула SNI не участвует — пусто, чтобы не шуметь; дефолт
+# показываем только в режиме clone.
+fake_mode_sni_summary() {
+  local profile="$1" pin
+  pin="$(sni_override_get "$profile")"
+  if [ -n "$pin" ]; then
+    printf 'SNI: %s (пин)' "$pin"
+    return 0
+  fi
+  if [ -n "$(sni_pool_list "$profile")" ]; then
+    printf 'SNI: %s' "$(sni_pool_display "$profile")"
+    return 0
+  fi
+  if [ "$(mode_override_get "$profile")" = "clone" ]; then
+    printf 'SNI: www.google.com (дефолт)'
+  fi
+  return 0
+}
+
+# Раскрашенная SNI-сводка для «Сейчас:» п.16: служебные слова («SNI:»,
+# «набор», детали в скобках) — жёлтым, само значение (имя набора / домен
+# пина / «свой список») — зелёным.
+fake_mode_sni_summary_colored() {
+  local profile="$1" pin d name mid rest
+  pin="$(sni_pool_pin_of "$profile")"
+  if [ -n "$pin" ]; then
+    echo -e "${yellow}SNI: ${plain}${green}${pin}${plain}${yellow} (пин)${plain}"
+    return 0
+  fi
+  if [ -n "$(sni_pool_list "$profile")" ]; then
+    d="$(sni_pool_display "$profile")"
+    case "$d" in
+      "набор "*"("*")")
+        pre="${d%% (*}"        # «набор google» | «набор google + свои»
+        rest="(${d##*(}"       # «(9 имён, по кругу, автосмена)»
+        name="${pre#набор }"
+        case "$name" in
+          *" "*) base="${name%% *}"; extra=" ${name#* }" ;;
+          *) base="$name"; extra="" ;;
+        esac
+        echo -e "${yellow}SNI: набор ${plain}${green}${base}${plain}${yellow}${extra} ${rest}${plain}"
+        ;;
+      "свой список "*"("*")")
+        rest="(${d##*(}"
+        echo -e "${yellow}SNI: ${plain}${green}свой список${plain}${yellow} ${rest}${plain}"
+        ;;
+      *)
+        echo -e "${yellow}SNI: ${d}${plain}"
+        ;;
+    esac
+    return 0
+  fi
+  if [ "$(sni_pool_mode_of "$profile")" = "clone" ]; then
+    echo -e "${yellow}SNI: www.google.com (дефолт)${plain}"
+  fi
+  return 0
+}
 
 fake_mode_sni_display() {
   local sni
   sni="$(sni_override_get "$1")"
-  if [ -n "$sni" ]; then echo "$sni"; else echo "www.google.com (дефолт)"; fi
+  if [ -n "$sni" ]; then
+    echo "$sni"
+  elif [ -n "$(sni_pool_effective "$1")" ]; then
+    sni_pool_display "$1"
+  else
+    echo "www.google.com (дефолт)"
+  fi
 }
 
 fake_mode_profile_pick() {
@@ -1802,7 +2260,7 @@ fake_mode_profile_pick() {
     else
       echo -e "${yellow}Сейчас: ${green}классика (штатные блобы конфига)${plain}"
     fi
-    echo -e "${yellow}SNI клона: ${plain}${green}$(fake_mode_sni_display "$profile")${plain}${yellow} — меняется в меню SNI${plain}"
+    echo -e "${yellow}SNI клона: ${plain}${green}$(fake_mode_sni_display "$profile")${plain}${yellow} — меняется в меню SNI / SNI-пул${plain}"
     echo -e "${yellow}Лимит клона: ${plain}${green}$(clone_size_display "$profile")${plain}${yellow} — меняется в меню «Размер клонов»${plain}"
     echo ""
     submenu_item "1" "Классика — штатные блобы конфига (сброс режима)"

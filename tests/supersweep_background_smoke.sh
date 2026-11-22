@@ -270,6 +270,9 @@ rm -f "$Z2R_SUPERSWEEP_DIR/cancel"
     [ "$calls" = 4 ]
 )
 cp orchestra/locked.lua "$ZATOR_ROOT/lua/locked.lua"
+# пул пробника: своя копия sni-pool.lua с путями в probe/ + пин тестового
+# экземпляра (глобальный sni_pool.pin рабочего не создаётся)
+cp lua/sni-pool.lua "$ZATOR_ROOT/lua/sni-pool.lua"
 tr -d '\r' < config.default > "$CONFIG_FILE"
 mkdir -p "$ZAPRET2_ROOT/nfq2"
 printf '#!/bin/sh\n[ "${1:-}" != --help ] || { printf " --autoexclude=[0|1]\\n"; exit 0; }\nexit 0\n' > "$ZAPRET2_ROOT/nfq2/nfqws2"
@@ -287,6 +290,28 @@ grep -q -- '--lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 ! grep -Fq -- 'wssize_ramp${' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 ! grep -q ' --' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
 ! grep -qE '^--lua-desync=[^ ]* --lua-desync=' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+# пул пробника: lua-init подключает ПРОБНУЮ копию sni-pool.lua (сразу после
+# locked.lua, как в проде), пути внутри переписаны на probe/, пин лежит в
+# probe/sni_pool.pin, а глобальный sni_pool.pin рабочего НЕ создаётся
+grep -q -- "--lua-init=@$Z2R_SUPERSWEEP_DIR/probe/sni-pool.lua" "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+[ "$(grep -n -- '--lua-init=@.*/locked.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args" | cut -d: -f1)" \
+  -lt "$(grep -n -- '--lua-init=@.*/sni-pool.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args" | cut -d: -f1)" ]
+grep -q "local POOL_TSV = \"$Z2R_SUPERSWEEP_DIR/probe/sni_pool.tsv\"" "$Z2R_SUPERSWEEP_DIR/probe/sni-pool.lua"
+grep -q "local POOL_POLICY = \"$Z2R_SUPERSWEEP_DIR/probe/sni_pool_policy.tsv\"" "$Z2R_SUPERSWEEP_DIR/probe/sni-pool.lua"
+grep -q "local POOL_PIN = \"$Z2R_SUPERSWEEP_DIR/probe/sni_pool.pin\"" "$Z2R_SUPERSWEEP_DIR/probe/sni-pool.lua"
+grep -Eq '^[0-9]+$' "$Z2R_SUPERSWEEP_DIR/probe/sni_pool.pin"
+[ ! -e "$ORCH_DIR/sni_pool.pin" ]
+# обновление пина drain-циклом изолированного прогона — тоже только пробное
+: > "$Z2R_SUPERSWEEP_DIR/probe/sni_pool.pin"
+_supersweep_sni_pin_probe
+grep -Eq '^[0-9]+$' "$Z2R_SUPERSWEEP_DIR/probe/sni_pool.pin"
+[ ! -e "$ORCH_DIR/sni_pool.pin" ]
+# без модуля в дереве (старая установка) — тихий no-op: конфиг собирается,
+# строки lua-init пула нет, падения нет
+mv "$ZATOR_ROOT/lua/sni-pool.lua" "$TMP/sni-pool.lua.aside"
+supersweep_probe_config 4 "$CONFIG_FILE"
+! grep -q -- '--lua-init=@.*/sni-pool.lua' "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args"
+mv "$TMP/sni-pool.lua.aside" "$ZATOR_ROOT/lua/sni-pool.lua"
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 1
 config_set_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_SCALE 1
 supersweep_probe_config 2 "$CONFIG_FILE"

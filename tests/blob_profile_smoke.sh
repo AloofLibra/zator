@@ -117,6 +117,21 @@ assert_contains "$WEBUI_SRC_ALL" 'tls_blob_profile' "webui-src не зовёт t
 assert_contains "$FAKE_SRV_SRC" 'def apply_tls_blob_profile' "fake_router_server нет apply_tls_blob_profile"
 assert_contains "$FAKE_SRV_SRC" '"profile_blobs"' "fake_router_server не отдаёт profile_blobs"
 
+# --- 1b. Живой прогон быстрого парсера GET tls_blob (регрессия PR#83) ------
+# off-by-one срезал первую букву имени (z2r_prof_1 -> 2r_prof_1 -> слот не
+# находился), значением отдавался полный путь — панель ждёт ИМЯ файла.
+(
+  eval "$(sed -n '/^api_tls_blob_profile_blobs_json()/,/^}/p' "$REPO_DIR/webui/cgi-bin/_lib.sh")"
+  json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+  # свой файл переопределений — не трогаем общий ORCH_BLOB_FILE последующих сценариев
+  ORCH_BLOB_FILE="$TMP_DIR/blob_override.parser.tsv"
+  printf '1\tz2r_prof_1\n2\tfake_default_tls\n4\ttls5\n5\tquic5\n' > "$ORCH_BLOB_FILE"
+  cfg="$CFG"
+  _pb_out="$(api_tls_blob_profile_blobs_json)"
+  [ "$_pb_out" = '"1":"tls_clienthello_max_ru.bin","2":"fake_default_tls","3":"","4":"tls_clienthello_5.bin","5":"quic_5.bin","8":""' ] \
+    || fail "api_tls_blob_profile_blobs_json: $_pb_out"
+)
+
 assert_contains "$TUTORIAL_SRC" 'Блоб на профиль' "TUTORIAL §8 без раздела про профиль"
 assert_contains "$AGENTS_SRC" 'blob_override\.tsv' "AGENTS.md не упоминает blob_override.tsv"
 

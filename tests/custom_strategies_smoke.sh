@@ -439,6 +439,57 @@ fi
 if custom_strategies_validate tpl 'oob:urp=zz' 2>/dev/null; then
   fail "validate: urp мусором должен падать"
 fi
+# urp — позиционный маркер (док. fork §oob, protocol.c posmarker_parse;
+# живой кейс: «Ключ urp= ждёт b, e или число» на oob:urp=midsld)
+custom_strategies_validate tpl 'oob:urp=midsld' \
+  || fail "validate: oob:urp=midsld (маркер) должен проходить"
+custom_strategies_validate tpl 'oob:urp=midsld+3' \
+  || fail "validate: oob:urp=midsld+3 (маркер со смещением) должен проходить"
+custom_strategies_validate tpl 'oob:urp=host-1' \
+  || fail "validate: oob:urp=host-1 (маркер со смещением) должен проходить"
+custom_strategies_validate tpl 'oob:urp=-1' \
+  || fail "validate: oob:urp=-1 (отрицательная позиция от конца) должен проходить"
+if custom_strategies_validate tpl 'oob:urp=B' 2>/dev/null; then
+  fail "validate: urp=B должен падать (fork принимает только строчные b/e)"
+fi
+# три плоские строки пользователя с РАЗНЫМИ :strategy=N — три отдельные записи
+res="$(custom_strategies_import_text $'--lua-desync=oob:urp=b:strategy=154\n--lua-desync=oob:urp=2:strategy=155\n--lua-desync=oob:urp=midsld:strategy=156' tpl)"
+printf '%s\n' "$res" | awk -F '\t' '$1=="RESULT" && $2==3 && $3==0 && $4==0 {ok=1} END {exit !ok}' \
+  || fail "import_text: три oob-строки с разными strategy=N должны лечь отдельными записями (получено: $(printf '%s\n' "$res"))"
+awk -F '\t' '$3=="oob:urp=b" || $3=="oob:urp=2" || $3=="oob:urp=midsld"' "$CUSTOM_STRATS_FILE" | grep -c . | grep -qx 3 \
+  || fail "import_text: у записей urp=oob должны быть срезаны :strategy=N"
+# аудит блокчека fork (blockcheck2.d/standard): 501 комбинация проходит импорт.
+# Здесь — ключевые формы, каждая когда-то падала:
+custom_strategies_validate tpl 'syndata' \
+  || fail "validate: голый примитив без аргументов должен проходить"
+custom_strategies_validate tpl 'multisplit:blob=fake_default_tls:tcp_md5:pos=2:nodrop:repeats=1 --lua-desync=multidisorder:pos=midsld' \
+  || fail "validate: голый multisplit/multidisorder во второй группе должен проходить"
+custom_strategies_validate tpl 'fake:blob=fake_default_tls:ip_ttl=3:repeats=1 --lua-desync=pktmod:ip_ttl=1' \
+  || fail "validate: pktmod из блокчека должен проходить"
+custom_strategies_validate tpl 'tcpseg:pos=0,-1:seqovl=1 --lua-desync=drop' \
+  || fail "validate: drop из блокчека должен проходить"
+custom_strategies_validate tpl 'fake:blob=fake_default_tls:ip6_hopbyhop:ip6_hopbyhop2:repeats=1' \
+  || fail "validate: ipv6-флаги fooling должны проходить"
+custom_strategies_validate tpl 'fake:blob=fake_default_tls:tcp_flags_unset=ACK:repeats=1' \
+  || fail "validate: tcp_flags_unset из блокчека должен проходить"
+custom_strategies_validate tpl 'fake:blob=fake_default_tls:tcp_flags_set=SYN:repeats=1' \
+  || fail "validate: tcp_flags_set из блокчека должен проходить"
+custom_strategies_validate tpl 'http_hostcase:spell=hoSt' \
+  || fail "validate: http_hostcase со spell должен проходить"
+custom_strategies_validate tpl 'multisplit:pos=10,sniext+1:seqovl=#seqovl_pat:seqovl_pattern=maxru' \
+  || fail "validate: seqovl=#блоб (apply_arg_prefix fork) должен проходить"
+custom_strategies_validate tpl 'syndata:blob=fake_default_tls:tls_mod=rnd,dupsid,sni=google.com' \
+  || fail "validate: tls_mod со sni=домен должен проходить"
+custom_strategies_validate tpl 'tcpseg:pos=0,midsld:ip_id=rnd:repeats=20' \
+  || fail "validate: ip_id=rnd из блокчека должен проходить"
+custom_strategies_validate p5 'fake:blob=fake_default_quic:repeats=5 --lua-desync=send:ipfrag:ipfrag_pos_udp=16 --lua-desync=drop' \
+  || fail "validate: quic-комбо блокчека (fake_default_quic + drop) должен проходить"
+if custom_strategies_validate tpl 'http_hostcase:spell=host1' 2>/dev/null; then
+  fail "validate: spell не из 4 букв должен падать"
+fi
+if custom_strategies_validate tpl 'fake:blob=maxru:tls_mod=rnd,hack' 2>/dev/null; then
+  fail "validate: неизвестный мод в tls_mod должен падать"
+fi
 # blob= у tls_client_hello_clone — цель, nfqws2 создаёт её сам в рантайме
 # (живой кейс: «Блоб «clone_www2» не объявлен в конфиге» на ручном вводе)
 custom_strategies_validate tpl 'tls_client_hello_clone:blob=clone_www2:fallback=fake_default_tls:sni_del:sni_first=www.google.com:sni_snt_new=0' \

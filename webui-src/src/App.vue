@@ -18,7 +18,7 @@ const tabs = [
   { view: 'strategies', label: 'Стратегии' },
   { view: 'domains', label: 'Домены' },
   { view: 'custom-strats', label: 'Свои стратегии' },
-  { view: 'custom-blobs', label: 'Свои блобы' },
+  { view: 'custom-blobs', label: 'Блобы и SNI' },
   { view: 'settings', label: 'Настройки' },
 ]
 

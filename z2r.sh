@@ -340,7 +340,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua wssize-ramp.lua strategy-validator.sh; do
+  for f in locked.lua sni-pool.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua wssize-ramp.lua strategy-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -372,6 +372,7 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/combined-detector.lua#/opt/zator/lua/combined-detector.lua#g' \
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
       -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
+      -e 's#/opt/zapret2/lua/sni-pool.lua#/opt/zator/lua/sni-pool.lua#g' \
       -e 's#/opt/zapret2/lua/fake-adapt.lua#/opt/zator/lua/fake-adapt.lua#g' \
       -e 's#/opt/zapret2/lua/wssize-ramp.lua#/opt/zator/lua/wssize-ramp.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
@@ -488,6 +489,16 @@ fi
 # (существующий лок побеждает), файл и каталог удаляются. Идемпотентна.
 if type orch_profile_lock_migrate >/dev/null 2>&1; then
   orch_profile_lock_migrate || true
+fi
+
+# Дефолтный SNI-пул (1/2 -> @google): создаём только когда файла нет вовсе —
+# «убрать пул» из меню оставляет файл (пусть пустой) и дефолт не возвращается.
+if [ ! -f "$ORCH_DIR/sni_pool.tsv" ]; then
+  if mkdir -p "$ORCH_DIR" && printf '1\t@google\n2\t@google\n' > "$ORCH_DIR/sni_pool.tsv"; then
+    :
+  else
+    echo -e "${yellow}Не удалось создать дефолтный SNI-пул: $ORCH_DIR/sni_pool.tsv${plain}" >&2
+  fi
 fi
 
 # Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
@@ -631,6 +642,7 @@ cleanup_zapret2_init_dirs() {
 
 ORCH_DIR="$ZATOR_ROOT/extra_strats/cache/orchestra"
 ORCH_LUA_LOCKED="$ZATOR_ROOT/lua/locked.lua"
+SNI_POOL_LUA="$ZATOR_ROOT/lua/sni-pool.lua"
 RST_GUARD_LUA="$ZATOR_ROOT/lua/rst-guard.lua"
 CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
@@ -674,7 +686,17 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$CIRCULAR_DETECTOR_LUA" "lua/combined-detector.lua" || return 1
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
+  z2r_download_project_file "$SNI_POOL_LUA" "lua/sni-pool.lua" || return 1
   z2r_download_project_file "$FAKE_ADAPT_LUA" "lua/fake-adapt.lua" || return 1
+  # SNI-наборы: sni_zator.txt — проектный (обновляем как есть: google, rkn,
+  # будущие секции), sni_user.txt — пользовательский, существующий не
+  # перезаписываем (как netrogat.txt); свои секции пользователь ведёт там.
+  z2r_download_project_file "$ZATOR_ROOT/extra_strats/sni_zator.txt" \
+    "extra_strats/sni_zator.txt" || true
+  if [ ! -f "$ZATOR_ROOT/extra_strats/sni_user.txt" ]; then
+    z2r_download_project_file "$ZATOR_ROOT/extra_strats/sni_user.txt" \
+      "extra_strats/sni_user.txt" || true
+  fi
   z2r_download_project_file "$WSSIZE_RAMP_LUA" "lua/wssize-ramp.lua" || return 1
   if [ -n "$WSSIZE_RAMP_FIREWALL" ] && [ -d "$(dirname "$WSSIZE_RAMP_FIREWALL")/.." ]; then
     mkdir -p "$(dirname "$WSSIZE_RAMP_FIREWALL")"
@@ -786,7 +808,8 @@ if [ -f "$ZAPRET2_ROOT/config" ]; then
     rst_guard_lua_update_from_repo || true
   fi
   if [ ! -s "$CIRCULAR_DETECTOR_LUA" ] || [ ! -s "$SILENT_DROP_DETECTOR_LUA" ] || \
-     [ ! -s "$DNS_CLONE_LUA" ] || [ ! -s "$FAKE_ADAPT_LUA" ] || \
+     [ ! -s "$DNS_CLONE_LUA" ] || [ ! -s "$SNI_POOL_LUA" ] || \
+     [ ! -s "$FAKE_ADAPT_LUA" ] || \
      [ ! -s "$STRATEGY_LOCK_MANAGER_LUA" ] || [ ! -s "$STRATEGY_VALIDATOR_WORKER" ]; then
     echo "Не найдены Lua-модули circular. Пытаюсь скачать из репозитория..."
     circular_runtime_update_from_repo || true
@@ -1132,7 +1155,7 @@ get_repo() {
   else
     rst_guard_lua_update_from_repo || true
   fi
-  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$FAKE_ADAPT_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$SNI_POOL_LUA" ] && [ -s "$FAKE_ADAPT_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
     :
   else
     circular_runtime_update_from_repo || return 1
@@ -2368,7 +2391,11 @@ webui_remove() {
   webui_stop_service
   case "$OSystem" in
     "WRT")
-      [ -f /etc/init.d/z2r-webui ] && rm -f /etc/init.d/z2r-webui
+      if [ -f /etc/init.d/z2r-webui ]; then
+        /etc/init.d/z2r-webui disable >/dev/null 2>&1 || true
+        rm -f /etc/init.d/z2r-webui
+      fi
+      rm -f /etc/rc.d/S95z2r-webui /etc/rc.d/K10z2r-webui 2>/dev/null || true
       ;;
     "entware")
       [ -f /opt/etc/init.d/S92z2r-webui ] && rm -f /opt/etc/init.d/S92z2r-webui
@@ -2594,7 +2621,7 @@ ${Fcyan}12.${yellow} Режим фильтра hostlist/autohostlist. Сейча
 ${Fcyan}13.${yellow} Безразборный режим (fallback). Сейчас: ${plain}[${MENU_FALLBACK}]${yellow}
 ${Fcyan}14.${yellow} Web-панель управления (установка/переустановка; обновление - п.5)
 ${Fcyan}15.${yellow} Провайдер
-${Fcyan}16.${yellow} TLS blob (--blob=maxru): глобальный и по профилям. Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
+${Fcyan}16.${yellow} Блобы, клоны и SNI профилей (--blob=maxru / clone / пулы SNI). Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
 ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас: ${plain}[${MENU_RST_GUARD}]${yellow}
 ${Fcyan}19.${yellow} Доп. настройки (reasm, WG, QUIC-fakes, keenetic)
 ${Fcyan}20.${yellow} Управление портами NFQWS2 (TCP/UDP). Сейчас: ${plain}[${MENU_PORTS}]${yellow}

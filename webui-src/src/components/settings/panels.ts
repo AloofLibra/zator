@@ -1,6 +1,5 @@
 import type { Component } from 'vue'
 import ModeTogglePanel from './ModeTogglePanel.vue'
-import TlsBlobPanel from './TlsBlobPanel.vue'
 import FallbackPanel from './FallbackPanel.vue'
 import UdpGamesPanel from './UdpGamesPanel.vue'
 import WireGuardPanel from './WireGuardPanel.vue'
@@ -15,8 +14,9 @@ export interface SettingsPanelEntry {
   props?: Record<string, unknown>
 }
 
+// TlsBlobPanel (блобы + режим фейков + размер клонов) переехала на вкладку
+// «Блобы и SNI» (CustomBlobsView) — в настройках остались не-блобовые панели.
 export const settingsPanels: SettingsPanelEntry[] = [
-  { id: 'tls-blob', component: TlsBlobPanel },
   { id: 'wssize-ramp', component: WssizeRampPanel },
   { id: 'auto-mode', component: ModeTogglePanel, props: { setting: 'auto_mode' } },
   { id: 'fallback', component: FallbackPanel },

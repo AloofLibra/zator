@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { customBlobs, customBlobsUpload, fetchCustomBlobs } from '../api/endpoints'
+import { customBlobs, customBlobsUpload } from '../api/endpoints'
+import { refreshTlsBlobSettings } from '../stores/settings'
+import { refreshSniState } from '../stores/sni'
 import type { CustomBlobInfo } from '../api/types'
 import { busyActive, busyButton, withBusy } from '../stores/busy'
 import { confirmDialog } from '../stores/confirm'
 import { showToast } from '../stores/toast'
+import ProfileMapCard from '../components/settings/ProfileMapCard.vue'
+import SniPanel from '../components/settings/SniPanel.vue'
+import TlsBlobPanel from '../components/settings/TlsBlobPanel.vue'
 
 // Пользовательские блобы («Свои блобы»): загрузка файлов через браузер в
 // /opt/zator/files/fake/custom_blob/ + декларации --blob=ИМЯ:@… между
@@ -24,7 +29,9 @@ const needsApply = ref(false)
 const refsTotal = computed(() => blobs.value.reduce((acc, b) => acc + (b.refs || 0), 0))
 
 async function load() {
-  const data = await fetchCustomBlobs()
+  // один blobs.cgi на всю вкладку: список блобов + sni-стейт в общий стор
+  // (карта профилей и SniPanel читают его, своих запросов не делают)
+  const [data] = await Promise.all([refreshSniState(), refreshTlsBlobSettings()])
   dir.value = data.dir || ''
   blobs.value = Array.isArray(data.blobs) ? data.blobs : []
   files.value = Array.isArray(data.files) ? data.files : []
@@ -262,6 +269,9 @@ async function applyToConfig() {
     <div v-if="!loaded" class="status-loading" aria-live="polite">Пожалуйста подождите...</div>
 
     <template v-else>
+      <ProfileMapCard />
+      <TlsBlobPanel />
+      <SniPanel />
       <section class="panel" id="custom-blobs-upload-panel">
         <div class="panel-header">
           <h2>Загрузка блоба</h2>

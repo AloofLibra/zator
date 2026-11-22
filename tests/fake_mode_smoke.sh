@@ -233,6 +233,8 @@ assert_contains "$Z2R_SRC" 'z2r_download_project_file "\$FAKE_ADAPT_LUA" "lua/fa
   "z2r.sh не докачивает fake-adapt.lua"
 assert_contains "$Z2R_SRC" 'silent-drop-detector\.lua dns-clone\.lua fake-adapt\.lua wssize-ramp\.lua strategy-validator\.sh' \
   "миграция z2r.sh не переносит fake-adapt.lua"
+assert_contains "$Z2R_SRC" 'locked\.lua sni-pool\.lua rst-guard\.lua' \
+  "миграция z2r.sh не переносит sni-pool.lua"
 assert_contains "$Z2R_SRC" 's#/opt/zapret2/lua/fake-adapt\.lua#/opt/zator/lua/fake-adapt\.lua#g' \
   "миграция z2r.sh не переписывает путь fake-adapt.lua"
 

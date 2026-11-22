@@ -42,6 +42,18 @@ submenu_status_item() {
   fi
 }
 
+# Как submenu_status_item, но value раскрашивает вызывающий (составные
+# строки: каждая часть своим цветом — блоб по переопределению, SNI-часть
+# по пину/пулу, теги-ярлыки). text тоже можно красить (напр. [tag] зелёным).
+submenu_status_item_raw() {
+  local key="$1" text="$2" value="$3"
+  if [ -z "$value" ]; then
+    echo -e "${Fcyan}${key}.${plain} ${text}"
+  else
+    echo -e "${Fcyan}${key}.${plain} ${text} ${yellow}Сейчас: ${value}${plain}"
+  fi
+}
+
 # Совместимость со старым кодом меню
 exit_to_menu() {
   pause_enter

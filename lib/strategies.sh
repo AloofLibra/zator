@@ -420,6 +420,11 @@ orch_auto_sweep() {
     zapret2_running && svc_was_running=1
 
     for ((s=start; s<=max; s++)); do
+        # Пин SNI-пула на время прогона (обновляется на каждой стратегии —
+        # долгий прогон не перерастает TTL пина): без него round-robin раздаёт
+        # разным стратегиям разные SNI и вердикты замусориваются; снят в конце,
+        # сдохший прогон истекает сам (SNI_POOL_PIN_MAX_AGE в lua/sni-pool.lua).
+        sni_pool_pin 2>/dev/null || true
         if [ "$kind" = "domain" ]; then
             orch_locked_set "$key" "tls" "$s" || true
         else
@@ -681,6 +686,7 @@ orch_auto_sweep() {
             echo "Изменения отменены, прежние стратегии профиля возвращены."
         fi
     fi
+    sni_pool_unpin 2>/dev/null || true
     return 0
 }
 
