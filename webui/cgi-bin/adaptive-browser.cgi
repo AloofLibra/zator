@@ -50,8 +50,66 @@ provided="${provided#Bearer }"
 . "$ROOT/z2r_lib/config.sh" 2>/dev/null || fail '503 Service Unavailable' 'configuration helpers unavailable'
 . "$ROOT/z2r_lib/orchestra_state.sh" 2>/dev/null || fail '503 Service Unavailable' 'scope helpers unavailable'
 . "$ROOT/z2r_lib/adaptive_browser.sh" 2>/dev/null || fail '503 Service Unavailable' 'browser runtime unavailable'
+. "$ROOT/z2r_lib/adaptive_rules.sh" 2>/dev/null || fail '503 Service Unavailable' 'adaptive strategy catalogue unavailable'
+. "$ROOT/z2r_lib/supersweep_probe.sh" 2>/dev/null || fail '503 Service Unavailable' 'strategy plan builder unavailable'
 adaptive_browser_client_auth "$provided" "${REMOTE_ADDR:-}" "$origin" || fail '401 Unauthorized' 'invalid, expired, or out-of-scope browser token'
 client_id="$ADAPTIVE_BROWSER_CLIENT_ID"; scope="$ADAPTIVE_BROWSER_CLIENT_SCOPE"
+
+browser_start_trial() {
+  local target="$1" trigger="$2" client_id="$3" client_ip="$4" scope="$5"
+  local host ip profile proto seen nfqws orch_dir now expires generation raw_id id
+  local candidate_dir args_file candidate fingerprint recipe config_value
+  IFS=$'\t' read -r host ip profile proto target_scope seen <<< "$target"
+  [[ "$target_scope" = "$scope" && "$client_ip" = "$REMOTE_ADDR" ]] || return 2
+  [[ ! -d "${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}" ]] || return 4
+  [[ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" NFQWS2_ENABLE 2>/dev/null | tr -d '"\047')" = 1 ]] || return 5
+  case "$proto" in
+    tls) recipe=tls-http1-v1 ;;
+    googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;;
+    *) return 3 ;;
+  esac
+  ORCH_DIR="$ROOT/extra_strats/cache/orchestra"
+  ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
+  adaptive_browser_profile_lock_check "$profile" "$scope" "$ORCH_DIR"
+  case $? in 1) ;; *) return 6 ;; esac
+  nfqws="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+  [[ -x "$nfqws" ]] || return 3
+  raw_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [[ "$raw_id" =~ ^[a-f0-9]{32}$ ]] || return 1
+  id="$raw_id"; now="$(date +%s)"; expires=$((now + 45))
+  raw_id="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [[ "$raw_id" =~ ^[0-9]{1,10}$ ]] || return 1
+  generation=$((raw_id % 999999999 + 1))
+  candidate_dir="$(adaptive_browser_state_dir)/candidates/$id"
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$(dirname "$candidate_dir")" && ! -e "$candidate_dir" ]] || return 1
+  mkdir -p "$candidate_dir" || return 1
+  Z2R_SUPERSWEEP_DIR="$candidate_dir"; export Z2R_SUPERSWEEP_DIR
+  CONFIG_FILE="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  for config_value in FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE; do
+    value="$(config_get_var "$CONFIG_FILE" "$config_value" 2>/dev/null | tr -d '"\047')" || { rm -rf "$candidate_dir"; return 3; }
+    printf -v "$config_value" '%s' "$value"
+  done
+  export FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE
+  if ! supersweep_probe_config "$profile" "$CONFIG_FILE" standard "$ip" "$recipe"; then
+    rm -rf "$candidate_dir"; return 3
+  fi
+  args_file="$candidate_dir/probe/nfqws2.args"
+  candidate="$(adaptive_browser_candidate_select "$host" "$ip" "$profile" "$proto" "$scope" "$args_file" "$nfqws" "$ORCH_DIR" "$client_id")"
+  if [[ $? -ne 0 || -z "$candidate" ]]; then rm -rf "$candidate_dir"; return 3; fi
+  IFS=$'\t' read -r strategy fingerprint <<< "$candidate"
+  rm -rf "$candidate_dir" || return 1
+  adaptive_browser_attempt_write "$id" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$trigger" QUEUED "$strategy" "$fingerprint" "$now" "$expires" "$generation" || return 1
+  if ! adaptive_browser_trial_add "$id" "$generation" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$strategy" "$fingerprint" "$now" "$expires"; then
+    adaptive_browser_attempt_transition "$id" QUEUED TARGET_NOT_MANAGED >/dev/null 2>&1 || :
+    return 7
+  fi
+  adaptive_browser_attempt_transition "$id" QUEUED WAIT_NEW_FLOW || {
+    adaptive_browser_trial_remove "$id" "$generation" || :
+    return 1
+  }
+  printf '{"schema_version":1,"status":"WAIT_NEW_FLOW","state":"WAIT_NEW_FLOW","attempt_id":"%s","candidate":{"profile_id":%s,"strategy":%s,"protocol":"%s","treatment_variant":"standard"},"scope":"%s","expires_at":%s,"retry_hint":"reload_if_safe"}' \
+    "$id" "$profile" "$strategy" "$proto" "$scope" "$expires"
+}
 
 case "${f[action]:-}" in
   browser_hello|browser_status)
@@ -90,9 +148,21 @@ case "${f[action]:-}" in
     events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
     [[ -r "$events" && ! -L "$events" ]] || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
     now="$(date +%s)"; matches="$(adaptive_browser_resolve_observation "$host" "$scope" "$events" "$now" 2>/dev/null)" || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
-    # Until production-flow trial selection is installed, do not claim that a
-    # strategy was applied. This explicit state is replaced by the session engine.
-    send '503 Service Unavailable' '{"schema_version":1,"status":"TRIAL_ENGINE_UNAVAILABLE","state":"NOT_TESTED"}'
+    IFS=$'\t' read -r obs_host obs_ip obs_profile obs_proto obs_scope obs_seen <<< "$matches"
+    if [[ "$obs_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$obs_profile" = 2 ]]; then
+      obs_proto=googlevideo-tcp
+      matches="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$obs_host" "$obs_ip" "$obs_profile" "$obs_proto" "$obs_scope" "$obs_seen")"
+    fi
+    trial_json="$(browser_start_trial "$matches" "$trigger" "$client_id" "${REMOTE_ADDR:-}" "$scope")"
+    trial_rc=$?
+    case "$trial_rc" in
+      0) send '200 OK' "$trial_json" ;;
+      4) send '200 OK' '{"schema_version":1,"status":"ROUTER_BUSY","state":"NOT_TESTED"}' ;;
+      5) send '200 OK' '{"schema_version":1,"status":"POLICY_BLOCKED","state":"NOT_TESTED"}' ;;
+      6) send '200 OK' '{"schema_version":1,"status":"MANUAL_LOCKED","state":"NOT_TESTED"}' ;;
+      7) send '200 OK' '{"schema_version":1,"status":"ACTIVE_ATTEMPT","state":"WAIT_NEW_FLOW"}' ;;
+      *) send '200 OK' '{"schema_version":1,"status":"NO_CANDIDATE","state":"NOT_TESTED"}' ;;
+    esac
     ;;
   browser_attempt_status|browser_cancel_attempt)
     [[ ${#f[@]} -eq 3 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid attempt id'
@@ -102,10 +172,11 @@ case "${f[action]:-}" in
     now="$(date +%s)"
     if (( now > expires )); then
       case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED) ;;
-        *) adaptive_browser_attempt_transition "$attempt_id" "$state" EXPIRED || fail '409 Conflict' 'attempt changed concurrently'; state=EXPIRED ;;
+        *) adaptive_browser_attempt_transition "$attempt_id" "$state" EXPIRED || fail '409 Conflict' 'attempt changed concurrently'; adaptive_browser_trial_remove "$attempt_id" "$generation" || :; state=EXPIRED ;;
       esac
     elif [[ "${f[action]}" = browser_cancel_attempt ]]; then
       adaptive_browser_attempt_transition "$attempt_id" "$state" CANCELLED || fail '409 Conflict' 'attempt is terminal or changed concurrently'
+      adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
       state=CANCELLED
     fi
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"

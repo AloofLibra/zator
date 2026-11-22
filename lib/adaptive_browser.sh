@@ -67,6 +67,78 @@ adaptive_browser_resolve_observation() {
   printf '%s\n' "${rows[0]}"
 }
 
+# Choose one numbered strategy without running curl, DNS, or an isolated probe.
+# Existing verified local rankings only sort candidates; a browser failure does
+# not itself create a verified rule or lower another strategy's rating.
+adaptive_browser_profile_lock_check() {
+  [[ $# = 3 && "$1" =~ ^[1-4]$ && ( "$2" = default || "$2" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
+  local profile="$1" scope="$2" orch_dir="$3" lock_file scoped_lock
+  scoped_lock=""
+  if [[ "$scope" != default ]]; then scoped_lock="$orch_dir/scopes/${scope/:/_}.tsv"; fi
+  # Match Lua's scoped-first, default-fallback lock resolution.
+  for lock_file in "$scoped_lock" "$orch_dir/locked.tsv"; do
+    [[ -n "$lock_file" && -e "$lock_file" ]] || continue
+    [[ -f "$lock_file" && ! -L "$lock_file" && -r "$lock_file" ]] || return 2
+    if awk -F '\t' -v pr="$profile" '$1==pr && (($2=="tls" && NF>=3) || NF==2) {found=1} END{exit !found}' "$lock_file"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+adaptive_browser_candidate_select() {
+  [[ $# = 9 ]] || return 2
+  local host="$1" ip="$2" profile="$3" proto="$4" scope="$5" args_file="$6" nfqws="$7" orch_dir="$8" client_id="$9"
+  local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" max current state stamp exact ranked family identity strategy fingerprint now
+  local -A seen=()
+  local -a candidates=()
+  [[ "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) &&
+     ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && -r "$args_file" && -x "$nfqws" ]] || return 2
+  adaptive_browser_profile_lock_check "$profile" "$scope" "$orch_dir"
+  case $? in 1) ;; *) return 4 ;; esac
+  current=1
+  stamp="$(adaptive_rules_runtime_stamp "$config" "$nfqws" "$orch_dir")" || return 1
+  exact="$(adaptive_rule_lookup_local "$host" "$ip" "$profile" "$proto" "$scope" "$stamp" 2>/dev/null || true)"
+  if [[ -n "$exact" ]]; then IFS=$'\t' read -r current _ <<< "$exact"; fi
+  max="$(config_profile_max_strategy "$profile" "$config")"
+  [[ "$max" =~ ^[1-9][0-9]{0,2}$ ]] || return 3
+  if [[ "$proto" = googlevideo-tcp ]]; then identity="$(adaptive_rules_googlevideo_group_id "$host")"; else identity=""; fi
+  ranked="$(adaptive_rules_ranked_candidates "$profile" "$proto" "$scope" "$stamp" "$max" "$identity" 2>/dev/null || true)"
+  while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$(printf '%s\n' "$ranked" | head -n 5)"
+  family="$(adaptive_exploration_strategy_order "$args_file" "$max" 2>/dev/null || true)"
+  while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$family"
+  now="$(date +%s)" || return 1
+  for strategy in "${candidates[@]}"; do
+    [[ "$strategy" != "$current" && ! ${seen[$strategy]+yes} ]] || continue
+    seen[$strategy]=1
+    if adaptive_browser_candidate_confirmed_failed "$client_id" "$host" "$ip" "$profile" "$proto" "$scope" "$strategy" "$now"; then continue; fi
+    fingerprint="$(adaptive_strategy_fingerprint "$profile" "$strategy" "$args_file" "$nfqws" standard "$( [[ "$proto" = googlevideo-tcp ]] && printf googlevideo-tcp-media-v1 || printf tls-http1-v1 )" 2>/dev/null)" || continue
+    [[ "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || continue
+    printf '%s\t%s\n' "$strategy" "$fingerprint"
+    return 0
+  done
+  return 3
+}
+
+adaptive_browser_candidate_confirmed_failed() {
+  [[ $# = 8 && "$1" =~ ^[a-f0-9]{32}$ ]] || return 1
+  local wanted_client="$1" host="$2" ip="$3" profile="$4" proto="$5" scope="$6" strategy="$7" now="$8"
+  local dir="$(adaptive_browser_state_dir)/attempts" file row ver id client client_ip old_scope old_host old_ip old_profile old_proto trigger state old_strategy fp created expires generation extra count=0
+  [[ -d "$dir" && ! -L "$dir" ]] || return 1
+  for file in "$dir"/*.tsv; do
+    [[ -f "$file" && ! -L "$file" ]] || continue
+    count=$((count + 1)); (( count <= 64 )) || return 1
+    [[ $(wc -c < "$file") -le 2048 ]] || continue
+    IFS= read -r row < "$file" || continue
+    IFS=$'\t' read -r ver id client client_ip old_scope old_host old_ip old_profile old_proto trigger state old_strategy fp created expires generation extra <<< "$row"
+    [[ "$ver" = 1 && "$client" = "$wanted_client" && "$old_host" = "$host" && "$old_ip" = "$ip" &&
+       "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" && "$old_strategy" = "$strategy" &&
+       "$state" = CONFIRMED_FAILURE && "$created" =~ ^[0-9]{1,10}$ ]] || continue
+    (( created >= now - 300 && created <= now + 5 )) && return 0
+  done
+  return 1
+}
+
 # Validates the browser-specific credential and returns its router-bound identity
 # in ADAPTIVE_BROWSER_CLIENT_ID / ADAPTIVE_BROWSER_CLIENT_SCOPE.
 adaptive_browser_client_auth() {

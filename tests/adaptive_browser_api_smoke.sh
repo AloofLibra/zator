@@ -9,7 +9,7 @@ export Z2R_ADAPTIVE_BROWSER_DIR="$tmp/runtime/browser" Z2R_ADAPTIVE_DIR="$tmp/ru
 export CLIENT_SCOPE_MAP_FILE="$tmp/zator/extra_strats/cache/client_scope.tsv"
 mkdir -p "$tmp/zator/extra_strats/cache/adaptive" "$tmp/zapret2" "$tmp/runtime"
 mkdir -p "$tmp/zator/z2r_lib"
-cp "$ROOT/lib/config.sh" "$ROOT/lib/orchestra_state.sh" "$ROOT/lib/adaptive_browser.sh" "$tmp/zator/z2r_lib/"
+cp "$ROOT/lib/config.sh" "$ROOT/lib/orchestra_state.sh" "$ROOT/lib/adaptive_browser.sh" "$ROOT/lib/adaptive_rules.sh" "$ROOT/lib/supersweep_probe.sh" "$tmp/zator/z2r_lib/"
 printf 'AGENT_BETA\n' > "$tmp/zator/extra_strats/cache/adaptive/mode"
 printf 'CLIENT_SCOPE_ENABLE=1\n' > "$tmp/zapret2/config"
 printf 'mark:7\t192.168.1.42\n' > "$CLIENT_SCOPE_MAP_FILE"
@@ -87,4 +87,40 @@ bash -n "$ROOT/webui/cgi-bin/adaptive-browser.cgi" "$ROOT/lib/adaptive_browser.s
 grep -q 'browser_hello' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 grep -q 'browser_cancel_attempt' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 ! grep -q 'TOKEN_FILE=.*adaptive/token$' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
+
+cat > "$ZAPRET2_ROOT/config" <<'EOF'
+CLIENT_SCOPE_ENABLE=1
+NFQWS2_OPT="
+--lua-desync=fake:strategy=1
+--lua-desync=multisplit:strategy=2
+--new
+"
+EOF
+mkdir -p "$ZAPRET2_ROOT/nfq2" "$tmp/orchestra" "$tmp/args"
+cat > "$ZAPRET2_ROOT/nfq2/nfqws2" <<'EOF'
+#!/usr/bin/env sh
+if [ "${1:-}" = --version ]; then echo 'nfqws2 test 1'; exit 0; fi
+exit 1
+EOF
+chmod +x "$ZAPRET2_ROOT/nfq2/nfqws2"
+printf '%s\n' '--lua-desync=fake:strategy=1' '--lua-desync=multisplit:strategy=2' > "$tmp/args/strategies"
+ORCH_DIR="$tmp/orchestra"
+. "$ROOT/lib/config.sh"
+. "$ROOT/lib/adaptive_rules.sh"
+selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
+[[ "${selected%%$'\t'*}" = 2 ]]
+printf '1\ttls\t6\n' > "$ORCH_DIR/locked.tsv"
+if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi
+rm -f "$ORCH_DIR/locked.tsv"
+mkdir -p "$ORCH_DIR/scopes"
+printf '1\ttls\t5\n' > "$ORCH_DIR/scopes/mark_7.tsv"
+if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls mark:7 "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi
+rm -f "$ORCH_DIR/scopes/mark_7.tsv"
+printf '1\ttls\t6\n' > "$ORCH_DIR/locked.tsv"
+if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls mark:7 "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi
+rm -f "$ORCH_DIR/locked.tsv"
+now="$(date +%s)"
+adaptive_browser_attempt_write aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$client_id" 192.168.1.42 default example.org 8.8.8.8 1 tls main_frame_network_failure CONFIRMED_FAILURE 2 - "$now" "$((now + 45))" 1
+adaptive_browser_candidate_confirmed_failed "$client_id" example.org 8.8.8.8 1 tls default 2 "$now"
+if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 3 ]]; fi
 echo 'adaptive browser API smoke: OK'
