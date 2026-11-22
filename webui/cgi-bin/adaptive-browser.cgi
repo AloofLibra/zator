@@ -313,7 +313,11 @@ case "${f[action]:-}" in
          "${f[observed_at]}" -le "$((now_ms + 5000))" &&
          "$state" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS)$ ]] || fail '400 Bad Request' 'invalid TCP fallback evidence'
       result_claim="$(adaptive_browser_result_claim "$client_id" "$attempt_id" "${f[browser_event_id]}" "${f[result]}" "$(date +%s)")" || {
-        result_rc=$?; [[ "$result_rc" = 3 ]] && send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"TCP_FALLBACK\",\"status\":\"DUPLICATE\"}"
+        result_rc=$?
+        if [[ "$result_rc" = 3 ]]; then
+          duplicate_state="$(adaptive_browser_attempt_read "$attempt_id" | cut -f11)"
+          send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$duplicate_state\",\"status\":\"DUPLICATE\"}"
+        fi
         fail '503 Service Unavailable' 'browser result journal unavailable'
       }
       adaptive_browser_attempt_transition "$attempt_id" "$state" TCP_FALLBACK || fail '409 Conflict' 'attempt changed concurrently'
