@@ -3,7 +3,7 @@
   "name": "Zator Browser Feedback (Beta)",
   "version": "0.1.0",
   "description": "Reports eligible network failures to a paired Zator router and shows attempt status.",
-  "permissions": ["storage", "webRequest", "webNavigation", "activeTab", "scripting"],
+  "permissions": ["storage", "webRequest", "activeTab", "scripting"],
   "optional_host_permissions": ["<all_urls>"],
   "background": { "service_worker": "service-worker.js" },
   "action": { "default_popup": "popup.html", "default_title": "Zator Browser Feedback" },

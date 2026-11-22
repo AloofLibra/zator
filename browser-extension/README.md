@@ -35,7 +35,7 @@ The extension stores at most 64 sanitized recent events in trusted extension sto
 
 ## Permissions
 
-- `webRequest`, `webNavigation`: observe failure metadata; no blocking listener is used.
+- `webRequest`: observe failure metadata; no blocking listener is used. The extension uses the request's tab/frame/document IDs directly and does not request the separate `webNavigation` permission.
 - `storage`: keep bounded local events and the separate browser pairing token.
 - `activeTab`: let the popup identify the selected tab without reading page content.
 - Optional `<all_urls>` permission: explicitly granted by the user to observe eligible network errors on visited sites.

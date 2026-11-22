@@ -444,27 +444,27 @@ CANCEL / CLIENT_OFFLINE / TAB_CLOSED / MODE_OFF / POLICY_CHANGED
 
 ### PR-C1 — прототип расширения: видимость ошибок + LAN pairing (P0)
 
-- [ ] MV3 `manifest.json`, service worker, options/popup; onErrorOccurred/onCompleted/webNavigation; `Fix site` и чистая локальная очередь событий.
-- [ ] Узкая pairing-схема и защищённый browser token; test fake-router/API, отсутствие старого full agent bearer.
-- [ ] Ограничения Chrome LNA / host permissions / MV3 worker lifecycle; проверить Chrome + Edge/Opera либо честно ограничить поддерживаемый браузер.
-- [ ] Никакого auto-apply в этой фазе, всё в OBSERVE/TEST_ONLY.
+- [x] Реализованы MV3 manifest/service worker/options/popup, `webRequest.onErrorOccurred`/`onCompleted`, `Fix site` и bounded локальная очередь. Неиспользуемый `webNavigation` permission удалён и проверяется regression smoke.
+- [x] Узкий browser pairing/token отделён от Windows-agent bearer; fake-router/API, create/rotate/revoke и недоверенные browser requests покрыты regression tests.
+- [ ] Browser LNA/permissions и service-worker lifecycle проверены на mock; живые Chrome/Edge installation/worker restart ещё не прошли. Поддерживаемый канал ограничен Chromium до отдельной проверки Edge/Opera.
+- [x] Автоматическое применение ограничено явными router modes; `OBSERVE`/`TEST_ONLY` не применяют правила, а `AGENT_BETA` требует pairing и scope consent.
 
 **Приёмка:** видим сетевую ошибку и правильный hostname/subresource; сеть успешна — задач нет; HTTP 500 не запускает автоподбор; worker выгружен — не потеряна подтверждённая очередь роутера; неправильный токен и запрос от сайта отклоняются.
 
 ### PR-C2 — browser router API и scoped session engine (P0)
 
-- [ ] Добавить bounded `browser_report_failure`, `browser_attempt_status`, `browser_report_result`, `browser_cancel_attempt`; `attempt_id`, nonce, generation, TTL, rate-limit, cleanup.
-- [ ] Использовать уже существующие `client_scope`/mark, manual precedence, `adaptive_queue` primitives; уточнить автоматическую пер-клиентскую привязку, не менять всю LAN без explicit consent.
-- [ ] Существующие CGI/API/PowerShell тесты не ломать. Ошибки приватных/внутренних доменов не создают автоэкспериментов.
+- [x] Реализованы bounded failure/status/result/cancel actions, attempt id/generation, idempotency, TTL, owner binding, rate limits, cleanup and bounded journals; API smokes cover duplicate, cancel, expiry, HTTP 503 and capacity.
+- [x] Pairing bound to a provisioned LAN client/mark; no default-scope browser trial without explicit consent; manual/profile locks retain precedence.
+- [x] Existing CGI/API/PowerShell and privacy regressions remain in `tests/run.sh quick` (**48/48**); private/intranet targets are rejected by API policy tests.
 
 **Приёмка:** два клиента/две вкладки не меняют чужие scoped правила; повторный event идемпотентен; истечение/отмена очищает только собственный trial; mode OFF, beta disable, ручной лок блокируют изменения.
 
 ### PR-C3 — production NEW_FLOW + strategy evidence (P0, главный gate)
 
-- [ ] Небольшой per-flow журнал для **активных browser attempts**: TCP SYN, Lua-selected strategy/DIRECT; production-путь q300, а не q65535. Интеграция в текущий `locked.lua` и при необходимости в существующие fw4/NDM hooks.
-- [ ] Корреляция attempt + client scope + validated host/IP + protocol + time + generation; `UNKNOWN/NOT_TESTED` при неоднозначности, повторно использованном соединении и несовпадении.
-- [ ] Отдельная QUIC Initial/UDP telemetry, не подменять обычными UDP-пакетами.
-- [ ] RAM/CPU-бюджет: bounded ring + write coalescing; никаких файловых записей на каждый пакет и flash wear.
+- [x] Lua writes bounded per-flow evidence only for active browser attempts: new TCP SYN plus selected strategy/DIRECT on production path; no q65535 rule is used for correlation.
+- [x] API correlates attempt/client scope/validated host/IP/protocol/time/generation; ambiguous or competing flows return UNKNOWN/NOT_TESTED and do not create a trial or promote a result.
+- [x] QUIC Initial telemetry is distinct from generic UDP; repeated/ambiguous Initials invalidate the proof.
+- [x] Flow evidence is bounded/coalesced in tmpfs, with a regression proving repeated competing flows remain one bounded ambiguity record. Production CPU/RAM measurement remains a hardware acceptance gate.
 
 **Приёмка:** reload без нового SYN не повышает рейтинг; новый SYN без применения ожидаемой стратегии не повышает; конкурирующий H2 flow даёт UNKNOWN; после смены каталога старый fingerprint недействителен; QUIC Retry/migration не удваивает успех.
 

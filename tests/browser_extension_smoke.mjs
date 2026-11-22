@@ -19,6 +19,7 @@ assert.match(popupScript, /NOT_TESTED: "not counted; no confirmed new flow"/)
 assert.match(popupScript, /TCP_FALLBACK: "browser used TCP; QUIC strategy was not tested"/)
 assert.ok(manifest.permissions.includes('webRequest'))
 assert.ok(manifest.permissions.includes('scripting'))
+assert.ok(!manifest.permissions.includes('webNavigation'), 'extension must not request an unused navigation permission')
 assert.ok(manifest.optional_host_permissions.includes('<all_urls>'))
 
 const listeners = { failure: null, completed: null, message: null }

@@ -1,6 +1,10 @@
 # Browser feedback autorotation delta inventory
 
-Inventory started at `4a3334f1` on `feat/bash-adaptive-rotation` (2026-11-22) and is extended below with the C8 implementation. This is a scope ledger, not a release approval. C8 code and docs are being committed together; prior extension artifact SHA-256 remains historical (`ce6c9c625aa41247acab6cb6a0cdca7d2f428c414a91f75ec71caabaa97a3f46`). The release-gate summary is [browser-feedback-beta-status.md](browser-feedback-beta-status.md).
+Inventory started at `4a3334f1` on `feat/bash-adaptive-rotation` (2026-11-22) and is updated below with current implementation evidence. This is a scope ledger, not a release approval. Router AUTO/QHM/shared-baseline implementation is committed at `cf6cba42`; the current follow-up trims one unused extension permission and will be committed with its accumulated documentation. The latest extension package hash is recorded below. The release-gate summary is [browser-feedback-beta-status.md](browser-feedback-beta-status.md).
+
+After reducing extension permission scope, the repackaged artifact SHA-256 is `fd141380d683bd0deb1c3b1baa20a9c0bd466c21ce77f249cf0f4b0de1d86872`; mock source/package tests pass. Real browser installation is still unverified.
+
+The extension no longer requests the unused `webNavigation` permission; `browser_extension_smoke.mjs` asserts this and both extension source/package smokes pass. The full WebUI suite passed **5/5**. The shell suite reached **73/76**; the remaining three YouTube media tests require `jq`, which is absent in WSL and was reported as a prerequisite failure rather than a code assertion.
 
 User trigger amendment (22.11.2026), recorded in the plan itself: start a short reversible trial immediately on an eligible single main-frame transport failure, two critical-resource failures in 30 seconds, or an explicit user request. Do not require prior DPI proof, curl, DNS/A-B checks, or multiple main-frame timeouts. Trial start is not a confirmed failure or ranking penalty. DNS/offline/certificate/HTTP-status/cancel/intranet errors do not auto-start a trial; only post-trial new-flow plus selected-strategy evidence can determine outcomes or advance to another candidate.
 
