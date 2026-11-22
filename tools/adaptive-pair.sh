@@ -16,6 +16,7 @@ RAMP_TARGETS_FILE="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}"
 if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transport.sh" ]; then
   . "$ROOT/z2r_lib/config.sh"
   . "$ROOT/z2r_lib/adaptive_lan_transport.sh"
+  [ ! -r "$ROOT/z2r_lib/googlevideo_ips.sh" ] || . "$ROOT/z2r_lib/googlevideo_ips.sh"
   CONFIG_FILE="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   FWTYPE="$(config_get_var "$CONFIG_FILE" FWTYPE 2>/dev/null | tr -d '"\047')"
   ZAPRET_NFT_TABLE="$(config_get_var "$CONFIG_FILE" ZAPRET_NFT_TABLE 2>/dev/null | tr -d '"\047')"
@@ -59,7 +60,7 @@ adaptive_ramp_pool_supported() {
   [ "$(config_get_var "$config" NFQWS2_ENABLE 2>/dev/null | tr -d '"\047')" = 1 ] || return 1
   grep -q -- '--lua-desync=wssize_ramp' "$config" || return 1
   [ -s "$ROOT/lua/wssize-ramp.lua" ] && [ ! -L "$ROOT/lua/wssize-ramp.lua" ] || return 1
-  local ipset path ip valid=0
+  local ipset path
   ipset="$(config_get_var "$config" Z2R_WSSIZE_RAMP_IPSET 2>/dev/null | tr -d '"\047')"
   case "$ipset" in
     /opt/zator/*) path="$ROOT/${ipset#/opt/zator/}" ;;
@@ -68,10 +69,8 @@ adaptive_ramp_pool_supported() {
     *) return 1 ;;
   esac
   [ -s "$path" ] && [ ! -L "$path" ] || return 1
-  while IFS= read -r ip || [ -n "$ip" ]; do
-    _adaptive_lan_public_ipv4_valid "$ip" && { valid=1; break; }
-  done < "$path"
-  [ "$valid" = 1 ]
+  command -v googlevideo_ips_validate >/dev/null 2>&1 || return 1
+  googlevideo_ips_validate "$path"
 }
 adaptive_ramp_pool_fingerprint() {
   local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" key value
