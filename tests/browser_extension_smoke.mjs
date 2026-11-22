@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
+import { webcrypto } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -43,7 +44,8 @@ const chrome = {
 }
 const context = {
   chrome, URL, URLSearchParams, AbortController, setTimeout, clearTimeout,
-  crypto: { randomUUID: () => 'b'.repeat(32) },
+  crypto: webcrypto,
+  TextEncoder,
   fetch: globalThis.fetch,
   __Z2R_BROWSER_TEST__: {}
 }
@@ -90,16 +92,19 @@ const head = await api.rememberFailure({ tabId: 2, requestId: 'req-head', type: 
 assert.equal(head.trigger, 'observe_only')
 assert.equal(sent.length, 1)
 
-const subresource = (requestId, type = 'xmlhttprequest') => ({ tabId: 8, documentId: 'doc-resource', requestId, type, method: 'GET',
-  url: 'https://media.example.test/chunk?private=1', error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now() })
+const subresource = (requestId, path = '/chunk/a', type = 'xmlhttprequest') => ({ tabId: 8, documentId: 'doc-resource', requestId, type, method: 'GET',
+  url: `https://media.example.test${path}?private=1`, error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now() })
 const firstResource = await api.rememberFailure(subresource('sub-1'))
 assert.equal(firstResource.trigger, 'observe_only')
-const secondResource = await api.rememberFailure(subresource('sub-2'))
+const differentResource = await api.rememberFailure(subresource('sub-other', '/chunk/b'))
+assert.equal(differentResource.trigger, 'observe_only', 'different subresources on one host must not be grouped')
+const secondResource = await api.rememberFailure(subresource('sub-2', '/chunk/a'))
 assert.equal(secondResource.trigger, 'critical_resource_repeated_failure')
 assert.equal(sent.length, 2)
 assert.equal(new URLSearchParams(sent[1].body).get('failure_count'), '2')
 assert.ok(!sent[1].body.includes('/chunk') && !sent[1].body.includes('private'))
-const image = await api.rememberFailure(subresource('image-1', 'image'))
+assert.ok(stored.resourceErrors.every(row => !JSON.stringify(row).includes('/chunk') && !JSON.stringify(row).includes('private')))
+const image = await api.rememberFailure(subresource('image-1', '/chunk/a', 'image'))
 assert.equal(image.trigger, 'observe_only')
 assert.equal(sent.length, 2)
 

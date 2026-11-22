@@ -6,7 +6,7 @@
   const RESOURCE_TYPES = new Set(["script", "xmlhttprequest", "media"]);
   const mainFrameErrors = new Set([
     "ERR_CONNECTION_RESET", "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT", "ERR_EMPTY_RESPONSE",
-    "ERR_CONNECTION_CLOSED", "ERR_SSL_PROTOCOL_ERROR",
+    "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_FAILED", "ERR_ADDRESS_UNREACHABLE", "ERR_SSL_PROTOCOL_ERROR",
     "ERR_QUIC_PROTOCOL_ERROR", "ERR_HTTP2_PROTOCOL_ERROR"
   ]);
   const ignoredErrors = new Set([
@@ -43,6 +43,15 @@
   function safeRemoteIp(ip) {
     return typeof ip === "string" && /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip) &&
       ip.split(".").every(part => Number(part) <= 255);
+  }
+  async function resourceIdentity(value) {
+    try {
+      const url = new URL(value);
+      const path = `${url.origin}${url.pathname}`;
+      const bytes = new TextEncoder().encode(path);
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      return Array.from(new Uint8Array(digest), x => x.toString(16).padStart(2, "0")).join("");
+    } catch { return ""; }
   }
   function opaqueId() {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "");
@@ -96,12 +105,15 @@
     let trigger = "";
     if (type === "main_frame" && method === "GET") trigger = "main_frame_network_failure";
     else if (RESOURCE_TYPES.has(type) && safeMethod(method)) {
-      const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${host}|${type}`;
-      const recent = state.resourceErrors.filter(x => x && Number.isFinite(x.at) && now - x.at <= DEDUPE_MS);
-      const matching = recent.filter(x => x.key === resourceKey);
-      if (matching.length >= 1) trigger = "critical_resource_repeated_failure";
-      recent.push({ key: resourceKey, at: now });
-      state.resourceErrors = recent.slice(-MAX_SEEN);
+      const identity = await resourceIdentity(details.url);
+      if (identity) {
+        const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${host}|${type}|${identity}`;
+        const recent = state.resourceErrors.filter(x => x && Number.isFinite(x.at) && now - x.at <= DEDUPE_MS);
+        const matching = recent.filter(x => x.key === resourceKey);
+        if (matching.length >= 1) trigger = "critical_resource_repeated_failure";
+        recent.push({ key: resourceKey, at: now });
+        state.resourceErrors = recent.slice(-MAX_SEEN);
+      }
     }
     const event = {
       id: opaqueId(), hostname: host, request_class: type, method: safeMethod(method) ? method : "UNSAFE",
