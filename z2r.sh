@@ -493,8 +493,13 @@ fi
 
 # Дефолтный SNI-пул (1/2 -> @google): создаём только когда файла нет вовсе —
 # «убрать пул» из меню оставляет файл (пусть пустой) и дефолт не возвращается.
+# PR83-REVIEW(4/6) [ответ AloofLibra, z2r.sh:496]: сначала mkdir -p $ORCH_DIR (на чистой установке каталога могло ещё не быть), а провал записи больше не глотается молча — предупреждение в stderr. Удалить после проверки.
 if [ ! -f "$ORCH_DIR/sni_pool.tsv" ]; then
-  printf '1\t@google\n2\t@google\n' > "$ORCH_DIR/sni_pool.tsv" 2>/dev/null || true
+  if mkdir -p "$ORCH_DIR" && printf '1\t@google\n2\t@google\n' > "$ORCH_DIR/sni_pool.tsv"; then
+    :
+  else
+    echo -e "${yellow}Не удалось создать дефолтный SNI-пул: $ORCH_DIR/sni_pool.tsv${plain}" >&2
+  fi
 fi
 
 # Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
