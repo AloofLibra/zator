@@ -37,7 +37,7 @@ for pair in "${pairs[@]}"; do
   [[ "$pair" = *=* && "$pair" != *%* && "$pair" != *+* ]] || fail '400 Bad Request' 'invalid form encoding'
   key="${pair%%=*}"; value="${pair#*=}"
   [[ "$key" =~ ^[a-z_]+$ && "$value" =~ ^[a-zA-Z0-9_.:-]*$ ]] || fail '400 Bad Request' 'invalid form field'
-  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_count|observed_at|attempt_id|result) ;;
+  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_count|observed_at|attempt_id|result|browser_ip) ;;
     *) fail '400 Bad Request' 'unknown form field' ;; esac
   [[ -n "$key" && ! ${f[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
   f[$key]="$value"
@@ -58,7 +58,7 @@ client_id="$ADAPTIVE_BROWSER_CLIENT_ID"; scope="$ADAPTIVE_BROWSER_CLIENT_SCOPE"
 browser_start_trial() {
   local target="$1" trigger="$2" client_id="$3" client_ip="$4" scope="$5"
   local host ip profile proto seen nfqws orch_dir now expires generation raw_id id
-  local candidate_dir args_file candidate fingerprint recipe config_value
+  local candidate_dir args_file candidate fingerprint recipe config_value flow_dir flow_user flow_uid flow_gid
   IFS=$'\t' read -r host ip profile proto target_scope seen <<< "$target"
   [[ "$target_scope" = "$scope" && "$client_ip" = "$REMOTE_ADDR" ]] || return 2
   [[ ! -d "${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}" ]] || return 4
@@ -74,6 +74,15 @@ browser_start_trial() {
   case $? in 1) ;; *) return 6 ;; esac
   nfqws="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
   [[ -x "$nfqws" ]] || return 3
+  CONFIG_FILE="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  flow_user="$(config_get_var "$CONFIG_FILE" WS_USER 2>/dev/null | tr -d '"\047')"
+  [[ -n "$flow_user" ]] || flow_user=nobody
+  [[ "$flow_user" =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || return 3
+  flow_uid="$(id -u "$flow_user" 2>/dev/null)"; flow_gid="$(id -g "$flow_user" 2>/dev/null)"
+  [[ "$flow_uid" =~ ^[0-9]+$ && "$flow_gid" =~ ^[0-9]+$ ]] || return 3
+  flow_dir="$(adaptive_browser_flow_dir)"
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$flow_dir" ]] || return 1
+  mkdir -p "$flow_dir" && chown "$flow_uid:$flow_gid" "$flow_dir" && chmod 700 "$flow_dir" || return 1
   raw_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   [[ "$raw_id" =~ ^[a-f0-9]{32}$ ]] || return 1
   id="$raw_id"; now="$(date +%s)"; expires=$((now + 45))
@@ -84,7 +93,6 @@ browser_start_trial() {
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$(dirname "$candidate_dir")" && ! -e "$candidate_dir" ]] || return 1
   mkdir -p "$candidate_dir" || return 1
   Z2R_SUPERSWEEP_DIR="$candidate_dir"; export Z2R_SUPERSWEEP_DIR
-  CONFIG_FILE="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   for config_value in FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE; do
     value="$(config_get_var "$CONFIG_FILE" "$config_value" 2>/dev/null | tr -d '"\047')" || { rm -rf "$candidate_dir"; return 3; }
     printf -v "$config_value" '%s' "$value"
@@ -109,6 +117,62 @@ browser_start_trial() {
   }
   printf '{"schema_version":1,"status":"WAIT_NEW_FLOW","state":"WAIT_NEW_FLOW","attempt_id":"%s","candidate":{"profile_id":%s,"strategy":%s,"protocol":"%s","treatment_variant":"standard"},"scope":"%s","expires_at":%s,"retry_hint":"reload_if_safe"}' \
     "$id" "$profile" "$strategy" "$proto" "$scope" "$expires"
+}
+
+browser_confirm_flow() {
+  local row ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at extra now
+  row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at extra <<< "$row"
+  now="$(date +%s)"
+  [[ "$ver" = 1 && "$flow_id" = "$attempt_id" && "$flow_generation" = "$generation" && "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" &&
+     "$flow_host" = "$host" && "$flow_ip" = "$ip" && "$flow_profile" = "$profile" && "$flow_proto" = "$proto" &&
+     "$flow_strategy" = "$strategy" && "$fingerprint" = "$attempt_fingerprint" &&
+     "$syn_at" -ge "$created" && "$selected_at" -ge "$syn_at" && "$selected_at" -le "$expires" && "$now" -le "$expires" && -z "${extra:-}" ]] || return 2
+  if [[ "$state" = WAIT_NEW_FLOW ]]; then
+    adaptive_browser_attempt_transition "$attempt_id" WAIT_NEW_FLOW FLOW_CONFIRMED || return 3
+    state=FLOW_CONFIRMED
+  elif [[ "$state" != FLOW_CONFIRMED && "$state" != WAIT_BROWSER_RESULT && "$state" != PROVISIONAL_SUCCESS ]]; then
+    return 3
+  fi
+}
+
+browser_promote_attempt() {
+  local dir args_file recipe config_value config nfqws max stamp current_fp catalog_rows catalog_version catalog_fp now expires
+  [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 1
+  adaptive_browser_profile_lock_check "$profile" "$attempt_scope" "$ROOT/extra_strats/cache/orchestra"
+  [[ "$?" = 1 ]] || return 1
+  case "$proto" in tls) recipe=tls-http1-v1 ;; googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; *) return 1 ;; esac
+  nfqws="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+  config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [[ -x "$nfqws" && -r "$config" && ! -L "$config" ]] || return 1
+  dir="$(adaptive_browser_state_dir)/candidates/$attempt_id.verify"
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$(dirname "$dir")" && ! -e "$dir" ]] || return 1
+  mkdir -p "$dir" || return 1
+  Z2R_SUPERSWEEP_DIR="$dir"; export Z2R_SUPERSWEEP_DIR
+  CONFIG_FILE="$config"
+  for config_value in FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE; do
+    value="$(config_get_var "$CONFIG_FILE" "$config_value" 2>/dev/null | tr -d '"\047')" || { rm -rf "$dir"; return 1; }
+    printf -v "$config_value" '%s' "$value"
+  done
+  export FWTYPE DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK POSTNAT POSTNAT_ALL ZAPRET_NFT_TABLE
+  if ! supersweep_probe_config "$profile" "$CONFIG_FILE" standard "$ip" "$recipe"; then rm -rf "$dir"; return 1; fi
+  args_file="$dir/probe/nfqws2.args"
+  max="$(config_profile_max_strategy "$profile" "$CONFIG_FILE")"
+  [[ "$max" =~ ^[1-9][0-9]{0,2}$ ]] || { rm -rf "$dir"; return 1; }
+  stamp="$(adaptive_rules_runtime_stamp "$CONFIG_FILE" "$nfqws" "$ROOT/extra_strats/cache/orchestra")" || { rm -rf "$dir"; return 1; }
+  current_fp="$(adaptive_strategy_fingerprint "$profile" "$strategy" "$args_file" "$nfqws" standard "$recipe")" || { rm -rf "$dir"; return 1; }
+  [[ "$current_fp" = "$attempt_fingerprint" ]] || { rm -rf "$dir"; return 1; }
+  catalog_rows="$(adaptive_strategy_fingerprint_catalog "$profile" "$max" "$args_file" "$nfqws" standard "$recipe" "$stamp" "$(adaptive_browser_state_dir)/catalog-cache")" || { rm -rf "$dir"; return 1; }
+  catalog_fp="$(awk -F '\t' -v n="$strategy" '$1==n {print $2; exit}' <<< "$catalog_rows")"
+  [[ "$catalog_fp" = "$attempt_fingerprint" ]] || { rm -rf "$dir"; return 1; }
+  catalog_version="sha256:$(printf '%s\n' "$catalog_rows" | sha256sum | awk '{print $1}')"
+  [[ "$catalog_version" =~ ^sha256:[a-f0-9]{64}$ ]] || { rm -rf "$dir"; return 1; }
+  now="$(date +%s)"; expires=$((now + 900))
+  adaptive_rule_add "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
+    "$catalog_version" "$stamp" "$expires"
+  local rc=$?
+  rm -rf "$dir"
+  return "$rc"
 }
 
 case "${f[action]:-}" in
@@ -167,7 +231,7 @@ case "${f[action]:-}" in
   browser_attempt_status|browser_cancel_attempt)
     [[ ${#f[@]} -eq 3 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ ]] || fail '400 Bad Request' 'invalid attempt id'
     row="$(adaptive_browser_attempt_read "${f[attempt_id]}")" || fail '404 Not Found' 'attempt not found'
-    IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy fingerprint created expires generation extra <<< "$row"
+    IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy attempt_fingerprint created expires generation extra <<< "$row"
     [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
     now="$(date +%s)"
     if (( now > expires )); then
@@ -179,13 +243,72 @@ case "${f[action]:-}" in
       adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
       state=CANCELLED
     fi
+    if [[ "$state" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS)$ ]]; then
+      if browser_confirm_flow; then :
+      else
+        flow_rc=$?
+        if [[ "$flow_rc" = 1 && "$state" = WAIT_NEW_FLOW ]]; then :
+        else adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || :; state=UNKNOWN; adaptive_browser_trial_remove "$attempt_id" "$generation" || :
+        fi
+      fi
+    fi
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
     ;;
   browser_report_result)
-    [[ ${#f[@]} -eq 7 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
+    [[ ${#f[@]} -eq 8 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
        "${f[result]:-}" =~ ^(network_success|network_failure)$ && "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ &&
-       "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid browser result'
-    fail '501 Not Implemented' 'production flow evidence is required before accepting outcomes'
+       "${f[browser_ip]:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid browser result'
+    awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; exit 0} {exit 1}' <<< "${f[browser_ip]}" || fail '400 Bad Request' 'invalid browser IP'
+    [[ "${f[result]}" != network_success || "${f[request_class]}" = main_frame ]] || fail '400 Bad Request' 'only main-frame success can recover a site'
+    row="$(adaptive_browser_attempt_read "${f[attempt_id]}")" || fail '404 Not Found' 'attempt not found'
+    IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy attempt_fingerprint created expires generation extra <<< "$row"
+    [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
+    if [[ "$state" = WAIT_NEW_FLOW ]]; then browser_confirm_flow || fail '409 Conflict' 'new production flow with selected strategy is not confirmed'; state=FLOW_CONFIRMED; fi
+    if [[ "$state" = FLOW_CONFIRMED ]]; then
+      adaptive_browser_attempt_transition "$attempt_id" FLOW_CONFIRMED WAIT_BROWSER_RESULT || fail '409 Conflict' 'attempt changed concurrently'
+      state=WAIT_BROWSER_RESULT
+    fi
+    [[ "${f[observed_at]}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid result time'
+    now_ms="$(( $(date +%s) * 1000 ))"
+    flow_row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || fail '409 Conflict' 'production flow evidence is unavailable'
+    IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_extra <<< "$flow_row"
+    [[ "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" && "$flow_host" = "$host" && "$flow_ip" = "$ip" && "${f[browser_ip]}" = "$flow_ip" &&
+       "$flow_profile" = "$profile" && "$flow_proto" = "$proto" && "$flow_strategy" = "$strategy" && "$flow_fingerprint" = "$attempt_fingerprint" ]] || fail '409 Conflict' 'production flow does not match this attempt'
+    (( f[observed_at] >= selected_at * 1000 && f[observed_at] <= now_ms + 5000 && f[observed_at] <= expires * 1000 )) || fail '400 Bad Request' 'result is outside the confirmed flow window'
+    [[ "$state" = WAIT_BROWSER_RESULT || "$state" = PROVISIONAL_SUCCESS ]] || fail '409 Conflict' 'attempt is not waiting for a browser result'
+    result_claim="$(adaptive_browser_result_claim "$client_id" "$attempt_id" "${f[browser_event_id]}" "${f[result]}" "$(date +%s)")" || {
+      result_rc=$?
+      [[ "$result_rc" = 3 ]] && send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"status\":\"DUPLICATE\"}"
+      fail '503 Service Unavailable' 'browser result journal unavailable'
+    }
+    case "$state:${f[result]}" in
+      WAIT_BROWSER_RESULT:network_failure)
+        adaptive_browser_attempt_transition "$attempt_id" WAIT_BROWSER_RESULT CONFIRMED_FAILURE || fail '409 Conflict' 'attempt changed concurrently'
+        adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+        state=CONFIRMED_FAILURE
+        ;;
+      WAIT_BROWSER_RESULT:network_success)
+        adaptive_browser_attempt_transition "$attempt_id" WAIT_BROWSER_RESULT PROVISIONAL_SUCCESS || fail '409 Conflict' 'attempt changed concurrently'
+        state=PROVISIONAL_SUCCESS
+        ;;
+      PROVISIONAL_SUCCESS:network_success)
+        browser_promote_attempt || {
+          adaptive_browser_attempt_transition "$attempt_id" PROVISIONAL_SUCCESS UNKNOWN || :
+          adaptive_browser_trial_remove "$attempt_id" "$generation" || :
+          send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"UNKNOWN\",\"reason\":\"strategy_fingerprint_changed_or_promotion_failed\"}"
+        }
+        adaptive_browser_attempt_transition "$attempt_id" PROVISIONAL_SUCCESS CONFIRMED_SUCCESS || fail '409 Conflict' 'attempt changed concurrently'
+        adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+        state=CONFIRMED_SUCCESS
+        ;;
+      PROVISIONAL_SUCCESS:network_failure)
+        adaptive_browser_attempt_transition "$attempt_id" PROVISIONAL_SUCCESS CONFIRMED_FAILURE || fail '409 Conflict' 'attempt changed concurrently'
+        adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+        state=CONFIRMED_FAILURE
+        ;;
+      *) fail '409 Conflict' 'attempt is not waiting for this result' ;;
+    esac
+    send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\"}"
     ;;
   *) fail '400 Bad Request' 'unknown browser action' ;;
 esac

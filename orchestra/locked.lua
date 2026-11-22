@@ -31,6 +31,8 @@ local CLONE_SIZES = {}
 local ADAPTIVE_RULES_PATH = os.getenv("Z2R_ADAPTIVE_RULES_FILE") or "/tmp/z2r-adaptive/rules.tsv"
 local ADAPTIVE_RULES_SNAPSHOT_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/rules.tsv"
 local ADAPTIVE_BROWSER_TRIALS_PATH = os.getenv("Z2R_ADAPTIVE_BROWSER_TRIALS_FILE") or "/tmp/z2r-adaptive/browser/trials.tsv"
+local ADAPTIVE_BROWSER_FLOW_DIR = os.getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR")
+  or ((os.getenv("Z2R_ADAPTIVE_DIR") or "/tmp/z2r-adaptive") .. "/browser/flows")
 local ADAPTIVE_MODE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/mode"
 local ADAPTIVE_DEFAULT_SCOPE_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/apply-default-scope"
 local ADAPTIVE_MODE = "OFF"
@@ -1637,6 +1639,61 @@ function z2r_adaptive_observe_connection(desync, profile, host, scope, require_o
   if ip and ip ~= "" then adaptive_observe_seen(host, ip, profile, desync_proto(desync), scope, desync.track) end
 end
 
+local function adaptive_browser_capture_syn(desync, profile, scope)
+  if ADAPTIVE_MODE ~= "AGENT_BETA" or type(desync) ~= "table" or desync.outgoing ~= true
+    or type(desync.track) ~= "table" or type(desync.dis) ~= "table" or type(desync.dis.tcp) ~= "table"
+    or tonumber(desync.dis.tcp.th_dport) ~= 443 or type(bitand) ~= "function"
+    or type(TH_SYN) ~= "number" or type(TH_ACK) ~= "number" then return false, "ineligible" end
+  local flags = tonumber(desync.dis.tcp.th_flags) or 0
+  if bitand(flags, TH_SYN) == 0 or bitand(flags, TH_ACK) ~= 0 then return false, "not-initial-syn" end
+  local state = desync.track.lua_state
+  if type(state) ~= "table" then state = {}; desync.track.lua_state = state end
+  if state.adaptive_browser_syn then return false, "already-seen" end -- SYN retransmits do not make a new flow.
+  if type(dis_ipdst) ~= "function" or type(ntop) ~= "function" then return false, "ip-helpers-missing" end
+  local dst = dis_ipdst(desync.dis)
+  local ip = dst and ntop(dst) or nil
+  if type(ip) ~= "string" or not ip:match("^%d+%.%d+%.%d+%.%d+$") then return false, "invalid-ip" end
+  state.adaptive_browser_syn = {ip = ip, profile = tostring(profile), scope = tostring(scope or "default"), seen = os.time()}
+  return true
+end
+
+local function adaptive_browser_record_flow(desync, trial, host, ip, profile, proto, scope, strategy)
+  if ADAPTIVE_MODE ~= "AGENT_BETA" or type(trial) ~= "table" or type(desync) ~= "table"
+    or type(desync.track) ~= "table" or type(desync.track.lua_state) ~= "table" then return false end
+  local syn = desync.track.lua_state.adaptive_browser_syn
+  local now = os.time()
+  if type(syn) ~= "table" or syn.ip ~= ip or syn.profile ~= tostring(profile) or syn.scope ~= scope
+    or syn.seen < trial.created or syn.seen > now or now > trial.expires
+    or trial.host ~= host or trial.ip ~= ip or trial.profile ~= tostring(profile) or trial.proto ~= proto
+    or trial.scope ~= scope or trial.strategy ~= strategy or not trial.id:match("^[0-9a-f]+$")
+    or #trial.id ~= 32 or not tostring(trial.fingerprint):match("^sha256:[0-9a-f]+$") then return false end
+  local path = ADAPTIVE_BROWSER_FLOW_DIR .. "/" .. trial.id .. "." .. tostring(trial.generation) .. ".tsv"
+  local existing = io.open(path, "r")
+  if existing then
+    local has_proof = existing:read("*l") ~= nil
+    existing:close()
+    if has_proof then
+      local ambiguous = io.open(path, "a")
+      if ambiguous then ambiguous:write("AMBIGUOUS\n"); ambiguous:close() end
+      return false
+    end
+  end
+  local f = io.open(path, "w")
+  if not f then return false end
+  local ok = f:write(table.concat({"1", trial.id, tostring(trial.generation), trial.client_id, scope,
+    host, ip, tostring(profile), proto, tostring(strategy), trial.fingerprint, tostring(syn.seen), tostring(now)}, "\t"), "\n")
+  f:close()
+  return ok ~= nil
+end
+
+function locked_browser_capture_syn_for_tests(desync, profile, scope)
+  return adaptive_browser_capture_syn(desync, profile, scope)
+end
+
+function locked_browser_record_flow_for_tests(desync, trial, host, ip, profile, proto, scope, strategy)
+  return adaptive_browser_record_flow(desync, trial, host, ip, profile, proto, scope, strategy)
+end
+
 function circular_locked(ctx, desync)
   if desync.arg and desync.arg.payload and not payload_check(desync) then
     return circular_locked_passthrough(ctx, desync)
@@ -1655,6 +1712,8 @@ function circular_locked(ctx, desync)
 
   local proto = desync_proto(desync)
   local base_profile = desync_profile_key(desync)
+  local scope = desync_client_scope(desync)
+  adaptive_browser_capture_syn(desync, base_profile, scope)
   -- Хост извлекается для любого профиля: доменные локи должны срабатывать на
   -- первом пакете соединения независимо от allow_nohost (он управляет только
   -- допуском потоков без хоста).
@@ -1717,7 +1776,6 @@ function circular_locked(ctx, desync)
     end
   end
 
-  local scope = desync_client_scope(desync)
   local locked = locked_strategy_for_profile(profile, proto, scope)
   if (not locked) and profile ~= base_profile then
     locked = locked_strategy_for_profile(base_profile, proto, scope)
@@ -1837,6 +1895,10 @@ function circular_locked(ctx, desync)
     desync.track.lua_state.adaptive_browser_trial_id = adaptive_trial.id
     desync.track.lua_state.adaptive_browser_trial_generation = adaptive_trial.generation
     desync.track.lua_state.adaptive_browser_trial_strategy = adaptive_trial.strategy
+    if not desync.track.lua_state.adaptive_browser_flow_recorded then
+      desync.track.lua_state.adaptive_browser_flow_recorded = adaptive_browser_record_flow(
+        desync, adaptive_trial, host, adaptive_trial.ip, base_profile, adaptive_proto, scope, selected_strategy)
+    end
   end
 
   local verdict = VERDICT_PASS

@@ -13,27 +13,56 @@ with tempfile.TemporaryDirectory(prefix="zator-browser-trial-") as temp:
     state.mkdir(parents=True)
     (state / "mode").write_text("AGENT_BETA\n")
     (state / "apply-default-scope").write_text("1\n")
+    flow_dir = root / "browser-flows"
+    flow_dir.mkdir()
 
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.globals().fake_getenv = lambda key: {
         "ZATOR_ROOT": str(root),
         "Z2R_ADAPTIVE_BROWSER_TRIALS_FILE": str(root / "trials.tsv"),
+        "Z2R_ADAPTIVE_BROWSER_FLOW_DIR": str(flow_dir),
         "Z2R_ADAPTIVE_RULES_FILE": str(root / "rules.tsv"),
     }.get(key)
     lua.execute("os.getenv = fake_getenv")
+    lua.globals().TH_SYN = 2
+    lua.globals().TH_ACK = 16
+    lua.globals().bitand = lambda left, right: int(left) & int(right)
+    lua.globals().dis_ipdst = lambda packet: packet["dst"]
+    lua.globals().ntop = lambda address: address
+    lua.execute("local py_bitand, py_dis_ipdst, py_ntop = bitand, dis_ipdst, ntop; bitand=function(a,b) return py_bitand(a,b) end; dis_ipdst=function(d) return py_dis_ipdst(d) end; ntop=function(ip) return py_ntop(ip) end")
     lua.execute(f"dofile({json.dumps(str(repo / 'orchestra/locked.lua'))})")
+    lua.execute("os.time = function() return 1000 end")
     lua.execute(r'''
 local now = 1000
+assert(type(bitand) == "function" and type(TH_SYN) == "number" and type(TH_ACK) == "number",
+  "test TCP helpers missing: " .. type(bitand) .. "/" .. type(TH_SYN) .. "/" .. type(TH_ACK))
 local id = string.rep("a", 32)
 local client = string.rep("b", 32)
+local fingerprint = "sha256:" .. string.rep("c", 64)
 local function trial(ip, scope, proto, profile, strategy, expires)
   return table.concat({"1", id, "1", client, "192.168.1.42", scope,
-    "cdn.example.org", ip, tostring(profile), proto, tostring(strategy), "-", "990", tostring(expires)}, "\t")
+    "cdn.example.org", ip, tostring(profile), proto, tostring(strategy), fingerprint, "990", tostring(expires)}, "\t")
 end
 local valid = trial("8.8.8.8", "mark:7", "tls", 1, 2, 1045)
 locked_load_browser_trials_for_tests({valid}, now)
 local found = locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "mark:7", now)
 assert(found and found.id == id and found.generation == 1 and found.strategy == 2, "exact trial not returned")
+local track = {}
+local syn = {outgoing=true, track=track, dis={dst="8.8.8.8", tcp={th_dport=443, th_flags=2}}}
+local captured, capture_reason = locked_browser_capture_syn_for_tests(syn, "1", "mark:7")
+assert(captured, "SYN capture refused: " .. tostring(capture_reason))
+assert(track.lua_state and track.lua_state.adaptive_browser_syn and track.lua_state.adaptive_browser_syn.ip == "8.8.8.8", "new TCP SYN was not captured")
+local trial_obj = locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "mark:7", now)
+assert(locked_browser_record_flow_for_tests({track=track}, trial_obj, "cdn.example.org", "8.8.8.8", "1", "tls", "mark:7", 2),
+  "matching post-trial SYN did not create production flow evidence")
+local flow_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".1.tsv", "r"))
+local flow_line = flow_file:read("*l")
+flow_file:close()
+assert(flow_line and flow_line:match("^1\t" .. id .. "\t1\t" .. client .. "\tmark:7\tcdn%.example%.org\t8%.8%.8%.8\t1\ttls\t2\t" .. fingerprint .. "\t1000\t1000$"),
+  "flow proof fields do not bind the new SYN and selected strategy")
+local no_syn = {track={}}
+assert(not locked_browser_record_flow_for_tests(no_syn, trial_obj, "cdn.example.org", "8.8.8.8", "1", "tls", "mark:7", 2),
+  "strategy selection without a SYN was accepted")
 assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.4.4", 1, "tls", "mark:7", now) == nil, "destination was not exact")
 locked_load_browser_trials_for_tests({valid:gsub("192%.168%.1%.42", "8.8.8.8")}, now)
 assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "mark:7", now) == nil, "public client IP accepted")
@@ -63,7 +92,7 @@ assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "d
     lua_off.globals().fake_getenv = lambda key: {
         "ZATOR_ROOT": str(off_root),
         "Z2R_ADAPTIVE_BROWSER_TRIALS_FILE": str(root / "trials.tsv"),
-        "Z2R_ADAPTIVE_RULES_FILE": str(root / "rules.tsv"),
+  "Z2R_ADAPTIVE_RULES_FILE": str(root / "rules.tsv"),
     }.get(key)
     lua_off.execute("os.getenv = fake_getenv")
     lua_off.execute(f"dofile({json.dumps(str(repo / 'orchestra/locked.lua'))})")

@@ -173,6 +173,59 @@ adaptive_browser_attempt_file() {
 }
 
 adaptive_browser_trials_file() { printf '%s/trials.tsv\n' "$(adaptive_browser_state_dir)"; }
+adaptive_browser_flow_dir() { printf '%s/flows\n' "$(adaptive_browser_state_dir)"; }
+
+adaptive_browser_flow_read() {
+  [[ $# = 2 && "$1" =~ ^[a-f0-9]{32}$ && "$2" =~ ^[1-9][0-9]{0,8}$ ]] || return 2
+  local dir file row lines
+  dir="$(adaptive_browser_flow_dir)"; file="$dir/$1.$2.tsv"
+  [[ -d "$dir" && ! -L "$dir" ]] || return 1
+  [[ -e "$file" ]] || return 1
+  [[ -f "$file" && ! -L "$file" && -r "$file" ]] || return 2
+  [[ $(wc -c < "$file") -le 512 ]] || return 2
+  lines="$(awk 'END {print NR+0}' "$file")"
+  [[ "$lines" = 1 ]] || return 2
+  IFS= read -r row < "$file" || return 2
+  local ver id generation client_id scope host ip profile proto strategy fingerprint syn_at selected_at extra
+  IFS=$'\t' read -r ver id generation client_id scope host ip profile proto strategy fingerprint syn_at selected_at extra <<< "$row"
+  [[ "$ver" = 1 && "$id" = "$1" && "$generation" = "$2" && "$client_id" =~ ^[a-f0-9]{32}$ &&
+     ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$host" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ &&
+     "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ &&
+     ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) &&
+     "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
+     "$syn_at" =~ ^[0-9]{1,10}$ && "$selected_at" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || return 2
+  printf '%s\n' "$row"
+}
+
+adaptive_browser_result_claim() {
+  [[ $# = 5 && "$1" =~ ^[a-f0-9]{32}$ && "$2" =~ ^[a-f0-9]{32}$ && "$3" =~ ^[a-f0-9]{32}$ &&
+     "$4" =~ ^(network_success|network_failure)$ && "$5" =~ ^[0-9]{10}$ ]] || return 2
+  local client_id="$1" attempt_id="$2" event_id="$3" result="$4" now="$5"
+  local dir="$(adaptive_browser_state_dir)/results" file lock tmp row ver old_client old_id old_result old_seen extra count=0 tries=0
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$dir" ]] || return 1
+  mkdir -p "$dir" || return 1
+  file="$dir/$attempt_id.tsv"; lock="$file.lock"
+  [[ ! -L "$file" && ! -L "$lock" ]] || return 1
+  while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries + 1)); (( tries < 20 )) || return 1; sleep 0.05; done
+  tmp="$(mktemp "$dir/.result.XXXXXX")" || { rmdir "$lock"; return 1; }
+  if [[ -r "$file" ]]; then
+    [[ $(wc -c < "$file") -le 2048 ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    while IFS= read -r row || [[ -n "$row" ]]; do
+      IFS=$'\t' read -r ver old_client old_id old_result old_seen extra <<< "$row"
+      [[ "$ver" = 1 && "$old_client" = "$client_id" && "$old_id" =~ ^[a-f0-9]{32}$ && "$old_result" =~ ^(network_success|network_failure)$ &&
+         "$old_seen" =~ ^[0-9]{10}$ && -z "${extra:-}" ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+      (( old_seen >= now - 300 && old_seen <= now + 5 )) || continue
+      count=$((count + 1)); (( count <= 7 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+      if [[ "$old_id" = "$event_id" ]]; then
+        rm -f "$tmp"; rmdir "$lock"; return 3
+      fi
+      printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+    done < "$file"
+  fi
+  printf '1\t%s\t%s\t%s\t%s\n' "$client_id" "$event_id" "$result" "$now" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
+  rmdir "$lock"
+}
 
 adaptive_browser_trial_add() {
   [[ $# = 13 ]] || return 2
@@ -220,6 +273,9 @@ adaptive_browser_trial_remove() {
   [[ $# = 2 && "$1" =~ ^[a-f0-9]{32}$ && "$2" =~ ^[1-9][0-9]{0,8}$ ]] || return 2
   local wanted="$1" generation="$2" file lock dir tmp row ver id gen rest removed=0 tries=0
   file="$(adaptive_browser_trials_file)"; dir="$(dirname "$file")"; lock="$file.lock"
+  local flow_file="$(adaptive_browser_flow_dir)/$wanted.$generation.tsv"
+  [[ ! -L "$flow_file" ]] || return 1
+  [[ ! -f "$flow_file" ]] || rm -f "$flow_file" || return 1
   [[ -f "$file" && ! -L "$file" && ! -L "$lock" ]] || return 0
   while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries + 1)); (( tries < 20 )) || return 1; sleep 0.05; done
   tmp="$(mktemp "$dir/.trials.XXXXXX")" || { rmdir "$lock"; return 1; }
@@ -322,7 +378,7 @@ adaptive_browser_attempt_transition() {
   file="$(adaptive_browser_attempt_file "$id")"; dir="$(dirname "$file")"; lock="$file.lock"
   [[ -r "$file" && ! -L "$file" && ! -L "$dir" && $(wc -c < "$file") -le 2048 ]] || return 1
   case "$expected:$next" in
-    QUEUED:WAIT_NEW_FLOW|QUEUED:TARGET_NOT_MANAGED|QUEUED:CANCELLED|QUEUED:EXPIRED|WAIT_NEW_FLOW:FLOW_CONFIRMED|WAIT_NEW_FLOW:UNKNOWN|WAIT_NEW_FLOW:NOT_TESTED|WAIT_NEW_FLOW:CANCELLED|WAIT_NEW_FLOW:EXPIRED|FLOW_CONFIRMED:WAIT_BROWSER_RESULT|FLOW_CONFIRMED:CONFIRMED_FAILURE|FLOW_CONFIRMED:UNKNOWN|FLOW_CONFIRMED:CANCELLED|FLOW_CONFIRMED:EXPIRED|WAIT_BROWSER_RESULT:PROVISIONAL_SUCCESS|WAIT_BROWSER_RESULT:CONFIRMED_FAILURE|WAIT_BROWSER_RESULT:UNKNOWN|WAIT_BROWSER_RESULT:CANCELLED|WAIT_BROWSER_RESULT:EXPIRED|PROVISIONAL_SUCCESS:CONFIRMED_SUCCESS|PROVISIONAL_SUCCESS:UNKNOWN|PROVISIONAL_SUCCESS:EXPIRED) ;;
+    QUEUED:WAIT_NEW_FLOW|QUEUED:TARGET_NOT_MANAGED|QUEUED:CANCELLED|QUEUED:EXPIRED|WAIT_NEW_FLOW:FLOW_CONFIRMED|WAIT_NEW_FLOW:UNKNOWN|WAIT_NEW_FLOW:NOT_TESTED|WAIT_NEW_FLOW:CANCELLED|WAIT_NEW_FLOW:EXPIRED|FLOW_CONFIRMED:WAIT_BROWSER_RESULT|FLOW_CONFIRMED:CONFIRMED_FAILURE|FLOW_CONFIRMED:UNKNOWN|FLOW_CONFIRMED:CANCELLED|FLOW_CONFIRMED:EXPIRED|WAIT_BROWSER_RESULT:PROVISIONAL_SUCCESS|WAIT_BROWSER_RESULT:CONFIRMED_FAILURE|WAIT_BROWSER_RESULT:UNKNOWN|WAIT_BROWSER_RESULT:CANCELLED|WAIT_BROWSER_RESULT:EXPIRED|PROVISIONAL_SUCCESS:CONFIRMED_SUCCESS|PROVISIONAL_SUCCESS:CONFIRMED_FAILURE|PROVISIONAL_SUCCESS:UNKNOWN|PROVISIONAL_SUCCESS:EXPIRED) ;;
     *) return 2 ;;
   esac
   while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries + 1)); (( tries < 20 )) || return 1; sleep 0.05; done

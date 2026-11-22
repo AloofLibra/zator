@@ -8,18 +8,27 @@ async function render() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tabId = tabs[0]?.id;
   activeTab = tabs[0] || null;
-  const state = await chrome.runtime.sendMessage({ type: "z2r:get-state" });
-  const row = (state.events || []).slice().reverse().find(item => item && item.hostname && item.tab_id === tabId);
+  let state = await chrome.runtime.sendMessage({ type: "z2r:get-state" });
+  let row = (state.events || []).slice().reverse().find(item => item && item.hostname && item.tab_id === tabId);
+  if (row?.attempt_id) {
+    await chrome.runtime.sendMessage({ type: "z2r:sync-attempt", eventId: row.id });
+    state = await chrome.runtime.sendMessage({ type: "z2r:get-state" });
+    row = (state.events || []).slice().reverse().find(item => item && item.hostname && item.tab_id === tabId);
+  }
   const permission = await chrome.permissions.contains({ origins: ["http://*/*", "https://*/*"] });
   mode.textContent = permission ? (state.config?.token ? "Paired · waiting for site errors" : "Monitoring enabled · pair a router") : "Enable error monitoring in Settings";
   fix.hidden = !activeTab?.url || !/^https?:\/\//i.test(activeTab.url);
   if (!row) {
+    activeEvent = null;
     latest.textContent = "No recent eligible network error. You can still ask Zator to try this site.";
     return;
   }
   activeEvent = row;
-  latest.textContent = `${row.hostname} · ${row.failure_class.replaceAll("_", " ")}${row.router_status ? ` · ${row.router_status}` : ""}`;
-  fix.hidden = Date.now() - row.observed_at > 120_000;
+  const attemptActive = row.attempt_id && ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status);
+  latest.textContent = attemptActive
+    ? `${row.hostname} · ${row.router_status}${row.pending_result ? " · browser result received" : " · reload the page if needed; waiting for a new connection"}`
+    : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${row.router_status}` : ""}`;
+  fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
 }
 
 fix.addEventListener("click", async () => {
@@ -33,3 +42,4 @@ fix.addEventListener("click", async () => {
 });
 document.querySelector("#options").addEventListener("click", () => chrome.runtime.openOptionsPage());
 void render();
+setInterval(() => { void render(); }, 2500);

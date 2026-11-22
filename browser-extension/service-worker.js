@@ -5,9 +5,9 @@
   const DEDUPE_MS = 30_000;
   const RESOURCE_TYPES = new Set(["script", "xmlhttprequest", "media"]);
   const mainFrameErrors = new Set([
-    "ERR_CONNECTION_RESET", "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT", "ERR_CONNECTION_REFUSED",
-    "ERR_CONNECTION_FAILED", "ERR_EMPTY_RESPONSE", "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_ABORTED", "ERR_SSL_PROTOCOL_ERROR",
-    "ERR_QUIC_PROTOCOL_ERROR", "ERR_HTTP2_PROTOCOL_ERROR", "ERR_NETWORK_IO_SUSPENDED"
+    "ERR_CONNECTION_RESET", "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT", "ERR_EMPTY_RESPONSE",
+    "ERR_CONNECTION_CLOSED", "ERR_SSL_PROTOCOL_ERROR",
+    "ERR_QUIC_PROTOCOL_ERROR", "ERR_HTTP2_PROTOCOL_ERROR"
   ]);
   const ignoredErrors = new Set([
     "ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED",
@@ -33,13 +33,17 @@
   function failureClass(error) {
     const code = String(error || "").replace(/^net::/, "").toUpperCase();
     if (ignoredErrors.has(code) || /CERT|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|NETWORK_CHANGED/.test(code)) return "";
-    if (mainFrameErrors.has(code) || /^(ERR_CONNECTION_(RESET|TIMED_OUT|CLOSED|ABORTED)|ERR_EMPTY_RESPONSE|ERR_(SSL|QUIC|HTTP2)_PROTOCOL_ERROR)$/.test(code)) {
+    if (mainFrameErrors.has(code) || /^(ERR_CONNECTION_(RESET|TIMED_OUT|CLOSED)|ERR_EMPTY_RESPONSE|ERR_(SSL|QUIC|HTTP2)_PROTOCOL_ERROR)$/.test(code)) {
       return "network_failure";
     }
     return "";
   }
 
-  function safeMethod(method) { return method === "GET" || method === "HEAD"; }
+  function safeMethod(method) { return method === "GET"; }
+  function safeRemoteIp(ip) {
+    return typeof ip === "string" && /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip) &&
+      ip.split(".").every(part => Number(part) <= 255);
+  }
   function opaqueId() {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "");
     const bytes = new Uint8Array(16);
@@ -55,6 +59,23 @@
       seen: Array.isArray(state.seen) ? state.seen : [],
       resourceErrors: Array.isArray(state.resourceErrors) ? state.resourceErrors : []
     };
+  }
+
+  async function postRouterForm(config, form) {
+    let endpoint;
+    try { endpoint = new URL("/cgi-bin/adaptive-browser.cgi", config.router).toString(); }
+    catch { return { ok: false, status: "invalid_router", data: {} }; }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", Authorization: `Bearer ${config.token}` },
+        body: new URLSearchParams(form), credentials: "omit", cache: "no-store", redirect: "error", signal: controller.signal
+      });
+      const data = await response.json().catch(() => ({}));
+      return { ok: response.ok, status: response.status, data };
+    } catch { return { ok: false, status: "unreachable", data: {} }; }
+    finally { clearTimeout(timeout); }
   }
 
   async function rememberFailure(details, source = "webRequest") {
@@ -87,6 +108,10 @@
       failure_class: failure, trigger, observed_at: now, tab_id: details.tabId
     };
     event.failure_count = trigger === "critical_resource_repeated_failure" ? 2 : 1;
+    if (trigger && await captureAttemptResult(state, host, details.tabId, "network_failure", type, now, details.ip)) {
+      await chrome.storage.local.set({ seen: state.seen, resourceErrors: state.resourceErrors });
+      return { accepted: true, trigger: "attempt_result" };
+    }
     state.events.push(event);
     state.events = state.events.slice(-MAX_EVENTS);
     await chrome.storage.local.set({ events: state.events, seen: state.seen, resourceErrors: state.resourceErrors });
@@ -98,10 +123,6 @@
     const state = await loadState();
     const { router, token } = state.config;
     if (!router || !token) return { paired: false };
-    let endpoint;
-    try {
-      endpoint = new URL("/cgi-bin/adaptive-browser.cgi", router).toString();
-    } catch { return { paired: false }; }
     const form = new URLSearchParams({
       schema_version: "1", action: "browser_report_failure", browser_event_id: event.id,
       trigger: userRequested ? "user_fix" : event.trigger,
@@ -109,23 +130,58 @@
       failure_class: event.failure_class, failure_count: String(userRequested ? 1 : (event.failure_count || 1)),
       observed_at: String(event.observed_at)
     });
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", Authorization: `Bearer ${token}` },
-        body: form.toString(), credentials: "omit", cache: "no-store", redirect: "error", signal: controller.signal
-      });
-      const data = await response.json().catch(() => ({}));
-      const latest = await loadState();
-      latest.events = latest.events.map(row => row.id === event.id
-        ? { ...row, router_status: data.state || data.status || (response.ok ? "received" : `http_${response.status}`) }
-        : row);
-      await chrome.storage.local.set({ events: latest.events });
-      return { paired: true, ok: response.ok, status: response.status };
-    } catch {
-      return { paired: true, ok: false, status: "unreachable" };
-    } finally { clearTimeout(timeout); }
+    const result = await postRouterForm(state.config, Object.fromEntries(form.entries()));
+    const latest = await loadState();
+    latest.events = latest.events.map(row => row.id === event.id
+      ? { ...row, router_status: result.data.state || result.data.status || (result.ok ? "received" : result.status),
+          attempt_id: result.data.attempt_id || row.attempt_id || null,
+          attempt_expires_at: result.data.expires_at || row.attempt_expires_at || null,
+          pending_result: row.pending_result || null }
+      : row);
+    await chrome.storage.local.set({ events: latest.events });
+    if (result.data.attempt_id) void syncAttempt(event.id);
+    return { paired: true, ok: result.ok, status: result.status, data: result.data };
+  }
+
+  async function syncAttempt(eventId) {
+    const state = await loadState();
+    const event = state.events.find(row => row && row.id === eventId && row.attempt_id);
+    if (!event || !state.config.router || !state.config.token) return { ok: false, state: "NO_ATTEMPT" };
+    const status = await postRouterForm(state.config, {
+      schema_version: "1", action: "browser_attempt_status", attempt_id: event.attempt_id
+    });
+    if (!status.ok) return { ok: false, state: status.status };
+    let latest = await loadState();
+    latest.events = latest.events.map(row => row.id === eventId ? { ...row, router_status: status.data.state || row.router_status } : row);
+    await chrome.storage.local.set({ events: latest.events });
+    const current = latest.events.find(row => row && row.id === eventId);
+    if (!current?.pending_result || !["FLOW_CONFIRMED", "PROVISIONAL_SUCCESS"].includes(status.data.state)) {
+      return { ok: true, state: status.data.state || "UNKNOWN" };
+    }
+    const pending = current.pending_result;
+    const result = await postRouterForm(latest.config, {
+      schema_version: "1", action: "browser_report_result", attempt_id: current.attempt_id,
+      browser_event_id: pending.id, result: pending.result, request_class: pending.request_class,
+      browser_ip: pending.browser_ip, observed_at: String(pending.observed_at)
+    });
+    latest = await loadState();
+    latest.events = latest.events.map(row => row.id === eventId ? {
+      ...row, router_status: result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
+      pending_result: result.ok ? null : row.pending_result
+    } : row);
+    await chrome.storage.local.set({ events: latest.events });
+    return { ok: result.ok, state: result.data.state || result.data.status || status.data.state };
+  }
+
+  async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp) {
+    if (!safeRemoteIp(browserIp)) return false;
+    const event = [...state.events].reverse().find(row => row && row.attempt_id && row.hostname === host && row.tab_id === tabId &&
+      ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status));
+    if (!event || (event.attempt_expires_at && observedAt > event.attempt_expires_at * 1000)) return false;
+    event.pending_result = { id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt };
+    await chrome.storage.local.set({ events: state.events });
+    void syncAttempt(event.id);
+    return true;
   }
 
   async function requestFix(eventId) {
@@ -150,9 +206,15 @@
   }
 
   async function recordHttpResponse(details) {
-    if (!details || details.tabId < 0 || details.incognito === true || ![403, 451, 500, 502, 503, 504].includes(details.statusCode)) return;
+    if (!details || details.tabId < 0 || details.incognito === true) return;
     const host = safeHost(details.url);
     if (!host) return;
+    if (details.type === "main_frame" && details.method === "GET" && details.statusCode >= 200 && details.statusCode < 400 && details.statusCode !== 304 && details.fromCache !== true) {
+      const state = await loadState();
+      await captureAttemptResult(state, host, details.tabId, "network_success", "main_frame", Date.now(), details.ip);
+      return;
+    }
+    if (![403, 451, 500, 502, 503, 504].includes(details.statusCode)) return;
     const state = await loadState();
     const row = { id: opaqueId(), hostname: host, request_class: details.type || "other", method: "GET",
       failure_class: `http_${details.statusCode}`, trigger: "manual_only", observed_at: Date.now(), tab_id: details.tabId };
@@ -177,9 +239,13 @@
       void requestCurrentPageFix(message.url, message.tabId).then(sendResponse).catch(() => sendResponse({ ok: false, reason: "error" }));
       return true;
     }
+    if (message && message.type === "z2r:sync-attempt" && typeof message.eventId === "string") {
+      void syncAttempt(message.eventId).then(sendResponse).catch(() => sendResponse({ ok: false, state: "error" }));
+      return true;
+    }
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, rememberFailure, reportFailure, requestFix, requestCurrentPageFix, recordHttpResponse };
+    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, rememberFailure, reportFailure, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt };
   }
 })();

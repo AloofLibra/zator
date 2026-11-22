@@ -53,6 +53,7 @@ const api = context.__Z2R_BROWSER_TEST__.api
 assert.equal(api.failureClass('net::ERR_CONNECTION_RESET'), 'network_failure')
 assert.equal(api.failureClass('net::ERR_NAME_NOT_RESOLVED'), '')
 assert.equal(api.failureClass('net::ERR_CERT_DATE_INVALID'), '')
+assert.equal(api.failureClass('net::ERR_CONNECTION_ABORTED'), '')
 assert.equal(api.safeHost('https://router.home.arpa/path'), '')
 
 const main = await api.rememberFailure({ tabId: 2, documentId: 'doc-a', requestId: 'req-a', type: 'main_frame', method: 'GET',
@@ -82,6 +83,10 @@ assert.equal(dns.ignored, 'not_eligible')
 const unsafe = await api.rememberFailure({ tabId: 2, requestId: 'req-post', type: 'main_frame', method: 'POST',
   url: 'https://pay.example.test/submit', error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now() })
 assert.equal(unsafe.trigger, 'observe_only')
+assert.equal(sent.length, 1)
+const head = await api.rememberFailure({ tabId: 2, requestId: 'req-head', type: 'main_frame', method: 'HEAD',
+  url: 'https://head.example.test/', error: 'net::ERR_CONNECTION_RESET', timeStamp: Date.now() })
+assert.equal(head.trigger, 'observe_only')
 assert.equal(sent.length, 1)
 
 const subresource = (requestId, type = 'xmlhttprequest') => ({ tabId: 8, documentId: 'doc-resource', requestId, type, method: 'GET',
