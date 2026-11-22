@@ -574,9 +574,9 @@ adaptive_rules_ranked_candidates() {
     [[ ! ${seen_pairs[$pair]+yes} ]] || continue
     seen_pairs[$pair]=1
     remaining=$((expiry - now))
-    # Rule TTL is currently six hours; remaining lifetime is a bounded proxy
+    # Rule TTL is currently fifteen minutes; remaining lifetime is a bounded proxy
     # for confirmation recency and keeps old snapshots from dominating groups.
-    (( remaining > 21600 )) && remaining=21600
+    (( remaining > 900 )) && remaining=900
     scores["$strategy"]=$(( ${scores[$strategy]:-0} + remaining ))
   done
   # A tied group result is conflicting evidence, not a reason to prefer the
