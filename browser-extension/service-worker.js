@@ -86,6 +86,7 @@
       id: opaqueId(), hostname: host, request_class: type, method: safeMethod(method) ? method : "UNSAFE",
       failure_class: failure, trigger, observed_at: now, tab_id: details.tabId
     };
+    event.failure_count = trigger === "critical_resource_repeated_failure" ? 2 : 1;
     state.events.push(event);
     state.events = state.events.slice(-MAX_EVENTS);
     await chrome.storage.local.set({ events: state.events, seen: state.seen, resourceErrors: state.resourceErrors });
@@ -105,7 +106,8 @@
       schema_version: "1", action: "browser_report_failure", browser_event_id: event.id,
       trigger: userRequested ? "user_fix" : event.trigger,
       request_class: event.request_class, hostname: event.hostname, method: event.method,
-      failure_class: event.failure_class, observed_at: String(event.observed_at)
+      failure_class: event.failure_class, failure_count: String(userRequested ? 1 : (event.failure_count || 1)),
+      observed_at: String(event.observed_at)
     });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
@@ -138,7 +140,7 @@
     const host = safeHost(url);
     if (!host || !Number.isInteger(tabId) || tabId < 0) return { ok: false, reason: "target_not_supported" };
     const event = { id: opaqueId(), hostname: host, request_class: "main_frame", method: "GET",
-      failure_class: "user_requested", trigger: "user_fix", observed_at: Date.now(), tab_id: tabId };
+      failure_class: "user_requested", trigger: "user_fix", failure_count: 1, observed_at: Date.now(), tab_id: tabId };
     const state = await loadState();
     state.events.push(event);
     state.events = state.events.slice(-MAX_EVENTS);

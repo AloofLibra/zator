@@ -37,7 +37,7 @@ for pair in "${pairs[@]}"; do
   [[ "$pair" = *=* && "$pair" != *%* && "$pair" != *+* ]] || fail '400 Bad Request' 'invalid form encoding'
   key="${pair%%=*}"; value="${pair#*=}"
   [[ "$key" =~ ^[a-z_]+$ && "$value" =~ ^[a-zA-Z0-9_.:-]*$ ]] || fail '400 Bad Request' 'invalid form field'
-  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|observed_at|attempt_id|result) ;;
+  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_count|observed_at|attempt_id|result) ;;
     *) fail '400 Bad Request' 'unknown form field' ;; esac
   [[ -n "$key" && ! ${f[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
   f[$key]="$value"
@@ -61,17 +61,19 @@ case "${f[action]:-}" in
     send '200 OK' "{\"schema_version\":1,\"client_id\":\"$client_id\",\"scope\":\"$scope\",\"mode\":\"$mode\",\"status\":\"paired\"}"
     ;;
   browser_report_failure)
-    [[ ${#f[@]} -eq 9 && "${f[trigger]:-}" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
+    [[ ${#f[@]} -eq 10 && "${f[trigger]:-}" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
        "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ && "${f[method]:-}" =~ ^(GET|HEAD|UNSAFE)$ &&
        "${f[failure_class]:-}" =~ ^(network_failure|user_requested|http_(403|451|500|502|503|504))$ &&
+       "${f[failure_count]:-}" =~ ^[12]$ &&
        "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid failure event'
     trigger="${f[trigger]}"; klass="${f[request_class]}"; method="${f[method]}"; failure="${f[failure_class]}"
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null || printf OFF)"
     [[ "$mode" = AGENT_BETA ]] || send '200 OK' "{\"schema_version\":1,\"status\":\"OBSERVE_ONLY\",\"state\":\"NOT_TESTED\",\"mode\":\"$mode\"}"
     if [[ "$trigger" = main_frame_network_failure ]]; then
-      [[ "$klass" = main_frame && "$method" = GET && "$failure" = network_failure ]] || fail '400 Bad Request' 'main-frame trigger mismatch'
+      [[ "$klass" = main_frame && "$method" = GET && "$failure" = network_failure && "${f[failure_count]}" = 1 ]] || fail '400 Bad Request' 'main-frame trigger mismatch'
     elif [[ "$trigger" = critical_resource_repeated_failure ]]; then
-      [[ "$klass" =~ ^(script|xmlhttprequest|media)$ && "$method" != UNSAFE && "$failure" = network_failure ]] || fail '400 Bad Request' 'resource trigger mismatch'
+      [[ "$klass" =~ ^(script|xmlhttprequest|media)$ && "$method" != UNSAFE && "$failure" = network_failure && "${f[failure_count]}" = 2 ]] || fail '400 Bad Request' 'resource trigger mismatch'
+    elif [[ "${f[failure_count]}" != 1 ]]; then fail '400 Bad Request' 'manual trigger count mismatch'
     elif [[ "$failure" = http_* ]]; then :; fi
     host="${f[hostname],,}"
     adaptive_browser_host_valid "$host" || fail '400 Bad Request' 'invalid target hostname'
@@ -80,13 +82,14 @@ case "${f[action]:-}" in
     (( observed <= now_ms + 5000 && observed >= now_ms - 60000 )) || fail '400 Bad Request' 'stale failure event'
     [[ "$trigger" = user_fix || "$failure" = network_failure ]] || send '200 OK' '{"schema_version":1,"status":"MANUAL_ONLY","state":"NOT_TESTED"}'
     [[ "$trigger" = main_frame_network_failure || "$trigger" = critical_resource_repeated_failure || "$trigger" = user_fix ]] || fail '400 Bad Request' 'invalid trigger'
+    claim="$(adaptive_browser_event_claim "$client_id" "${f[browser_event_id]}" "$host" "$trigger" "$(date +%s)")" || fail '503 Service Unavailable' 'browser event journal unavailable'
+    [[ "$claim" != duplicate ]] || send '200 OK' '{"schema_version":1,"status":"DUPLICATE","state":"NOT_TESTED"}'
+    [[ "$claim" != budget ]] || send '200 OK' '{"schema_version":1,"status":"COOLDOWN","state":"NOT_TESTED"}'
     # Resolve only from recent production observations already written by Lua.
     # No DNS lookup or synthetic request is performed before the first trial.
     events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
     [[ -r "$events" && ! -L "$events" ]] || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
-    now="$(date +%s)"; matches="$(awk -F '\t' -v h="$host" -v sc="$scope" -v now="$now" '
-      $1==1 && $2=="seen" && $3==h && $7==sc && $8 ~ /^[0-9]+$/ && $8>=now-300 && $8<=now+10 && $5 ~ /^[1-4]$/ && ($6=="tls" || $6=="googlevideo-tcp") {print $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7; n++}
-      END {if(n!=1) exit 1}' "$events" 2>/dev/null)" || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
+    now="$(date +%s)"; matches="$(adaptive_browser_resolve_observation "$host" "$scope" "$events" "$now" 2>/dev/null)" || send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}'
     # Until production-flow trial selection is installed, do not claim that a
     # strategy was applied. This explicit state is replaced by the session engine.
     send '503 Service Unavailable' '{"schema_version":1,"status":"TRIAL_ENGINE_UNAVAILABLE","state":"NOT_TESTED"}'
@@ -98,10 +101,11 @@ case "${f[action]:-}" in
     [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
     now="$(date +%s)"
     if (( now > expires )); then
-      adaptive_browser_attempt_write "$attempt_id" "$owner" "$owner_ip" "$attempt_scope" "$host" "$ip" "$profile" "$proto" "$trigger" EXPIRED "$strategy" "$fingerprint" "$created" "$expires" "$generation" || fail '503 Service Unavailable' 'attempt expiry could not be saved'
-      state=EXPIRED
+      case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED) ;;
+        *) adaptive_browser_attempt_transition "$attempt_id" "$state" EXPIRED || fail '409 Conflict' 'attempt changed concurrently'; state=EXPIRED ;;
+      esac
     elif [[ "${f[action]}" = browser_cancel_attempt ]]; then
-      adaptive_browser_attempt_write "$attempt_id" "$owner" "$owner_ip" "$attempt_scope" "$host" "$ip" "$profile" "$proto" "$trigger" CANCELLED "$strategy" "$fingerprint" "$created" "$expires" "$generation" || fail '503 Service Unavailable' 'attempt cancellation failed'
+      adaptive_browser_attempt_transition "$attempt_id" "$state" CANCELLED || fail '409 Conflict' 'attempt is terminal or changed concurrently'
       state=CANCELLED
     fi
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
