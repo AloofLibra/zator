@@ -118,7 +118,8 @@ fi
 if adaptive_rule_add cdn.example.org 93.184.216.34 1 tls mark:123456 7 "$fp" "$cat" "$stamp" "$((now + 3600))"; then
   echo 'invalid scope accepted' >&2; exit 1
 fi
-if adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$cat" "$stamp" "$((now + 604900))"; then
+excessive_expiry=$(( $(date +%s) + 604900 ))
+if adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$cat" "$stamp" "$excessive_expiry"; then
   echo 'excessive TTL accepted' >&2; exit 1
 fi
 if adaptive_rule_add cdn.example.org 192.168.1.1 1 tls default 7 "$fp" "$cat" "$stamp" "$((now + 3600))"; then
