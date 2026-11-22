@@ -322,6 +322,20 @@ sni_pool_set_delete google || fail "не удалился пользовател
 if sni_pool_set_delete rkn; then fail "удалился проектный набор rkn"; fi
 sni_pool_assign_set 3 my
 if sni_pool_set_delete my; then fail "удалился набор, на который ссылается профиль 3"; fi
+# регрессия PR#83: занятость проверяется ТОЧНЫМ именем второго поля —
+# @my не должен блокировать удаление @my2 (подстрочный grep ловил префикс)
+sni_pool_set_write my2 m2-1.example.org
+sni_pool_set_delete my2 || fail "не удалился набор my2: @my посчитан подстрокой @my2"
+if sni_pool_set_delete my; then fail "после my2 удалился реально занятый my"; fi
+# регрессия PR#83 (битый tr на openwrt: p->w, u->l): домены пишутся как
+# введены, кроме нижнего регистра — ppp.gogle.com не превращается в www.gogle.com
+sni_pool_set_write my2 PPP.GoGle.COM ppp.gogle.com
+[ "$(sni_pool_set_read my2 | tr '\n' ' ')" = "ppp.gogle.com " ] \
+  || fail "sni_pool_set_write подменяет символы (битый tr-класс)"
+sni_pool_set_delete my2 || fail "не удалился my2 после регрессии tr"
+sni_pool_set_list 6 ppp.gogle.com Www.AppArmor.com
+[ "$(sni_pool_list 6 | tr '\n' ' ')" = "ppp.gogle.com www.apparmor.com " ] \
+  || fail "sni_pool_set_list подменяет символы (битый tr-класс)"
 
 # замена существующей секции на месте: заголовок файла и соседние секции целы
 sni_pool_set_write my x.example.org y.example.org z.example.org

@@ -972,7 +972,8 @@ sni_pool_set_write() {
   local -A seen=()
   local d dir f sec tmp
   for d in "$@"; do
-    d="$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')"
+    # PR83-REVIEW(6/6) [ответ AloofLibra, orchestra_state.sh:975]: tr '[:upper:]' '[:lower:]' на роутерном tr (openwrt) заменяет буквы по позициям «класса» как литеральной строки (p->w, u->l: ppp.gogle.com -> www.gogle.com) — встроенный bash ${d,,} без форка, как предлагал автор замечания. Удалить после проверки.
+    d="${d,,}"
     sni_override_valid "$d" || return 2
     [ -z "${seen[$d]:-}" ] || continue
     seen[$d]=1
@@ -1032,7 +1033,9 @@ sni_pool_set_delete() {
   sni_pool_set_name_valid "$name" || return 2
   f="$Z2R_SNI_USER_FILE"
   [ -f "$f" ] || return 0
-  if [ -f "$ORCH_SNI_POOL_FILE" ] && grep -qF "@${name}" "$ORCH_SNI_POOL_FILE"; then
+  # PR83-REVIEW(5/6) [ответ AloofLibra, orchestra_state.sh:1035]: было grep -qF "@${name}" — подстрока ловила @google внутри @google2 и запрещала удаление несвязанного набора; теперь сравнение ВТОРОГО ПОЛЯ целиком (строка «profile<TAB>@имя»). Удалить после проверки.
+  if [ -f "$ORCH_SNI_POOL_FILE" ] \
+     && awk -F '\t' -v s="@$name" '$2==s {found=1} END {exit !found}' "$ORCH_SNI_POOL_FILE"; then
     echo "Set @${name} is referenced by sni_pool.tsv" >&2
     return 3
   fi
@@ -1064,6 +1067,9 @@ sni_pool_set_delete() {
 
 # Сырые строки пула профиля из sni_pool.tsv (могут быть @ссылками).
 # Файл читается в кеш один раз на процесс, фильтрация — чистым bash.
+# CRLF срезается как в lua/sni-pool.lua (load_pools): файл, правленный с
+# Windows, на реальном Linux оставлял «имя\r» и @ссылка не разрешалась
+# (MSYS на десктопе маскировал проблему текстовым режимом).
 sni_pool_list() {
   local row out=""
   if [ -z "$_Z2R_SNI_POOL_ROWS_SET" ]; then
@@ -1072,6 +1078,7 @@ sni_pool_list() {
     _Z2R_SNI_POOL_ROWS_SET=1
   fi
   while IFS= read -r row; do
+    row="${row%$'\r'}"
     case "${row%%$'\t'*}" in "$1") out="${out}${row#*$'\t'}"$'\n' ;; esac
   done <<< "$_Z2R_SNI_POOL_ROWS"
   [ -n "$out" ] && printf '%s' "$out"
@@ -1133,7 +1140,8 @@ sni_pool_set_list() {
   local d tmp
   for d in "$@"; do
     case "$d" in @*) return 2 ;; esac
-    d="$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')"
+    # PR83-REVIEW(6/6) [ответ AloofLibra, orchestra_state.sh:975]: тот же битый tr на openwrt — см. sni_pool_set_write; здесь тоже ${d,,}. Удалить после проверки.
+    d="${d,,}"
     sni_override_valid "$d" || return 2
     [ -z "${seen[$d]:-}" ] || continue
     seen[$d]=1
@@ -1201,6 +1209,7 @@ sni_pool_policy_get() {
     _Z2R_SNI_POLICY_ROWS_SET=1
   fi
   while IFS= read -r row; do
+    row="${row%$'\r'}"
     case "${row%%$'\t'*}" in "$1") out="${row#*$'\t'}"; break ;; esac
   done <<< "$_Z2R_SNI_POLICY_ROWS"
   [ -n "$out" ] && printf '%s\n' "$out"
