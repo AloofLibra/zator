@@ -237,6 +237,28 @@ assert.equal(stored.events.at(-1).router_status, 'UNKNOWN')
 assert.equal(stored.events.at(-1).router_reason, 'h3_protocol_evidence_unavailable')
 assert.match(popupScript, /H3 protocol evidence unavailable; QUIC success not confirmed/)
 
+stored.events.push({ id: 'l'.repeat(32), hostname: 'media.example.test', tab_id: 8, attempt_id: 'm'.repeat(32),
+  trigger: 'critical_resource_repeated_failure', request_class: 'xmlhttprequest', router_status: 'FLOW_CONFIRMED',
+  pending_result: { id: 'n'.repeat(32), result: 'network_success', request_class: 'xmlhttprequest', browser_ip: '8.8.8.8', observed_at: Date.now() },
+  pending_results: [
+    { id: 'n'.repeat(32), result: 'network_success', request_class: 'xmlhttprequest', browser_ip: '8.8.8.8', observed_at: Date.now() },
+    { id: 'o'.repeat(32), result: 'network_failure', request_class: 'xmlhttprequest', browser_ip: '8.8.8.8', observed_at: Date.now() }
+  ] })
+const restartedListeners = { failure: null, completed: null, message: null }
+const restartedChrome = { ...chrome, webRequest: {
+  onErrorOccurred: { addListener: fn => { restartedListeners.failure = fn } },
+  onCompleted: { addListener: fn => { restartedListeners.completed = fn } }
+}, runtime: { onMessage: { addListener: fn => { restartedListeners.message = fn } } } }
+const restartedContext = { ...context, chrome: restartedChrome, __Z2R_BROWSER_TEST__: {} }
+restartedContext.globalThis = restartedContext
+vm.runInNewContext(readFileSync(resolve(root, 'browser-extension/service-worker.js'), 'utf8'), restartedContext)
+const restartedApi = restartedContext.__Z2R_BROWSER_TEST__.api
+await restartedApi.syncAttempt('l'.repeat(32))
+assert.equal(stored.events.at(-1).pending_results.length, 1, 'worker restart must preserve the remaining result queue')
+assert.equal(stored.events.at(-1).pending_result.id, 'o'.repeat(32))
+await restartedApi.syncAttempt('l'.repeat(32))
+assert.equal(stored.events.at(-1).pending_results.length, 0, 'restarted worker should drain persisted browser outcomes')
+
 for (const file of ['popup.js', 'options.js']) {
   assert.doesNotThrow(() => new vm.Script(readFileSync(resolve(root, `browser-extension/${file}`), 'utf8'), { filename: file }))
 }
