@@ -207,7 +207,8 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" Z2R_AD
   bash "$tmp/zator/tools/adaptive-pair.sh" disable > "$tmp/recover.out"
 [[ "$(cat "$tmp/runs/$crash_id/state")" = failed &&
    "$(cat "$tmp/runs/$crash_id/error")" = controller_crash_recovered &&
-   ! -e "$tmp/shared.lock" && "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF ]] || {
+   ! -e "$tmp/shared.lock" && "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF &&
+   "$(cat "$tmp/recover.out")" == *'Restart zapret2 to apply any restored Ramp config'* ]] || {
   echo 'disable did not recover a stale adaptive controller' >&2; exit 1;
 }
 echo 'adaptive pairing smoke: ok'

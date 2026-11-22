@@ -424,7 +424,7 @@ if [ "$action" = disable ]; then
     . "$ROOT/z2r_lib/adaptive_rules.sh"
     adaptive_rules_invalidate || { echo 'Could not clear adaptive rules.' >&2; exit 1; }
   fi
-  echo 'Adaptive agent disabled; active probes are cancelling through cleanup.'
+  echo 'Adaptive agent disabled; active probes are cancelling through cleanup. Restart zapret2 to apply any restored Ramp config.'
   exit 0
 fi
 if [ "$action" = create ] && [ -e "$TOKEN_FILE" ]; then
