@@ -123,6 +123,27 @@ ORCH_DIR="$tmp/orchestra"
 . "$ROOT/lib/supersweep_probe.sh"
 selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
 [[ "${selected%%$'\t'*}" = 2 ]]
+# One eligible managed main-frame failure starts a scoped trial immediately;
+# the first attempt must not perform a curl/DNS diagnosis.
+mkdir -p "$ZATOR_ROOT/extra_strats/cache/orchestra"
+trial_host=immediate.example.org
+trial_now="$(date +%s)"
+printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$trial_host" "$trial_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+mkdir -p "$tmp/mock-diagnostics"
+for diagnostic in curl nslookup; do
+  cat > "$tmp/mock-diagnostics/$diagnostic" <<'EOF'
+#!/usr/bin/env sh
+printf '%s\n' "$0" >> "$Z2R_TEST_DIAGNOSTICS"
+exit 99
+EOF
+  chmod +x "$tmp/mock-diagnostics/$diagnostic"
+done
+main_event=12121212121212121212121212121212
+main_body="schema_version=1&action=browser_report_failure&browser_event_id=$main_event&trigger=main_frame_network_failure&request_class=main_frame&hostname=$trial_host&method=GET&failure_class=network_failure&failure_count=1&observed_at=$((trial_now * 1000))"
+main_response="$(printf '%s' "$main_body" | env PATH="$tmp/mock-diagnostics:$PATH" Z2R_TEST_DIAGNOSTICS="$tmp/diagnostics-called" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#main_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"WAIT_NEW_FLOW"' <<< "$main_response"
+[[ ! -e "$tmp/diagnostics-called" ]]
 printf 'Example ISP - Test City\n' > "$ZATOR_ROOT/extra_strats/cache/provider.txt"
 printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in"
 adaptive_browser_rankings_opted_in
