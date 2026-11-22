@@ -1,0 +1,12 @@
+:root { color-scheme: light dark; font: 14px/1.45 system-ui, sans-serif; }
+body { margin: 0; padding: 28px; min-width: 360px; background: Canvas; color: CanvasText; }
+body.popup { min-width: 290px; padding: 16px; }
+main { max-width: 680px; margin: 0 auto; }
+h1 { font-size: 20px; margin: 0 0 16px; }
+h2 { font-size: 16px; margin: 0 0 8px; }
+section, form { display: grid; gap: 10px; padding: 16px 0; border-top: 1px solid color-mix(in srgb, CanvasText 20%, transparent); }
+label { display: grid; gap: 5px; }
+input { box-sizing: border-box; width: 100%; padding: 9px; }
+button { padding: 9px 12px; cursor: pointer; }
+.notice { padding: 12px; border: 1px solid #b58a00; border-radius: 6px; }
+.small { font-size: 12px; opacity: .78; }

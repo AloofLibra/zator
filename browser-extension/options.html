@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Zator Browser Feedback</title><link rel="stylesheet" href="style.css"></head>
+<body>
+  <main>
+    <h1>Zator Browser Feedback</h1>
+    <p class="notice">Beta, observe and retry only. Eligible network failures are sent to your paired LAN router. The extension does not collect successful visits or page paths.</p>
+    <section>
+      <h2>Site error monitoring</h2>
+      <p>Monitoring needs permission to read network error metadata on sites you visit. It does not read page contents, cookies, or request bodies.</p>
+      <button id="grant-monitoring" type="button">Enable error monitoring</button>
+      <span id="permission-state" role="status"></span>
+    </section>
+    <form id="settings">
+      <h2>Paired router</h2>
+      <label>Router LAN address <input id="router" type="url" placeholder="http://192.168.1.1" autocomplete="url"></label>
+      <label>Browser token <input id="token" type="password" autocomplete="off" spellcheck="false"></label>
+      <button type="button" id="grant-router">Allow connection to this router</button>
+      <button type="submit">Save pairing</button>
+      <span id="save-state" role="status"></span>
+    </form>
+    <p class="small">The token stays in trusted extension storage and is sent only to the router address above. It is never sent to websites or statistics services.</p>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>
