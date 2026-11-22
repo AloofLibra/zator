@@ -166,7 +166,10 @@
     });
     latest = await loadState();
     latest.events = latest.events.map(row => row.id === eventId ? {
-      ...row, router_status: result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
+      ...row,
+      attempt_id: result.data.next_attempt?.attempt_id || row.attempt_id,
+      attempt_expires_at: result.data.next_attempt?.expires_at || row.attempt_expires_at,
+      router_status: result.data.next_attempt?.state || result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
       pending_result: result.ok ? null : row.pending_result
     } : row);
     await chrome.storage.local.set({ events: latest.events });
