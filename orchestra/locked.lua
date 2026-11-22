@@ -51,8 +51,7 @@ do
 end
 -- Environment opt-in alone is insufficient: TEST_ONLY must never select a
 -- stored rule, even if a stale daemon environment still carries the flag.
-local ADAPTIVE_RULES_APPLY = ADAPTIVE_MODE == "AGENT_BETA"
-  or (os.getenv("Z2R_ADAPTIVE_RULES_APPLY") == "1" and ADAPTIVE_MODE == "AUTO")
+local ADAPTIVE_RULES_APPLY = ADAPTIVE_MODE == "AGENT_BETA" or ADAPTIVE_MODE == "AUTO"
 local ADAPTIVE_DEFAULT_SCOPE_APPLY = ADAPTIVE_MODE == "AUTO"
 do
   if ADAPTIVE_MODE == "AGENT_BETA" then
@@ -69,6 +68,7 @@ local ADAPTIVE_OBSERVE_ENABLED = ADAPTIVE_MODE == "OBSERVE" or ADAPTIVE_MODE == 
 local ADAPTIVE_OBSERVE_EVENTS = {}
 local ADAPTIVE_OBSERVE_ORDER = {}
 local ADAPTIVE_OBSERVE_COUNT = 0
+local adaptive_observe_rewrite
 local ADAPTIVE_RAMP_TARGETS = {}
 local ADAPTIVE_RAMP_TARGET_ORDER = {}
 local ADAPTIVE_RAMP_TARGET_COUNT = 0
@@ -88,7 +88,8 @@ if ADAPTIVE_OBSERVE_ENABLED then
       local valid_kind = proto == "tls" and profile:match("^[1-4]$")
         or proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$")
         or proto == "quic" and profile == "5" and adaptive_quic_host_allowed(host)
-      if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure" or status == "active_rule_degraded") and #host <= 253
+      local router_candidate = status:match("^router_trial_([1-9][0-9]?[0-9]?)$")
+      if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure" or status == "active_rule_degraded" or router_candidate or status == "router_exhausted") and #host <= 253
         and host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") and valid_kind
         and (scope == "default" or scope:match("^mark:%d+$")) then
         local key = table.concat({host, ip, profile, proto, scope}, "\0")
@@ -96,6 +97,7 @@ if ADAPTIVE_OBSERVE_ENABLED then
           local event = {key = key, host = host, ip = ip, profile = profile, proto = proto,
             scope = scope, status = status, seen = tonumber(seen) or 0,
             failure_count = (status == "suspected_failure" or status == "active_rule_degraded") and 2 or 0}
+          if router_candidate then event.router_candidate = tonumber(router_candidate) end
           ADAPTIVE_OBSERVE_EVENTS[key] = event
           ADAPTIVE_OBSERVE_ORDER[#ADAPTIVE_OBSERVE_ORDER + 1] = event
           ADAPTIVE_OBSERVE_COUNT = ADAPTIVE_OBSERVE_COUNT + 1
@@ -1593,6 +1595,11 @@ local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
   if tostring(profile) == "2" then adaptive_ramp_target_seen(host, ip, scope, now, profile) end
   local old = ADAPTIVE_OBSERVE_EVENTS[key]
   if old then
+    if (old.status == "router_exhausted" or old.router_candidate) and now - (old.seen or 0) > 1800 then
+      old.status, old.router_candidate, old.failure_count, old.failure_strategy = "seen", nil, 0, nil
+      old.seen = now
+      adaptive_observe_rewrite()
+    end
     state.adaptive_observe_context = {key = key, host = host, ip = ip, profile = tostring(profile),
       proto = proto, scope = scope, adaptive_rule_applied = state.adaptive_rule_applied == true}
     state.adaptive_observe_key = key
@@ -1636,7 +1643,7 @@ local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
     proto = proto, scope = scope, adaptive_rule_applied = state.adaptive_rule_applied == true}
 end
 
-local function adaptive_observe_rewrite()
+adaptive_observe_rewrite = function()
   local f = io.open(ADAPTIVE_EVENTS_PATH, "r+")
   if not f then return false end
   local lines = {}
@@ -1742,9 +1749,21 @@ local function adaptive_quic_health_observe(desync, host, profile, scope)
     item = adaptive_quic_health_get(host, ip, scope, now)
     item.initials = math.min(65535, item.initials + 1)
     if state.adaptive_quic_health_key == item.key then
-      item.retries = math.min(65535, item.retries + 1)
+      if not state.adaptive_quic_health_retry_counted then
+        item.retries = math.min(65535, item.retries + 1)
+        state.adaptive_quic_health_retry_counted = true
+        item.seen = now
+        adaptive_quic_health_write(true)
+        if ADAPTIVE_MODE == "AUTO" and item.response == 0 and not state.adaptive_quic_health_failure_reported
+          and type(z2r_adaptive_suspected_failure) == "function" then
+          state.adaptive_quic_health_failure_reported = true
+          z2r_adaptive_suspected_failure(desync, {}, "quic_retry")
+        end
+      end
     else
       state.adaptive_quic_health_key = item.key
+      state.adaptive_quic_health_retry_counted = false
+      state.adaptive_quic_health_failure_reported = false
     end
     item.seen = now
     adaptive_quic_health_write()
@@ -1787,7 +1806,7 @@ end
 
 -- A packet-level detector is only a suspicion signal. Require two distinct
 -- failed connections for this exact tuple before asking the agent to probe it.
-function z2r_adaptive_suspected_failure(desync, crec)
+function z2r_adaptive_suspected_failure(desync, crec, failure_kind)
   if not ADAPTIVE_OBSERVE_ENABLED or type(crec) ~= "table" or crec.adaptive_failure_reported
     or type(desync) ~= "table" or type(desync.track) ~= "table"
     or type(desync.track.lua_state) ~= "table" then return end
@@ -1795,7 +1814,31 @@ function z2r_adaptive_suspected_failure(desync, crec)
   local context = desync.track.lua_state.adaptive_observe_context
   if type(context) ~= "table" then return end
   local event = ADAPTIVE_OBSERVE_EVENTS[context.key]
-  if not event or event.status == "suspected_failure" or event.status == "active_rule_degraded" then return end
+  if not event then return end
+  if ADAPTIVE_MODE == "AUTO" then
+    if failure_kind == "application" or failure_kind == "client_abort" or failure_kind == "ambiguous" then return end
+    if event.status == "router_exhausted" then return end
+    local strategy = tonumber(context.selected_strategy)
+    local count = tonumber(context.strategy_count)
+    if not strategy or not count or strategy < 0 or strategy > count or count < 1 then return end
+    if event.router_candidate and event.router_candidate ~= strategy then return end
+    if event.failure_strategy == strategy then event.failure_count = (event.failure_count or 0) + 1
+    else event.failure_strategy, event.failure_count = strategy, 1 end
+    if event.failure_count < 2 then return end
+    if strategy < math.min(count, 10) then
+      event.router_candidate = strategy + 1
+      event.status = "router_trial_" .. tostring(strategy + 1)
+      event.failure_strategy, event.failure_count = nil, 0
+    else
+      event.router_candidate = nil
+      event.status = "router_exhausted"
+      event.failure_strategy, event.failure_count = nil, 0
+    end
+    event.seen = os.time()
+    adaptive_observe_rewrite()
+    return
+  end
+  if event.status == "suspected_failure" or event.status == "active_rule_degraded" then return end
   event.failure_count = (event.failure_count or 0) + 1
   if event.failure_count < 2 then return end
   event.status = context.adaptive_rule_applied and "active_rule_degraded" or "suspected_failure"
@@ -2047,6 +2090,11 @@ function circular_locked(ctx, desync)
   if quic_initial and host and adaptive_quic_host_allowed(host) then adaptive_proto = "quic" end
   local adaptive_transport_ok = (desync.dis and desync.dis.tcp and tonumber(desync.dis.tcp.th_dport) == 443 and proto == "tls")
     or (quic_initial and adaptive_proto == "quic")
+  if locked == nil and host and host ~= "" and desync.track and desync.dis and desync.dis.tcp
+    and tonumber(desync.dis.tcp.th_dport) == 443 and proto == "tls"
+    and type(dis_ipdst) == "function" and type(ntop) == "function" then
+    z2r_adaptive_observe_connection(desync, base_profile, host, scope)
+  end
   if ADAPTIVE_RULES_APPLY
     and locked == nil and host and host ~= "" and desync.track
     and type(desync.track.lua_state) == "table" and desync.dis and desync.dis.ip and adaptive_transport_ok
@@ -2074,13 +2122,6 @@ function circular_locked(ctx, desync)
         state.adaptive_rule_checked = true
       end
     end
-  end
-
-  if locked == nil and host and host ~= "" and desync.track
-    and desync.dis and desync.dis.ip and desync.dis.tcp
-    and tonumber(desync.dis.tcp.th_dport) == 443 and proto == "tls"
-    and type(dis_ipdst) == "function" and type(ntop) == "function" then
-    z2r_adaptive_observe_connection(desync, base_profile, host, scope)
   end
 
   -- DIRECT is a distinct verified adaptive result. It passes this exact flow
@@ -2124,6 +2165,27 @@ function circular_locked(ctx, desync)
     error("circular_locked: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
   end
 
+  local router_event = desync.track and desync.track.lua_state and desync.track.lua_state.adaptive_observe_context
+    and ADAPTIVE_OBSERVE_EVENTS[desync.track.lua_state.adaptive_observe_context.key] or nil
+  local router_trial_candidate = ADAPTIVE_MODE == "AUTO" and router_event and router_event.router_candidate or nil
+  local router_pinned_strategy = ADAPTIVE_MODE == "AUTO" and desync.track and desync.track.lua_state
+    and tonumber(desync.track.lua_state.adaptive_router_auto_strategy) or nil
+  if router_pinned_strategy then
+    adaptive_strategy, adaptive_trial = router_pinned_strategy, nil
+  elseif ADAPTIVE_MODE == "AUTO" and router_event and router_event.status == "router_exhausted" then
+    adaptive_strategy, adaptive_trial = nil, nil
+  elseif router_trial_candidate then
+    if router_trial_candidate >= 1 and router_trial_candidate <= hrec.ctstrategy then
+      adaptive_strategy, adaptive_trial = router_trial_candidate, nil
+    else
+      router_event.router_candidate = nil
+      router_event.status = "router_exhausted"
+      router_event.seen = os.time()
+      adaptive_strategy, adaptive_trial = nil, nil
+      adaptive_observe_rewrite()
+    end
+  end
+
   local selected_strategy
   if locked and locked >= 1 and locked <= hrec.ctstrategy then
     selected_strategy = locked
@@ -2146,6 +2208,11 @@ function circular_locked(ctx, desync)
   if desync.track and type(desync.track.lua_state) == "table" and desync.track.lua_state.adaptive_observe_context then
     desync.track.lua_state.adaptive_observe_context.adaptive_rule_applied =
       adaptive_strategy ~= nil and selected_strategy == adaptive_strategy
+    desync.track.lua_state.adaptive_observe_context.selected_strategy = selected_strategy
+    desync.track.lua_state.adaptive_observe_context.strategy_count = hrec.ctstrategy
+  end
+  if ADAPTIVE_MODE == "AUTO" and locked == nil and desync.track and type(desync.track.lua_state) == "table" then
+    desync.track.lua_state.adaptive_router_auto_strategy = selected_strategy
   end
   if adaptive_trial and desync.track and type(desync.track.lua_state) == "table" and selected_strategy == adaptive_trial.strategy then
     desync.track.lua_state.adaptive_browser_trial_id = adaptive_trial.id

@@ -6,7 +6,7 @@ import { busyActive, withBusy } from '../../stores/busy'
 import { announceRestart, restartSuffix, showToast } from '../../stores/toast'
 
 const status = ref<AdaptiveStatus | null>(null)
-const modeLabel = computed(() => ({ OFF: 'Выключен', OBSERVE: 'Наблюдение', TEST_ONLY: 'Пробные проверки', AGENT_BETA: 'Динамический подбор (Beta)' }[status.value?.mode || 'OFF']))
+const modeLabel = computed(() => ({ OFF: 'Выключен', OBSERVE: 'Наблюдение', TEST_ONLY: 'Пробные проверки', AUTO: 'Роутерная авторотация · низкая достоверность', AGENT_BETA: 'Динамический подбор (Beta)' }[status.value?.mode || 'OFF']))
 const browserBetaAvailable = computed(() => Boolean(status.value?.paired || (status.value?.browser?.paired_clients || 0) > 0))
 const pairingDaysRemaining = computed(() => {
   const expires = status.value?.pairing_expires_at
@@ -28,6 +28,9 @@ function isFresh(event: { observed_at: number }) {
 }
 
 function eventLabel(status: string) {
+  const routerTrial = status.match(/^router_trial_(\d+)$/)
+  if (routerTrial) return `роутерная проба стратегии ${routerTrial[1]} · низкая достоверность`
+  if (status === 'router_exhausted') return 'каталог стратегий исчерпан · возврат к исходной стратегии'
   if (status === 'suspected_failure') return 'повторные признаки сбоя · нужна проверка'
   if (status === 'active_rule_degraded') return 'применяемое авто-правило могло ухудшиться · нужна проверка'
   if (status === 'needs_verify') return 'запрошена проверка'
@@ -78,6 +81,7 @@ function probeReason(reason: string) {
 }
 
 async function act(action: string, rule?: { hostname: string; destination_ip: string; profile_id: number; protocol: 'tls' | 'googlevideo-tcp' | 'quic'; scope: string }) {
+  if (action === 'router-auto' && !window.confirm('Включить роутерную авторотацию без расширения и Windows-агента? После двух независимых transport-сбоев новых соединений Zator временно попробует следующую стратегию; это низкодостоверный сигнал, активные проверки и q65535 не запускаются.')) return
   if (action === 'disable' && !window.confirm('Отключить adaptive agent, отменить пробы и удалить его правила?')) return
   if (action === 'beta-lan' && !window.confirm('Разрешить проверенным точным adaptive-правилам действовать для всего LAN (scope default), включая устройства без отдельной маркировки?')) return
   if (action === 'ramp-pool-on' && !window.confirm('Включить Ramp-first для настроенного Googlevideo IPv4-пула? Это глобальное изменение для новых TCP-соединений Googlevideo, использует текущие параметры Ramp и помечается как manual_unverified. Beta должна быть включена для всего LAN.')) return
@@ -87,7 +91,7 @@ async function act(action: string, rule?: { hostname: string; destination_ip: st
     await withBusy(`adaptive-${action}`, async () => {
       const result = await adaptiveAction(action, rule)
       if (result.restarted) announceRestart()
-      const message = action === 'test-only' ? 'Пробный режим включён.' : action === 'beta' ? 'Beta включена: применяются только правила с точной client scope.' : action === 'beta-lan' ? 'Beta включена с явным разрешением на применение к LAN.' : action === 'request-probe'
+      const message = action === 'test-only' ? 'Пробный режим включён.' : action === 'router-auto' ? 'Роутерная авторотация включена с низкой достоверностью.' : action === 'beta' ? 'Beta включена: применяются только правила с точной client scope.' : action === 'beta-lan' ? 'Beta включена с явным разрешением на применение к LAN.' : action === 'request-probe'
         ? 'Проверка поставлена в очередь. Windows watcher должен быть запущен.'
         : action === 'ramp-pool-on' ? 'Ramp-first согласие сохранено.'
         : action === 'ramp-pool-off' ? 'Ramp-first согласие отозвано.'
@@ -177,8 +181,8 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
     <ul v-if="status?.events.length" class="adaptive-events" aria-label="Очередь адаптивных наблюдений">
       <li v-for="event in status.events" :key="`${event.hostname}|${event.destination_ip}|${event.profile_id}|${event.scope}`">
         <code>{{ event.hostname }}</code> → <code>{{ event.destination_ip }}</code>
-        <span>{{ eventLabel(event.status) }} · TCP/TLS · профиль {{ event.profile_id }} · {{ event.scope }} · {{ eventTime(event.observed_at) }}</span>
-        <button class="ghost" :disabled="busyActive || !['TEST_ONLY', 'AGENT_BETA'].includes(status.mode) || !isFresh(event)" @click="act('request-probe', event)">Проверить</button>
+        <span>{{ eventLabel(event.status) }} · {{ event.protocol === 'quic' ? 'QUIC' : 'TCP/TLS' }} · профиль {{ event.profile_id }} · {{ event.scope }} · {{ eventTime(event.observed_at) }}</span>
+        <button v-if="event.protocol === 'tls'" class="ghost" :disabled="busyActive || !['TEST_ONLY', 'AGENT_BETA'].includes(status.mode) || !isFresh(event)" @click="act('request-probe', event)">Проверить</button>
       </li>
     </ul>
     <p v-else-if="status" class="form-hint">Очередь событий пуста.</p>
@@ -193,10 +197,12 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
     </ul>
       <p v-if="status?.mode === 'AGENT_BETA' && !status.default_scope_apply" class="form-hint">Новые browser trials остаются в маркированном scope. Подтверждённая доменная стратегия также применяется клиентам без отдельного scope; их manual lock и policy выше неё.</p>
       <p v-else-if="status?.mode === 'AGENT_BETA'" class="settings-alert">Beta может применять проверенные точные правила ко всему LAN. Для браузерной авторотации Windows watcher не нужен; он используется только для отдельных тестовых проверок.</p>
+      <p v-else-if="status?.mode === 'AUTO'" class="settings-alert">Роутерная авторотация действует на новые соединения по текущим сигналам; исход остаётся низкодостоверным и не считается подтверждённым browser success.</p>
       <p v-else class="form-hint">Стратегия автоматически не применяется. Windows watcher нужен только для изолированных проверок в TEST_ONLY.</p>
     <div class="card-actions">
       <button class="ghost" :disabled="busyActive || !status?.paired" @click="act('observe')">Наблюдение</button>
       <button class="primary" :disabled="busyActive || !status?.paired" @click="act('test-only')">TEST_ONLY</button>
+      <button v-if="status?.mode !== 'AUTO'" class="danger" :disabled="busyActive" @click="act('router-auto')">Роутерная авторотация · без расширения</button>
       <button class="primary" :disabled="busyActive || !browserBetaAvailable" @click="act('beta')">Включить Beta · marked scope</button>
       <button class="danger" :disabled="busyActive || !browserBetaAvailable" @click="act('beta-lan')">Включить Beta · весь LAN</button>
       <button class="ghost" :disabled="busyActive" @click="act('pause')">Пауза</button>

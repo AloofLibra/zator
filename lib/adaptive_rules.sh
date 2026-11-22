@@ -280,6 +280,27 @@ adaptive_rules_invalidate() {
     rmdir "$lock" 2>/dev/null || :; return 1;
   }
   rmdir "$lock" || return 1
+  adaptive_router_trials_reset || return 1
+}
+
+adaptive_router_trials_reset() {
+  local events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
+  local dir tmp owner mode
+  [ -e "$events" ] || return 0
+  [ -f "$events" ] && [ ! -L "$events" ] && [ -r "$events" ] || return 1
+  (( $(wc -c < "$events") <= 65536 )) || return 1
+  dir="$(dirname "$events")"
+  owner="$(stat -c '%u:%g' "$events" 2>/dev/null)"
+  mode="$(stat -c '%a' "$events" 2>/dev/null)"
+  [[ "$owner" =~ ^[0-9]+:[0-9]+$ && "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  tmp="$(mktemp "$dir/.events-reset.XXXXXX")" || return 1
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    NR<=128 && NF==8 && $1==1 && ($2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") { $2="seen" }
+    { print }
+  ' "$events" > "$tmp" || { rm -f "$tmp"; return 1; }
+  chown "$owner" "$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$events" || {
+    rm -f "$tmp"; return 1;
+  }
 }
 
 adaptive_rules_runtime_reset() {
@@ -292,6 +313,7 @@ adaptive_rules_runtime_reset() {
   done
   rm -f "$file" || { rmdir "$lock" 2>/dev/null || :; return 1; }
   rmdir "$lock" || return 1
+  adaptive_router_trials_reset || return 1
 }
 
 adaptive_rules_snapshot() {

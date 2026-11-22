@@ -63,20 +63,20 @@ def run_selection(enabled, lock_rows=(), strategy=7, ip="93.184.216.34", repeat=
       locked_load_adaptive_lines_for_tests({{rule_line({strategy})}}, os.time(), {json.dumps(process_stamp)})
       assert(locked_adaptive_strategy_for_tuple({json.dumps(hostname)}, "93.184.216.34", {json.dumps(profile)}, {json.dumps(rule_proto)}, "default") == {expected_lookup}, "runtime stamp validation failed")
       local state = {{lua_state = {{}}}}
-      local function invoke(destination, port)
+      local function invoke(destination, port, flow_state)
         local plan = {{}}
         for i = 1, 8 do plan[i] = {{arg = {{strategy = i}}}} end
         local desync = {{
           profile = {json.dumps(profile)}, hostname = {json.dumps(hostname)}, dis = {{destination = destination, ip = {{}}, tcp = {{th_dport = port or 443}}}},
-          track = state, arg = {{}}, plan = plan
+          track = flow_state or {{lua_state = {{}}}}, arg = {{}}, plan = plan
         }}
         assert(circular_locked({{}}, desync) == VERDICT_PASS)
         local selected = executed[1]
         executed = {{}}
         return selected
       end
-      selected_first = invoke({json.dumps(ip)})
-      {'local_cached = nil' if not repeat else f'locked_load_adaptive_lines_for_tests({{rule_line({strategy + 1})}}, os.time(), {json.dumps(process_stamp)}); local_cached = invoke({json.dumps(ip)});'}
+      selected_first = invoke({json.dumps(ip)}, nil, {'state' if repeat else 'nil'})
+      {'local_cached = nil' if not repeat else f'locked_load_adaptive_lines_for_tests({{rule_line({strategy + 1})}}, os.time(), {json.dumps(process_stamp)}); local_cached = invoke({json.dumps(ip)}, nil, state);'}
       selected_cached = local_cached
       selected_other_ip = invoke("93.184.216.35")
       selected_other_port = invoke("93.184.216.34", 8443)

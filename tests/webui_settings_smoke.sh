@@ -243,6 +243,7 @@ grep -Fxq 'restart' "$ADAPTIVE_RESTART_LOG" || fail 'adaptive mode change did no
 # pairing. The separate Windows-agent token must not be required.
 rm -f "$TMP_DIR/runtime/extra_strats/cache/adaptive/token" "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
 cp "$REPO_DIR/tools/adaptive-pair.sh" "$TMP_DIR/runtime/tools/adaptive-pair.sh"
+cp "$REPO_DIR/tools/adaptive-ramp-proof.sh" "$TMP_DIR/runtime/tools/adaptive-ramp-proof.sh"
 cp "$REPO_DIR/lib/config.sh" "$TMP_DIR/runtime/z2r_lib/config.sh"
 cp "$REPO_DIR/lib/adaptive_lan_transport.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_lan_transport.sh"
 cp "$REPO_DIR/lib/adaptive_queue.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_queue.sh"
@@ -265,6 +266,27 @@ grep -Fq 'Status: 200 OK' <<< "$browser_beta_action" || fail 'WebUI could not en
 grep -Fq '"action":"beta"' <<< "$browser_beta_action" || fail 'browser-only WebUI response omitted the Beta action'
 [[ "$(cat "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode")" = AGENT_BETA ]] || fail 'browser-only WebUI action did not persist Beta mode'
 grep -Fq 'Windows agent is optional' <<< "$browser_beta_action" || fail 'browser-only WebUI action response implied an agent requirement'
+# Router AUTO can be enabled with neither Windows-agent pairing nor browser pairing.
+rm -f "$TMP_DIR/runtime/extra_strats/cache/adaptive/browser-clients.tsv"
+router_auto_body='setting=adaptive_action&action=router-auto'
+router_auto_action="$(printf '%s' "$router_auto_body" | env ZATOR_ROOT="$TMP_DIR/runtime" ZAPRET2_ROOT="$TMP_DIR/zapret2" \
+  Z2R_ADAPTIVE_DIR="$TMP_DIR/router-auto-runtime" PATH="$TMP_DIR/bin:$PATH" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded \
+  CONTENT_LENGTH="${#router_auto_body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=192.168.1.7 \
+  ADAPTIVE_ACTION_LOG="$TMP_DIR/router-auto-actions.log" ADAPTIVE_RESTART_LOG="$TMP_DIR/router-auto-restarts.log" \
+  bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq 'Status: 200 OK' <<< "$router_auto_action" || fail 'WebUI router AUTO required a browser or Windows-agent pairing'
+grep -Fq '"action":"router-auto"' <<< "$router_auto_action" || fail 'router AUTO response omitted its action'
+[[ "$(cat "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode")" = AUTO ]] || fail 'WebUI router AUTO did not persist AUTO mode'
+router_auto_status="$(ZATOR_ROOT="$TMP_DIR/runtime" ZAPRET2_ROOT="$TMP_DIR/zapret2" Z2R_ADAPTIVE_DIR="$TMP_DIR/router-auto-runtime" \
+  REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"mode":"AUTO","default_scope_apply":true' <<< "$router_auto_status" || fail 'router AUTO status did not report default-scope application'
+grep -Fq '"automatic_apply":true' <<< "$router_auto_status" || fail 'router AUTO status did not report its active fallback mode'
+printf '1\trouter_trial_2\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n' "$(date +%s)" >> "$TMP_DIR/router-auto-runtime/events.tsv"
+printf '1\trouter_trial_3\trr1.googlevideo.com\t94.0.3.5\t5\tquic\tdefault\t%s\n' "$(date +%s)" >> "$TMP_DIR/router-auto-runtime/events.tsv"
+router_auto_trial_status="$(ZATOR_ROOT="$TMP_DIR/runtime" ZAPRET2_ROOT="$TMP_DIR/zapret2" Z2R_ADAPTIVE_DIR="$TMP_DIR/router-auto-runtime" \
+  REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+grep -Fq '"status":"router_trial_2","hostname":"cdn.example.org"' <<< "$router_auto_trial_status" || fail 'router AUTO trial state was omitted from WebUI status'
+grep -Fq '"status":"router_trial_3","hostname":"rr1.googlevideo.com"' <<< "$router_auto_trial_status" || fail 'QUIC router AUTO trial state was omitted from WebUI status'
 printf 'paired-token\n' > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token"
 printf '%s\n' "$pairing_expiry" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
 cat > "$TMP_DIR/runtime/tools/adaptive-pair.sh" <<'ADAPTIVE_CLI'

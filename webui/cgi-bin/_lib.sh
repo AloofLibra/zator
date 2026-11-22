@@ -137,10 +137,13 @@ api_adaptive_get() {
   local requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$base/requests.tsv}"
   local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' quic_health_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state browser_status_json='{"paired_clients":0,"connected_clients":0,"active_attempts":[]}'
   mode="$(cat "$mode_file" 2>/dev/null || printf OFF)"
-  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) ;; *) mode=OFF ;; esac
+  case "$mode" in OBSERVE|TEST_ONLY|AUTO|AGENT_BETA) ;; *) mode=OFF ;; esac
   if [ "$mode" = AGENT_BETA ]; then
     automatic_apply=true
     [ "$(cat "$default_scope_file" 2>/dev/null || true)" != 1 ] || default_scope_apply=true
+  elif [ "$mode" = AUTO ]; then
+    automatic_apply=true
+    default_scope_apply=true
   fi
   if [ -d "${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}" ]; then
     ramp_exemptions_supported=false
@@ -192,9 +195,10 @@ api_adaptive_get() {
   if [ -r "$events_file" ] && [ ! -L "$events_file" ]; then
     event_data="$(awk -F '\t' '
       BEGIN { printf "[" }
-      NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded") &&
+      NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") &&
         length($3)<=253 && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ &&
-        $5 ~ /^[1-4]$/ && $6=="tls" && ($7=="default" || ($7 ~ /^mark:[1-9][0-9]*$/ && length($7)<=10 && substr($7,6)+0<=65535)) &&
+        (( $5 ~ /^[1-4]$/ && $6=="tls" ) || ( $5==5 && $6=="quic" && ($3 ~ /\.googlevideo\.com$/ || $3 ~ /\.youtube\.com$/ || $3 ~ /\.youtubei\.googleapis\.com$/) )) &&
+        ($7=="default" || ($7 ~ /^mark:[1-9][0-9]*$/ && length($7)<=10 && substr($7,6)+0<=65535)) &&
         $8 ~ /^[0-9]+$/ {
           split($4,o,"."); valid=($4 ~ /^[0-9.]+$/ && length($4)<=15 && o[1]<=255 && o[2]<=255 && o[3]<=255 && o[4]<=255 &&
             o[1]>0 && o[1]!=10 && o[1]!=127 && o[1]<224 && !(o[1]==100 && o[2]>=64 && o[2]<=127) &&
@@ -354,7 +358,7 @@ api_adaptive_action() {
     adaptive_rule_remove "$host" "$ip" "$profile" "$scope" "$proto" || send_error '404 Not Found' 'Adaptive-правило уже удалено или недоступно'
     send_json '200 OK' '{"ok":true,"action":"reset-rule","restarted":false,"message":"Правило удалено"}'
   fi
-  case "$action" in observe|test-only|beta|beta-lan|ramp-pool-on|ramp-pool-off|pause|clear-events|disable) ;; *) send_error '400 Bad Request' 'Некорректное действие adaptive rotation' ;; esac
+  case "$action" in observe|test-only|router-auto|beta|beta-lan|ramp-pool-on|ramp-pool-off|pause|clear-events|disable) ;; *) send_error '400 Bad Request' 'Некорректное действие adaptive rotation' ;; esac
   local origin="${HTTP_ORIGIN:-}" host="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}"
   [[ -n "$host" && ( "$origin" = "http://$host" || "$origin" = "https://$host" ) ]] || \
     send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'

@@ -103,7 +103,7 @@ export interface AdaptiveStatus {
     success_after_apply: number
     cooldown_targets: number
   } | null
-  mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY' | 'AGENT_BETA'
+  mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY' | 'AUTO' | 'AGENT_BETA'
   default_scope_apply: boolean
   browser?: {
     paired_clients: number
@@ -136,11 +136,12 @@ export interface AdaptiveStatus {
     pending_requests: number
   events: Array<{
     status: 'seen' | 'needs_verify' | 'suspected_failure' | 'active_rule_degraded'
+      | 'router_exhausted' | `router_trial_${number}`
       request_id?: string
     hostname: string
     destination_ip: string
     profile_id: number
-    protocol: 'tls'
+    protocol: 'tls' | 'quic'
     scope: string
     observed_at: number
   }>

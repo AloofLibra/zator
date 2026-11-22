@@ -70,6 +70,10 @@
 | Browser-flow stats, WebUI, package | `present`, `tested`; live browser upload `not verified` | Отдельный `browser_flow` schema и mock tests; Chrome extension пока не установлено, token/upload не выполнялись |
 | Chrome install, Local Network Access, MV3 live restart | `blocked` | Chrome native folder picker не принимает управление Computer Use; разрешение пользователя на установку дано, но расширение не загружено |
 
+### 0.1.2. C8 implementation update (2026-11-22)
+
+Software implementation for C8 is now present in the branch: pairing-free router AUTO, bounded lower-confidence router-side strategy rotation, browser-confirmed shared default-scope baseline, and passive QHM. `bash tests/run.sh quick` passes **48/48 in 224s** on this implementation; focused runtime/state/WebUI tests and WebUI typecheck/build also pass. This closes the software portion of C8, not the release acceptance: Chrome extension installation, production q300/browser correlation, hardware recovery/reboot and platform/load gates remain open. The branch remains **NO-GO for beta release** until those gates are separately accepted.
+
 Повторный `bash tests/run.sh quick` на `4f6fac5` прошёл **48/48 за 206 s**. Browser pairing CLI регрессия проверяет создание и ротацию токена, отказ старого токена, индивидуальный revoke и revoke-all; browser API regression проверяет cancel/expiry cleanup. Тесты доказывают перечисленные программные контракты, но не меняют hardware/live статусы.
 
 ### 0.2. РЕАЛИЗОВАНО ЧАСТИЧНО / ЕЩЁ НЕ ГОТОВО
@@ -509,11 +513,11 @@ CANCEL / CLIENT_OFFLINE / TAB_CLOSED / MODE_OFF / POLICY_CHANGED
 
 ### PR-C8 — автономная роутерная авторотация и пассивный QUIC Health Monitor (P0)
 
-- [ ] Сохранить прежний router-side autorotation как рабочий режим при отсутствии/отключении расширения; не ставить browser pairing или browser result в условие старта/продолжения цикла. Отметить router-only результат более низким confidence и отдельным provenance.
-- [ ] Уточнить state machine и WebUI: router-only сигнал может продолжать обычный ограниченный подбор, а browser feedback усиливает/уточняет оценку; `UNKNOWN` browser outcome не отключает router loop и не подменяет router evidence.
-- [ ] После browser-confirmed результата применять стратегию для того же домена к LAN-клиентам без отдельного client scope. Не смешивать браузерное подтверждение клиента A с подтверждением исхода для клиента B; per-client scope, manual lock и policy B имеют приоритет. Точное правило host/IP/profile/transport применимости и invalidation при смене каталога/IP задокументировать и покрыть тестами.
-- [ ] Добавить bounded passive QUIC Health Monitor на production-path: наблюдать Initial, признаки ответного трафика/прогресса, повторные попытки и возможный TCP fallback; хранить минимум данных с TTL/лимитами. Не запускать curl, q65535/isolated queue, активные запросы, sweep или тяжёлый capture. Любая неоднозначная корреляция — `UNKNOWN`, никакой ложной QUIC SUCCESS.
-- [ ] Добавить регрессии для авторотации без расширения, отключения/потери pairing во время цикла, пониженного confidence, межклиентского применения подтверждённой стратегии, приоритетов scope/manual/policy, смены IP/каталога и QHM Initial/response/retry/fallback/unknown; проверить старые режимы и упаковку.
+- [x] Сохранить прежний router-side autorotation как рабочий режим при отсутствии/отключении расширения; не ставить browser pairing или browser result в условие старта/продолжения цикла. Router AUTO помечен как низкодостоверный; он не записывает browser-confirmed success.
+- [x] Уточнить state machine и WebUI: router-only сигнал продолжает ограниченный подбор после двух независимых production transport failures на точном tuple; browser feedback остаётся более сильным отдельным источником, а `UNKNOWN` не подменяет router evidence. HTTP/application, client-abort и неоднозначный upstream redirect сигнал не запускают router AUTO.
+- [x] После browser-confirmed результата применять стратегию для того же домена к LAN-клиентам без отдельного client scope. Отдельные scopes/manual locks сохраняют приоритет; shared baseline использует точный host/IP/profile/transport ключ и очищается при catalog/config invalidation. Пер-client исходы остаются раздельными.
+- [x] Добавить bounded passive QUIC Health Monitor на production-path: Initial, ответный UDP/443 трафик, повторы и возможный TCP fallback; максимум 64 записи и TTL 30 минут. Не запускает curl, q65535/isolated queue, активные запросы, sweep или capture. Эти показатели не являются QUIC success.
+- [x] Добавить программные регрессии для router AUTO без pairing, candidate/exhaustion/cooldown и игнорирования app/ambiguous failure, межклиентского baseline и приоритета manual scope, exact tuple/catalog reset, а также QHM Initial/response/retry/fallback/лимита. Аппаратная матрица и browser E2E остаются отдельными незакрытыми gates.
 
 **Приёмка:** удаление/отключение расширения не ломает прежний router-only цикл; браузер повышает качество доказательств, но не становится LAN-wide обязательной зависимостью. Подтверждённая доменная стратегия применяется клиентам без отдельного scope с сохранением их ручных ограничений. QHM работает только на пассивных bounded production signals и никогда не запускает тяжёлые проверки.
 

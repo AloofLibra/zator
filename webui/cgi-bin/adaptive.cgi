@@ -158,14 +158,14 @@ json_events() {
   if [[ -r "$file" && ! -L "$file" ]]; then
   while IFS=$'\t' read -r ver status host ip profile proto scope seen || [[ -n "$ver$status$host$ip$profile$proto$scope$seen" ]]; do
     (( count < event_limit )) || break
-    [[ "$ver" = 1 && ( "$status" = seen || "$status" = needs_verify || "$status" = suspected_failure || "$status" = active_rule_degraded ) &&
+    [[ "$ver" = 1 && ( "$status" = seen || "$status" = needs_verify || "$status" = suspected_failure || "$status" = active_rule_degraded || "$status" =~ ^router_trial_[1-9][0-9]?[0-9]?$ || "$status" = router_exhausted ) &&
        "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 &&
        "$profile" =~ ^[1-4]$ && "$proto" = tls &&
        ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,10}$ ) && "$seen" =~ ^[0-9]{1,10}$ ]] || continue
     _adaptive_lan_public_ipv4_valid "$ip" || continue
     (( seen <= now + 60 && seen >= now - 604800 )) || continue
       key="$host|$ip|$profile|$scope"
-      [[ ( "$status" != seen && "$status" != suspected_failure && "$status" != active_rule_degraded ) || ! ${processed[$key]+present} ]] || continue
+      [[ ( "$status" != seen && "$status" != suspected_failure && "$status" != active_rule_degraded && "$status" != router_exhausted && ! "$status" =~ ^router_trial_ ) || ! ${processed[$key]+present} ]] || continue
     (( first )) || printf ','
     first=0
     printf '{"status":"%s","hostname":"%s","destination_ip":"%s","profile_id":%s,"protocol":"%s","scope":"%s","observed_at":%s}' \

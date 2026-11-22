@@ -28,13 +28,13 @@ if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transpor
 fi
 Z2R_ADAPTIVE_LOCK_DIR="${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}"
 action="${1:-create}"
-case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-proof-on|ramp-pool-off|pause|events|quic-health|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-off|pause|events|quic-health|clear-events]' >&2; exit 2 ;; esac
+case "$action" in status|doctor|create|rotate|disable|observe|test-only|router-auto|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-proof-on|ramp-pool-off|pause|events|quic-health|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|router-auto|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-off|pause|events|quic-health|clear-events]' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root on the router.' >&2; exit 1; }
 [ ! -L "$TOKEN_DIR" ] || { echo 'Refusing a symlinked adaptive token directory.' >&2; exit 1; }
 adaptive_mode() {
   local mode
   mode="$(cat "$MODE_FILE" 2>/dev/null || printf 'OFF')"
-  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) printf '%s\n' "$mode" ;; *) printf 'OFF\n' ;; esac
+  case "$mode" in OBSERVE|TEST_ONLY|AUTO|AGENT_BETA) printf '%s\n' "$mode" ;; *) printf 'OFF\n' ;; esac
 }
 adaptive_set_mode() {
   local mode="$1" tmp
@@ -360,7 +360,9 @@ if [ "$action" = status ]; then
     echo 'Adaptive agent pairing: disabled'
   fi
   printf 'Adaptive mode: %s\n' "$(adaptive_mode)"
-  if [ "$(adaptive_mode)" = AGENT_BETA ]; then
+  if [ "$(adaptive_mode)" = AUTO ]; then
+    echo 'Automatic strategy application: router-only, default scope, low-confidence production feedback'
+  elif [ "$(adaptive_mode)" = AGENT_BETA ]; then
     if [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ]; then echo 'Beta application: exact rules including default/LAN scope'
     else echo 'Beta application: exact marked-client scopes only; default/LAN scope disabled'; fi
   else echo 'Automatic strategy application: disabled'; fi
@@ -401,7 +403,7 @@ if [ "$action" = status ]; then
   ' "$rules_file")"
   printf 'Stored exact rules: %s\n' "$rules"
   event_count=0
-  [ ! -r "$EVENTS_FILE" ] || event_count="$(awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded") {n++} END {print n+0}' "$EVENTS_FILE")"
+  [ ! -r "$EVENTS_FILE" ] || event_count="$(awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") {n++} END {print n+0}' "$EVENTS_FILE")"
   printf 'Observation events: %s\n' "$event_count"
   ramp_target_count=0
   [ ! -r "$RAMP_TARGETS_FILE" ] || ramp_target_count="$(awk -F '\t' 'NR<=128 && NF==10 && $1==1 && $6=="tls-observed" {n++} END {print n+0}' "$RAMP_TARGETS_FILE")"
@@ -426,7 +428,7 @@ if [ "$action" = doctor ]; then
   elif [ -s "$TOKEN_FILE" ] && [ ! -L "$TOKEN_FILE" ]; then token_state=EXPIRED_OR_INVALID; fi
   doctor_check 'paired agent token' "$token_state"
   mode="$(adaptive_mode)"
-  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) doctor_check 'runtime mode' "$mode" 0 ;; *) doctor_check 'runtime mode' OFF 0 ;; esac
+  case "$mode" in OBSERVE|TEST_ONLY|AUTO|AGENT_BETA) doctor_check 'runtime mode' "$mode" 0 ;; *) doctor_check 'runtime mode' OFF 0 ;; esac
   fwtype="$(awk -F= '$1=="FWTYPE" {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$config" 2>/dev/null)"
   case "$fwtype" in
     nft|nftables) backend=nft; command -v nft >/dev/null 2>&1 && backend_state=OK || backend_state=MISSING ;;
@@ -443,7 +445,8 @@ if [ "$action" = doctor ]; then
       *) doctor_check 'test NFQUEUE 65535' "$queue_state" ;;
     esac
   else doctor_check 'test NFQUEUE 65535' UNAVAILABLE; fi
-  echo 'AUTO mode: unavailable; pending Windows agent/API end-to-end, firewall rebuild/crash recovery, alternate route/offload, and load/resource acceptance.'
+  echo 'Router AUTO uses passive production failures and configured profile candidates; it does not need browser pairing, a Windows agent, or NFQUEUE 65535.'
+  echo 'The doctor queue/controller checks above apply only to optional advanced isolated probes. Router AUTO remains a low-confidence fallback until platform/load acceptance.'
   echo 'This check is read-only; it does not install firewall rules or start a probe.'
   exit "$doctor_fail"
 fi
@@ -460,6 +463,13 @@ if [ "$action" = test-only ]; then
   adaptive_prepare_events || { echo 'Could not prepare private observation queue.' >&2; exit 1; }
   adaptive_set_mode TEST_ONLY || { echo 'Could not enable test-only mode.' >&2; exit 1; }
   echo 'TEST_ONLY enabled: restart zapret2 to load event observation; authenticated probes may run, automatic strategy application remains disabled.'
+  exit 0
+fi
+if [ "$action" = router-auto ]; then
+  adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; router AUTO was not changed.' >&2; exit 1; }
+  adaptive_prepare_events || { echo 'Could not prepare private router observation files.' >&2; exit 1; }
+  adaptive_set_mode AUTO || { echo 'Could not enable router AUTO.' >&2; exit 1; }
+  echo 'Router AUTO enabled without browser/agent pairing. Two independent production transport failures advance the exact host/IP/profile/scope to the next configured strategy; outcome confidence remains low and no isolated probe runs. Restart zapret2 to activate.'
   exit 0
 fi
 if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
@@ -512,7 +522,7 @@ if [ "$action" = pause ]; then
 fi
 if [ "$action" = events ]; then
   if [ -r "$EVENTS_FILE" ]; then
-    awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded") && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && $4 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $5 ~ /^[1-4]$/ && $6=="tls" && ($7=="default" || $7 ~ /^mark:[0-9]+$/) && $8 ~ /^[0-9]+$/ {print $2 "\t" $3 "\t" $4 "\tprofile=" $5 "\t" $8}' "$EVENTS_FILE"
+    awk -F '\t' 'NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && $4 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $5 ~ /^[1-4]$/ && $6=="tls" && ($7=="default" || $7 ~ /^mark:[0-9]+$/) && $8 ~ /^[0-9]+$/ {print $2 "\t" $3 "\t" $4 "\tprofile=" $5 "\t" $8}' "$EVENTS_FILE"
   fi
   exit 0
 fi

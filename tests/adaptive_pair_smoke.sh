@@ -71,7 +71,7 @@ expiry="$(cat "$tmp/zator/extra_strats/cache/adaptive/token.expires")"
 doctor="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" \
   Z2R_ADAPTIVE_QUEUE_FILE="$tmp/queue" bash "$tmp/zator/tools/adaptive-pair.sh" doctor)"
 [[ "$doctor" == *'zapret2 config'*' OK'* && "$doctor" == *'adaptive controller'*' OK'* &&
-   "$doctor" == *'test NFQUEUE 65535'*' OK'* && "$doctor" == *'AUTO mode: unavailable'* ]] || {
+   "$doctor" == *'test NFQUEUE 65535'*' OK'* && "$doctor" == *'Router AUTO uses passive production failures'* ]] || {
   echo "doctor omitted local checks or overstated AUTO readiness: $doctor" >&2; exit 1;
 }
 printf '65535 4321 0 0 0 0 0 0\n' > "$tmp/queue"
@@ -80,6 +80,23 @@ if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" \
   echo 'doctor reported a busy probe queue as ready' >&2; exit 1
 fi
 printf 'complete\n' > "$tmp/runs/0123456789abcdef0123456789abcdef/state"
+cp "$tmp/zator/extra_strats/cache/adaptive/token" "$tmp/token.saved"
+cp "$tmp/zator/extra_strats/cache/adaptive/token.expires" "$tmp/token-expiry.saved"
+rm -f "$tmp/zator/extra_strats/cache/adaptive/token" "$tmp/zator/extra_strats/cache/adaptive/token.expires"
+router_auto="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" router-auto)"
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AUTO &&
+   "$router_auto" == *'without browser/agent pairing'* && "$router_auto" == *'no isolated probe runs'* &&
+   "$(stat -c '%a' "$tmp/runs/events.tsv")" = 600 && "$(stat -c '%a' "$tmp/runs/quic-health.tsv")" = 600 ]] || {
+  echo 'router AUTO incorrectly required pairing or did not prepare private passive state' >&2; exit 1;
+}
+auto_status="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" status)"
+[[ "$auto_status" == *'Adaptive agent pairing: disabled'* && "$auto_status" == *'router-only, default scope, low-confidence production feedback'* ]] || {
+  echo 'router AUTO status hid its no-pairing/low-confidence state' >&2; exit 1;
+}
+mv "$tmp/token.saved" "$tmp/zator/extra_strats/cache/adaptive/token"
+mv "$tmp/token-expiry.saved" "$tmp/zator/extra_strats/cache/adaptive/token.expires"
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" test-only >/dev/null
 [[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = TEST_ONLY ]] || { echo 'test-only mode was not persisted' >&2; exit 1; }
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null

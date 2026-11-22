@@ -159,6 +159,83 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-suspected-") as tmp:
     assert len(tuple_rows) == 1 and len(stored_rows) == 2, \
         f"suspected failure must update its tuple row without duplication: {stored_rows!r}"
 
+with tempfile.TemporaryDirectory(prefix="zator-adaptive-router-auto-") as tmp:
+    lua, events, _ = runtime(Path(tmp), "AUTO")
+    def router_status():
+        return next(row.split("\t")[1] for row in events.read_text().splitlines()
+                    if row.split("\t")[2] == "router-auto.example.org")
+    lua.execute("""
+      locked_load_lines_for_tests({})
+      local function flow()
+        local desync = {outgoing=true, profile="1", hostname="router-auto.example.org", arg={proto="tls"},
+          dis={destination="93.184.216.44", ip={}, tcp={th_dport=443}}, track={lua_state={}},
+          plan={{arg={strategy=1}}, {arg={strategy=2}}, {arg={strategy=3}}}}
+        circular_locked({}, desync)
+        return desync
+      end
+      function auto_fail()
+        local desync = flow()
+        z2r_adaptive_suspected_failure(desync, {})
+        return desync.track.lua_state.adaptive_observe_context.selected_strategy
+      end
+      function auto_application_failure()
+        local desync = flow()
+        z2r_adaptive_suspected_failure(desync, {}, "application")
+        return desync.track.lua_state.adaptive_observe_context.selected_strategy
+      end
+      function auto_ambiguous_failure()
+        local desync = flow()
+        z2r_adaptive_suspected_failure(desync, {}, "ambiguous")
+        return desync.track.lua_state.adaptive_observe_context.selected_strategy
+      end
+    """)
+    assert lua.globals().auto_application_failure() == 1 and lua.globals().auto_application_failure() == 1 \
+        and lua.globals().auto_ambiguous_failure() == 1 and router_status() == "seen", \
+        "router AUTO must ignore application failures and ambiguous upstream redirect signals"
+    assert lua.globals().auto_fail() == 1 and router_status() == "seen", \
+        "router AUTO must not rotate on only one failed production flow"
+    assert lua.globals().auto_fail() == 1 and router_status() == "router_trial_2", \
+        "router AUTO should start a low-confidence next-strategy trial after two independent failures"
+    assert lua.globals().auto_fail() == 2 and router_status() == "router_trial_2", \
+        "router AUTO should keep the current trial after one failure"
+    assert lua.globals().auto_fail() == 2 and router_status() == "router_trial_3", \
+        "router AUTO should advance only after two failures on the current candidate"
+    assert lua.globals().auto_fail() == 3 and router_status() == "router_trial_3", \
+        "router AUTO should test the next configured strategy in production"
+    assert lua.globals().auto_fail() == 3 and router_status() == "router_exhausted", \
+        "router AUTO should stop after the configured candidates fail"
+    assert lua.globals().auto_fail() == 1 and router_status() == "router_exhausted", \
+        "exhaustion should return to the configured first strategy without claiming success"
+
+with tempfile.TemporaryDirectory(prefix="zator-adaptive-router-auto-quic-") as tmp:
+    lua, events, _ = runtime(Path(tmp), "AUTO")
+    def quic_router_status():
+        return next(row.split("\t")[1] for row in events.read_text().splitlines()
+                    if row.split("\t")[2] == "rr1.googlevideo.com")
+    lua.execute("""
+      local function flow(track)
+        local desync = {outgoing=true, profile="5", hostname="rr1.googlevideo.com", l7payload="quic_initial",
+          arg={proto="udp"}, dis={destination="94.0.3.5", ip={}, udp={th_dport=443}}, track=track,
+          plan={{arg={strategy=1}}, {arg={strategy=2}}, {arg={strategy=3}}}}
+        circular_locked({}, desync)
+        return desync
+      end
+      function quic_retry(track)
+        local desync = flow(track)
+        flow(track)
+        return desync.track.lua_state.adaptive_observe_context.selected_strategy
+      end
+      function quic_auto_selected()
+        return flow({lua_state={}}).track.lua_state.adaptive_observe_context.selected_strategy
+      end
+    """)
+    assert lua.globals().quic_retry(lua.eval("{lua_state={}}")) == 1 and quic_router_status() == "seen", \
+        "one unanswered QUIC Initial retry must not rotate the profile"
+    quic_second_selected = lua.globals().quic_retry(lua.eval("{lua_state={}}"))
+    assert quic_second_selected == 1 and quic_router_status() == "router_trial_2", \
+        f"two independent unanswered QUIC Initial retries should start a low-confidence next-strategy trial: selected={quic_second_selected!r}, event={quic_router_status()!r}, health={(Path(tmp) / 'quic-health.tsv').read_text()!r}"
+    assert lua.globals().quic_auto_selected() == 2, "QUIC router AUTO did not apply the next production strategy"
+
 with tempfile.TemporaryDirectory(prefix="zator-adaptive-degraded-") as tmp:
     lua, events, _ = runtime(Path(tmp), "AGENT_BETA", default_scope=True)
     lua.execute("""
@@ -208,6 +285,24 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-shared-rule-") as tmp:
         "a marked client must not inherit the shared default-scope baseline"
     assert lua.globals().test_manual_skipped_shared is True, \
         "manual strategy lock must override browser-confirmed shared baseline"
+
+with tempfile.TemporaryDirectory(prefix="zator-adaptive-shared-auto-") as tmp:
+    lua, _, _ = runtime(Path(tmp), "AUTO")
+    lua.execute("""
+      locked_load_lines_for_tests({})
+      locked_load_adaptive_lines_for_tests({"1\\tcdn.example.org\\t93.184.216.34\\t1\\ttls\\tshared\\t9\\t" ..
+        "sha256:" .. string.rep("a", 64) .. "\\tsha256:" .. string.rep("b", 64) .. "\\t123:456\\t10000"}, 1000, "123:456")
+      local desync = {profile="1", hostname="cdn.example.org", arg={proto="tls"},
+        dis={destination="93.184.216.34", ip={}, tcp={th_dport=443}}, track={lua_state={}}, plan={}}
+      for i=1,10 do desync.plan[i] = {arg={strategy=i}} end
+      circular_locked({}, desync)
+      test_auto_shared_applied = desync.track.lua_state.adaptive_rule_strategy
+      test_auto_shared_selected = desync.track.lua_state.adaptive_observe_context.selected_strategy
+      test_auto_shared_low_conf = desync.track.lua_state.adaptive_observe_context.adaptive_rule_applied
+    """)
+    assert lua.globals().test_auto_shared_applied == 9 and lua.globals().test_auto_shared_selected == 9 \
+        and lua.globals().test_auto_shared_low_conf is True, \
+        "router AUTO without browser pairing must apply a browser-confirmed default-scope baseline"
 
 with tempfile.TemporaryDirectory(prefix="zator-quic-health-") as tmp:
     lua, _, _ = runtime(Path(tmp), "AGENT_BETA")

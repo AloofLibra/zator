@@ -4,6 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export Z2R_ADAPTIVE_RULES_FILE="$tmp/rules.tsv"
+export Z2R_ADAPTIVE_EVENTS_FILE="$tmp/events.tsv"
 export ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_SNAPSHOT_DELAY=1 Z2R_ADAPTIVE_SNAPSHOT_INTERVAL=0
 mkdir -p "$tmp/zapret2"
 printf 'WS_USER=%s\n' "$(id -un)" > "$tmp/zapret2/config"
@@ -199,7 +200,12 @@ ZAPRET2_INIT="$tmp/init" z2r_service_action restart
 [[ ! -e "$Z2R_ADAPTIVE_RULES_FILE" && -s "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] || { echo 'service restart did not retain the stamp-checked snapshot' >&2; exit 1; }
 adaptive_rules_runtime_reset
 adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$cat" "$stamp" "$((now + 3600))"
+printf '1\trouter_trial_2\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n1\trouter_exhausted\tother.example.org\t93.184.216.35\t1\ttls\tdefault\t%s\n' "$now" "$now" > "$Z2R_ADAPTIVE_EVENTS_FILE"
+chmod 600 "$Z2R_ADAPTIVE_EVENTS_FILE"
 printf 'TEST_VALUE=before\n' > "$tmp/config"
 config_set_var "$tmp/config" TEST_VALUE after
 [[ ! -e "$Z2R_ADAPTIVE_RULES_FILE" && ! -e "$ZATOR_ROOT/extra_strats/cache/adaptive/rules.tsv" ]] || { echo 'config_set_var left stale adaptive rules' >&2; exit 1; }
+[[ "$(cut -f2 "$Z2R_ADAPTIVE_EVENTS_FILE" | tr '\n' ' ')" = 'seen seen ' && "$(stat -c '%a' "$Z2R_ADAPTIVE_EVENTS_FILE")" = 600 ]] || {
+  echo 'config invalidation did not clear router AUTO trials while preserving private event state' >&2; exit 1;
+}
 echo 'adaptive rule store smoke: ok'

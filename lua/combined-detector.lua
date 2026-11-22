@@ -692,28 +692,30 @@ function combined_failure_detector(desync, crec)
     -- First, call standard failure detector for RST/retrans/redirect
     if standard_failure_detector(desync, crec) then
         if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
-            z2r_adaptive_suspected_failure(desync, crec)
+            -- Upstream's standard detector also treats redirects as failures;
+            -- router AUTO must not confuse an HTTP response with transport loss.
+            z2r_adaptive_suspected_failure(desync, crec, "ambiguous")
         end
         return true
     end
 
     if check_early_client_tls_abort(desync, crec) then
         if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
-            z2r_adaptive_suspected_failure(desync, crec)
+            z2r_adaptive_suspected_failure(desync, crec, "client_abort")
         end
         return true
     end
 
     if check_connection_stall(desync, crec) then
         if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
-            z2r_adaptive_suspected_failure(desync, crec)
+            z2r_adaptive_suspected_failure(desync, crec, "transport")
         end
         return true
     end
 
     if check_extended_rst(desync, crec) then
         if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
-            z2r_adaptive_suspected_failure(desync, crec)
+            z2r_adaptive_suspected_failure(desync, crec, "transport")
         end
         return true
     end
@@ -737,7 +739,7 @@ function combined_failure_detector(desync, crec)
     local content_failure = check_tcp_response_content_failure(payload, crec)
     if content_failure then
         if not crec.adaptive_failure_reported and type(z2r_adaptive_suspected_failure) == "function" then
-            z2r_adaptive_suspected_failure(desync, crec)
+            z2r_adaptive_suspected_failure(desync, crec, "application")
         end
         return true
     end
