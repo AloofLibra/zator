@@ -23,8 +23,11 @@ for i in 0 1 2 3; do
     8000 6000 0 1 240 "$((now - 3 + i))"
 done
 id_list="$(IFS=,; printf '%s' "${ids[*]}")"
-proof="$(adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now")"
+proof="$(adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now" "$client")"
 [[ "$proof" =~ ^[a-f0-9]{64}$ ]] || { echo 'healthy ordered Ramp/Plain/Plain/Ramp evidence was rejected' >&2; exit 1; }
+if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" >/dev/null 2>&1; then
+  echo 'another paired browser client reused this canary evidence' >&2; exit 1
+fi
 expires=$((now + 600))
 adaptive_browser_ramp_canary_lease_apply "$host" "$ip" "$scope" "$proof" "$expires"
 lease="${Z2R_ADAPTIVE_DIR}/ramp-exempt.tsv"
@@ -41,15 +44,15 @@ adaptive_browser_ramp_canary_lease_revoke "$host" "$ip" "$scope" "$proof"
 
 evidence="$(adaptive_browser_state_dir)/media-quality/evidence.tsv"
 sed -i $'3s/\\thealthy\\t/\\tdegraded\\t/' "$evidence"
-if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now" >/dev/null; then
+if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now" "$client" >/dev/null; then
   echo 'degraded plain media was accepted as a Ramp canary' >&2; exit 1
 fi
 sed -i $'3s/\\tdegraded\\t/\\thealthy\\t/' "$evidence"
 sed -i '4s/\t7\t/\t8\t/' "$evidence"
-if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now" >/dev/null; then
+if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "$id_list" "$now" "$client" >/dev/null; then
   echo 'strategy mismatch was accepted as one controlled canary' >&2; exit 1
 fi
-if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "${ids[0]},${ids[1]},${ids[1]},${ids[3]}" "$now" >/dev/null 2>&1; then
+if adaptive_browser_ramp_canary_validate "$host" "$ip" "$scope" "${ids[0]},${ids[1]},${ids[1]},${ids[3]}" "$now" "$client" >/dev/null 2>&1; then
   echo 'duplicate observation ID was accepted' >&2; exit 1
 fi
 echo 'adaptive browser Ramp canary evidence smoke: OK'

@@ -860,8 +860,8 @@ adaptive_browser_media_quality_write() {
 # Accept only a natural Ramp -> Plain -> Plain -> Ramp browser sequence for
 # one exact target. Applying the short exception remains a separate operation.
 adaptive_browser_ramp_canary_validate() {
-  [[ $# = 5 ]] || return 2
-  local host="$1" ip="$2" scope="$3" ids="$4" now="$5"
+  [[ $# = 6 ]] || return 2
+  local host="$1" ip="$2" scope="$3" ids="$4" now="$5" wanted_client="$6"
   local file row ver id generation client old_scope old_host old_ip profile proto strategy fp treatment ack
   local quality sample progress stall dropped total observed extra count=0 i current_id expected_treatment
   local first_client="" first_strategy="" first_fp="" first_at=0 last_at=0
@@ -872,7 +872,7 @@ adaptive_browser_ramp_canary_validate() {
      "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
      ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
      "$ids" =~ ^[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32},[a-f0-9]{32}$ &&
-     "$now" =~ ^[0-9]{10}$ ]] || return 2
+     "$now" =~ ^[0-9]{10}$ && "$wanted_client" =~ ^[a-f0-9]{32}$ ]] || return 2
   if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 2; fi
   awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || return 2
   IFS=, read -r -a wanted <<< "$ids"
@@ -908,7 +908,7 @@ adaptive_browser_ramp_canary_validate() {
     IFS=$'\t' read -r ver id generation client old_scope old_host old_ip profile proto strategy fp treatment ack \
       quality sample progress stall dropped total observed extra <<< "$row"
     expected_treatment="${expected[i]}"
-    [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_scope" = "$scope" &&
+    [[ "$client" = "$wanted_client" && "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_scope" = "$scope" &&
        "$treatment" = "$expected_treatment" && "$quality" = healthy &&
        "$sample" -ge 7500 && "$progress" -ge 5000 && "$stall" -lt 1000 ]] || return 1
     if [[ "$treatment" = applied ]]; then [[ "$ack" = confirmed ]] || return 1; fi
