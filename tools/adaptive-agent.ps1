@@ -395,7 +395,8 @@ if ($Watch) {
     if ($Explore) { $exploreState = Read-ExploreState }
     $exploreLoadWarningShown = $false
     $rampUnsupportedWarningShown = $false
-    Write-Output (if ($RampAudit) { "Watching with low-priority Googlevideo Ramp audit enabled; Ctrl+C stops." } elseif ($Explore) { "Watching with low-priority exploration every $ExploreIntervalSeconds seconds; Ctrl+C stops." } else { "Watching adaptive observations every $WatchIntervalSeconds seconds; Ctrl+C stops." })
+    $watchMessage = if ($RampAudit) { "Watching with low-priority Googlevideo Ramp audit enabled; Ctrl+C stops." } elseif ($Explore) { "Watching with low-priority exploration every $ExploreIntervalSeconds seconds; Ctrl+C stops." } else { "Watching adaptive observations every $WatchIntervalSeconds seconds; Ctrl+C stops." }
+    Write-Output $watchMessage
     while ($true) {
         try {
             $queue = Invoke-AdaptiveApi @{ action = 'events' }
