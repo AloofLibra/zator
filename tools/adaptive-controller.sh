@@ -57,6 +57,24 @@ adaptive_controller_no_result_reason() {
   fi
 }
 
+adaptive_controller_add_probe_network_bytes() {
+  [[ $# = 2 ]] || return 2
+  local run="$1" bytes="$2" file body tmp
+  [[ -d "$run" && ! -L "$run" && -f "$run/result.json" && ! -L "$run/result.json" ]] || return 1
+  if [[ "$bytes" != -1 ]]; then
+    [[ "$bytes" =~ ^(0|[1-9][0-9]{0,9})$ && "$bytes" -le 1073741824 ]] || return 2
+  else
+    bytes=null
+  fi
+  file="$run/result.json"
+  body="$(cat "$file")" || return 1
+  [[ "$body" = *\} ]] || return 1
+  body="${body%\}}"
+  tmp="$run/.result.json.tmp.$$"
+  (umask 077; printf '%s,"probe_network_bytes":%s}\n' "$body" "$bytes" > "$tmp") &&
+    chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
 adaptive_controller_save_status() {
   [[ $# = 17 ]] || return 2
   local run="$1" completed="$2" observed="$3" overall="$4" reason="$5" recipe="$6" treatment="$7"
@@ -377,6 +395,10 @@ for ((i=0; i<35; i++)); do
   sleep 1
 done
 
+probe_network_bytes=-1
+probe_network_bytes="$(adaptive_lan_transport_queue_bytes 2>/dev/null)" || probe_network_bytes=-1
+[[ "$probe_network_bytes" =~ ^(0|[1-9][0-9]{0,9})$ && "$probe_network_bytes" -le 1073741824 ]] || probe_network_bytes=-1
+
 overall=INCONCLUSIVE final_reason=probe_error route_verified=false queue_seen=false strategy_ack_seen=false
 syn_stage_confirmed=false late_ack_stage_confirmed=false media_bytes=0 media_speed_bps=0 media_duration_ms=0
 observed="$(date +%s)"
@@ -465,6 +487,8 @@ fi
     "$id" "$route_verified" "$queue_seen" "$strategy_ack_seen" "$syn_stage_confirmed" "$late_ack_stage_confirmed" "$transport" "$application" "$overall" "$final_reason" "${observed:-0}" "${host,,}" "$dst_ip" "$probe_proto" "$profile" "$scope" "$fingerprint" "$strategy" "$catalog_version" "$recipe" "$treatment" "$client_profile" "$media_url_sha256" "$media_bytes" "$media_speed_bps" "$media_duration_ms" > "$run/result.json.tmp"
 fi
 mv -f "$run/result.json.tmp" "$run/result.json"
+adaptive_controller_add_probe_network_bytes "$run" "$probe_network_bytes" || \
+  printf 'adaptive controller: isolated queue byte metric could not be saved\n' >&2
 controller_finished_at="$(date +%s)"
 controller_duration_seconds=$((controller_finished_at - controller_started_at))
 [[ "$controller_duration_seconds" =~ ^[0-9]{1,6}$ ]] || controller_duration_seconds=0

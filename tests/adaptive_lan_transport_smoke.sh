@@ -25,6 +25,12 @@ adaptive_lan_lease_write "$TMP_DIR/leases" probe1 192.168.1.20 62000 142.250.72.
 calls="$TMP_DIR/iptables.log"
 iptables() {
   printf '%s\n' "$*" >> "$calls"
+  if [[ "$*" == *'-L Z2R_ADAPTIVE_LAN -n -v -x'* ]]; then
+    printf '%s\n' 'pkts bytes target prot opt in out source destination' \
+      '3 1000 NFQUEUE tcp -- * * 192.168.1.20 142.250.72.14 NFQUEUE num 65535' \
+      '2 500 NFQUEUE tcp -- * * 192.168.1.20 142.250.72.14 NFQUEUE num 65535'
+    return 0
+  fi
   case "$*" in
     *' -N Z2R_ADAPTIVE_LAN_POST'*) IPT_POST_CHAIN=1 ;;
     *' -N Z2R_ADAPTIVE_LAN'*) IPT_MAIN_CHAIN=1 ;;
@@ -44,6 +50,7 @@ iptables() {
   return 0
 }
 adaptive_lan_transport_start "$TMP_DIR/leases" probe1 1999999999
+[[ "$(adaptive_lan_transport_queue_bytes)" = 1500 ]] || { echo 'isolated queue byte counters were not summed' >&2; exit 1; }
 grep -q -- '-I FORWARD 1 -m conntrack --ctdir REPLY .*z2r-adaptive-lan-reply -j Z2R_ADAPTIVE_LAN' "$calls" || { echo 'reply hook is not before the production queue' >&2; exit 1; }
 grep -q -- '-A FORWARD -m conntrack --ctdir ORIGINAL .*z2r-adaptive-lan-original -j Z2R_ADAPTIVE_LAN' "$calls" || { echo 'original hook is not after existing mangle processing' >&2; exit 1; }
 grep -q -- '-I POSTROUTING 1 .*Z2R_ADAPTIVE_LAN_POST' "$calls" || { echo 'exact-tuple production-queue bypass hook not installed first' >&2; exit 1; }

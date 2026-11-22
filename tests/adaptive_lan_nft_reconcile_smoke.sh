@@ -52,7 +52,7 @@ nft() {
       for direction in original reply; do
         offset=0; [[ "$direction" != reply ]] || offset=3
         printf ' rule meta l4proto tcp ct direction %s ct original ip saddr 192.168.1.20 ct original proto-src 62000 ct original ip daddr 142.250.72.14 ct original proto-dst 443 meta mark set meta mark | 0x10000000 comment "z2r_adaptive_lan" # handle %s\n' "$direction" "$((201 + offset))"
-        printf ' rule meta l4proto tcp ct direction %s ct original ip saddr 192.168.1.20 ct original proto-src 62000 ct original ip daddr 142.250.72.14 ct original proto-dst 443 queue flags bypass to 65535 comment "z2r_adaptive_lan" # handle %s\n' "$direction" "$((202 + offset))"
+        printf ' rule meta l4proto tcp ct direction %s ct original ip saddr 192.168.1.20 ct original proto-src 62000 ct original ip daddr 142.250.72.14 ct original proto-dst 443 counter packets 3 bytes 1000 queue flags bypass to 65535 comment "z2r_adaptive_lan" # handle %s\n' "$direction" "$((202 + offset))"
         printf ' rule meta l4proto tcp ct direction %s ct original ip saddr 192.168.1.20 ct original proto-src 62000 ct original ip daddr 142.250.72.14 ct original proto-dst 443 accept comment "z2r_adaptive_lan" # handle %s\n' "$direction" "$((203 + offset))"
       done ;;
     'list chain inet zapret2 z2r_adaptive_lan') [[ -e "$NFT_ACTIVE" ]] ;;
@@ -80,6 +80,8 @@ unset -f stat
 grep -q 'insert rule inet zapret2 postnat_hook jump z2r_adaptive_lan' "$TMP/batch" || { echo 'nft postnat jump was not rebuilt' >&2; exit 1; }
 grep -q 'insert rule inet zapret2 prenat_hook jump z2r_adaptive_lan' "$TMP/batch" || { echo 'nft prenat jump was not rebuilt' >&2; exit 1; }
 grep -q 'queue flags bypass to 65535' "$TMP/batch" || { echo 'test queue routing was not rebuilt' >&2; exit 1; }
+grep -q 'counter queue flags bypass to 65535' "$TMP/batch" || { echo 'isolated queue rules do not count probe IP bytes' >&2; exit 1; }
+[[ "$(adaptive_lan_transport_queue_bytes)" = 2000 ]] || { echo 'nft isolated queue byte counters were not summed' >&2; exit 1; }
 touch "$TMP/partial"
 before="$(grep -c '^-f -$' "$NFT_CALLS" || true)"
 if adaptive_lan_transport_reconcile; then echo 'partial nft lease state was accepted' >&2; exit 1; fi

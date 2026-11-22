@@ -49,7 +49,7 @@ api_supersweep_get() {
 }
 
 adaptive_last_probe_json() {
-  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" run status_file id row_ver completed observed outcome reason recipe treatment profile scope strategy route queue ack bytes speed media_ms duration extra now
+  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" run status_file result_file result_size probe_network_bytes probe_network_bytes_json id row_ver completed observed outcome reason recipe treatment profile scope strategy route queue ack bytes speed media_ms duration extra now
   local best_completed=0 best_json='null'
   [[ -d "$base" && ! -L "$base" ]] || { printf 'null\n'; return 0; }
   now="$(date +%s)" || { printf 'null\n'; return 0; }
@@ -71,9 +71,20 @@ adaptive_last_probe_json() {
       *) continue ;;
     esac
     if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || continue; fi
+    probe_network_bytes_json=null
+    result_file="$run/result.json"
+    if [[ -f "$result_file" && ! -L "$result_file" && -r "$result_file" ]]; then
+      result_size="$(wc -c < "$result_file" 2>/dev/null)"
+      if [[ "$result_size" =~ ^[0-9]+$ ]] && (( result_size <= 8192 )); then
+        probe_network_bytes="$(sed -n 's/.*"probe_network_bytes":\([0-9][0-9]*\|null\).*/\1/p' "$result_file" | head -n1)"
+        if [[ "$probe_network_bytes" =~ ^(0|[1-9][0-9]{0,9})$ ]] && (( probe_network_bytes <= 1073741824 )); then
+          probe_network_bytes_json="$probe_network_bytes"
+        fi
+      fi
+    fi
     (( completed <= now + 60 && completed >= now - 86400 && observed <= now + 60 && observed >= now - 86400 && completed > best_completed )) || continue
     best_completed="$completed"
-    best_json="{\"observed_at\":$observed,\"overall\":\"$outcome\",\"reason\":\"$reason\",\"recipe_id\":\"$recipe\",\"treatment_variant\":\"$treatment\",\"profile_id\":$profile,\"scope\":\"$scope\",\"strategy_number\":$strategy,\"route_verified\":$route,\"queue_seen\":$queue,\"strategy_ack_seen\":$ack,\"media_bytes\":$bytes,\"media_speed_bps\":$speed,\"media_duration_ms\":$media_ms,\"duration_seconds\":$duration}"
+    best_json="{\"observed_at\":$observed,\"overall\":\"$outcome\",\"reason\":\"$reason\",\"recipe_id\":\"$recipe\",\"treatment_variant\":\"$treatment\",\"profile_id\":$profile,\"scope\":\"$scope\",\"strategy_number\":$strategy,\"route_verified\":$route,\"queue_seen\":$queue,\"strategy_ack_seen\":$ack,\"media_bytes\":$bytes,\"media_speed_bps\":$speed,\"media_duration_ms\":$media_ms,\"duration_seconds\":$duration,\"probe_network_bytes\":$probe_network_bytes_json}"
   done
   printf '%s\n' "$best_json"
 }

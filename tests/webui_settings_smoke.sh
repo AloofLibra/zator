@@ -144,6 +144,7 @@ printf '1\tseen\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n1\tactive_
 printf '1\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t7\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
 mkdir -p "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 printf '1\t%s\t%s\tSUCCESS\tmedia_ok\tgooglevideo-tcp-media-v1\tstandard\t2\tmark:4\t9\ttrue\ttrue\ttrue\t1048576\t2000000\t524\t12\n' "$(date +%s)" "$(date +%s)" > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status.tsv"
+printf '{"probe_network_bytes":1234567}\n' > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/result.json"
 printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.last"
 printf '%s\n' 'adaptive_rule_remove() { printf "%s|%s|%s|%s\\n" "$@" >> "$ADAPTIVE_RULE_RESET_LOG"; }' > "$TMP_DIR/runtime/z2r_lib/adaptive_rules.sh"
 cp "$REPO_DIR/lib/adaptive_queue.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_queue.base.sh"
@@ -168,6 +169,7 @@ grep -Fq '"last_probe":{"observed_at":' <<< "$adaptive_status" || fail 'adaptive
 grep -Fq '"reason":"media_ok"' <<< "$adaptive_status" || fail 'adaptive status omitted the last probe reason'
 grep -Fq '"status":"active_rule_degraded"' <<< "$adaptive_status" || fail 'adaptive status omitted the degraded active-rule event'
 grep -Fq '"media_bytes":1048576' <<< "$adaptive_status" || fail 'adaptive status omitted media transfer metrics'
+grep -Fq '"probe_network_bytes":1234567' <<< "$adaptive_status" || fail 'adaptive status omitted test-queue IP byte metrics'
 assert_not_contains "$adaptive_status" 'media_url_sha256' 'adaptive status exposed media URL hashes'
 printf '1\tdirect.example.org\t93.184.216.35\t1\ttls\tmark:4\t0\tsha256:%064d\tsha256:%064d\t1:2\t%s\n' 0 0 "$(( $(date +%s) + 3600 ))" >> "$TMP_DIR/runtime/extra_strats/cache/adaptive/rules.tsv"
 adaptive_direct_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"

@@ -68,3 +68,23 @@ if adaptive_controller_save_status "$tmp/run" "$(date +%s)" "$(date +%s)" SUCCES
   echo 'status writer accepted an out-of-range client mark' >&2; exit 1;
 fi
 echo 'adaptive controller no-result classification passed'
+
+awk '
+  /^adaptive_controller_add_probe_network_bytes\(\) \{/ { copying=1 }
+  /^adaptive_controller_save_status\(\) \{/ { copying=0 }
+  copying { print }
+' "$ROOT/tools/adaptive-controller.sh" > "$tmp/bytes.sh"
+. "$tmp/bytes.sh"
+printf '{"schema_version":1}\n' > "$tmp/run/result.json"
+adaptive_controller_add_probe_network_bytes "$tmp/run" 123456 || { echo 'valid queue byte metric was rejected' >&2; exit 1; }
+grep -Fq '{"schema_version":1,"probe_network_bytes":123456}' "$tmp/run/result.json" || {
+  echo 'queue byte metric was not appended to result JSON' >&2; exit 1;
+}
+printf '{"schema_version":1}\n' > "$tmp/run/result.json"
+adaptive_controller_add_probe_network_bytes "$tmp/run" -1 || { echo 'unknown queue byte metric was rejected' >&2; exit 1; }
+grep -Fq '{"schema_version":1,"probe_network_bytes":null}' "$tmp/run/result.json" || {
+  echo 'unknown queue byte metric was not represented as null' >&2; exit 1;
+}
+if adaptive_controller_add_probe_network_bytes "$tmp/run" 2000000000 >/dev/null 2>&1; then
+  echo 'queue byte metric accepted an out-of-range value' >&2; exit 1;
+fi

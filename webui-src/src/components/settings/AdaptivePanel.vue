@@ -133,6 +133,7 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
       <span>{{ probeOutcome(status.last_probe.overall) }} · {{ probeReason(status.last_probe.reason) }} · профиль {{ status.last_probe.profile_id }} · {{ status.last_probe.scope }} · {{ status.last_probe.strategy_number === 0 ? 'DIRECT' : `стратегия ${status.last_probe.strategy_number}` }} · {{ status.last_probe.treatment_variant }}</span>
       <span>Маршрут {{ status.last_probe.route_verified ? 'подтверждён' : 'не подтверждён' }} · test queue {{ status.last_probe.queue_seen ? 'видна' : 'не видна' }} · ACK {{ status.last_probe.strategy_ack_seen ? 'подтверждён' : 'не подтверждён' }} · {{ eventTime(status.last_probe.observed_at) }}</span>
       <span v-if="status.last_probe.media_bytes > 0">Медиа: {{ (status.last_probe.media_bytes / 1048576).toFixed(2) }} MiB · {{ (status.last_probe.media_speed_bps / 1000000).toFixed(2) }} MB/s · {{ status.last_probe.media_duration_ms }} ms</span>
+      <span>Пакетный расход тестовой очереди: {{ status.last_probe.probe_network_bytes === null ? 'нет счётчика' : `${(status.last_probe.probe_network_bytes / 1048576).toFixed(2)} MiB IP-пакетов` }} · байты с последней установки временного правила; после его восстановления это нижняя граница</span>
       <span>Длительность проверки: {{ status.last_probe.duration_seconds }} с</span>
     </div>
     <p v-if="pairingDaysRemaining !== null && pairingDaysRemaining <= 30" class="settings-alert" role="status">

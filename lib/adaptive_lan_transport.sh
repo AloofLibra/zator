@@ -337,7 +337,7 @@ _adaptive_lan_nft_install() {
       direction=${rule_pair#*:}
       printf 'add rule inet %s z2r_adaptive_lan meta l4proto %s ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s meta mark set meta mark | %s comment "z2r_adaptive_lan"\n' \
         "$table" "$proto" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port" "$mark"
-      printf 'add rule inet %s z2r_adaptive_lan meta l4proto %s ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s queue flags bypass to 65535 comment "z2r_adaptive_lan"\n' \
+      printf 'add rule inet %s z2r_adaptive_lan meta l4proto %s ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s counter queue flags bypass to 65535 comment "z2r_adaptive_lan"\n' \
         "$table" "$proto" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port"
       printf 'add rule inet %s z2r_adaptive_lan meta l4proto %s ct direction %s ct original ip saddr %s ct original proto-src %s ct original ip daddr %s ct original proto-dst %s accept comment "z2r_adaptive_lan"\n' \
         "$table" "$proto" "$direction" "$source_ip" "$source_port" "$destination_ip" "$destination_port"
@@ -415,6 +415,29 @@ adaptive_lan_transport_stop() {
     _Z2R_ADAPTIVE_LAN_STATE_FILE=""
   fi
   _Z2R_ADAPTIVE_LAN_LOCKED=0
+}
+
+# Return IP-layer bytes counted only by this lease's queue-65535 rules.
+# This is a lower bound if NDM/firewall reconciliation reinstalled them.
+adaptive_lan_transport_queue_bytes() {
+  case "${FWTYPE:-iptables}" in
+    iptables)
+      _adaptive_lan_iptables -S Z2R_ADAPTIVE_LAN >/dev/null 2>&1 || return 1
+      _adaptive_lan_iptables -L Z2R_ADAPTIVE_LAN -n -v -x 2>/dev/null | awk '
+        $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $0 ~ /NFQUEUE/ && $0 ~ /65535/ { total += $2; found++ }
+        END { if (found) printf "%.0f\n", total; else exit 1 }
+      '
+      ;;
+    nft|nftables)
+      nft -a list chain inet "${_Z2R_ADAPTIVE_LAN_NFT_TABLE:-${ZAPRET_NFT_TABLE:-zapret2}}" z2r_adaptive_lan 2>/dev/null | awk '
+        /queue flags bypass to 65535/ && match($0, /counter packets [0-9]+ bytes [0-9]+/) {
+          value=substr($0, RSTART, RLENGTH); sub(/^.*bytes /, "", value); total += value; found++
+        }
+        END { if (found) printf "%.0f\n", total; else exit 1 }
+      '
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 _adaptive_lan_write_transport_state() {

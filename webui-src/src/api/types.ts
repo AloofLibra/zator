@@ -146,6 +146,7 @@ export interface AdaptiveStatus {
     media_speed_bps: number
     media_duration_ms: number
     duration_seconds: number
+    probe_network_bytes: number | null
   } | null
   active_probes: number
   cleanup_failures: number
