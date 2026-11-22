@@ -35,6 +35,10 @@ const fakeRouter = createServer(async (request, response) => {
     return
   }
   const params = new URLSearchParams(body)
+  if (action === 'browser_report_result' && params.get('attempt_id') === 'z'.repeat(32)) {
+    response.writeHead(503, { 'content-type': 'application/json' }).end('{"error":"temporarily unavailable"}')
+    return
+  }
   const result = action === 'browser_report_failure' && params.get('hostname') === 'video.example.test'
     ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'a'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
     : action === 'browser_report_failure' && params.get('hostname') === 'media.example.test'
@@ -247,6 +251,15 @@ assert.equal(stored.events.at(-1).attempt_id, '1'.repeat(32), 'next server candi
 assert.equal(stored.events.at(-1).router_status, 'WAIT_NEW_FLOW')
 assert.equal(reloads.length, 2, 'each server-issued candidate gets one controlled browser retry')
 assert.ok(stored.autoRetriedAttempts.includes('1'.repeat(32)))
+
+stored.events.push({ id: 'u'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'z'.repeat(32),
+  trigger: 'main_frame_network_failure', request_class: 'main_frame', method: 'GET', failure_class: 'network_failure', router_status: 'FLOW_CONFIRMED',
+  pending_result: { id: 'v'.repeat(32), result: 'network_failure', request_class: 'main_frame', browser_ip: '8.8.8.8', observed_at: Date.now() } })
+const disconnectedResult = await api.syncAttempt('u'.repeat(32))
+assert.equal(disconnectedResult.ok, false, 'router result failure must be surfaced')
+assert.equal(stored.events.at(-1).attempt_id, 'z'.repeat(32), 'router failure must not invent or select a candidate')
+assert.equal(stored.events.at(-1).pending_results.length, 1, 'unacknowledged browser result must remain queued')
+assert.equal(reloads.length, 2, 'router failure must not trigger another browser reload')
 
 stored.events.push({ id: 'l'.repeat(32), hostname: 'media.example.test', tab_id: 8, attempt_id: 'm'.repeat(32),
   trigger: 'critical_resource_repeated_failure', request_class: 'xmlhttprequest', router_status: 'FLOW_CONFIRMED',
