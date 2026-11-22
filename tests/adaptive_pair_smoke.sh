@@ -218,6 +218,27 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
    -e "$tmp/runs/0123456789abcdef0123456789abcdef/cancel" &&
    ! -s "$tmp/runs/rules.tsv" ]] || { echo 'disable did not revoke/cancel/clear state' >&2; exit 1; }
 
+# Browser-only beta activation must not require the separate Windows-agent token.
+browser_expiry=$(( $(date +%s) + 3600 ))
+if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null 2>&1; then
+  echo 'Beta enabled without either agent or browser pairing' >&2; exit 1;
+fi
+printf '1\t12121212121212121212121212121212\t%s\t192.168.1.42\tmark:7\t%s\n' \
+  "$(printf '%064d' 0 | tr 0 b)" "$(( $(date +%s) - 1 ))" > "$tmp/zator/extra_strats/cache/adaptive/browser-clients.tsv"
+if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null 2>&1; then
+  echo 'expired browser pairing enabled Beta' >&2; exit 1;
+fi
+printf '1\t12121212121212121212121212121212\t%s\t192.168.1.42\tmark:7\t%s\n' \
+  "$(printf '%064d' 0 | tr 0 b)" "$browser_expiry" > "$tmp/zator/extra_strats/cache/adaptive/browser-clients.tsv"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" beta > "$tmp/browser-beta.out"
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AGENT_BETA &&
+   "$(cat "$tmp/browser-beta.out")" == *'Windows agent is optional'* ]] || {
+  echo 'browser pairing could not enable scoped Beta without a Windows-agent token' >&2; exit 1;
+}
+
 crash_id=abcdef0123456789abcdef0123456789
 mkdir -p "$tmp/runs/$crash_id/leases" "$tmp/runs/$crash_id/probe" "$tmp/shared.lock" "$tmp/proc"
 touch "$tmp/runs/$crash_id/probe/locked.lua"

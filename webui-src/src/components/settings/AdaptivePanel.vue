@@ -7,6 +7,7 @@ import { announceRestart, restartSuffix, showToast } from '../../stores/toast'
 
 const status = ref<AdaptiveStatus | null>(null)
 const modeLabel = computed(() => ({ OFF: 'Выключен', OBSERVE: 'Наблюдение', TEST_ONLY: 'Пробные проверки', AGENT_BETA: 'Динамический подбор (Beta)' }[status.value?.mode || 'OFF']))
+const browserBetaAvailable = computed(() => Boolean(status.value?.paired || (status.value?.browser?.paired_clients || 0) > 0))
 const pairingDaysRemaining = computed(() => {
   const expires = status.value?.pairing_expires_at
   if (!status.value?.paired || !expires) return null
@@ -106,11 +107,11 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
   <section class="panel">
     <div class="panel-header"><h2>Адаптивный подбор</h2></div>
     <p class="panel-desc">
-      Агент наблюдает новые TCP/TLS-соединения и может проверять локальные стратегии через отдельную тестовую очередь.
-      Рабочие локи не меняются автоматически. Сопряжение создаётся на роутере командой <code>/opt/zator/tools/adaptive-pair.sh create</code>.
+      Браузерное расширение сообщает о сетевых сбоях; в Beta Zator может временно проверить следующую стратегию для разрешённого scope. Применение ко всему LAN требует отдельного согласия.
+      Windows watcher остаётся необязательным инструментом изолированных проверок. Сопряжение браузера создаётся на роутере командой <code>/opt/zator/tools/adaptive-browser-pair.sh create CLIENT_IPV4 mark:N</code>.
     </p>
     <div v-if="status" class="adaptive-status" aria-live="polite">
-      <div><span>Сопряжение</span><strong>{{ status.paired ? 'включено' : status.pairing_expired ? 'срок истёк · выполните rotate в CLI' : 'не настроено' }}</strong></div>
+      <div><span>Сопряжение Windows-агента</span><strong>{{ status.paired ? 'включено' : status.pairing_expired ? 'срок истёк · выполните rotate в CLI' : 'не настроено · для браузера не требуется' }}</strong></div>
       <div><span>Windows watcher</span><strong>{{ status.agent_online ? 'на связи' : status.agent_last_seen ? `не в сети · ${eventTime(status.agent_last_seen)}` : 'ещё не связывался' }}</strong></div>
       <div v-if="status.browser"><span>Браузерное расширение</span><strong>{{ status.browser.connected_clients ? `на связи · ${status.browser.connected_clients} из ${status.browser.paired_clients}` : status.browser.paired_clients ? `сопряжено · не в сети (${status.browser.paired_clients})` : 'не сопряжено' }}</strong></div>
       <div><span>Режим</span><strong>{{ modeLabel }}</strong></div>
@@ -185,16 +186,16 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
       </li>
     </ul>
       <p v-if="status?.mode === 'AGENT_BETA' && !status.default_scope_apply" class="form-hint">Beta применяет только проверенные точные правила для явно маркированного client scope. События со scope default остаются в режиме проверки.</p>
-      <p v-else-if="status?.mode === 'AGENT_BETA'" class="settings-alert">Beta может применять проверенные точные правила ко всему LAN. Чтобы запустить подбор, держите Windows watcher подключённым.</p>
-      <p v-else class="form-hint">Стратегия автоматически не применяется. Для подключения запустите watcher на Windows после включения TEST_ONLY.</p>
+      <p v-else-if="status?.mode === 'AGENT_BETA'" class="settings-alert">Beta может применять проверенные точные правила ко всему LAN. Для браузерной авторотации Windows watcher не нужен; он используется только для отдельных тестовых проверок.</p>
+      <p v-else class="form-hint">Стратегия автоматически не применяется. Windows watcher нужен только для изолированных проверок в TEST_ONLY.</p>
     <div class="card-actions">
       <button class="ghost" :disabled="busyActive || !status?.paired" @click="act('observe')">Наблюдение</button>
       <button class="primary" :disabled="busyActive || !status?.paired" @click="act('test-only')">TEST_ONLY</button>
-      <button class="primary" :disabled="busyActive || !status?.paired" @click="act('beta')">Включить Beta · marked scope</button>
-      <button class="danger" :disabled="busyActive || !status?.paired" @click="act('beta-lan')">Включить Beta · весь LAN</button>
+      <button class="primary" :disabled="busyActive || !browserBetaAvailable" @click="act('beta')">Включить Beta · marked scope</button>
+      <button class="danger" :disabled="busyActive || !browserBetaAvailable" @click="act('beta-lan')">Включить Beta · весь LAN</button>
       <button class="ghost" :disabled="busyActive" @click="act('pause')">Пауза</button>
       <button class="ghost" :disabled="busyActive" @click="act('clear-events')">Очистить события</button>
-      <button v-if="status?.paired" class="ghost" :disabled="busyActive" @click="act('disable')">Отключить</button>
+      <button v-if="status?.paired || (status?.browser?.paired_clients || 0) > 0" class="ghost" :disabled="busyActive" @click="act('disable')">Отключить</button>
     </div>
   </section>
 </template>

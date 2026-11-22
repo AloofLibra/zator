@@ -269,6 +269,20 @@ adaptive_token_valid() {
   [[ "$token" =~ ^[a-f0-9]{64}$ && "$expiry" =~ ^[0-9]{1,10}$ && "$now" =~ ^[0-9]{1,10}$ ]] || return 1
   (( expiry > now ))
 }
+adaptive_browser_pairing_valid() {
+  local file="$TOKEN_DIR/browser-clients.tsv" now
+  [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] && (( $(wc -c < "$file") <= 8192 )) || return 1
+  now="$(date +%s)" || return 1
+  awk -F '\t' -v now="$now" '
+    NR<=8 && NF==6 && $1==1 && $2 ~ /^[a-f0-9]{32}$/ && $3 ~ /^[a-f0-9]{64}$/ &&
+      $4 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && ($5=="default" || $5 ~ /^mark:[1-9][0-9]{0,4}$/) &&
+      $6 ~ /^[0-9]{10}$/ && $6>now {
+        split($4,ip,"."); private=(ip[1]==10 || (ip[1]==192 && ip[2]==168) || (ip[1]==172 && ip[2]>=16 && ip[2]<=31))
+        if (private && ip[1]<=255 && ip[2]<=255 && ip[3]<=255 && ip[4]<=255) found=1
+      }
+    END {exit !found}
+  ' "$file"
+}
 adaptive_prepare_events() {
   local config user uid gid
   [ ! -L "$BASE" ] && [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
@@ -447,7 +461,9 @@ if [ "$action" = test-only ]; then
   exit 0
 fi
 if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
-  adaptive_token_valid || { echo 'Pair the Windows agent first with: adaptive-pair.sh create' >&2; exit 1; }
+  adaptive_token_valid || adaptive_browser_pairing_valid || {
+    echo 'Pair a Windows agent or browser first; browser pairing: adaptive-browser-pair.sh create CLIENT_IPV4 mark:N' >&2; exit 1;
+  }
   adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; Beta mode was not changed.' >&2; exit 1; }
   adaptive_prepare_events || { echo 'Could not prepare private observation queue.' >&2; exit 1; }
   if [ "$action" = beta-lan ]; then
@@ -460,7 +476,7 @@ if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
   if [ "$action" = beta-lan ]; then
     echo 'AGENT_BETA enabled. Verified exact rules may apply to the whole LAN (default scope); restart zapret2 to activate.'
   else
-    echo 'AGENT_BETA enabled. Verified exact rules may apply only to explicitly marked client scopes; default/LAN scope stays test-only. Restart zapret2 to activate.'
+    echo 'AGENT_BETA enabled. Verified exact rules may apply only to explicitly marked client scopes; default/LAN scope stays test-only. Windows agent is optional for browser feedback. Restart zapret2 to activate.'
   fi
   exit 0
 fi
