@@ -115,7 +115,13 @@ browser_start_trial() {
   if [[ $? -ne 0 || -z "$candidate" ]]; then rm -rf "$candidate_dir"; return 3; fi
   IFS=$'\t' read -r strategy fingerprint <<< "$candidate"
   rm -rf "$candidate_dir" || return 1
-  adaptive_browser_attempt_write "$id" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$trigger" QUEUED "$strategy" "$fingerprint" "$now" "$expires" "$generation" || return 1
+  adaptive_browser_attempt_gc "$now" "$id"
+  case $? in 0) ;; 3) return 4 ;; *) return 1 ;; esac
+  if ! adaptive_browser_attempt_write "$id" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$trigger" QUEUED "$strategy" "$fingerprint" "$now" "$expires" "$generation"; then
+    adaptive_browser_attempt_reservation_release "$id" >/dev/null 2>&1 || :
+    return 1
+  fi
+  adaptive_browser_attempt_reservation_release "$id" >/dev/null 2>&1 || :
   if ! adaptive_browser_trial_add "$id" "$generation" "$client_id" "$client_ip" "$scope" "$host" "$ip" "$profile" "$proto" "$strategy" "$fingerprint" "$now" "$expires"; then
     adaptive_browser_attempt_transition "$id" QUEUED TARGET_NOT_MANAGED >/dev/null 2>&1 || :
     return 7

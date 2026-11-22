@@ -86,6 +86,52 @@ if adaptive_browser_attempt_transition "$attempt" WAIT_NEW_FLOW CANCELLED; then 
 if adaptive_browser_attempt_transition "$attempt" WAIT_BROWSER_RESULT WAIT_NEW_FLOW; then exit 1; fi
 if adaptive_browser_attempt_write ../bad "$client_id" 192.168.1.42 mark:7 example.org - 1 tls main_frame_network_failure WAIT_NEW_FLOW 2 - 1 2 1; then exit 1; fi
 
+gc_now="$(date +%s)"
+gc_make_attempt() {
+  local gc_id="$1" created="$2" expires="$3" state="$4"
+  printf '1\t%s\t%s\t192.168.1.42\tmark:7\texample.org\t8.8.8.8\t1\ttls\tmain_frame_network_failure\t%s\t2\t-\t%s\t%s\t1\n' \
+    "$gc_id" "$client_id" "$state" "$created" "$expires" > "$(adaptive_browser_attempt_file "$gc_id")"
+}
+gc_old=11111111111111111111111111111111
+gc_make_attempt "$gc_old" "$((gc_now - 301))" "$((gc_now - 256))" CONFIRMED_FAILURE
+mkdir -p "$(adaptive_browser_flow_dir)"
+printf 'stale\n' > "$(adaptive_browser_flow_dir)/$gc_old.1.tsv"
+adaptive_browser_attempt_gc "$gc_now"
+[[ ! -e "$(adaptive_browser_attempt_file "$gc_old")" && ! -e "$(adaptive_browser_flow_dir)/$gc_old.1.tsv" ]] || {
+  echo 'stale browser attempt or flow evidence survived GC' >&2; exit 1;
+}
+gc_reserve_a=22222222222222222222222222222222
+gc_reserve_b=33333333333333333333333333333333
+adaptive_browser_attempt_gc "$gc_now" "$gc_reserve_a"
+adaptive_browser_attempt_gc "$gc_now" "$gc_reserve_b"
+[[ -d "$Z2R_ADAPTIVE_BROWSER_DIR/attempts/.reserve.$gc_reserve_a" && -d "$Z2R_ADAPTIVE_BROWSER_DIR/attempts/.reserve.$gc_reserve_b" ]] || {
+  echo 'concurrent browser attempt capacity was not reserved' >&2; exit 1;
+}
+adaptive_browser_attempt_reservation_release "$gc_reserve_a"
+adaptive_browser_attempt_reservation_release "$gc_reserve_b"
+for i in $(seq 1000 1060); do
+  gc_id="$(printf '%032x' "$i")"
+  gc_make_attempt "$gc_id" "$gc_now" "$((gc_now + 45))" WAIT_NEW_FLOW
+done
+gc_reserve_c=44444444444444444444444444444444
+gc_reserve_d=55555555555555555555555555555555
+adaptive_browser_attempt_gc "$gc_now" "$gc_reserve_c"
+adaptive_browser_attempt_gc "$gc_now" "$gc_reserve_d"
+if adaptive_browser_attempt_gc "$gc_now" 66666666666666666666666666666666; then
+  echo 'capacity reservation allowed more than 64 browser attempts' >&2; exit 1
+else [[ "$?" = 3 ]]; fi
+adaptive_browser_attempt_reservation_release "$gc_reserve_c"
+adaptive_browser_attempt_reservation_release "$gc_reserve_d"
+for i in $(seq 1000 1060); do rm -f -- "$(adaptive_browser_attempt_file "$(printf '%032x' "$i")")"; done
+for i in $(seq 1 63); do
+  gc_id="$(printf '%032x' "$i")"
+  gc_make_attempt "$gc_id" "$gc_now" "$((gc_now + 45))" WAIT_NEW_FLOW
+done
+if adaptive_browser_attempt_gc "$gc_now"; then echo '64 fresh attempts exceeded the journal cap' >&2; exit 1
+else [[ "$?" = 3 ]]; fi
+for i in $(seq 1 63); do rm -f -- "$(adaptive_browser_attempt_file "$(printf '%032x' "$i")")"; done
+adaptive_browser_attempt_gc "$gc_now"
+
 trial_id=99999999999999999999999999999999
 trial_now="$(date +%s)"
 adaptive_browser_trial_add "$trial_id" 1 "$client_id" 192.168.1.42 mark:7 example.org 8.8.8.8 1 tls 2 - "$trial_now" "$((trial_now + 45))"
@@ -152,6 +198,10 @@ main_response="$(printf '%s' "$main_body" | env PATH="$tmp/mock-diagnostics:$PAT
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"WAIT_NEW_FLOW"' <<< "$main_response"
 [[ ! -e "$tmp/diagnostics-called" ]]
+shopt -s nullglob
+reservations=("$Z2R_ADAPTIVE_BROWSER_DIR/attempts"/.reserve.*)
+[[ ${#reservations[@]} -eq 0 ]] || { echo 'successful trial left a capacity reservation behind' >&2; exit 1; }
+shopt -u nullglob
 # Multiple eligible production observations are ambiguous, not unmanaged, and
 # must not create a trial.
 ambiguous_now="$(date +%s)"

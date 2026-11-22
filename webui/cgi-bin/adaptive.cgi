@@ -754,6 +754,7 @@ case "$action" in
       "${fields[revalidation_recoveries]:-}" "${fields[revalidation_failures]:-}" "${fields[success_after_apply]:-0}")
     [[ ${fields[cooldown_targets]+present} ]] && status_args+=("${fields[cooldown_targets]}")
     adaptive_queue_agent_status "${status_args[@]}" || fail '400 Bad Request' 'invalid agent status snapshot'
+    adaptive_queue_agent_heartbeat >/dev/null 2>&1 || :
     send_json '200 OK' '{"schema_version":1,"ok":true}'
     ;;
   ramp_targets)

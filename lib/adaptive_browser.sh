@@ -443,6 +443,113 @@ adaptive_browser_attempt_file() {
   printf '%s/%s.tsv\n' "$(adaptive_browser_state_dir)/attempts" "$1"
 }
 
+adaptive_browser_attempt_reservation_release() {
+  [[ $# = 1 && "$1" =~ ^[a-f0-9]{32}$ ]] || return 2
+  local path="$(adaptive_browser_state_dir)/attempts/.reserve.$1" owner
+  [[ -d "$path" && ! -L "$path" && -f "$path/pid" && ! -L "$path/pid" ]] || return 1
+  owner="$(cat "$path/pid" 2>/dev/null)"
+  [[ "$owner" = "$$" ]] || return 1
+  rm -f "$path/pid" && rmdir "$path"
+}
+
+# Keep the tmpfs attempt journal bounded across long-running routers. Terminal
+# rows are retained for five minutes for the WebUI and candidate-failure budget.
+adaptive_browser_attempt_gc() {
+  [[ ( $# = 1 || $# = 2 ) && "$1" =~ ^[0-9]{10}$ && ( $# = 1 || "$2" =~ ^[a-f0-9]{32}$ ) ]] || return 2
+  local now="$1" reserve_id="${2:-}" dir="$(adaptive_browser_state_dir)/attempts" gc_lock file name row reservation
+  local ver id client client_ip scope host ip profile proto trigger state strategy fingerprint created expires generation extra
+  local count=0 scanned=0 tries=0 owner attempt_lock lock_stamp reserve_name
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$dir" ]] || return 1
+  mkdir -p "$dir" || return 1
+  gc_lock="$dir/.gc.lock"
+  [[ ! -L "$gc_lock" ]] || return 1
+  while ! (umask 077; mkdir "$gc_lock") 2>/dev/null; do
+    tries=$((tries + 1))
+    owner="$(cat "$gc_lock/pid" 2>/dev/null)"
+    if [[ "$owner" =~ ^[1-9][0-9]{0,9}$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -f "$gc_lock/pid" 2>/dev/null || :
+      rmdir "$gc_lock" 2>/dev/null || :
+      continue
+    fi
+    if [[ ! "$owner" =~ ^[1-9][0-9]{0,9}$ ]]; then
+      lock_stamp="$(stat -c %Y "$gc_lock" 2>/dev/null)"
+      if [[ "$lock_stamp" =~ ^[0-9]{10}$ ]] && (( now - lock_stamp > 2 )); then
+        rmdir "$gc_lock" 2>/dev/null || :
+        continue
+      fi
+    fi
+    (( tries < 40 )) || return 1
+    sleep 0.05
+  done
+  printf '%s\n' "$$" > "$gc_lock/pid" || { rm -f "$gc_lock/pid"; rmdir "$gc_lock"; return 1; }
+  for file in "$dir"/*.tsv; do
+    [[ -f "$file" && ! -L "$file" ]] || continue
+    scanned=$((scanned + 1))
+    if (( scanned > 512 )); then rm -f "$gc_lock/pid"; rmdir "$gc_lock"; return 1; fi
+    name="${file##*/}"; id="${name%.tsv}"
+    [[ "$id" =~ ^[a-f0-9]{32}$ && $(wc -c < "$file") -le 2048 ]] || { count=$((count + 1)); continue; }
+    row="$(adaptive_browser_attempt_read "$id" 2>/dev/null)" || { count=$((count + 1)); continue; }
+    IFS=$'\t' read -r ver id client client_ip scope host ip profile proto trigger state strategy fingerprint created expires generation extra <<< "$row"
+    [[ "$ver" = 1 && "$id" = "${name%.tsv}" && "$created" =~ ^[0-9]{10}$ && "$expires" =~ ^[0-9]{10}$ &&
+       "$generation" =~ ^[1-9][0-9]{0,8}$ && -z "${extra:-}" ]] || { count=$((count + 1)); continue; }
+    if (( created < now - 300 )); then
+      attempt_lock="$file.lock"
+      [[ ! -L "$attempt_lock" ]] || { count=$((count + 1)); continue; }
+      if (umask 077; mkdir "$attempt_lock") 2>/dev/null; then
+        row="$(adaptive_browser_attempt_read "$id" 2>/dev/null)" || row=""
+        IFS=$'\t' read -r ver id client client_ip scope host ip profile proto trigger state strategy fingerprint created expires generation extra <<< "$row"
+        if [[ "$ver" = 1 && "$id" = "${name%.tsv}" && "$created" =~ ^[0-9]{10}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ && -z "${extra:-}" ]] && (( created < now - 300 )); then
+          if adaptive_browser_trial_remove "$id" "$generation" && rm -f -- "$file"; then :; else
+            rmdir "$attempt_lock" 2>/dev/null || :; rm -f "$gc_lock/pid"; rmdir "$gc_lock"; return 1
+          fi
+        else
+          count=$((count + 1))
+        fi
+        rmdir "$attempt_lock" 2>/dev/null || :
+      else
+        count=$((count + 1))
+      fi
+    else
+      count=$((count + 1))
+    fi
+  done
+  for reservation in "$dir"/.reserve.*; do
+    [[ -d "$reservation" && ! -L "$reservation" ]] || continue
+    scanned=$((scanned + 1))
+    if (( scanned > 512 )); then rm -f "$gc_lock/pid"; rmdir "$gc_lock"; return 1; fi
+    reserve_name="${reservation##*/}"
+    owner="$(cat "$reservation/pid" 2>/dev/null)"
+    if [[ "$reserve_name" =~ ^\.reserve\.[a-f0-9]{32}$ && "$owner" =~ ^[1-9][0-9]{0,9}$ ]] && kill -0 "$owner" 2>/dev/null; then
+      count=$((count + 1))
+    elif [[ ! "$owner" =~ ^[1-9][0-9]{0,9}$ ]]; then
+      lock_stamp="$(stat -c %Y "$reservation" 2>/dev/null)"
+      if [[ "$lock_stamp" =~ ^[0-9]{10}$ ]] && (( now - lock_stamp > 2 )) && [[ -f "$reservation/pid" || -z "$owner" ]]; then
+        rm -f "$reservation/pid" 2>/dev/null || :
+        rmdir "$reservation" 2>/dev/null || count=$((count + 1))
+      else count=$((count + 1)); fi
+    else
+      rm -f "$reservation/pid" 2>/dev/null || :
+      rmdir "$reservation" 2>/dev/null || count=$((count + 1))
+    fi
+  done
+  if [[ -n "$reserve_id" ]]; then
+    (( count < 64 )) || { rm -f "$gc_lock/pid"; rmdir "$gc_lock"; return 3; }
+    reservation="$dir/.reserve.$reserve_id"
+    [[ ! -e "$reservation" && ! -L "$reservation" ]] || { rm -f "$gc_lock/pid"; rmdir "$gc_lock"; return 1; }
+    if ! (umask 077; mkdir "$reservation") || ! printf '%s\n' "$$" > "$reservation/pid"; then
+      rm -f "$reservation/pid" 2>/dev/null || :
+      rmdir "$reservation" 2>/dev/null || :
+      rm -f "$gc_lock/pid"; rmdir "$gc_lock"; return 1
+    fi
+    count=$((count + 1))
+  fi
+  rm -f "$gc_lock/pid"
+  rmdir "$gc_lock" || return 1
+  if [[ -n "$reserve_id" ]]; then (( count <= 64 )) || return 3
+  else (( count < 64 )) || return 3; fi
+  return 0
+}
+
 adaptive_browser_trials_file() { printf '%s/trials.tsv\n' "$(adaptive_browser_state_dir)"; }
 adaptive_browser_flow_dir() { printf '%s/flows\n' "$(adaptive_browser_state_dir)"; }
 
