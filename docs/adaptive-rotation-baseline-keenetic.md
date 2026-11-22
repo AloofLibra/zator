@@ -109,3 +109,10 @@ This adds Keenetic plain TCP media evidence and leaves Ramp-first/exemption, deg
 - The installer regression was that `remove_zapret` deleted the NDM hook before reinstall, while `entware_fixes` could continue after a failed download. Reinstall now preserves the live hook while still removing it during full uninstall; a regression check covers both paths.
 
 This verifies one manually triggered NDM-hook rebuild and a post-rebuild HTTPS flow. It does not observe a later spontaneous NDM event over several minutes.
+
+### Hook persistence follow-up (2026-11-22 03:20 MSK)
+
+- Read-only check about one hour after restoration found both the executable NDM hook and `keenetic-policy.sh` still present. The NDM hook SHA-256 remained `eac74b9d70bfeddce2010961183ecf2bc7217ecd40d52911780f6f310309879e`; both passed `sh -n`.
+- Production `nfqws2` remained PID 16764 and queue 300 remained registered. No queue-65535 test process was present.
+
+This confirms the restored hook did not disappear again during the observed hour. It is not evidence that a spontaneous NDM firewall rebuild occurred during that interval.
