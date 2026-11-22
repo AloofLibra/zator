@@ -1675,6 +1675,11 @@ class FakeRouterState:
                  "profile_id": 2, "protocol": "tls", "scope": "mark:4", "observed_at": 1730000300},
             ],
             "event_capacity": 128, "pending_requests": 0, "rules": [], "active_probes": 0,
+            "browser": {"paired_clients": 1, "connected_clients": 1, "active_attempts": [
+                {"hostname": "cdn.example.org", "profile_id": 1, "protocol": "tls", "scope": "mark:4",
+                 "state": "WAIT_NEW_FLOW", "strategy_number": 3, "created_at": int(time.time()),
+                 "expires_at": int(time.time()) + 45},
+            ]},
             "cleanup_failures": 0,
             "ramp_audit_supported": True, "ramp_exemptions_supported": True,
             "ramp_pool_enabled": False, "ramp_pool_consent": False, "ramp_pool_basis": "off",

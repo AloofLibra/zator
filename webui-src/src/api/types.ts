@@ -105,6 +105,21 @@ export interface AdaptiveStatus {
   } | null
   mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY' | 'AGENT_BETA'
   default_scope_apply: boolean
+  browser?: {
+    paired_clients: number
+    connected_clients: number
+    active_attempts: Array<{
+      hostname: string
+      profile_id: number
+      protocol: 'tls' | 'googlevideo-tcp' | 'quic' | 'unknown'
+      scope: string
+      state: 'QUEUED' | 'WAIT_NEW_FLOW' | 'FLOW_CONFIRMED' | 'WAIT_BROWSER_RESULT' | 'PROVISIONAL_SUCCESS'
+        | 'CONFIRMED_SUCCESS' | 'CONFIRMED_FAILURE' | 'UNKNOWN' | 'NOT_TESTED' | 'CANCELLED' | 'EXPIRED' | 'TARGET_NOT_MANAGED'
+      strategy_number: number
+      created_at: number
+      expires_at: number
+    }>
+  }
   event_count: number
   event_capacity: number
     pending_requests: number

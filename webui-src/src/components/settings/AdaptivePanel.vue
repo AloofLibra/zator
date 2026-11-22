@@ -53,6 +53,14 @@ function adaptiveSearchOutcome(outcome: string) {
   return ({ none: 'ещё не запускался', found: 'стратегия найдена', direct: 'подтверждён DIRECT', deep_scheduled: 'DeepSearch запланирован', all_exhausted: 'кандидаты исчерпаны', limit_reached: 'достигнут лимит FastSearch', inconclusive: 'недостаточно данных', stopped_rate_limit: 'пауза из-за ограничения частоты', stopped_infra: 'остановлен из-за инфраструктуры', cancelled: 'отменён' } as Record<string, string>)[outcome] || outcome
 }
 
+function browserAttemptState(state: string) {
+  return ({ QUEUED: 'в очереди', WAIT_NEW_FLOW: 'ожидает нового соединения', FLOW_CONFIRMED: 'соединение и стратегия подтверждены', WAIT_BROWSER_RESULT: 'ожидает результата браузера', PROVISIONAL_SUCCESS: 'предварительный успех', CONFIRMED_SUCCESS: 'подтверждённый успех', CONFIRMED_FAILURE: 'подтверждённый сбой', UNKNOWN: 'результат неизвестен', NOT_TESTED: 'соединение не проверено', CANCELLED: 'отменено', EXPIRED: 'истекло', TARGET_NOT_MANAGED: 'ресурс не управляется Zator' } as Record<string, string>)[state] || state
+}
+
+function browserProtocol(protocol: string) {
+  return ({ tls: 'TCP/TLS', 'googlevideo-tcp': 'Googlevideo TCP', quic: 'QUIC', unknown: 'не определён' } as Record<string, string>)[protocol] || protocol
+}
+
 function probeReason(reason: string) {
   const labels: Record<string, string> = {
     media_ok: 'медиа передано', probe_ok: 'HTTP-ответ получен', timeout: 'таймаут',
@@ -104,6 +112,7 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
     <div v-if="status" class="adaptive-status" aria-live="polite">
       <div><span>Сопряжение</span><strong>{{ status.paired ? 'включено' : status.pairing_expired ? 'срок истёк · выполните rotate в CLI' : 'не настроено' }}</strong></div>
       <div><span>Windows watcher</span><strong>{{ status.agent_online ? 'на связи' : status.agent_last_seen ? `не в сети · ${eventTime(status.agent_last_seen)}` : 'ещё не связывался' }}</strong></div>
+      <div v-if="status.browser"><span>Браузерное расширение</span><strong>{{ status.browser.connected_clients ? `на связи · ${status.browser.connected_clients} из ${status.browser.paired_clients}` : status.browser.paired_clients ? `сопряжено · не в сети (${status.browser.paired_clients})` : 'не сопряжено' }}</strong></div>
       <div><span>Режим</span><strong>{{ modeLabel }}</strong></div>
       <div><span>События</span><strong>{{ status.event_count }} / {{ status.event_capacity }}</strong></div>
       <div><span>Запросы проверки</span><strong>{{ status.pending_requests }}</strong></div>
@@ -115,6 +124,12 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
       <div v-if="status.cleanup_failures" class="settings-alert">
         Есть незавершённая очистка тестовой очереди: {{ status.cleanup_failures }}.
       </div>
+    </div>
+    <div v-if="status?.browser?.active_attempts.length" class="adaptive-last-probe" aria-live="polite">
+      <strong>Браузерные попытки</strong>
+      <span v-for="attempt in status.browser.active_attempts" :key="`${attempt.hostname}|${attempt.scope}|${attempt.created_at}`">
+        <code>{{ attempt.hostname }}</code> · {{ browserProtocol(attempt.protocol) }} · профиль {{ attempt.profile_id }} · {{ attempt.scope }} · стратегия {{ attempt.strategy_number }} · {{ browserAttemptState(attempt.state) }} · {{ attempt.expires_at > Math.floor(Date.now() / 1000) ? `истекает ${eventTime(attempt.expires_at)}` : `начато ${eventTime(attempt.created_at)}` }}
+      </span>
     </div>
     <div v-if="status?.agent_status" class="adaptive-last-probe" aria-live="polite">
       <strong>Watcher · {{ adaptiveStage(status.agent_status.stage) }}</strong>

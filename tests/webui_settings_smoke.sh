@@ -85,6 +85,7 @@ printf 'exit 97\n' > "$TMP_DIR/runtime/z2r_lib/config.sh"
 for file in orchestra_state strategies netcheck; do
   printf ':\n' > "$TMP_DIR/runtime/z2r_lib/$file.sh"
 done
+cp "$REPO_DIR/lib/adaptive_browser.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_browser.sh"
 cat > "$TMP_DIR/runtime/z2r_lib/supersweep.sh" <<'REPORT'
 supersweep_report_json() { printf '{"state":"idle"}\n'; }
 REPORT
@@ -146,6 +147,16 @@ mkdir -p "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 printf '1\t%s\t%s\tSUCCESS\tmedia_ok\tgooglevideo-tcp-media-v1\tstandard\t2\tmark:4\t9\ttrue\ttrue\ttrue\t1048576\t2000000\t524\t12\n' "$(date +%s)" "$(date +%s)" > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status.tsv"
 printf '{"probe_network_bytes":1234567}\n' > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/result.json"
 printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.last"
+browser_client_id=12121212121212121212121212121212
+browser_token_hash="$(printf '%064d' 3)"
+browser_expiry=$(( $(date +%s) + 3600 ))
+printf '1\t%s\t%s\t192.168.1.42\tmark:7\t%s\n' "$browser_client_id" "$browser_token_hash" "$browser_expiry" > "$TMP_DIR/runtime/extra_strats/cache/adaptive/browser-clients.tsv"
+mkdir -p "$TMP_DIR/adaptive/browser/presence" "$TMP_DIR/adaptive/browser/attempts"
+printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/browser/presence/$browser_client_id"
+browser_attempt_id=abababababababababababababababab
+browser_created="$(date +%s)"
+printf '1\t%s\t%s\t192.168.1.42\tmark:7\tbrowser.example.org\t8.8.8.8\t1\ttls\tmain_frame_network_failure\tWAIT_NEW_FLOW\t2\tsha256:%064d\t%s\t%s\t9\n' \
+  "$browser_attempt_id" "$browser_client_id" 0 "$browser_created" "$((browser_created + 45))" > "$TMP_DIR/adaptive/browser/attempts/$browser_attempt_id.tsv"
 printf '%s\n' 'adaptive_rule_remove() { printf "%s|%s|%s|%s\\n" "$@" >> "$ADAPTIVE_RULE_RESET_LOG"; }' > "$TMP_DIR/runtime/z2r_lib/adaptive_rules.sh"
 cp "$REPO_DIR/lib/adaptive_queue.sh" "$TMP_DIR/runtime/z2r_lib/adaptive_queue.base.sh"
 cat > "$TMP_DIR/runtime/z2r_lib/adaptive_queue.sh" <<'ADAPTIVE_QUEUE'
@@ -157,7 +168,7 @@ cat > "$TMP_DIR/runtime/tools/adaptive-pair.sh" <<'ADAPTIVE_CLI'
 printf '%s\n' "$1" >> "$ADAPTIVE_ACTION_LOG"
 ADAPTIVE_CLI
 chmod +x "$TMP_DIR/runtime/tools/adaptive-pair.sh"
-adaptive_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
+adaptive_status="$(Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" Z2R_ADAPTIVE_BROWSER_DIR="$TMP_DIR/adaptive/browser" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
 grep -Fq '"paired":true' <<< "$adaptive_status" || fail 'adaptive pairing status missing'
 grep -Fq '"mode":"TEST_ONLY"' <<< "$adaptive_status" || fail 'adaptive mode missing'
 grep -Fq '"adaptive_rule_flipflops":0' <<< "$adaptive_status" || fail 'adaptive panel omitted the semantic flip-flop count'
@@ -177,6 +188,11 @@ grep -Fq '"hostname":"direct.example.org"' <<< "$adaptive_direct_status" || fail
 grep -Fq '"strategy_number":0' <<< "$adaptive_direct_status" || fail 'adaptive panel did not preserve the DIRECT sentinel'
 grep -Fq '"resources":{' <<< "$adaptive_status" || fail 'adaptive router capacity metrics missing'
 grep -Fq '"agent_online":true' <<< "$adaptive_status" || fail 'adaptive status did not report a recent Windows agent heartbeat'
+grep -Fq '"paired_clients":1,"connected_clients":1' <<< "$adaptive_status" || fail 'adaptive status omitted paired browser presence'
+grep -Fq '"hostname":"browser.example.org"' <<< "$adaptive_status" || fail 'adaptive status omitted an active browser trial'
+grep -Fq '"state":"WAIT_NEW_FLOW","strategy_number":2' <<< "$adaptive_status" || fail 'adaptive status omitted browser trial state/strategy'
+assert_not_contains "$adaptive_status" "$browser_client_id" 'adaptive GET exposed browser client identity'
+assert_not_contains "$adaptive_status" 192.168.1.42 'adaptive GET exposed browser client IP'
 assert_not_contains "$adaptive_status" 'sha256:' 'adaptive GET exposed internal fingerprints'
 assert_not_contains "$adaptive_status" paired-token 'adaptive GET exposed bearer token'
 linux_adaptive_status="$(Z2R_ADAPTIVE_NDM_ROOT="$TMP_DIR/no-ndm" Z2R_ADAPTIVE_DIR="$TMP_DIR/adaptive" REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"

@@ -135,7 +135,7 @@ api_adaptive_get() {
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   local events_file="${Z2R_ADAPTIVE_EVENTS_FILE:-$base/events.tsv}"
   local requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$base/requests.tsv}"
-  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state
+  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state browser_status_json='{"paired_clients":0,"connected_clients":0,"active_attempts":[]}'
   mode="$(cat "$mode_file" 2>/dev/null || printf OFF)"
   case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) ;; *) mode=OFF ;; esac
   if [ "$mode" = AGENT_BETA ]; then
@@ -177,6 +177,7 @@ api_adaptive_get() {
     adaptive_rule_flipflops="$(adaptive_rules_flipflop_total 2>/dev/null || printf 0)"
     [[ "$adaptive_rule_flipflops" =~ ^[0-9]{1,9}$ ]] || adaptive_rule_flipflops=0
   fi
+  browser_status_json="$(adaptive_browser_status_json 2>/dev/null || printf '%s' '{"paired_clients":0,"connected_clients":0,"active_attempts":[]}')"
   agent_file="$base/agent.last"
   if [ -f "$agent_file" ] && [ ! -L "$agent_file" ]; then
     heartbeat_value="$(cat "$agent_file" 2>/dev/null)"
@@ -237,7 +238,50 @@ api_adaptive_get() {
     done
   fi
   printf 'Cache-Control: no-store\r\n'
-  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason,\"ramp_exemptions_supported\":$ramp_exemptions_supported,\"ramp_exemptions_unsupported_reason\":$ramp_exemptions_unsupported_reason,\"ramp_pool_enabled\":$ramp_pool_enabled,\"ramp_pool_consent\":$ramp_pool_consent,\"ramp_pool_basis\":\"$ramp_pool_basis\"}"
+  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"browser\":$browser_status_json,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason,\"ramp_exemptions_supported\":$ramp_exemptions_supported,\"ramp_exemptions_unsupported_reason\":$ramp_exemptions_unsupported_reason,\"ramp_pool_enabled\":$ramp_pool_enabled,\"ramp_pool_consent\":$ramp_pool_consent,\"ramp_pool_basis\":\"$ramp_pool_basis\"}"
+}
+
+adaptive_browser_status_json() {
+  local clients_file="${Z2R_ADAPTIVE_BROWSER_CLIENTS_FILE:-$ZATOR_ROOT/extra_strats/cache/adaptive/browser-clients.tsv}"
+  local state_dir="${Z2R_ADAPTIVE_BROWSER_DIR:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/browser}"
+  local now="$(date +%s)" rows id expiry scope row file ver owner owner_ip host ip profile proto trigger state strategy fingerprint created expires generation extra
+  local paired_count=0 connected_count=0 active_json='' active_count=0 stamp client_rows=0 presence_dir="$state_dir/presence"
+  if [[ -f "$clients_file" && ! -L "$clients_file" && -r "$clients_file" && $(wc -c < "$clients_file") -le 8192 ]]; then
+    while IFS=$'\t' read -r ver id fingerprint owner_ip scope expiry extra; do
+      client_rows=$((client_rows + 1)); (( client_rows <= 8 )) || break
+      [[ "$ver" = 1 && "$id" =~ ^[a-f0-9]{32}$ && "$fingerprint" =~ ^[a-f0-9]{64}$ &&
+         "$owner_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$scope" =~ ^(default|mark:[1-9][0-9]{0,4})$ &&
+         "$expiry" =~ ^[0-9]{10}$ && -z "${extra:-}" ]] || continue
+      (( expiry > now )) || continue
+      paired_count=$((paired_count + 1))
+      file="$state_dir/presence/$id"
+      if [[ ! -L "$state_dir" && ! -L "$presence_dir" && -f "$file" && ! -L "$file" && -r "$file" && $(wc -c < "$file") -le 16 ]]; then
+        stamp="$(cat "$file" 2>/dev/null)"
+        [[ "$stamp" =~ ^[0-9]{10}$ ]] && (( stamp >= now - 90 && stamp <= now + 5 )) && connected_count=$((connected_count + 1))
+      fi
+    done < "$clients_file"
+  fi
+  local attempts_dir="$state_dir/attempts"
+  if [[ ! -L "$state_dir" && -d "$attempts_dir" && ! -L "$attempts_dir" ]]; then
+    for file in "$attempts_dir"/*.tsv; do
+      [[ -f "$file" && ! -L "$file" && -r "$file" && $(wc -c < "$file") -le 2048 ]] || continue
+      IFS=$'\t' read -r ver id owner owner_ip scope host ip profile proto trigger state strategy fingerprint created expires generation extra < "$file" || continue
+      [[ "$ver" = 1 && "$id" =~ ^[a-f0-9]{32}$ && "$owner" =~ ^[a-f0-9]{32}$ &&
+         "$scope" =~ ^(default|mark:[1-9][0-9]{0,4})$ && "$host" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && ${#host} -le 253 &&
+         "$profile" =~ ^[1-5]$ && "$proto" =~ ^(tls|googlevideo-tcp|quic|unknown)$ &&
+         "$state" =~ ^(QUEUED|WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED)$ &&
+         "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && "$created" =~ ^[0-9]{10}$ && "$expires" =~ ^[0-9]{10}$ && -z "${extra:-}" ]] || continue
+      case "$state" in
+        QUEUED|WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS) (( expires > now )) || continue ;;
+        *) (( created >= now - 300 && created <= now + 5 )) || continue ;;
+      esac
+      (( active_count < 32 )) || break
+      [[ -z "$active_json" ]] || active_json+=','
+      active_json+="{\"hostname\":\"$host\",\"profile_id\":$profile,\"protocol\":\"$proto\",\"scope\":\"$scope\",\"state\":\"$state\",\"strategy_number\":$strategy,\"created_at\":$created,\"expires_at\":$expires}"
+      active_count=$((active_count + 1))
+    done
+  fi
+  printf '{"paired_clients":%s,"connected_clients":%s,"active_attempts":[%s]}' "$paired_count" "$connected_count" "$active_json"
 }
 
 api_adaptive_action() {
@@ -347,6 +391,7 @@ fi
 find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{"error":"missing z2r runtime libs"}'; exit 0; }
 . "$LIB_DIR/config.sh"
 [ -f "$LIB_DIR/adaptive_rules.sh" ] && . "$LIB_DIR/adaptive_rules.sh"
+[ -f "$LIB_DIR/adaptive_browser.sh" ] && . "$LIB_DIR/adaptive_browser.sh"
 [ -f "$LIB_DIR/adaptive_queue.sh" ] && . "$LIB_DIR/adaptive_queue.sh"
 . "$LIB_DIR/orchestra_state.sh"
 . "$LIB_DIR/strategies.sh"

@@ -54,6 +54,7 @@ provided="${provided#Bearer }"
 . "$ROOT/z2r_lib/supersweep_probe.sh" 2>/dev/null || fail '503 Service Unavailable' 'strategy plan builder unavailable'
 adaptive_browser_client_auth "$provided" "${REMOTE_ADDR:-}" "$origin" || fail '401 Unauthorized' 'invalid, expired, or out-of-scope browser token'
 client_id="$ADAPTIVE_BROWSER_CLIENT_ID"; scope="$ADAPTIVE_BROWSER_CLIENT_SCOPE"
+adaptive_browser_presence_touch "$client_id" >/dev/null 2>&1 || :
 
 browser_start_trial() {
   local target="$1" trigger="$2" client_id="$3" client_ip="$4" scope="$5"

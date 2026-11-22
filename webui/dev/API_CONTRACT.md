@@ -614,6 +614,7 @@ curl с HTTP/3 из `lib/quic_media.sh` (env `Z2R_QUIC_CURL` → `/opt/bin/curl`
 ### Adaptive rotation — локальное управление
 
 `GET /cgi-bin/settings.cgi?setting=adaptive` возвращает состояние сопряжения (включая отдельный флаг истёкшего токена), online/last-seen heartbeat Windows watcher, режим,
+сводку браузерного расширения (`paired_clients`, недавние API-клиенты за 90 секунд и активные/недавно завершённые попытки без browser client ID, LAN IP или fingerprint),
 ограниченную очередь последних 128 событий (hostname, публичный destination IP,
 profile, protocol, scope и время), подтверждённые действующие локальные правила
 (точный hostname/IP/profile/scope, локальный номер стратегии и срок действия),

@@ -257,6 +257,33 @@ adaptive_browser_client_auth() {
   (( found == 1 ))
 }
 
+# Keep a short browser presence heartbeat on tmpfs for the WebUI. A write is
+# rate-limited per client and never contains the browser token or LAN address.
+adaptive_browser_presence_touch() {
+  [[ $# = 1 && "$1" =~ ^[a-f0-9]{32}$ ]] || return 2
+  local id="$1" now dir file tmp entry count=0 stamp
+  now="$(date +%s)" || return 1
+  dir="$(adaptive_browser_state_dir)/presence"
+  [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$dir" ]] || return 1
+  mkdir -p "$dir" || return 1
+  file="$dir/$id"
+  [[ ! -L "$file" ]] || return 1
+  if [[ -f "$file" ]]; then
+    stamp="$(cat "$file" 2>/dev/null)"
+    [[ "$stamp" =~ ^[0-9]{10}$ ]] && (( stamp >= now - 60 && stamp <= now + 5 )) && return 0
+  fi
+  for entry in "$dir"/*; do
+    [[ -f "$entry" && ! -L "$entry" ]] || continue
+    count=$((count + 1))
+    (( count <= 64 )) || return 1
+    stamp="$(cat "$entry" 2>/dev/null)"
+    if [[ "$stamp" =~ ^[0-9]{10}$ ]] && (( stamp < now - 600 )); then rm -f "$entry"; count=$((count - 1)); fi
+  done
+  (( count < 64 )) || [[ -f "$file" ]] || return 1
+  tmp="$(mktemp "$dir/.presence.XXXXXX")" || return 1
+  (umask 077; printf '%s\n' "$now" > "$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
 adaptive_browser_attempt_file() {
   printf '%s/%s.tsv\n' "$(adaptive_browser_state_dir)/attempts" "$1"
 }

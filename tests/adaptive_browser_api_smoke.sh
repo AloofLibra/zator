@@ -31,6 +31,7 @@ response="$(printf '%s' "$body" | env REQUEST_METHOD=POST CONTENT_TYPE=applicati
   bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"status":"paired"' <<< "$response"
 grep -q '"ranking_opt_in":false' <<< "$response"
+[[ "$(cat "$Z2R_ADAPTIVE_BROWSER_DIR/presence/$client_id")" =~ ^[0-9]{10}$ ]] || { echo 'browser API did not record tmpfs presence' >&2; exit 1; }
 grep -q "Access-Control-Allow-Origin: $origin" <<< "$response"
 preflight="$(env REQUEST_METHOD=OPTIONS HTTP_ORIGIN="$origin" HTTP_ACCESS_CONTROL_REQUEST_METHOD=POST \
   HTTP_ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK=true bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi" </dev/null)"
