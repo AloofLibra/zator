@@ -37,7 +37,7 @@ while (($#)); do
     *) shift ;;
   esac
 done
-printf '%s\n' "$url" > "$Z2R_TEST_STATS_URL"
+printf '%s\n' "$url" >> "$Z2R_TEST_STATS_URL"
 cp "$config" "$Z2R_TEST_STATS_CURL_CONFIG"
 cp "$payload" "$Z2R_TEST_STATS_PAYLOAD"
 [[ "${Z2R_TEST_STATS_FAIL:-0}" != 1 ]] || exit 22
@@ -48,9 +48,15 @@ export PATH="$tmp/mockbin:$PATH"
 export Z2R_TEST_STATS_URL="$tmp/upload-url" Z2R_TEST_STATS_CURL_CONFIG="$tmp/curl.conf" Z2R_TEST_STATS_PAYLOAD="$tmp/payload.json"
 if Z2R_TEST_STATS_FAIL=1 adaptive_browser_stats_flush; then echo 'failed upload was reported as success' >&2; exit 1; fi
 [[ -s "$queue" ]] || { echo 'failed upload discarded queued results' >&2; exit 1; }
+[[ "$(wc -l < "$tmp/upload-url")" = 1 ]] || { echo 'unexpected upload count after one failed request' >&2; exit 1; }
+rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-flow-upload-opt-in"
+adaptive_browser_stats_flush
+[[ -s "$queue" && "$(wc -l < "$tmp/upload-url")" = 1 ]] || { echo 'withdrawn consent allowed upload or discarded local rows' >&2; exit 1; }
+printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-flow-upload-opt-in"
+chmod 600 "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-flow-upload-opt-in"
 adaptive_browser_stats_flush
 [[ ! -e "$queue" ]] || { echo 'accepted upload did not clear sent result' >&2; exit 1; }
-[[ "$(cat "$tmp/upload-url")" = 'https://alooflibra.fun/z4r/adaptive-v2/browser-flow' ]]
+[[ "$(wc -l < "$tmp/upload-url")" = 2 && "$(tail -n1 "$tmp/upload-url")" = 'https://alooflibra.fun/z4r/adaptive-v2/browser-flow' ]]
 grep -q 'Authorization: Bearer test-client-token-' "$tmp/curl.conf"
 grep -q '"provider":"MTS"' "$tmp/payload.json"
 grep -q '"state":"CONFIRMED_SUCCESS"' "$tmp/payload.json"
