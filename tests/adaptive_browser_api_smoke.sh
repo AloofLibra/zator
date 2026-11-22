@@ -132,6 +132,18 @@ rm -f "$ORCH_DIR/scopes/mark_7.tsv"
 printf '1\ttls\t6\n' > "$ORCH_DIR/locked.tsv"
 if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls mark:7 "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi
 rm -f "$ORCH_DIR/locked.tsv"
+mode_file="$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+mode_index=0
+for inactive_mode in OFF OBSERVE TEST_ONLY; do
+  printf '%s\n' "$inactive_mode" > "$mode_file"
+  mode_index=$((mode_index + 1))
+  mode_event="$(printf '%032x' "$mode_index")"
+  mode_body="schema_version=1&action=browser_report_failure&browser_event_id=$mode_event&trigger=main_frame_network_failure&request_class=main_frame&method=GET&failure_class=network_failure&failure_count=1&hostname=mode-$inactive_mode.example.org&observed_at=$(date +%s%3N)"
+  mode_response="$(printf '%s' "$mode_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#mode_body}" \
+    HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+  grep -q '"status":"MODE_DISABLED"' <<< "$mode_response" || { echo "browser API applied a trial while mode=$inactive_mode" >&2; exit 1; }
+done
+printf 'AGENT_BETA\n' > "$mode_file"
 now="$(date +%s)"
 adaptive_browser_attempt_write aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$client_id" 192.168.1.42 default example.org 8.8.8.8 1 tls main_frame_network_failure CONFIRMED_FAILURE 2 - "$now" "$((now + 45))" 1
 adaptive_browser_candidate_confirmed_failed "$client_id" example.org 8.8.8.8 1 tls default 2 "$now"

@@ -61,6 +61,7 @@ browser_start_trial() {
   local candidate_dir args_file candidate fingerprint recipe config_value flow_dir flow_user flow_uid flow_gid flow_owner
   IFS=$'\t' read -r host ip profile proto target_scope seen <<< "$target"
   [[ "$target_scope" = "$scope" && "$client_ip" = "$REMOTE_ADDR" ]] || return 2
+  [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 5
   [[ ! -d "${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}" ]] || return 4
   [[ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" NFQWS2_ENABLE 2>/dev/null | tr -d '"\047')" = 1 ]] || return 5
   case "$proto" in
@@ -197,7 +198,7 @@ case "${f[action]:-}" in
        "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid failure event'
     trigger="${f[trigger]}"; klass="${f[request_class]}"; method="${f[method]}"; failure="${f[failure_class]}"
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null || printf OFF)"
-    [[ "$mode" = AGENT_BETA ]] || send '200 OK' "{\"schema_version\":1,\"status\":\"OBSERVE_ONLY\",\"state\":\"NOT_TESTED\",\"mode\":\"$mode\"}"
+    [[ "$mode" = AGENT_BETA ]] || send '200 OK' "{\"schema_version\":1,\"status\":\"MODE_DISABLED\",\"state\":\"NOT_TESTED\",\"mode\":\"$mode\"}"
     if [[ "$trigger" = main_frame_network_failure ]]; then
       [[ "$klass" = main_frame && "$method" = GET && "$failure" = network_failure && "${f[failure_count]}" = 1 ]] || fail '400 Bad Request' 'main-frame trigger mismatch'
     elif [[ "$trigger" = critical_resource_repeated_failure ]]; then
@@ -207,6 +208,7 @@ case "${f[action]:-}" in
     host="${f[hostname],,}"
     adaptive_browser_host_valid "$host" || fail '400 Bad Request' 'invalid target hostname'
     host="$ADAPTIVE_BROWSER_HOST"
+    [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || send '200 OK' '{"schema_version":1,"status":"MODE_DISABLED","state":"NOT_TESTED"}'
     now_ms="$(( $(date +%s) * 1000 ))"; observed="${f[observed_at]}"
     (( observed <= now_ms + 5000 && observed >= now_ms - 60000 )) || fail '400 Bad Request' 'stale failure event'
     [[ "$trigger" = user_fix || "$failure" = network_failure ]] || send '200 OK' '{"schema_version":1,"status":"MANUAL_ONLY","state":"NOT_TESTED"}'
@@ -229,7 +231,7 @@ case "${f[action]:-}" in
     case "$trial_rc" in
       0) send '200 OK' "$trial_json" ;;
       4) send '200 OK' '{"schema_version":1,"status":"ROUTER_BUSY","state":"NOT_TESTED"}' ;;
-      5) send '200 OK' '{"schema_version":1,"status":"POLICY_BLOCKED","state":"NOT_TESTED"}' ;;
+      5) send '200 OK' '{"schema_version":1,"status":"MODE_DISABLED","state":"NOT_TESTED"}' ;;
       6) send '200 OK' '{"schema_version":1,"status":"MANUAL_LOCKED","state":"NOT_TESTED"}' ;;
       7) send '200 OK' '{"schema_version":1,"status":"ACTIVE_ATTEMPT","state":"WAIT_NEW_FLOW"}' ;;
       *) send '200 OK' '{"schema_version":1,"status":"NO_CANDIDATE","state":"NOT_TESTED"}' ;;
