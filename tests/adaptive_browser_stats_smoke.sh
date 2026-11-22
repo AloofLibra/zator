@@ -24,6 +24,15 @@ queue="$ZATOR_ROOT/extra_strats/cache/adaptive/browser-flow-queue.tsv"
 [[ "$(wc -l < "$queue")" = 1 && "$(stat -c '%a' "$queue")" = 600 ]]
 ! grep -q 'example.org\|8\.8\.8\.8\|192\.168\.1\.42\|browser-token' "$queue"
 
+fallback_attempt=abcdefabcdefabcdefabcdefabcdefac
+adaptive_browser_attempt_write "$fallback_attempt" "$client" 192.168.1.42 mark:7 rr1---sn-a.googlevideo.com 8.8.8.8 5 quic main_frame_network_failure TCP_FALLBACK 2 "$fingerprint" "$now" "$((now + 45))" 2
+adaptive_browser_stats_queue_attempt "$fallback_attempt"
+[[ "$(wc -l < "$queue")" = 2 ]]
+h3_attempt=abcdefabcdefabcdefabcdefabcdefad
+adaptive_browser_attempt_write "$h3_attempt" "$client" 192.168.1.42 mark:7 rr1---sn-a.googlevideo.com 8.8.8.8 5 quic main_frame_network_failure CONFIRMED_SUCCESS 2 "$fingerprint" "$now" "$((now + 45))" 3
+adaptive_browser_stats_queue_attempt "$h3_attempt"
+[[ "$(wc -l < "$queue")" = 3 ]]
+
 cat > "$tmp/mockbin/curl" <<'MOCK_CURL'
 #!/usr/bin/env bash
 set -eu
@@ -61,6 +70,9 @@ grep -q 'Authorization: Bearer test-client-token-' "$tmp/curl.conf"
 grep -q '"provider":"MTS"' "$tmp/payload.json"
 grep -q '"state":"CONFIRMED_SUCCESS"' "$tmp/payload.json"
 grep -q '"protocol_proven":true' "$tmp/payload.json"
+grep -q '"state":"TCP_FALLBACK"' "$tmp/payload.json"
+grep -q '"protocol":"quic"' "$tmp/payload.json"
+grep -q '"protocol":"quic".*"state":"CONFIRMED_SUCCESS".*"protocol_proven":true' "$tmp/payload.json"
 ! grep -Eq 'example\.org|8\.8\.8\.8|192\.168\.1\.42|test-client-token' "$tmp/payload.json"
 rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-flow-upload-opt-in"
 adaptive_browser_stats_flush

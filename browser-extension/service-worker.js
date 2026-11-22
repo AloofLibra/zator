@@ -63,6 +63,30 @@
       return Array.from(new Uint8Array(digest), x => x.toString(16).padStart(2, "0")).join("");
     } catch { return ""; }
   }
+
+  async function readBrowserProtocol(tabId, url) {
+    if (!chrome.scripting?.executeScript) return "";
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId },
+        args: [url],
+        func: targetUrl => {
+          let target;
+          try { target = new URL(targetUrl); } catch { return ""; }
+          const entries = [...performance.getEntriesByType("resource"), ...performance.getEntriesByType("navigation")];
+          const matches = entries.filter(entry => {
+            try {
+              const entryUrl = new URL(entry.name);
+              return entryUrl.origin === target.origin && entryUrl.pathname === target.pathname;
+            } catch { return false; }
+          });
+          return matches.length === 1 ? matches[0].nextHopProtocol || "" : "";
+        }
+      });
+      if (/^h3(?:-\d+)?$/.test(result || "")) return "h3";
+      return ["h2", "h2c", "http/1.0", "http/1.1"].includes(result) ? "tcp" : "";
+    } catch { return ""; }
+  }
   function opaqueId() {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "");
     const bytes = new Uint8Array(16);
@@ -164,6 +188,7 @@
       ? { ...row, router_status: result.data.state || result.data.status || (result.ok ? "received" : result.status),
           router_reason: result.data.reason || null,
           attempt_id: result.data.attempt_id || row.attempt_id || null,
+          candidate_protocol: result.data.candidate?.protocol || row.candidate_protocol || null,
           attempt_expires_at: result.data.expires_at || row.attempt_expires_at || null,
           pending_result: row.pending_result || null }
       : row);
@@ -203,7 +228,7 @@
     });
     if (!status.ok) return { ok: false, state: status.status };
     let latest = await loadState();
-    const terminal = ["CANCELLED", "EXPIRED", "CONFIRMED_SUCCESS", "CONFIRMED_FAILURE", "UNKNOWN"].includes(status.data.state);
+    const terminal = ["CANCELLED", "EXPIRED", "CONFIRMED_SUCCESS", "CONFIRMED_FAILURE", "TCP_FALLBACK", "UNKNOWN"].includes(status.data.state);
     latest.events = latest.events.map(row => row.id === eventId ? {
       ...row,
       router_status: status.data.state || row.router_status,
@@ -221,7 +246,8 @@
     const result = await postRouterForm(latest.config, {
       schema_version: "1", action: "browser_report_result", attempt_id: current.attempt_id,
       browser_event_id: pending.id, result: pending.result, request_class: pending.request_class,
-      browser_ip: pending.browser_ip, observed_at: String(pending.observed_at)
+      browser_ip: pending.browser_ip, observed_at: String(pending.observed_at),
+      ...(pending.browser_protocol ? { browser_protocol: pending.browser_protocol } : {})
     });
     latest = await loadState();
     latest.events = latest.events.map(row => {
@@ -233,6 +259,7 @@
       return {
         ...row,
         attempt_id: result.data.next_attempt?.attempt_id || row.attempt_id,
+        candidate_protocol: result.data.next_attempt?.candidate?.protocol || row.candidate_protocol || null,
         attempt_expires_at: result.data.next_attempt?.expires_at || row.attempt_expires_at,
         router_status: result.data.next_attempt?.state || result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
         router_reason: result.data.reason || row.router_reason || null,
@@ -277,18 +304,31 @@
     return { ok: result.ok, state: result.data.state || result.status };
   }
 
-  async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp, resourceId = "") {
-    if (!safeRemoteIp(browserIp)) return false;
+  function findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId = "") {
     const event = [...state.events].reverse().find(row => row && row.attempt_id && row.hostname === host && row.tab_id === tabId &&
       ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status));
-    if (!event || (event.attempt_expires_at && observedAt > event.attempt_expires_at * 1000)) return false;
+    if (!event || (event.attempt_expires_at && observedAt > event.attempt_expires_at * 1000)) return null;
     if (requestClass !== "main_frame" && !(event.trigger === "critical_resource_repeated_failure" &&
-        requestClass === event.request_class && typeof event.resource_identity === "string" && event.resource_identity === resourceId)) return false;
+        requestClass === event.request_class && typeof event.resource_identity === "string" && event.resource_identity === resourceId)) return null;
+    return event;
+  }
+
+  async function browserProtocolForAttempt(state, host, tabId, requestClass, observedAt, url, resourceId = "") {
+    const event = findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId);
+    if (!event || event.candidate_protocol !== "quic") return "";
+    return readBrowserProtocol(tabId, url);
+  }
+
+  async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp, resourceId = "", browserProtocol = "") {
+    if (!safeRemoteIp(browserIp)) return false;
+    const event = findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId);
+    if (!event) return false;
     const queue = Array.isArray(event.pending_results)
       ? event.pending_results
       : event.pending_result ? [event.pending_result] : [];
     if (queue.length >= 4) return false;
-    queue.push({ id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt });
+    queue.push({ id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt,
+      ...(browserProtocol ? { browser_protocol: browserProtocol } : {}) });
     event.pending_results = queue;
     event.pending_result = queue[0];
     await chrome.storage.local.set({ events: state.events });
@@ -324,10 +364,14 @@
     if (details.method === "GET" && details.statusCode >= 200 && details.statusCode < 400 && details.statusCode !== 304 && details.fromCache !== true) {
       const state = await loadState();
       if (details.type === "main_frame") {
-        await captureAttemptResult(state, host, details.tabId, "network_success", "main_frame", Date.now(), details.ip);
+        const observedAt = Date.now();
+        const protocol = await browserProtocolForAttempt(state, host, details.tabId, "main_frame", observedAt, details.url);
+        await captureAttemptResult(state, host, details.tabId, "network_success", "main_frame", observedAt, details.ip, "", protocol);
       } else if (RESOURCE_TYPES.has(details.type)) {
         const identity = await resourceIdentity(details.url);
-        await captureAttemptResult(state, host, details.tabId, "network_success", details.type, Date.now(), details.ip, identity);
+        const observedAt = Date.now();
+        const protocol = await browserProtocolForAttempt(state, host, details.tabId, details.type, observedAt, details.url, identity);
+        await captureAttemptResult(state, host, details.tabId, "network_success", details.type, observedAt, details.ip, identity, protocol);
       }
       return;
     }
@@ -367,6 +411,6 @@
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt };
+    globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, readBrowserProtocol, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt };
   }
 })();

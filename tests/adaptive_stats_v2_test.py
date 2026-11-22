@@ -208,6 +208,9 @@ browser_db = FakeRedis()
 assert adaptive.ingest_browser_batch(browser_db, browser, SECRET, now=NOW, source_digest=browser_source) == 1
 assert adaptive.ingest_browser_batch(browser_db, browser, SECRET, now=NOW, source_digest=browser_source) == 0
 assert not browser_db.sets.get("z4r:adaptive:v2:dimensions:active"), "browser feedback leaked into probe rankings"
+browser_fallback = browser_batch(results=[{"profile_id": 5, "protocol": "quic", "fingerprint": FP1,
+    "state": "TCP_FALLBACK", "treatment_variant": "standard", "protocol_proven": False, "confidence": "high"}])
+assert adaptive.validate_browser_batch(browser_fallback, SECRET, now=NOW, source_digest=browser_source)["rows"][0]["state"] == "TCP_FALLBACK"
 browser_conflict = browser_batch(results=[{"profile_id": 5, "protocol": "quic", "fingerprint": FP1,
     "state": "CONFIRMED_SUCCESS", "treatment_variant": "standard", "protocol_proven": False, "confidence": "high"}])
 try:

@@ -37,7 +37,7 @@ for pair in "${pairs[@]}"; do
   [[ "$pair" = *=* && "$pair" != *%* && "$pair" != *+* ]] || fail '400 Bad Request' 'invalid form encoding'
   key="${pair%%=*}"; value="${pair#*=}"
   [[ "$key" =~ ^[a-z_]+$ && "$value" =~ ^[a-zA-Z0-9_.:-]*$ ]] || fail '400 Bad Request' 'invalid form field'
-  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_transport|failure_count|observed_at|attempt_id|result|browser_ip) ;;
+  case "$key" in schema_version|action|browser_event_id|trigger|request_class|hostname|method|failure_class|failure_transport|failure_count|observed_at|attempt_id|result|browser_ip|browser_protocol) ;;
     *) fail '400 Bad Request' 'unknown form field' ;; esac
   [[ -n "$key" && ! ${f[$key]+present} ]] || fail '400 Bad Request' 'duplicate form field'
   f[$key]="$value"
@@ -261,7 +261,7 @@ case "${f[action]:-}" in
     [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
     now="$(date +%s)"
     if (( now > expires )); then
-      case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED) ;;
+      case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED) ;;
         *) adaptive_browser_attempt_transition "$attempt_id" "$state" EXPIRED || fail '409 Conflict' 'attempt changed concurrently'; adaptive_browser_trial_remove "$attempt_id" "$generation" || :; state=EXPIRED ;;
       esac
     elif [[ "${f[action]}" = browser_cancel_attempt ]]; then
@@ -278,7 +278,7 @@ case "${f[action]:-}" in
         fi
       fi
     fi
-    case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
+    case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || : ;;
     esac
     if [[ "$proto" = googlevideo-tcp ]]; then
@@ -294,30 +294,45 @@ case "${f[action]:-}" in
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
     ;;
   browser_report_result)
-    [[ ${#f[@]} -eq 8 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
+    [[ ( ${#f[@]} -eq 8 || ${#f[@]} -eq 9 ) && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
        "${f[result]:-}" =~ ^(network_success|network_failure)$ && "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ &&
-       "${f[browser_ip]:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid browser result'
+       "${f[browser_ip]:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ &&
+       ( -z "${f[browser_protocol]:-}" || "${f[browser_protocol]}" =~ ^(h3|tcp)$ ) ]] || fail '400 Bad Request' 'invalid browser result'
     awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; exit 0} {exit 1}' <<< "${f[browser_ip]}" || fail '400 Bad Request' 'invalid browser IP'
     row="$(adaptive_browser_attempt_read "${f[attempt_id]}")" || fail '404 Not Found' 'attempt not found'
     IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy attempt_fingerprint created expires generation extra <<< "$row"
     [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
     if [[ "${f[request_class]}" != main_frame ]]; then
-      [[ "$trigger" = critical_resource_repeated_failure && "${f[request_class]}" =~ ^(script|xmlhttprequest|media)$ && "$proto" != quic ]] || fail '400 Bad Request' 'critical-resource result does not match this attempt'
+      [[ "$trigger" = critical_resource_repeated_failure && "${f[request_class]}" =~ ^(script|xmlhttprequest|media)$ ]] || fail '400 Bad Request' 'critical-resource result does not match this attempt'
+    fi
+    [[ "${f[observed_at]}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid result time'
+    now_ms="$(( $(date +%s) * 1000 ))"
+    if [[ "$proto" = quic && "${f[browser_protocol]:-}" = tcp ]]; then
+      [[ "${f[result]}" = network_success && "${f[browser_ip]}" = "$ip" &&
+         "${f[observed_at]}" -ge "$((created * 1000))" && "${f[observed_at]}" -le "$((expires * 1000))" &&
+         "${f[observed_at]}" -le "$((now_ms + 5000))" &&
+         "$state" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS)$ ]] || fail '400 Bad Request' 'invalid TCP fallback evidence'
+      result_claim="$(adaptive_browser_result_claim "$client_id" "$attempt_id" "${f[browser_event_id]}" "${f[result]}" "$(date +%s)")" || {
+        result_rc=$?; [[ "$result_rc" = 3 ]] && send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"TCP_FALLBACK\",\"status\":\"DUPLICATE\"}"
+        fail '503 Service Unavailable' 'browser result journal unavailable'
+      }
+      adaptive_browser_attempt_transition "$attempt_id" "$state" TCP_FALLBACK || fail '409 Conflict' 'attempt changed concurrently'
+      adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
+      adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
+      send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"TCP_FALLBACK\",\"status\":\"TCP_FALLBACK\",\"reason\":\"browser_negotiated_tcp\"}"
     fi
     if [[ "$state" = WAIT_NEW_FLOW ]]; then browser_confirm_flow || fail '409 Conflict' 'new production flow with selected strategy is not confirmed'; state=FLOW_CONFIRMED; fi
     if [[ "$state" = FLOW_CONFIRMED ]]; then
       adaptive_browser_attempt_transition "$attempt_id" FLOW_CONFIRMED WAIT_BROWSER_RESULT || fail '409 Conflict' 'attempt changed concurrently'
       state=WAIT_BROWSER_RESULT
     fi
-    [[ "${f[observed_at]}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid result time'
-    now_ms="$(( $(date +%s) * 1000 ))"
     flow_row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || fail '409 Conflict' 'production flow evidence is unavailable'
     IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_extra <<< "$flow_row"
     [[ "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" && "$flow_host" = "$host" && "$flow_ip" = "$ip" && "${f[browser_ip]}" = "$flow_ip" &&
        "$flow_profile" = "$profile" && "$flow_proto" = "$proto" && "$flow_strategy" = "$strategy" && "$flow_fingerprint" = "$attempt_fingerprint" ]] || fail '409 Conflict' 'production flow does not match this attempt'
     (( f[observed_at] >= selected_at * 1000 && f[observed_at] <= now_ms + 5000 && f[observed_at] <= expires * 1000 )) || fail '400 Bad Request' 'result is outside the confirmed flow window'
     [[ "$state" = WAIT_BROWSER_RESULT || "$state" = PROVISIONAL_SUCCESS ]] || fail '409 Conflict' 'attempt is not waiting for a browser result'
-    if [[ "$proto" = quic ]]; then
+    if [[ "$proto" = quic && "${f[browser_protocol]:-}" != h3 ]]; then
       adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || fail '409 Conflict' 'attempt changed concurrently'
       adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
@@ -355,7 +370,7 @@ case "${f[action]:-}" in
         ;;
       *) fail '409 Conflict' 'attempt is not waiting for this result' ;;
     esac
-    case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
+    case "$state" in CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || : ;;
     esac
     if [[ "$state" = CONFIRMED_FAILURE ]]; then

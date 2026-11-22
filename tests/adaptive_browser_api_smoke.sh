@@ -425,4 +425,39 @@ grep -q '"reason":"h3_protocol_evidence_unavailable"' <<< "$quic_result_response
 if grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$quic_result_response"; then
   echo 'browser success on a QUIC trial was incorrectly counted as H3 success' >&2; exit 1;
 fi
+
+# A browser timing entry that proves TCP fallback ends the QUIC trial without
+# requiring a QUIC Initial, promoting the strategy, or advancing a candidate.
+fallback_attempt=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+fallback_generation=11
+fallback_now="$(date +%s)"
+fallback_expires=$((fallback_now + 30))
+adaptive_browser_attempt_write "$fallback_attempt" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic main_frame_network_failure WAIT_NEW_FLOW "$quic_strategy" "$quic_fingerprint" "$fallback_now" "$fallback_expires" "$fallback_generation"
+adaptive_browser_trial_add "$fallback_attempt" "$fallback_generation" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic "$quic_strategy" "$quic_fingerprint" "$fallback_now" "$fallback_expires"
+fallback_body="schema_version=1&action=browser_report_result&attempt_id=$fallback_attempt&browser_event_id=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdce&result=network_success&request_class=main_frame&browser_ip=8.8.8.8&observed_at=$((fallback_now * 1000))&browser_protocol=tcp"
+fallback_response="$(printf '%s' "$fallback_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#fallback_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"TCP_FALLBACK"' <<< "$fallback_response"
+grep -q '"reason":"browser_negotiated_tcp"' <<< "$fallback_response"
+[[ "$(adaptive_browser_attempt_read "$fallback_attempt" | cut -f11)" = TCP_FALLBACK ]]
+! grep -q "$fallback_attempt" "$(adaptive_browser_trials_file)"
+if grep -q '"state":"NEXT_CANDIDATE"' <<< "$fallback_response"; then
+  echo 'TCP fallback must not advance the QUIC candidate' >&2; exit 1;
+fi
+
+# H3 timing plus the matching production QUIC Initial permits the normal
+# provisional success path; browser success without this field stays UNKNOWN.
+h3_attempt=dededededededededededededededede
+h3_generation=12
+h3_now="$(date +%s)"
+h3_expires=$((h3_now + 30))
+adaptive_browser_attempt_write "$h3_attempt" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic main_frame_network_failure WAIT_NEW_FLOW "$quic_strategy" "$quic_fingerprint" "$h3_now" "$h3_expires" "$h3_generation"
+adaptive_browser_trial_add "$h3_attempt" "$h3_generation" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic "$quic_strategy" "$quic_fingerprint" "$h3_now" "$h3_expires"
+printf '1\t%s\t%s\t%s\tmark:7\t%s\t8.8.8.8\t5\tquic\t%s\t%s\t%s\t%s\n' \
+  "$h3_attempt" "$h3_generation" "$client_id" "$quic_host" "$quic_strategy" "$quic_fingerprint" "$h3_now" "$h3_now" > "$flow_dir/$h3_attempt.$h3_generation.tsv"
+h3_body="schema_version=1&action=browser_report_result&attempt_id=$h3_attempt&browser_event_id=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee&result=network_success&request_class=main_frame&browser_ip=8.8.8.8&observed_at=$((h3_now * 1000))&browser_protocol=h3"
+h3_response="$(printf '%s' "$h3_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#h3_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"PROVISIONAL_SUCCESS"' <<< "$h3_response"
+! grep -q '"status":"PROTOCOL_UNKNOWN"' <<< "$h3_response"
 echo 'adaptive browser API smoke: OK'

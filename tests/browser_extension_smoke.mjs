@@ -16,13 +16,16 @@ assert.doesNotMatch(popup, /No automatic reloads/i)
 assert.match(popupScript, /UNKNOWN: "outcome unknown; no candidate advanced"/)
 assert.match(popupScript, /multiple recent connections match; no trial started/)
 assert.match(popupScript, /NOT_TESTED: "not counted; no confirmed new flow"/)
+assert.match(popupScript, /TCP_FALLBACK: "browser used TCP; QUIC strategy was not tested"/)
 assert.ok(manifest.permissions.includes('webRequest'))
+assert.ok(manifest.permissions.includes('scripting'))
 assert.ok(manifest.optional_host_permissions.includes('<all_urls>'))
 
 const listeners = { failure: null, completed: null, message: null }
 const routerToken = 'a'.repeat(48)
 const sent = []
 const reloads = []
+let pageTimingEntries = []
 let currentTabUrl = 'https://video.example.test/watch?v=secret'
 const fakeRouter = createServer(async (request, response) => {
   const chunks = []
@@ -73,11 +76,13 @@ const chrome = {
     get: async id => ({ id, url: currentTabUrl }),
     reload: async (id, options) => { reloads.push({ id, options }) }
   },
+  scripting: { executeScript: async spec => [{ result: spec.func(...spec.args) }] },
   runtime: { onMessage: { addListener: fn => { listeners.message = fn } } }
 }
 const context = {
   chrome, URL, URLSearchParams, AbortController, setTimeout, clearTimeout,
   crypto: webcrypto,
+  performance: { getEntriesByType: type => pageTimingEntries.filter(entry => entry.entryType === type) },
   TextEncoder,
   fetch: globalThis.fetch,
   __Z2R_BROWSER_TEST__: {}
@@ -98,6 +103,13 @@ assert.equal(api.failureClass('net::ERR_SSL_CLIENT_AUTH_CERT_NEEDED'), '')
 assert.equal(api.failureTransport('net::ERR_QUIC_HANDSHAKE_FAILED'), 'quic')
 assert.equal(api.failureTransport('net::ERR_SSL_HANDSHAKE_NOT_COMPLETED'), 'tls')
 assert.equal(api.failureTransport('net::ERR_CONNECTION_RESET'), 'unknown')
+pageTimingEntries = [{ entryType: 'resource', name: 'https://quic.example.test/video?sig=private', nextHopProtocol: 'h3' }]
+assert.equal(await api.readBrowserProtocol(2, 'https://quic.example.test/video?sig=private'), 'h3')
+pageTimingEntries.push({ entryType: 'resource', name: 'https://quic.example.test/video?sig=other', nextHopProtocol: 'h2' })
+assert.equal(await api.readBrowserProtocol(2, 'https://quic.example.test/video?sig=private'), '', 'ambiguous timing entries must not prove protocol')
+pageTimingEntries = [{ entryType: 'resource', name: 'https://quic.example.test/video?sig=private', nextHopProtocol: 'h2' }]
+assert.equal(await api.readBrowserProtocol(2, 'https://quic.example.test/video?sig=private'), 'tcp')
+pageTimingEntries = []
 assert.equal(api.safeHost('https://router.home.arpa/path'), '')
 
 const main = await api.rememberFailure({ tabId: 2, documentId: 'doc-a', requestId: 'req-a', type: 'main_frame', method: 'GET',
@@ -237,6 +249,17 @@ await api.syncAttempt('f'.repeat(32))
 assert.equal(stored.events.at(-1).router_status, 'EXPIRED')
 assert.deepEqual(stored.events.at(-1).pending_results, [], 'expired attempts must discard queued browser outcomes')
 assert.equal(stored.events.at(-1).pending_result, null)
+
+stored.events.push({ id: 'y'.repeat(32), hostname: 'quic.example.test', tab_id: 2, attempt_id: '2'.repeat(32),
+  trigger: 'main_frame_network_failure', request_class: 'main_frame', method: 'GET', failure_class: 'network_failure',
+  candidate_protocol: 'quic', router_status: 'FLOW_CONFIRMED' })
+pageTimingEntries = [{ entryType: 'navigation', name: 'https://quic.example.test/video?sig=private', nextHopProtocol: 'h3' }]
+await api.recordHttpResponse({ tabId: 2, type: 'main_frame', method: 'GET', statusCode: 200, fromCache: false,
+  url: 'https://quic.example.test/video?sig=private', ip: '8.8.8.8' })
+await api.queueSyncAttempt('y'.repeat(32))
+const quicBrowserResult = sent.findLast(row => new URLSearchParams(row.body).get('action') === 'browser_report_result' &&
+  new URLSearchParams(row.body).get('attempt_id') === '2'.repeat(32))
+assert.equal(new URLSearchParams(quicBrowserResult.body).get('browser_protocol'), 'h3', 'only active QUIC attempts should report H3 timing evidence')
 
 stored.events.push({ id: 'e'.repeat(32), hostname: 'rr1---sn-a.googlevideo.com', tab_id: 2,
   attempt_id: 'f'.repeat(32), router_status: 'WAIT_NEW_FLOW' })

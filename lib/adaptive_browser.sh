@@ -302,12 +302,14 @@ adaptive_browser_stats_queue_attempt() {
   local -a rows=()
   row="$(adaptive_browser_attempt_read "$1")" || return 1
   IFS=$'\t' read -r ver id client client_ip scope host ip profile proto trigger state strategy fingerprint created expires generation extra <<< "$row"
-  [[ "$ver" = 1 && "$id" = "$1" && "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+  [[ "$ver" = 1 && "$id" = "$1" && "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
      "$created" =~ ^[0-9]{10}$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ && -z "${extra:-}" ]] || return 0
   case "$proto:$profile" in tls:[1-4]) protocol=tls ;; googlevideo-tcp:2) protocol=googlevideo-tcp ;; quic:5) protocol=quic ;; *) return 0 ;; esac
   case "$state:$protocol" in
     CONFIRMED_SUCCESS:tls|CONFIRMED_SUCCESS:googlevideo-tcp) proven=true; confidence=high ;;
+    CONFIRMED_SUCCESS:quic) proven=true; confidence=high ;;
     CONFIRMED_FAILURE:tls|CONFIRMED_FAILURE:googlevideo-tcp) proven=true; confidence=medium ;;
+    TCP_FALLBACK:quic) confidence=high ;;
   esac
   queue_dir="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive"
   queue="$queue_dir/browser-flow-queue.tsv"
@@ -325,7 +327,7 @@ adaptive_browser_stats_queue_attempt() {
       IFS=$'\t' read -r oldver oldid observed oldprofile oldproto oldfp oldstate oldtreatment oldproven oldconfidence extra <<< "$oldrow"
       [[ "$oldver" = 1 && "$oldid" =~ ^[a-f0-9]{32}$ && "$observed" =~ ^[0-9]{10}$ && "$oldprofile" =~ ^[1-5]$ &&
          "$oldproto" =~ ^(tls|googlevideo-tcp|quic)$ && "$oldfp" =~ ^sha256:[a-f0-9]{64}$ &&
-         "$oldstate" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+         "$oldstate" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
          "$oldtreatment" = standard && "$oldproven" =~ ^(true|false)$ && "$oldconfidence" =~ ^(low|medium|high)$ && -z "${extra:-}" ]] || continue
       [[ "$oldid" != "$id" ]] || continue
       rows+=("$oldrow")
@@ -376,7 +378,7 @@ adaptive_browser_stats_flush() {
   while IFS=$'\t' read -r ver id observed profile protocol fingerprint state treatment proven confidence extra; do
     [[ "$ver" = 1 && "$id" =~ ^[a-f0-9]{32}$ && "$observed" =~ ^[0-9]{10}$ && "$profile" =~ ^[1-5]$ &&
        "$protocol" =~ ^(tls|googlevideo-tcp|quic)$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
-       "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+       "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
        "$treatment" = standard && "$proven" =~ ^(true|false)$ && "$confidence" =~ ^(low|medium|high)$ && -z "${extra:-}" ]] || continue
     (( observed >= now - 604800 && observed <= now + 300 )) || continue
     key="$profile|$protocol|$fingerprint|$state|$treatment|$proven|$confidence"
@@ -419,7 +421,7 @@ adaptive_browser_stats_flush() {
   while IFS=$'\t' read -r ver id observed profile protocol fingerprint state treatment proven confidence extra; do
     [[ "$ver" = 1 && "$id" =~ ^[a-f0-9]{32}$ && "$observed" =~ ^[0-9]{10}$ && "$profile" =~ ^[1-5]$ &&
        "$protocol" =~ ^(tls|googlevideo-tcp|quic)$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
-       "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+       "$state" =~ ^(CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
        "$treatment" = standard && "$proven" =~ ^(true|false)$ && "$confidence" =~ ^(low|medium|high)$ && -z "${extra:-}" ]] || continue
     sent_id=0
     for request_id in "${selected_ids[@]}"; do [[ "$request_id" = "$id" ]] && { sent_id=1; break; }; done
@@ -741,7 +743,7 @@ adaptive_browser_attempt_write() {
      ( "$ip" = - || "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ) &&
      "$profile" =~ ^[0-5]$ && ( "$proto" = tls || "$proto" = googlevideo-tcp || "$proto" = quic || "$proto" = unknown ) &&
      "$trigger" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
-     "$state" =~ ^(QUEUED|TEST_ONLY|TARGET_NOT_MANAGED|WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
+     "$state" =~ ^(QUEUED|TEST_ONLY|TARGET_NOT_MANAGED|WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED)$ &&
      "$strategy" =~ ^(-|0|[1-9][0-9]{0,2})$ &&
      ( "$fingerprint" = - || "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ) &&
      "$created" =~ ^[0-9]{1,10}$ && "$expires" =~ ^[0-9]{1,10}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ ]] || return 2
@@ -762,13 +764,13 @@ adaptive_browser_attempt_write() {
 # Compare-and-swap state transition: an older tab cannot overwrite a newer
 # terminal outcome after reading a stale attempt snapshot.
 adaptive_browser_attempt_transition() {
-  [[ $# = 3 && "$1" =~ ^[a-f0-9]{32}$ && "$2" =~ ^(QUEUED|WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED)$ &&
-     "$3" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED)$ ]] || return 2
+  [[ $# = 3 && "$1" =~ ^[a-f0-9]{32}$ && "$2" =~ ^(QUEUED|WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED)$ &&
+     "$3" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS|CONFIRMED_SUCCESS|CONFIRMED_FAILURE|TCP_FALLBACK|UNKNOWN|NOT_TESTED|CANCELLED|EXPIRED|TARGET_NOT_MANAGED)$ ]] || return 2
   local id="$1" expected="$2" next="$3" file dir lock row ver attempt client ip scope host dst profile proto trigger state strategy fp created expires generation extra tries=0
   file="$(adaptive_browser_attempt_file "$id")"; dir="$(dirname "$file")"; lock="$file.lock"
   [[ -r "$file" && ! -L "$file" && ! -L "$dir" && $(wc -c < "$file") -le 2048 ]] || return 1
   case "$expected:$next" in
-    QUEUED:WAIT_NEW_FLOW|QUEUED:TARGET_NOT_MANAGED|QUEUED:CANCELLED|QUEUED:EXPIRED|WAIT_NEW_FLOW:FLOW_CONFIRMED|WAIT_NEW_FLOW:UNKNOWN|WAIT_NEW_FLOW:NOT_TESTED|WAIT_NEW_FLOW:CANCELLED|WAIT_NEW_FLOW:EXPIRED|FLOW_CONFIRMED:WAIT_BROWSER_RESULT|FLOW_CONFIRMED:CONFIRMED_FAILURE|FLOW_CONFIRMED:UNKNOWN|FLOW_CONFIRMED:CANCELLED|FLOW_CONFIRMED:EXPIRED|WAIT_BROWSER_RESULT:PROVISIONAL_SUCCESS|WAIT_BROWSER_RESULT:CONFIRMED_FAILURE|WAIT_BROWSER_RESULT:UNKNOWN|WAIT_BROWSER_RESULT:CANCELLED|WAIT_BROWSER_RESULT:EXPIRED|PROVISIONAL_SUCCESS:CONFIRMED_SUCCESS|PROVISIONAL_SUCCESS:CONFIRMED_FAILURE|PROVISIONAL_SUCCESS:UNKNOWN|PROVISIONAL_SUCCESS:EXPIRED) ;;
+    QUEUED:WAIT_NEW_FLOW|QUEUED:TARGET_NOT_MANAGED|QUEUED:CANCELLED|QUEUED:EXPIRED|WAIT_NEW_FLOW:FLOW_CONFIRMED|WAIT_NEW_FLOW:TCP_FALLBACK|WAIT_NEW_FLOW:UNKNOWN|WAIT_NEW_FLOW:NOT_TESTED|WAIT_NEW_FLOW:CANCELLED|WAIT_NEW_FLOW:EXPIRED|FLOW_CONFIRMED:WAIT_BROWSER_RESULT|FLOW_CONFIRMED:TCP_FALLBACK|FLOW_CONFIRMED:CONFIRMED_FAILURE|FLOW_CONFIRMED:UNKNOWN|FLOW_CONFIRMED:CANCELLED|FLOW_CONFIRMED:EXPIRED|WAIT_BROWSER_RESULT:PROVISIONAL_SUCCESS|WAIT_BROWSER_RESULT:TCP_FALLBACK|WAIT_BROWSER_RESULT:CONFIRMED_FAILURE|WAIT_BROWSER_RESULT:UNKNOWN|WAIT_BROWSER_RESULT:CANCELLED|WAIT_BROWSER_RESULT:EXPIRED|PROVISIONAL_SUCCESS:CONFIRMED_SUCCESS|PROVISIONAL_SUCCESS:TCP_FALLBACK|PROVISIONAL_SUCCESS:CONFIRMED_FAILURE|PROVISIONAL_SUCCESS:UNKNOWN|PROVISIONAL_SUCCESS:EXPIRED) ;;
     *) return 2 ;;
   esac
   while ! (umask 077; mkdir "$lock") 2>/dev/null; do tries=$((tries + 1)); (( tries < 20 )) || return 1; sleep 0.05; done

@@ -35,6 +35,7 @@ async function render() {
     PROVISIONAL_SUCCESS: "provisional recovery",
     CONFIRMED_SUCCESS: "recovery confirmed",
     CONFIRMED_FAILURE: "failure confirmed",
+    TCP_FALLBACK: "browser used TCP; QUIC strategy was not tested",
     UNKNOWN: "outcome unknown; no candidate advanced",
     NOT_TESTED: "not counted; no confirmed new flow",
     TARGET_NOT_MANAGED: "target is not managed by Zator",
