@@ -147,6 +147,7 @@ mkdir -p "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 printf '1\t%s\t%s\tSUCCESS\tmedia_ok\tgooglevideo-tcp-media-v1\tstandard\t2\tmark:4\t9\ttrue\ttrue\ttrue\t1048576\t2000000\t524\t12\n' "$(date +%s)" "$(date +%s)" > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status.tsv"
 printf '{"probe_network_bytes":1234567}\n' > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/result.json"
 printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.last"
+printf '1\trr1.googlevideo.com\t94.0.1.5\tdefault\t2\t1\t1\t1\t%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/quic-health.tsv"
 browser_client_id=12121212121212121212121212121212
 browser_token_hash="$(printf '%064d' 3)"
 browser_expiry=$(( $(date +%s) + 3600 ))
@@ -174,6 +175,7 @@ grep -Fq '"mode":"TEST_ONLY"' <<< "$adaptive_status" || fail 'adaptive mode miss
 grep -Fq '"adaptive_rule_flipflops":0' <<< "$adaptive_status" || fail 'adaptive panel omitted the semantic flip-flop count'
 grep -Fq '"event_count":2' <<< "$adaptive_status" || fail 'adaptive event count missing'
 grep -Fq '"pending_requests":0' <<< "$adaptive_status" || fail 'adaptive request count missing'
+grep -Fq '"quic_health":[{"hostname":"rr1.googlevideo.com","destination_ip":"94.0.1.5","scope":"default","initials":2,"retries":1,"response_observed":true,"possible_tcp_fallback":true' <<< "$adaptive_status" || fail 'adaptive panel omitted passive QUIC health data'
 grep -Fq '"hostname":"cdn.example.org"' <<< "$adaptive_status" || fail 'adaptive queue details missing'
 grep -Fq '"strategy_number":7' <<< "$adaptive_status" || fail 'adaptive exact rule details missing'
 grep -Fq '"last_probe":{"observed_at":' <<< "$adaptive_status" || fail 'adaptive status omitted the last probe summary'

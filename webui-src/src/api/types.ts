@@ -120,6 +120,17 @@ export interface AdaptiveStatus {
       expires_at: number
     }>
   }
+  quic_health?: Array<{
+    hostname: string
+    destination_ip: string
+    scope: string
+    initials: number
+    retries: number
+    response_observed: boolean
+    possible_tcp_fallback: boolean
+    observed_at: number
+    confidence: 'low'
+  }>
   event_count: number
   event_capacity: number
     pending_requests: number
@@ -137,11 +148,11 @@ export interface AdaptiveStatus {
       hostname: string
       destination_ip: string
       profile_id: number
-      protocol: 'tls' | 'googlevideo-tcp'
-      scope: string
+      protocol: 'tls' | 'googlevideo-tcp' | 'quic'
+      scope: 'default' | 'shared' | string
       strategy_number: number
       treatment_variant: 'standard'
-      evidence: 'route_verified'
+      evidence: 'route_verified' | 'browser_confirmed_shared'
       expires: number
       ttl_seconds: number
     }>

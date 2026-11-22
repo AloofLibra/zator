@@ -189,6 +189,7 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADA
   bash "$tmp/zator/tools/adaptive-pair.sh" observe > "$tmp/observe.out"
 [[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OBSERVE &&
    "$(stat -c '%a' "$tmp/runs/events.tsv")" = 600 &&
+   "$(stat -c '%a' "$tmp/runs/quic-health.tsv")" = 600 &&
    "$(cat "$tmp/observe.out")" == *'strategy selection remains unchanged'* ]] || {
   echo 'observe mode did not create a private queue and explicit mode file' >&2; exit 1;
 }
@@ -196,9 +197,14 @@ printf '1\tseen\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n' "$now" >
 events="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
   bash "$tmp/zator/tools/adaptive-pair.sh" events)"
 [[ "$events" == *'cdn.example.org'* && "$events" == *'93.184.216.34'* ]] || { echo 'events command omitted a valid observation' >&2; exit 1; }
+printf '1\trr1.googlevideo.com\t93.184.216.34\tmark:4\t2\t1\t1\t1\t%s\n' "$now" > "$tmp/runs/quic-health.tsv"
+quic_health="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" quic-health)"
+[[ "$quic_health" == *'rr1.googlevideo.com'* && "$quic_health" == *$'\t1\t1\t1\t'* ]] || { echo 'QUIC Health Monitor status command omitted a valid passive row' >&2; exit 1; }
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
   bash "$tmp/zator/tools/adaptive-pair.sh" clear-events >/dev/null
 [[ ! -s "$tmp/runs/events.tsv" && "$(stat -c '%a' "$tmp/runs/events.tsv")" = 400 &&
+   ! -s "$tmp/runs/quic-health.tsv" && "$(stat -c '%a' "$tmp/runs/quic-health.tsv")" = 400 &&
    "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF ]] || { echo 'clear-events did not empty and pause the queue' >&2; exit 1; }
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
   bash "$tmp/zator/tools/adaptive-pair.sh" pause >/dev/null
@@ -214,7 +220,7 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pa
 printf 'failed\n' > "$tmp/runs/0123456789abcdef0123456789abcdef/state"
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
   bash "$tmp/zator/tools/adaptive-pair.sh" disable >/dev/null
-[[ ! -e "$tmp/zator/extra_strats/cache/adaptive/token" && ! -e "$tmp/zator/extra_strats/cache/adaptive/token.expires" && "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF && ! -e "$tmp/runs/events.tsv" &&
+[[ ! -e "$tmp/zator/extra_strats/cache/adaptive/token" && ! -e "$tmp/zator/extra_strats/cache/adaptive/token.expires" && "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = OFF && ! -e "$tmp/runs/events.tsv" && ! -e "$tmp/runs/quic-health.tsv" &&
    -e "$tmp/runs/0123456789abcdef0123456789abcdef/cancel" &&
    ! -s "$tmp/runs/rules.tsv" ]] || { echo 'disable did not revoke/cancel/clear state' >&2; exit 1; }
 

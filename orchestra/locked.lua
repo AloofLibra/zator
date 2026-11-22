@@ -61,14 +61,22 @@ do
   end
 end
 local ADAPTIVE_EVENTS_PATH = os.getenv("Z2R_ADAPTIVE_EVENTS_FILE") or "/tmp/z2r-adaptive/events.tsv"
+local ADAPTIVE_QUIC_HEALTH_PATH = os.getenv("Z2R_ADAPTIVE_QUIC_HEALTH_FILE")
+  or ((os.getenv("Z2R_ADAPTIVE_DIR") or "/tmp/z2r-adaptive") .. "/quic-health.tsv")
 local ADAPTIVE_RAMP_TARGETS_PATH = os.getenv("Z2R_ADAPTIVE_RAMP_TARGETS_FILE") or "/tmp/z2r-adaptive/ramp-targets.tsv"
-local ADAPTIVE_OBSERVE_ENABLED = ADAPTIVE_MODE == "OBSERVE" or ADAPTIVE_MODE == "TEST_ONLY" or ADAPTIVE_MODE == "AGENT_BETA"
+local ADAPTIVE_OBSERVE_ENABLED = ADAPTIVE_MODE == "OBSERVE" or ADAPTIVE_MODE == "TEST_ONLY"
+  or ADAPTIVE_MODE == "AGENT_BETA" or ADAPTIVE_MODE == "AUTO"
 local ADAPTIVE_OBSERVE_EVENTS = {}
 local ADAPTIVE_OBSERVE_ORDER = {}
 local ADAPTIVE_OBSERVE_COUNT = 0
 local ADAPTIVE_RAMP_TARGETS = {}
 local ADAPTIVE_RAMP_TARGET_ORDER = {}
 local ADAPTIVE_RAMP_TARGET_COUNT = 0
+local ADAPTIVE_QUIC_HEALTH = {}
+local ADAPTIVE_QUIC_HEALTH_ORDER = {}
+local ADAPTIVE_QUIC_HEALTH_LOADED = false
+local ADAPTIVE_QUIC_HEALTH_LIMIT = 64
+local ADAPTIVE_QUIC_HEALTH_LAST_WRITE = 0
 if ADAPTIVE_OBSERVE_ENABLED then
   local f = io.open(ADAPTIVE_EVENTS_PATH, "r")
   if f then
@@ -410,7 +418,7 @@ local function adaptive_rule_parse_line(line, now)
     or proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$")
     or proto == "quic" and profile == "5" and adaptive_quic_host_allowed(host)
   if not valid_rule then return nil end
-  if scope ~= "default" and not scope:match("^mark:%d%d?%d?%d?%d?$") then
+  if scope ~= "default" and scope ~= "shared" and not scope:match("^mark:%d%d?%d?%d?%d?$") then
     if not scope:match("^mark:%d+$") or #scope > 10 then return nil end
   end
   if not strategy or strategy < 0 or strategy > 999 or strategy % 1 ~= 0 then return nil end
@@ -633,6 +641,21 @@ function locked_adaptive_strategy_for_tuple(host, ip, profile, proto, scope, now
   proto = string.lower(tostring(proto or "tcp"))
   scope = string.lower(tostring(scope or "default"))
   local key = table.concat({host, ip, profile, proto, scope}, "\0")
+  local rule = ADAPTIVE_RULES[key]
+  if not rule or ADAPTIVE_RULE_CONFLICTS[key] or rule.expires <= (now or os.time()) then return nil end
+  local runtime_stamp = ADAPTIVE_TEST_RUNTIME_STAMP or ADAPTIVE_RUNTIME_STAMP
+  if not runtime_stamp or rule.runtime_stamp ~= runtime_stamp then return nil end
+  return rule.strategy, rule.fingerprint, rule.catalog, rule.expires
+end
+
+function locked_adaptive_shared_strategy_for_tuple(host, ip, profile, proto, now)
+  if not host or not ip or not profile then return nil end
+  if not ADAPTIVE_TEST_LINES then load_locked_tables() end
+  host = string.lower(tostring(host):gsub("%.$", ""))
+  ip = tostring(ip)
+  profile = tostring(profile)
+  proto = string.lower(tostring(proto or "tcp"))
+  local key = table.concat({host, ip, profile, proto, "shared"}, "\0")
   local rule = ADAPTIVE_RULES[key]
   if not rule or ADAPTIVE_RULE_CONFLICTS[key] or rule.expires <= (now or os.time()) then return nil end
   local runtime_stamp = ADAPTIVE_TEST_RUNTIME_STAMP or ADAPTIVE_RUNTIME_STAMP
@@ -1627,6 +1650,141 @@ local function adaptive_observe_rewrite()
   return ok ~= nil
 end
 
+local function adaptive_quic_health_key(host, ip, scope)
+  return table.concat({host, ip, tostring(scope or "default")}, "\0")
+end
+
+local function adaptive_quic_health_load(now)
+  if ADAPTIVE_QUIC_HEALTH_LOADED then return end
+  ADAPTIVE_QUIC_HEALTH_LOADED = true
+  local f = io.open(ADAPTIVE_QUIC_HEALTH_PATH, "r")
+  if not f then return end
+  now = now or os.time()
+  local count = 0
+  for line in f:lines() do
+    count = count + 1
+    if count > ADAPTIVE_QUIC_HEALTH_LIMIT then break end
+    local ver, host, ip, scope, initials, retries, response, fallback, seen =
+      line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)\t(%d+)\t([01])\t([01])\t(%d+)$")
+    initials, retries, seen = tonumber(initials), tonumber(retries), tonumber(seen)
+    if ver == "1" and adaptive_quic_host_allowed(host) and adaptive_observe_ip_valid(ip)
+      and (scope == "default" or scope:match("^mark:%d+$"))
+      and initials and initials > 0 and initials <= 65535 and retries and retries <= 65535
+      and seen and seen <= now + 60 and seen >= now - 1800 then
+      local key = adaptive_quic_health_key(host, ip, scope)
+      if not ADAPTIVE_QUIC_HEALTH[key] then
+        local item = {key=key, host=host, ip=ip, scope=scope, initials=initials, retries=retries,
+          response=tonumber(response), fallback=tonumber(fallback), seen=seen}
+        ADAPTIVE_QUIC_HEALTH[key] = item
+        ADAPTIVE_QUIC_HEALTH_ORDER[#ADAPTIVE_QUIC_HEALTH_ORDER + 1] = item
+      end
+    end
+  end
+  f:close()
+end
+
+local function adaptive_quic_health_write(force)
+  local now = os.time()
+  if not force and ADAPTIVE_QUIC_HEALTH_LAST_WRITE > 0 and now - ADAPTIVE_QUIC_HEALTH_LAST_WRITE < 2 then return true end
+  local f = io.open(ADAPTIVE_QUIC_HEALTH_PATH, "w")
+  if not f then return false end
+  local lines = {}
+  for i, item in ipairs(ADAPTIVE_QUIC_HEALTH_ORDER) do
+    lines[i] = table.concat({"1", item.host, item.ip, item.scope, tostring(item.initials),
+      tostring(item.retries), tostring(item.response), tostring(item.fallback), tostring(item.seen)}, "\t")
+  end
+  local ok = f:write(table.concat(lines, "\n"), "\n")
+  f:close()
+  if ok then ADAPTIVE_QUIC_HEALTH_LAST_WRITE = now end
+  return ok ~= nil
+end
+
+local function adaptive_quic_health_get(host, ip, scope, now)
+  adaptive_quic_health_load(now)
+  local key = adaptive_quic_health_key(host, ip, scope)
+  local item = ADAPTIVE_QUIC_HEALTH[key]
+  if item and now - item.seen > 1800 then
+    ADAPTIVE_QUIC_HEALTH[key] = nil
+    for i, old in ipairs(ADAPTIVE_QUIC_HEALTH_ORDER) do
+      if old.key == key then table.remove(ADAPTIVE_QUIC_HEALTH_ORDER, i); break end
+    end
+    item = nil
+  end
+  if not item then
+    item = {key=key, host=host, ip=ip, scope=tostring(scope or "default"), initials=0,
+      retries=0, response=0, fallback=0, seen=now}
+    if #ADAPTIVE_QUIC_HEALTH_ORDER >= ADAPTIVE_QUIC_HEALTH_LIMIT then
+      local evicted = table.remove(ADAPTIVE_QUIC_HEALTH_ORDER, 1)
+      if evicted then ADAPTIVE_QUIC_HEALTH[evicted.key] = nil end
+    end
+    ADAPTIVE_QUIC_HEALTH_ORDER[#ADAPTIVE_QUIC_HEALTH_ORDER + 1] = item
+    ADAPTIVE_QUIC_HEALTH[key] = item
+  end
+  return item
+end
+
+-- Passive, bounded transport observations only. A TCP connection near a QUIC
+-- Initial is a possible fallback, never proof that both flows belong to one
+-- browser request.
+local function adaptive_quic_health_observe(desync, host, profile, scope)
+  if not ADAPTIVE_OBSERVE_ENABLED or not adaptive_quic_host_allowed(host)
+    or type(desync) ~= "table" or type(desync.track) ~= "table" then return end
+  local state = desync.track.lua_state
+  if type(state) ~= "table" then state = {}; desync.track.lua_state = state end
+  local now = os.time()
+  local ip, key, item
+  if desync.outgoing == true and tostring(profile) == "5" and desync.l7payload == "quic_initial" and type(desync.dis) == "table"
+    and type(desync.dis.udp) == "table" and tonumber(desync.dis.udp.th_dport) == 443
+    and type(dis_ipdst) == "function" and type(ntop) == "function" then
+    local dst = dis_ipdst(desync.dis)
+    ip = dst and ntop(dst) or nil
+    if not ip or not adaptive_observe_ip_valid(ip) then return end
+    item = adaptive_quic_health_get(host, ip, scope, now)
+    item.initials = math.min(65535, item.initials + 1)
+    if state.adaptive_quic_health_key == item.key then
+      item.retries = math.min(65535, item.retries + 1)
+    else
+      state.adaptive_quic_health_key = item.key
+    end
+    item.seen = now
+    adaptive_quic_health_write()
+    return
+  end
+  if desync.outgoing == false and type(state.adaptive_quic_health_key) == "string"
+    and type(desync.dis) == "table" and type(desync.dis.udp) == "table"
+    and tonumber(desync.dis.udp.th_sport) == 443 then
+    key = state.adaptive_quic_health_key
+    adaptive_quic_health_load(now)
+    item = ADAPTIVE_QUIC_HEALTH[key]
+    if item and item.response == 0 then
+      item.response = 1
+      item.seen = now
+      adaptive_quic_health_write(true)
+    end
+    return
+  end
+  if desync.outgoing == true and type(desync.dis) == "table" and type(desync.dis.tcp) == "table"
+    and tonumber(desync.dis.tcp.th_dport) == 443 and type(dis_ipdst) == "function" and type(ntop) == "function" then
+    local flags = tonumber(desync.dis.tcp.th_flags) or 0
+    if type(bitand) ~= "function" or type(TH_SYN) ~= "number" or type(TH_ACK) ~= "number"
+      or bitand(flags, TH_SYN) == 0 or bitand(flags, TH_ACK) ~= 0 then return end
+    local dst = dis_ipdst(desync.dis)
+    ip = dst and ntop(dst) or nil
+    if not ip or not adaptive_observe_ip_valid(ip) then return end
+    adaptive_quic_health_load(now)
+    item = ADAPTIVE_QUIC_HEALTH[adaptive_quic_health_key(host, ip, scope)]
+    if item and now >= item.seen and now - item.seen <= 30 and item.fallback == 0 then
+      item.fallback = 1
+      item.seen = now
+      adaptive_quic_health_write(true)
+    end
+  end
+end
+
+function locked_quic_health_observe_for_tests(desync, host, profile, scope)
+  return adaptive_quic_health_observe(desync, host, profile, scope)
+end
+
 -- A packet-level detector is only a suspicion signal. Require two distinct
 -- failed connections for this exact tuple before asking the agent to probe it.
 function z2r_adaptive_suspected_failure(desync, crec)
@@ -1844,6 +2002,9 @@ function circular_locked(ctx, desync)
   end
 
   -- Only expose QUIC targets to browser trials after every configured list gate.
+  if host and host ~= "" then
+    adaptive_quic_health_observe(desync, host, base_profile, scope)
+  end
   if quic_initial and host and host ~= "" and type(dis_ipdst) == "function" and type(ntop) == "function" and desync.track then
     local dst = dis_ipdst(desync.dis)
     local dst_ip = dst and ntop(dst) or nil
@@ -1886,7 +2047,7 @@ function circular_locked(ctx, desync)
   if quic_initial and host and adaptive_quic_host_allowed(host) then adaptive_proto = "quic" end
   local adaptive_transport_ok = (desync.dis and desync.dis.tcp and tonumber(desync.dis.tcp.th_dport) == 443 and proto == "tls")
     or (quic_initial and adaptive_proto == "quic")
-  if ADAPTIVE_RULES_APPLY and (scope ~= "default" or ADAPTIVE_DEFAULT_SCOPE_APPLY)
+  if ADAPTIVE_RULES_APPLY
     and locked == nil and host and host ~= "" and desync.track
     and type(desync.track.lua_state) == "table" and desync.dis and desync.dis.ip and adaptive_transport_ok
     and type(dis_ipdst) == "function" and type(ntop) == "function" then
@@ -1899,9 +2060,14 @@ function circular_locked(ctx, desync)
         adaptive_strategy = state.adaptive_rule_strategy or nil
         adaptive_trial = state.adaptive_browser_trial or nil
       else
-        adaptive_trial = locked_browser_trial_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope)
-        if adaptive_trial then adaptive_strategy = adaptive_trial.strategy
-        else adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope) end
+        if scope ~= "default" or ADAPTIVE_DEFAULT_SCOPE_APPLY then
+          adaptive_trial = locked_browser_trial_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope)
+          if adaptive_trial then adaptive_strategy = adaptive_trial.strategy
+          else adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope) end
+        end
+        if not adaptive_strategy and scope == "default" then
+          adaptive_strategy = locked_adaptive_shared_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto)
+        end
         state.adaptive_rule_key = tuple_key
         state.adaptive_rule_strategy = adaptive_strategy or false
         state.adaptive_browser_trial = adaptive_trial or false

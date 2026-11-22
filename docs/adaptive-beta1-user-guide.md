@@ -1,8 +1,24 @@
 # Adaptive Agent Beta 1 operator guide
 
-**Status: internal/test use only.** Beta 1 is not release-approved. OpenWrt and Keenetic each have a successful isolated TCP media path; OpenWrt has verified Ramp SYN/late-ACK media tests, but Keenetic's Ramp test has not verified the late ACK. Keep Keenetic Ramp auditing and exemptions unsupported until that evidence passes. Valid live exception revocation remains unverified. Keep the feature in `TEST_ONLY` unless you are intentionally evaluating the gated Beta behavior on a test router.
+**Status: internal/test use only.** Beta 1 is not release-approved. OpenWrt and Keenetic each have a successful isolated TCP media path; OpenWrt has verified Ramp SYN/late-ACK media tests, but Keenetic's Ramp test has not verified the late ACK. Ramp probes and audit are available on Keenetic after explicit Ramp-first pool consent; automatic exact-IP exemptions remain gated there until the late-ACK evidence passes. Valid live exception revocation remains unverified. On Linux/VPS, Ramp is not excluded by the Keenetic-specific gate. Keep the feature in `TEST_ONLY` unless you are intentionally evaluating the gated Beta behavior on a test router.
 
-## Pair the Windows agent
+## Browser-only autorotation
+
+After pairing the extension to the router, it can run the ordinary browser recovery loop without the Windows agent. Incognito traffic is ignored. On the router, pair the browser's LAN IP to its existing client mark:
+
+```sh
+/opt/zator/tools/adaptive-browser-pair.sh create 192.168.1.42 mark:7
+```
+
+In the extension settings, allow access to the router address, enter the one-time browser token, save the pairing, then use **Check router pairing**. If Chromium shows a local-network access prompt, allow it; the check makes this an explicit user action before background reporting begins. A denied or failed check means browser reporting is not ready. Then enable scoped Beta and restart zapret2 when prompted:
+
+```sh
+/opt/zator/tools/adaptive-pair.sh beta
+```
+
+This allows trials only for explicitly marked scopes. Enabling `beta-lan` is a separate, broader consent and is not needed for browser-only use. The extension reports eligible failures and outcomes; the Windows agent remains optional for isolated strategy, media, Ramp, and H3 investigations.
+
+## Pair the optional Windows agent
 
 On the router, run the pairing command as root:
 
@@ -55,6 +71,24 @@ Ramp auditing uses only recently observed Googlevideo host/IP targets and bounde
 
 `beta-lan` grants consent for exact rules at default scope across the LAN. Do not use it for routine evaluation: it widens the affected clients. The mode remains experimental and does not enable legacy `AUTO`.
 
+Ramp-first is a separate explicit LAN-wide opt-in. After `beta-lan`, run:
+
+```sh
+/opt/zator/tools/adaptive-pair.sh ramp-pool-on
+```
+
+The command validates the configured Googlevideo IPv4 feed and records the basis as `manual_unverified`. Restart zapret2 when prompted. Use `ramp-pool-off` to revoke this consent; if Beta enabled Ramp from a disabled state, the command restores that state only when its parameters were not edited manually, then tells you to restart to apply the config. A Ramp setting that predated Beta is preserved. This pool policy covers only configured Googlevideo IPv4 addresses, not all TCP/443 traffic. Ramp probes/audit remain available on Keenetic and Linux/VPS with consent; automatic exact-IP exemptions remain disabled on Keenetic until late-ACK evidence passes.
+
+For proof-triggered Ramp-first expansion, use the separate arm command after `beta-lan`:
+
+```sh
+/opt/zator/tools/adaptive-pair.sh ramp-pool-arm
+```
+
+This records consent without changing the live config. Watch can then compare Ramp/plain/Ramp media on an exact, recently observed Googlevideo host/IP that remains in the configured pool. The server accepts the transition only when all three results use the same signed media URL and strategy, both Ramp controls verify route, queue, strategy ACK, SYN and late ACK, and the plain result confirms a bounded media degradation. On proof, Beta enables Ramp for the configured pool and asks for a zapret2 restart. `ramp-pool-off` cancels an unused arm or restores the Beta-managed disabled setting after proof, if the Ramp parameters were not manually edited.
+
+The backup includes the Ramp ownership marker so a restored config can still safely undo a Beta-managed enable. The adaptive pairing token is never included in backups.
+
 ## Pause and roll back
 
 Pause observation and stop adaptive activity:
@@ -69,11 +103,14 @@ Restart zapret2 when prompted. To revoke pairing and clear adaptive state:
 /opt/zator/tools/adaptive-pair.sh disable
 ```
 
+If Beta had enabled Ramp-first from a disabled state, `disable` restores the config and asks you to restart zapret2 to apply it.
+
 `status` and `doctor` report current mode and cleanup state without printing the token. Keep automatic Beta rules disabled if cleanup is pending or `doctor` reports a failed prerequisite.
 
 ## Data and limits
 
 - Probe decisions are local. `-UploadStatistics` and `-UseSharedRankings` are separate, explicit opt-ins; neither is required for local operation. Ranking requests disclose provider/profile/protocol. Signed media URLs and raw Googlevideo host/IP observations are not sent to the stats service.
+- Browser-flow outcome upload is a separate router-side opt-in from both Windows-agent statistics and shared-ranking downloads. Check it with `/opt/zator/tools/adaptive-browser-pair.sh stats-status`; enable only after receiving a separate server-issued browser-flow token with `stats-on`, send pending rows with `stats-flush`, or revoke consent and clear its token/queue with `stats-off`. Uploads contain bounded aggregate profile/protocol/fingerprint/outcome dimensions, never hostname, destination IP, URL, browser pairing token, or visit history. Consent defaults off; no browser-flow token is currently provisioned for this beta.
 - Media probes require Windows curl 8.4 or newer. Profile-5 checks require a curl build with HTTP/3 support and use HTTP/3-only mode.
 - Beta rules match exact host/IP/profile/scope and expire. They do not propagate from one CDN sibling or IP to another. Existing connections keep their established flow behavior.
 - If an adaptive rule expires, conflicts, or no longer matches the current runtime stamp, it is ignored for new connections. Manual domain/profile locks keep priority; otherwise Zator resumes its normal current-config strategy selection. No Redis request is needed for this fallback.

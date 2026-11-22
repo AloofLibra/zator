@@ -102,3 +102,7 @@ This closes the fixed-capacity/overflow and ranking-retention check for a full d
 ### Read-only test-server follow-up (2026-11-21 07:57 UTC)
 
 After the synthetic load run, a read-only SSH snapshot confirmed the test VM still has one vCPU and 1,967 MiB RAM, with 1,094,884 KiB `MemAvailable` and load average `0.00, 0.00, 0.00`. Redis 7.0.15 was active with 16.89 MiB `used_memory`, 30.04 MiB RSS, 28.97 MiB peak memory, and 418 DB 0 keys. AOF remains disabled, RDB reports `ok`, `maxmemory` remains unlimited, and DB 15 remains disposable. `nginx`, `redis-server`, `z4r-stats`, `z4r-dashboard`, and the adaptive refresh timer were active; the timer was waiting for its next run. No settings, services, or Redis keys were changed by this snapshot. These are current test-host values, not production measurements or a sustained CPU/fork-overhead result.
+
+### Browser-flow HTTPS integration (2026-11-22)
+
+The already-installed test-host handler and nginx route were verified read-only against the local source hash. Through HTTPS on the test host, a one-row synthetic QUIC `PROTOCOL_UNKNOWN` browser-flow payload returned `200 accepted=1`; replay returned `200 accepted=0`; changed payload with the same request ID returned `409`. The temporary client token was revoked and its exact request/source/dimension/aggregate Redis keys were removed. No real browser result or production host was involved. This verifies the test endpoint's auth, idempotency, conflict rejection, and cleanup; it does not verify router uploader consent or browser-to-stats operation.

@@ -433,9 +433,10 @@ adaptive_rules_flipflop_total() {
 }
 
 adaptive_rule_add() {
-  [[ $# = 10 ]] || return 2
+  [[ $# = 10 || $# = 11 ]] || return 2
   local host="${1,,}" ip="$2" profile="$3" proto="$4" scope="$5"
   local strategy="$6" fingerprint="$7" catalog="$8" runtime_stamp="$9" expires="${10}"
+  local rule_origin="${11:-}"
   local now file dir lock tmp row count=0 lock_tries=0 snapshot source_file owner previous_fingerprint=""
   [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 2
@@ -448,7 +449,7 @@ adaptive_rule_add() {
        (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1
     exit 0
   } {exit 1}' <<< "$ip" || return 2
-  [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ ) ]] || return 2
+  [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ || ( "$scope" = shared && "$rule_origin" = browser-confirmed ) ) ]] || return 2
   [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   [[ "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ ]] || return 2
   [[ "$runtime_stamp" =~ ^[0-9:|]{1,2048}$ ]] || return 2
@@ -500,7 +501,7 @@ adaptive_rule_remove() {
   local host="${1,,}" ip="$2" profile="$3" scope="$4" proto="${5:-tls}"
   local file dir lock snapshot source tmp row ver old_host old_ip old_profile old_proto old_scope old_strategy old_fp old_catalog old_stamp old_expiry extra tries=0 owner removed=0 count=0
   [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
-  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" = shared || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
   [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   file="$(adaptive_rules_file)"; dir="$(dirname "$file")"; lock="$file.lock"; snapshot="$(adaptive_rules_snapshot_file)"
   mkdir -p "$dir" "$(dirname "$snapshot")" || return 1
@@ -539,7 +540,7 @@ adaptive_rule_lookup_local() {
   [[ $# = 6 ]] || return 2
   local host="${1,,}" ip="$2" profile="$3" proto="$4" scope="$5" stamp="$6"
   local file snapshot row ver old_host old_ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now
-  local found='' matches=0 count=0
+  local found='' found_scope='' matches=0 shared_found='' shared_matches=0 count=0
   [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   file="$(adaptive_rules_file)"; snapshot="$(adaptive_rules_snapshot_file)"
   [[ -f "$file" && ! -L "$file" ]] || file="$snapshot"
@@ -550,16 +551,23 @@ adaptive_rule_lookup_local() {
     IFS=$'\t' read -r ver old_host old_ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra <<< "$row"
     [[ "$ver" = 1 && -z "${extra:-}" && "$old_host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ &&
        "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$old_profile" =~ ^[1-4]$ && ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 && "$old_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$old_profile" = 5 && "$old_proto" = quic ) ) &&
-       ( "$old_scope" = default || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ &&
+       ( "$old_scope" = default || "$old_scope" = shared || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ &&
        "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
     [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_profile" = "$profile" && "$old_proto" = "$proto" &&
-       "$old_scope" = "$scope" && "$old_stamp" = "$stamp" ]] || continue
+       ( "$old_scope" = "$scope" || ( "$scope" = default && "$old_scope" = shared ) ) && "$old_stamp" = "$stamp" ]] || continue
     (( expiry > now )) || continue
-    matches=$((matches + 1))
-    found="${strategy}\t${fp}\t${catalog}\t${expiry}"
+    if [[ "$old_scope" = "$scope" ]]; then
+      matches=$((matches + 1))
+      found="${strategy}\t${fp}\t${catalog}\t${expiry}"
+      found_scope="$old_scope"
+    else
+      shared_matches=$((shared_matches + 1))
+      shared_found="${strategy}\t${fp}\t${catalog}\t${expiry}"
+    fi
   done < "$file"
-  (( matches == 1 )) || return 1
-  printf '%b\n' "$found"
+  if (( matches == 1 )); then printf '%b\t%s\n' "$found" "$found_scope"; return 0; fi
+  (( matches == 0 && shared_matches == 1 )) || return 1
+  printf '%b\tshared\n' "$shared_found"
 }
 
 # Remove an adaptive rule only when a route-verified failure reproduces the
@@ -568,13 +576,13 @@ adaptive_rule_lookup_local() {
 adaptive_rule_remove_if_matches() {
   [[ $# = 8 ]] || return 2
   local host="$1" ip="$2" profile="$3" proto="$4" scope="$5" strategy="$6" fingerprint="$7" stamp="$8"
-  local current current_strategy current_fingerprint current_catalog current_expiry
+  local current current_strategy current_fingerprint current_catalog current_expiry current_scope
   adaptive_rules_kind_valid "$profile" "$proto" "$host" || return 2
   [[ "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || return 2
   current="$(adaptive_rule_lookup_local "$host" "$ip" "$profile" "$proto" "$scope" "$stamp")" || return 1
-  IFS=$'\t' read -r current_strategy current_fingerprint current_catalog current_expiry <<< "$current"
+  IFS=$'\t' read -r current_strategy current_fingerprint current_catalog current_expiry current_scope <<< "$current"
   [[ "$current_strategy" = "$strategy" && "$current_fingerprint" = "$fingerprint" ]] || return 1
-  adaptive_rule_remove "$host" "$ip" "$profile" "$scope" "$proto"
+  adaptive_rule_remove "$host" "$ip" "$profile" "$current_scope" "$proto"
 }
 
 # List locally confirmed strategies for a profile/scope, most frequent first.

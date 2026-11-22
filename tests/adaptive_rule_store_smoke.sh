@@ -26,9 +26,22 @@ fi
 adaptive_rule_remove_if_matches cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$stamp" || {
   echo 'matching degraded active rule was not removed' >&2; exit 1;
 }
-if adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls default "$stamp" >/dev/null; then
-  echo 'degraded active rule remained after exact revalidation failure' >&2; exit 1;
+if awk -F '\t' '$2=="cdn.example.org" && $3=="93.184.216.34" && $4==1 && $5=="tls" && $6=="default" {found=1} END {exit !found}' "$Z2R_ADAPTIVE_RULES_FILE"; then
+  echo 'degraded exact-scope rule remained after exact revalidation failure' >&2; exit 1;
 fi
+if adaptive_rule_add cdn.example.org 93.184.216.34 1 tls shared 7 "$fp" "$cat" "$stamp" "$((now + 3600))"; then
+  echo 'shared baseline was accepted without browser-confirmed provenance' >&2; exit 1
+fi
+adaptive_rule_add cdn.example.org 93.184.216.34 1 tls shared 9 "$fp" "$cat" "$stamp" "$((now + 3600))" browser-confirmed
+shared_found="$(adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls default "$stamp")"
+[[ "${shared_found%%$'\t'*}" = 9 ]] || { echo 'browser-confirmed shared rule was not available to a client without an exact rule' >&2; exit 1; }
+if adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls mark:5 "$stamp" >/dev/null; then
+  echo 'browser-confirmed shared rule leaked into a separately scoped client' >&2; exit 1
+fi
+adaptive_rule_add cdn.example.org 93.184.216.34 1 tls mark:4 6 "$fp" "$cat" "$stamp" "$((now + 3600))"
+scoped_found="$(adaptive_rule_lookup_local cdn.example.org 93.184.216.34 1 tls mark:4 "$stamp")"
+[[ "${scoped_found%%$'\t'*}" = 6 ]] || { echo 'client-specific rule did not take precedence over shared baseline' >&2; exit 1; }
+adaptive_rules_invalidate || { echo 'could not isolate shared-baseline regression fixture' >&2; exit 1; }
 adaptive_rule_add cdn.example.org 93.184.216.34 1 tls default 7 "$fp" "$cat" "$stamp" "$((now + 3600))"
 adaptive_rule_add direct.example.org 93.184.216.36 1 tls default 0 "$fp" "$cat" "$stamp" "$((now + 3600))"
 direct_found="$(adaptive_rule_lookup_local direct.example.org 93.184.216.36 1 tls default "$stamp")"

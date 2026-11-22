@@ -12,6 +12,7 @@ RAMP_POOL_FILE="$TOKEN_DIR/ramp-pool"
 RAMP_POOL_ARM_FILE="$TOKEN_DIR/ramp-pool-armed"
 BASE="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
 EVENTS_FILE="${Z2R_ADAPTIVE_EVENTS_FILE:-$BASE/events.tsv}"
+QUIC_HEALTH_FILE="${Z2R_ADAPTIVE_QUIC_HEALTH_FILE:-$BASE/quic-health.tsv}"
 RAMP_TARGETS_FILE="${Z2R_ADAPTIVE_RAMP_TARGETS_FILE:-$BASE/ramp-targets.tsv}"
 [ -r "$ROOT/z2r_lib/adaptive_queue.sh" ] && . "$ROOT/z2r_lib/adaptive_queue.sh"
 [ -r "$ROOT/tools/adaptive-ramp-proof.sh" ] && . "$ROOT/tools/adaptive-ramp-proof.sh"
@@ -27,7 +28,7 @@ if [ -r "$ROOT/z2r_lib/config.sh" ] && [ -r "$ROOT/z2r_lib/adaptive_lan_transpor
 fi
 Z2R_ADAPTIVE_LOCK_DIR="${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}"
 action="${1:-create}"
-case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-proof-on|ramp-pool-off|pause|events|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-off|pause|events|clear-events]' >&2; exit 2 ;; esac
+case "$action" in status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-proof-on|ramp-pool-off|pause|events|quic-health|clear-events) ;; *) echo 'Usage: adaptive-pair.sh [status|doctor|create|rotate|disable|observe|test-only|beta|beta-lan|ramp-pool-arm|ramp-pool-on|ramp-pool-off|pause|events|quic-health|clear-events]' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root on the router.' >&2; exit 1; }
 [ ! -L "$TOKEN_DIR" ] || { echo 'Refusing a symlinked adaptive token directory.' >&2; exit 1; }
 adaptive_mode() {
@@ -285,24 +286,25 @@ adaptive_browser_pairing_valid() {
 }
 adaptive_prepare_events() {
   local config user uid gid
-  [ ! -L "$BASE" ] && [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
+  [ ! -L "$BASE" ] && [ ! -L "$EVENTS_FILE" ] && [ ! -L "$QUIC_HEALTH_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
   config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   user="$(awk -F= '$1=="WS_USER" {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$config" 2>/dev/null)"
   [ -n "$user" ] || user=nobody
   uid="$(id -u "$user" 2>/dev/null)"; gid="$(id -g "$user" 2>/dev/null)"
   [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || return 1
-  mkdir -p "$TOKEN_DIR" "$BASE" && touch "$EVENTS_FILE" "$RAMP_TARGETS_FILE" || return 1
+  mkdir -p "$TOKEN_DIR" "$BASE" && touch "$EVENTS_FILE" "$QUIC_HEALTH_FILE" "$RAMP_TARGETS_FILE" || return 1
   chown 0:0 "$TOKEN_DIR" && chmod 711 "$TOKEN_DIR" || return 1
-  chown "$uid:$gid" "$EVENTS_FILE" "$RAMP_TARGETS_FILE" && chmod 600 "$EVENTS_FILE" "$RAMP_TARGETS_FILE"
+  chown "$uid:$gid" "$EVENTS_FILE" "$QUIC_HEALTH_FILE" "$RAMP_TARGETS_FILE" && chmod 600 "$EVENTS_FILE" "$QUIC_HEALTH_FILE" "$RAMP_TARGETS_FILE"
 }
 adaptive_pause_mode() {
   local tmp run run_id
-  [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
+  [ ! -L "$EVENTS_FILE" ] && [ ! -L "$QUIC_HEALTH_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || return 1
   adaptive_ramp_pool_restore || return 1
   mkdir -p "$TOKEN_DIR"
   tmp="$(mktemp "$TOKEN_DIR/.mode.XXXXXX")" || return 1
   printf 'OFF\n' > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$MODE_FILE" || { rm -f "$tmp"; return 1; }
   [ ! -e "$EVENTS_FILE" ] || chmod 400 "$EVENTS_FILE"
+  [ ! -e "$QUIC_HEALTH_FILE" ] || chmod 400 "$QUIC_HEALTH_FILE"
   [ ! -e "$RAMP_TARGETS_FILE" ] || chmod 400 "$RAMP_TARGETS_FILE"
   if [ -d "$BASE" ] && [ ! -L "$BASE" ]; then
     for run in "$BASE"/*; do
@@ -514,12 +516,18 @@ if [ "$action" = events ]; then
   fi
   exit 0
 fi
+if [ "$action" = quic-health ]; then
+  if [ -r "$QUIC_HEALTH_FILE" ]; then
+    awk -F '\t' 'NR<=64 && NF==9 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && $3 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $4 ~ /^(default|mark:[1-9][0-9]{0,4})$/ && $5 ~ /^[1-9][0-9]{0,4}$/ && $6 ~ /^[0-9]{1,5}$/ && $7 ~ /^[01]$/ && $8 ~ /^[01]$/ && $9 ~ /^[0-9]{10}$/ {print}' "$QUIC_HEALTH_FILE"
+  fi
+  exit 0
+fi
 if [ "$action" = clear-events ]; then
-  [ ! -L "$EVENTS_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || { echo 'Refusing a symlinked observation queue.' >&2; exit 1; }
+  [ ! -L "$EVENTS_FILE" ] && [ ! -L "$QUIC_HEALTH_FILE" ] && [ ! -L "$RAMP_TARGETS_FILE" ] || { echo 'Refusing a symlinked observation queue.' >&2; exit 1; }
   adaptive_pause_mode || { echo 'Could not pause observation.' >&2; exit 1; }
   adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; adaptive mode is OFF but events were not cleared.' >&2; exit 1; }
   if type adaptive_queue_clear >/dev/null 2>&1; then adaptive_queue_clear || { echo 'Could not clear queued probe requests.' >&2; exit 1; }; fi
-  for clear_file in "$EVENTS_FILE" "$RAMP_TARGETS_FILE"; do
+  for clear_file in "$EVENTS_FILE" "$QUIC_HEALTH_FILE" "$RAMP_TARGETS_FILE"; do
     if [ -e "$clear_file" ]; then
       tmp="$(mktemp "$clear_file.tmp.XXXXXX")" || exit 1
       owner="$(stat -c '%u:%g' "$clear_file" 2>/dev/null)"
@@ -538,6 +546,7 @@ if [ "$action" = disable ]; then
   adaptive_wait_probe_cleanup || { echo 'Probe cleanup did not finish; check the adaptive probe state before uninstalling.' >&2; exit 1; }
   if type adaptive_queue_clear >/dev/null 2>&1; then adaptive_queue_clear || { echo 'Could not clear queued probe requests.' >&2; exit 1; }; fi
   rm -f "$EVENTS_FILE"
+  rm -f "$QUIC_HEALTH_FILE"
   rm -f "$RAMP_TARGETS_FILE"
   rm -f "$TOKEN_FILE" "$TOKEN_EXPIRY_FILE" "$TOKEN_FILE.tmp."* "$TOKEN_EXPIRY_FILE.tmp."*
   if [ -f "$ROOT/z2r_lib/adaptive_rules.sh" ]; then

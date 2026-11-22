@@ -26,7 +26,7 @@ export const fetchH3Curl = (signal?: AbortSignal) =>
 export const fetchAdaptiveStatus = (signal?: AbortSignal) =>
   api<AdaptiveStatus>('/cgi-bin/settings.cgi?setting=adaptive', { signal })
 
-export const adaptiveAction = (action: string, rule?: { hostname: string; destination_ip: string; profile_id: number; protocol: 'tls' | 'googlevideo-tcp'; scope: string }) =>
+export const adaptiveAction = (action: string, rule?: { hostname: string; destination_ip: string; profile_id: number; protocol: 'tls' | 'googlevideo-tcp' | 'quic'; scope: string }) =>
   api<AdaptiveActionResult>('/cgi-bin/settings.cgi', formBody({ setting: 'adaptive_action', action, ...(rule ? { hostname: rule.hostname, destination_ip: rule.destination_ip, profile_id: String(rule.profile_id), protocol: rule.protocol, scope: rule.scope } : {}) }))
 
 export const fetchCustomStrats = (block: string, signal?: AbortSignal) =>

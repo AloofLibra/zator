@@ -19,12 +19,15 @@ def runtime(root: Path, mode: str, default_scope: bool = False):
     events.touch()
     ramp_targets = root / "ramp-targets.tsv"
     ramp_targets.touch()
+    quic_health = root / "quic-health.tsv"
+    quic_health.touch()
     lua = LuaRuntime(unpack_returned_tuples=True)
     env = {
         "ZATOR_ROOT": str(root),
         "ZAPRET2_ROOT": "/nonexistent/zapret2",
         "Z2R_ADAPTIVE_RULES_FILE": str(root / "missing-rules.tsv"),
         "Z2R_ADAPTIVE_EVENTS_FILE": str(events),
+        "Z2R_ADAPTIVE_QUIC_HEALTH_FILE": str(quic_health),
         "Z2R_ADAPTIVE_RAMP_TARGETS_FILE": str(ramp_targets),
         "Z2R_ADAPTIVE_RULES_APPLY": "0",
     }
@@ -178,5 +181,66 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-degraded-") as tmp:
     lua.globals().test_failure()
     assert events.read_text().split("\t")[1] == "active_rule_degraded", \
         f"two failures on flows where the exact adaptive rule was selected must identify active_rule_degraded: {events.read_text()!r}"
+
+with tempfile.TemporaryDirectory(prefix="zator-adaptive-shared-rule-") as tmp:
+    lua, _, _ = runtime(Path(tmp), "AGENT_BETA")
+    lua.execute("""
+      locked_load_lines_for_tests({})
+      locked_load_adaptive_lines_for_tests({"1\\tcdn.example.org\\t93.184.216.34\\t1\\ttls\\tshared\\t9\\t" ..
+        "sha256:" .. string.rep("a", 64) .. "\\tsha256:" .. string.rep("b", 64) .. "\\t123:456\\t10000"}, 1000, "123:456")
+      local desync = {profile="1", hostname="cdn.example.org", arg={proto="tls"},
+        dis={destination="93.184.216.34", ip={}, tcp={th_dport=443}},
+        track={lua_state={}}, plan={}}
+      for i=1,9 do desync.plan[i] = {arg={strategy=i}} end
+      circular_locked({}, desync)
+      test_shared_strategy = desync.track.lua_state.adaptive_rule_strategy
+      test_shared_applied = desync.track.lua_state.adaptive_observe_context.adaptive_rule_applied
+      locked_load_lines_for_tests({"cdn.example.org\\ttls\\t1"})
+      local manual = {profile="1", hostname="cdn.example.org", arg={proto="tls"},
+        dis={destination="93.184.216.34", ip={}, tcp={th_dport=443}},
+        track={lua_state={}}, plan={{arg={strategy=1}}}}
+      circular_locked({}, manual)
+      test_manual_skipped_shared = manual.track.lua_state.adaptive_rule_strategy == nil
+    """)
+    assert lua.globals().test_shared_strategy == 9 and lua.globals().test_shared_applied is True, \
+        f"browser-confirmed shared strategy should apply to default-scope clients without beta-lan consent: strategy={lua.globals().test_shared_strategy!r}, applied={lua.globals().test_shared_applied!r}"
+    assert lua.eval('locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.34", "1", "tls", "mark:5", 5000)') is None, \
+        "a marked client must not inherit the shared default-scope baseline"
+    assert lua.globals().test_manual_skipped_shared is True, \
+        "manual strategy lock must override browser-confirmed shared baseline"
+
+with tempfile.TemporaryDirectory(prefix="zator-quic-health-") as tmp:
+    lua, _, _ = runtime(Path(tmp), "AGENT_BETA")
+    lua.execute("""
+      bitand = function(a, b) return (a % (b * 2)) >= b and b or 0 end
+      TH_SYN, TH_ACK = 2, 16
+      local state = {lua_state={}}
+      local function qinitial()
+        locked_quic_health_observe_for_tests({outgoing=true, l7payload="quic_initial",
+          dis={destination="94.0.1.5", udp={th_dport=443}}, track=state},
+          "rr1.googlevideo.com", "5", "mark:4")
+      end
+      qinitial(); qinitial()
+      locked_quic_health_observe_for_tests({outgoing=false,
+        dis={udp={th_sport=443}}, track=state}, "rr1.googlevideo.com", "5", "mark:4")
+      locked_quic_health_observe_for_tests({outgoing=true,
+        dis={destination="94.0.1.5", tcp={th_dport=443, th_flags=2}}, track={lua_state={}}},
+        "rr1.googlevideo.com", "1", "mark:4")
+    """)
+    health_rows = [row.split("\t") for row in (Path(tmp) / "quic-health.tsv").read_text().splitlines() if row]
+    assert len(health_rows) == 1 and health_rows[0][4:8] == ["2", "1", "1", "1"], \
+        f"QUIC monitor should count Initial/retry/response and possible TCP fallback: {health_rows!r}"
+
+    lua.execute("""
+      for i=1,70 do
+        test_now = test_now + 2
+        locked_quic_health_observe_for_tests({outgoing=true, l7payload="quic_initial",
+          dis={destination="94.0.2."..i, udp={th_dport=443}}, track={lua_state={}}},
+          "v"..i..".youtube.com", "5", "mark:4")
+      end
+    """)
+    health_rows = [row for row in (Path(tmp) / "quic-health.tsv").read_text().splitlines() if row]
+    assert len(health_rows) == 64 and "v70.youtube.com" in health_rows[-1] and "rr1.googlevideo.com" not in "\n".join(health_rows), \
+        "QUIC health monitor must keep a bounded 64-target ring"
 
 print("adaptive observation smoke ok")

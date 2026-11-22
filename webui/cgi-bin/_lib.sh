@@ -135,7 +135,7 @@ api_adaptive_get() {
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   local events_file="${Z2R_ADAPTIVE_EVENTS_FILE:-$base/events.tsv}"
   local requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$base/requests.tsv}"
-  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state browser_status_json='{"paired_clients":0,"connected_clients":0,"active_attempts":[]}'
+  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' quic_health_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state browser_status_json='{"paired_clients":0,"connected_clients":0,"active_attempts":[]}'
   mode="$(cat "$mode_file" 2>/dev/null || printf OFF)"
   case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) ;; *) mode=OFF ;; esac
   if [ "$mode" = AGENT_BETA ]; then
@@ -178,6 +178,7 @@ api_adaptive_get() {
     [[ "$adaptive_rule_flipflops" =~ ^[0-9]{1,9}$ ]] || adaptive_rule_flipflops=0
   fi
   browser_status_json="$(adaptive_browser_status_json 2>/dev/null || printf '%s' '{"paired_clients":0,"connected_clients":0,"active_attempts":[]}')"
+  quic_health_json="$(adaptive_quic_health_json 2>/dev/null || printf '[]')"
   agent_file="$base/agent.last"
   if [ -f "$agent_file" ] && [ ! -L "$agent_file" ]; then
     heartbeat_value="$(cat "$agent_file" 2>/dev/null)"
@@ -218,11 +219,11 @@ api_adaptive_get() {
     rules_json="$(awk -F '\t' -v now="$(date +%s)" '
       BEGIN { printf "[" }
       NR<=256 && NF==11 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
-        $3 ~ /^[0-9.]+$/ && $4 ~ /^[1-4]$/ && ($5=="tls" || ($5=="googlevideo-tcp" && $4==2 && $2 ~ /\.googlevideo\.com$/)) && ($6=="default" || $6 ~ /^mark:[1-9][0-9]*$/) &&
+        $3 ~ /^[0-9.]+$/ && (($4 ~ /^[1-4]$/ && ($5=="tls" || ($5=="googlevideo-tcp" && $4==2 && $2 ~ /\.googlevideo\.com$/))) || ($4==5 && $5=="quic" && ($2 ~ /\.googlevideo\.com$/ || $2 ~ /\.youtube\.com$/ || $2 ~ /\.youtubei\.googleapis\.com$/))) && ($6=="default" || $6=="shared" || $6 ~ /^mark:[1-9][0-9]*$/) &&
         $7 ~ /^(0|[1-9][0-9]*)$/ && $8 ~ /^sha256:[a-f0-9]{64}$/ && $9 ~ /^sha256:[a-f0-9]{64}$/ &&
         $11 ~ /^[0-9]+$/ && $11>now {
           if (n++) printf ","
-          printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"strategy_number\":%s,\"treatment_variant\":\"standard\",\"evidence\":\"route_verified\",\"expires\":%s,\"ttl_seconds\":%s}", $2,$3,$4,$5,$6,$7,$11,$11-now
+          printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"strategy_number\":%s,\"treatment_variant\":\"standard\",\"evidence\":\"%s\",\"expires\":%s,\"ttl_seconds\":%s}", $2,$3,$4,$5,$6,$7,($6=="shared"?"browser_confirmed_shared":"route_verified"),$11,$11-now
         }
       END { printf "]" }
     ' "$rule_file")"
@@ -238,7 +239,33 @@ api_adaptive_get() {
     done
   fi
   printf 'Cache-Control: no-store\r\n'
-  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"browser\":$browser_status_json,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason,\"ramp_exemptions_supported\":$ramp_exemptions_supported,\"ramp_exemptions_unsupported_reason\":$ramp_exemptions_unsupported_reason,\"ramp_pool_enabled\":$ramp_pool_enabled,\"ramp_pool_consent\":$ramp_pool_consent,\"ramp_pool_basis\":\"$ramp_pool_basis\"}"
+  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"browser\":$browser_status_json,\"quic_health\":$quic_health_json,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason,\"ramp_exemptions_supported\":$ramp_exemptions_supported,\"ramp_exemptions_unsupported_reason\":$ramp_exemptions_unsupported_reason,\"ramp_pool_enabled\":$ramp_pool_enabled,\"ramp_pool_consent\":$ramp_pool_consent,\"ramp_pool_basis\":\"$ramp_pool_basis\"}"
+}
+
+adaptive_quic_health_json() {
+  local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
+  local file="${Z2R_ADAPTIVE_QUIC_HEALTH_FILE:-$base/quic-health.tsv}"
+  [ -r "$file" ] && [ ! -L "$file" ] && (( $(wc -c < "$file") <= 32768 )) || { printf '[]'; return; }
+  awk -F '\t' -v now="$(date +%s)" '
+    BEGIN { printf "[" }
+    NR<=64 && NF==9 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
+      ($2=="youtube.com" || $2 ~ /\.youtube\.com$/ || $2=="googlevideo.com" || $2 ~ /\.googlevideo\.com$/ ||
+       $2=="youtubei.googleapis.com" || $2 ~ /\.youtubei\.googleapis\.com$/) &&
+      $3 ~ /^[0-9.]+$/ && ($4=="default" || ($4 ~ /^mark:[1-9][0-9]*$/ && length($4)<=10 && substr($4,6)+0<=65535)) &&
+      $5 ~ /^[1-9][0-9]{0,4}$/ && $5<=65535 && $6 ~ /^[0-9]{1,5}$/ && $6<=65535 &&
+      $7 ~ /^[01]$/ && $8 ~ /^[01]$/ && $9 ~ /^[0-9]{10}$/ && $9<=now+60 && $9>=now-1800 {
+        split($3,o,"."); valid=(length($3)<=15 && o[1]<=255 && o[2]<=255 && o[3]<=255 && o[4]<=255 &&
+          o[1]>0 && o[1]!=10 && o[1]!=127 && o[1]<224 &&
+          !(o[1]==100 && o[2]>=64 && o[2]<=127) && !(o[1]==169 && o[2]==254) &&
+          !(o[1]==172 && o[2]>=16 && o[2]<=31) && !(o[1]==192 && (o[2]==168 || (o[2]==0 && (o[3]==0 || o[3]==2)) || (o[2]==88 && o[3]==99))) &&
+          !(o[1]==198 && (o[2]==18 || o[2]==19 || (o[2]==51 && o[3]==100))) && !(o[1]==203 && o[2]==0 && o[3]==113))
+        if (!valid) next
+        if (n++) printf ","
+        printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"scope\":\"%s\",\"initials\":%s,\"retries\":%s,\"response_observed\":%s,\"possible_tcp_fallback\":%s,\"observed_at\":%s,\"confidence\":\"low\"}",
+          $2,$3,$4,$5,$6,($7==1?"true":"false"),($8==1?"true":"false"),$9
+      }
+    END { printf "]" }
+  ' "$file"
 }
 
 adaptive_browser_status_json() {
@@ -311,7 +338,7 @@ api_adaptive_action() {
     local origin="${HTTP_ORIGIN:-}" host_header="${HTTP_HOST:-}" client="${REMOTE_ADDR:-}"
     [[ -n "$host_header" && ( "$origin" = "http://$host_header" || "$origin" = "https://$host_header" ) ]] || send_error '403 Forbidden' 'Запрос adaptive должен исходить из этой панели'
     awk -v ip="$client" 'BEGIN {split(ip,o,"."); if (!(o[1]==10 || (o[1]==172 && o[2]>=16 && o[2]<=31) || (o[1]==192 && o[2]==168) || ip=="127.0.0.1")) exit 1}' || send_error '403 Forbidden' 'Управление adaptive разрешено только из локальной сети'
-    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ && ${#host} -le 253 && "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "${host,,}" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ]] || send_error '400 Bad Request' 'Некорректное adaptive-правило'
+    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ && ${#host} -le 253 && "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-5]$ && ( "$scope" = default || "$scope" = shared || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && ( ( "$proto" = tls && "$profile" =~ ^[1-4]$ ) || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "${host,,}" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) || ( "$proto" = quic && "$profile" = 5 && ( "${host,,}" =~ ^([a-z0-9-]+\.)*(googlevideo|youtube)\.com$ || "${host,,}" =~ ^([a-z0-9-]+\.)*youtubei\.googleapis\.com$ ) ) ) ]] || send_error '400 Bad Request' 'Некорректное adaptive-правило'
     type adaptive_rule_remove >/dev/null 2>&1 || send_error '503 Service Unavailable' 'Adaptive rule store недоступен'
     adaptive_rule_remove "$host" "$ip" "$profile" "$scope" "$proto" || send_error '404 Not Found' 'Adaptive-правило уже удалено или недоступно'
     send_json '200 OK' '{"ok":true,"action":"reset-rule","restarted":false,"message":"Правило удалено"}'

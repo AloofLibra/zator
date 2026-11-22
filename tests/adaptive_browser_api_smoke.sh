@@ -364,6 +364,12 @@ result_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_f
 result_response="$(printf '%s' "$result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#result_body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$result_response"
+grep -q $'^1\texample.org\t8.8.8.8\t1\ttls\tshared\t' "$Z2R_ADAPTIVE_DIR/rules.tsv" || {
+  echo 'browser-confirmed strategy was not stored as a shared domain baseline' >&2; exit 1;
+}
+grep -q $'^1\texample.org\t8.8.8.8\t1\ttls\tmark:7\t' "$Z2R_ADAPTIVE_DIR/rules.tsv" || {
+  echo 'browser-confirmed strategy was not retained for the originating client scope' >&2; exit 1;
+}
 
 critical_attempt=efefefefefefefefefefefefefefefef
 critical_generation=8

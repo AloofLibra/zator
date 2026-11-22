@@ -184,8 +184,15 @@ browser_promote_attempt() {
   catalog_version="sha256:$(printf '%s\n' "$catalog_rows" | sha256sum | awk '{print $1}')"
   [[ "$catalog_version" =~ ^sha256:[a-f0-9]{64}$ ]] || { rm -rf "$dir"; return 1; }
   now="$(date +%s)"; expires=$((now + 900))
-  adaptive_rule_add "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
-    "$catalog_version" "$stamp" "$expires"
+  # Keep the confirmed rule for the browser's client scope, and publish the
+  # same result as a default-scope baseline for clients without a configured
+  # scope. Marked clients never inherit the shared row.
+  if [[ "$attempt_scope" != default ]]; then
+    adaptive_rule_add "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
+      "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+  fi
+  adaptive_rule_add "$host" "$ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
+    "$catalog_version" "$stamp" "$expires" browser-confirmed
   local rc=$?
   rm -rf "$dir"
   return "$rc"

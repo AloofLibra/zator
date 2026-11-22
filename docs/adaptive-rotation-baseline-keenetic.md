@@ -99,6 +99,12 @@ This does not pass the Keenetic Ramp gate. The SYN callback alone is insufficien
 - With q65535 absent after the isolated probes, a normal HTTPS request to the same hostname/IP returned HTTP 404 from the Google edge. During the check, production queue 300 remained registered and its aggregate TCP queue counters advanced; this is supporting evidence for the production route, not packet attribution to that one flow.
 - Cleanup stopped the temporary listener, removed the exact INPUT allowance, staged tree and temporary archive/token. Final checks showed no q65535 registration, no adaptive controller/probe, no port-17783 allowance, and production PID 2958 unchanged.
 
+### Ramp late-ACK diagnostic follow-up (2026-11-22 11:20 MSK)
+
+- A fresh temporary TEST_ONLY copy on Keenetic used strategy 9 with `gv_tcp_ramp` against the same host/IP. The PS 5.1 agent transferred 1 MiB in 900 ms (1,166,968 B/s on the first diagnostic pass; 1,115,424 and 1,164,700 B/s on two fixed-port repeats), but all three authoritative results remained `INCONCLUSIVE/ramp_stage_unconfirmed`, with queue and strategy ACK present, SYN confirmed, and late ACK absent. The test q65535 byte count was 1,271 bytes; production q300 remained owned by PID 9659.
+- A diagnostic-only Lua copy logged `ack=0,open=1` twice, after its SYN audit row. A WAN-side tcpdump with snaplen 96 and the exact client source port showed the outgoing SYN on `ppp0` with `win 1,wscale 3`; later client ACKs on that capture advertised windows 252–255. This confirms the configured small-window SYN reached WAN and the media transfer completed, but does not establish that Lua observed the data ACK or performed its later window restoration. Low q65535 bytes and the two logged ACKs are consistent with the established flow leaving the inspected NFQUEUE path (for example through acceleration/offload); this cause is not yet proven. The prior LAN-side capture saw pre-forward packets and was not sufficient to inspect the modified WAN packet.
+- The stage used only `/tmp`, and the diagnostic Lua change was not copied into the repository. After cleanup, queue 65535 and both probe locks were absent, the temporary listener and INPUT allowance were removed, and production q300 PID 9659 remained. No persistent configuration or strategy lock changed. Next diagnostic step is to repeat with a narrowly scoped temporary offload exclusion or otherwise account for the exact flow's complete packet path before deciding whether the ACK threshold or the test route is at fault.
+
 This adds Keenetic plain TCP media evidence and leaves Ramp-first/exemption, degraded-plain revocation, alternate routes/offload, rebuild/crash/reboot during a lease, sustained contention, and other nfqws2 builds open. AUTO remains disabled.
 
 ## NDM hook recovery after update (2026-11-22)
@@ -116,3 +122,27 @@ This verifies one manually triggered NDM-hook rebuild and a post-rebuild HTTPS f
 - Production `nfqws2` remained PID 16764 and queue 300 remained registered. No queue-65535 test process was present.
 
 This confirms the restored hook did not disappear again during the observed hour. It is not evidence that a spontaneous NDM firewall rebuild occurred during that interval.
+
+### Later read-only snapshot (2026-11-22 05:35 MSK)
+
+- The hook and `keenetic-policy.sh` are still executable; the installed hook hash is unchanged. Queue 300 remains registered to PID 16764 and all six production NFQUEUE rules are present. Router uptime was about 2 days 18 hours; no q65535/adaptive probe was active.
+- This confirms the current snapshot only. No spontaneous NDM event was observed during this check, so it does not reproduce or rule out the reported loss of zapret rules several minutes after a restart.
+
+### Follow-up read-only snapshot (2026-11-22 06:11 MSK)
+
+- Production `nfqws2` is still PID 16764 on queue 300; all six TCP/UDP INPUT, FORWARD, and POSTROUTING NFQUEUE rules are present. No queue 65535 owner was active.
+- The installed `/opt/etc/ndm/netfilter.d/000-zapret2.sh` is older than the current repository source and lacks its adaptive-probe reconciliation tail. It still contains `restart-fw`, client-scope reconcile, and Supersweep reconcile. The live zapret2 process and queue are healthy at this snapshot; no spontaneous NDM rebuild or delayed traffic failure was observed.
+- No router files, rules, locks, or configuration were changed by this check.
+
+## Official nfqws2 v1.0.7 router-originated flow (2026-11-22)
+
+- The SHA-256-verified official binary ran from a temporary `/tmp` stage using the staged copy of the live config. A pinned HTTPS HEAD to `www.google.com/robots.txt` returned HTTP 200; q65535 advanced 0→28, the matching Lua ACK identified profile 1/strategy 1, and `supersweep_probe_healthy` passed.
+- The temporary transport and queue were removed. Production q300 remained owned by PID 16764, the staged config matched the live config byte-for-byte, and `/tmp/z2r-official-flow` was absent afterward. The global q300 sequence advanced during the run, so that counter alone cannot attribute the test flow versus unrelated router traffic. This verifies official binary packet-path behavior for a router-originated flow, not the paired LAN-client acceptance flow.
+
+### NDM-hook installer guard (2026-11-22)
+
+The repository installer now stages the downloaded hook beside the destination, checks that it is a non-empty regular file with valid shell syntax and the expected `restart-fw` command, and atomically replaces the destination only after validation. Failed downloads or invalid payloads preserve the previous hook. Regression smoke coverage and the full suite passed; commit `6e5422b` is pushed to `feat/bash-adaptive-rotation`. This source change has not been deployed to the router.
+
+### Legacy-hook migration ordering (2026-11-22)
+
+The reinstall migration previously deleted the old `000-zapret.sh` before downloading its replacement. It now keeps the legacy hook on download/validation failure and removes it only after the checked `000-zapret2.sh` is installed. The failure-preservation regression and full suite passed; commit `d3ea8b6` is pushed to `feat/bash-adaptive-rotation`, with no router deployment.

@@ -77,7 +77,7 @@ function probeReason(reason: string) {
   return labels[reason] || reason
 }
 
-async function act(action: string, rule?: { hostname: string; destination_ip: string; profile_id: number; protocol: 'tls' | 'googlevideo-tcp'; scope: string }) {
+async function act(action: string, rule?: { hostname: string; destination_ip: string; profile_id: number; protocol: 'tls' | 'googlevideo-tcp' | 'quic'; scope: string }) {
   if (action === 'disable' && !window.confirm('Отключить adaptive agent, отменить пробы и удалить его правила?')) return
   if (action === 'beta-lan' && !window.confirm('Разрешить проверенным точным adaptive-правилам действовать для всего LAN (scope default), включая устройства без отдельной маркировки?')) return
   if (action === 'ramp-pool-on' && !window.confirm('Включить Ramp-first для настроенного Googlevideo IPv4-пула? Это глобальное изменение для новых TCP-соединений Googlevideo, использует текущие параметры Ramp и помечается как manual_unverified. Beta должна быть включена для всего LAN.')) return
@@ -107,8 +107,8 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
   <section class="panel">
     <div class="panel-header"><h2>Адаптивный подбор</h2></div>
     <p class="panel-desc">
-      Браузерное расширение сообщает о сетевых сбоях; в Beta Zator может временно проверить следующую стратегию для разрешённого scope. Применение ко всему LAN требует отдельного согласия.
-      Windows watcher остаётся необязательным инструментом изолированных проверок. Сопряжение браузера создаётся на роутере командой <code>/opt/zator/tools/adaptive-browser-pair.sh create CLIENT_IPV4 mark:N</code>.
+      Роутерная авторотация работает и без расширения по локальным сигналам с более низкой достоверностью. Расширение добавляет точную обратную связь; подтверждённая стратегия для домена применяется клиентам без отдельного scope, приоритет их lock/policy сохраняется.
+      QUIC Health Monitor пассивно считает Initial, retries, наблюдаемый ответ и возможный TCP fallback; активные проверки он не запускает. Windows watcher остаётся необязательным инструментом изолированных проверок.
     </p>
     <div v-if="status" class="adaptive-status" aria-live="polite">
       <div><span>Сопряжение Windows-агента</span><strong>{{ status.paired ? 'включено' : status.pairing_expired ? 'срок истёк · выполните rotate в CLI' : 'не настроено · для браузера не требуется' }}</strong></div>
@@ -130,6 +130,12 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
       <strong>Браузерные попытки</strong>
       <span v-for="attempt in status.browser.active_attempts" :key="`${attempt.hostname}|${attempt.scope}|${attempt.created_at}`">
         <code>{{ attempt.hostname }}</code> · {{ browserProtocol(attempt.protocol) }} · профиль {{ attempt.profile_id }} · {{ attempt.scope }} · стратегия {{ attempt.strategy_number }} · {{ browserAttemptState(attempt.state) }} · {{ attempt.expires_at > Math.floor(Date.now() / 1000) ? `истекает ${eventTime(attempt.expires_at)}` : `начато ${eventTime(attempt.created_at)}` }}
+      </span>
+    </div>
+    <div v-if="status?.quic_health?.length" class="adaptive-last-probe" aria-live="polite">
+      <strong>QUIC Health Monitor · пассивные наблюдения</strong>
+      <span v-for="item in status.quic_health" :key="`${item.hostname}|${item.destination_ip}|${item.scope}`">
+        <code>{{ item.hostname }}</code> → <code>{{ item.destination_ip }}</code> · {{ item.scope }} · Initial {{ item.initials }} · retries {{ item.retries }} · ответ {{ item.response_observed ? 'наблюдался' : 'не наблюдался' }} · возможный TCP fallback {{ item.possible_tcp_fallback ? 'да' : 'нет' }} · достоверность низкая · {{ eventTime(item.observed_at) }}
       </span>
     </div>
     <div v-if="status?.agent_status" class="adaptive-last-probe" aria-live="polite">
@@ -181,11 +187,11 @@ onMounted(() => { void refresh().catch(error => showToast((error as Error).messa
     <ul v-if="status?.rules.length" class="adaptive-events" aria-label="Подтверждённые локальные правила">
       <li v-for="rule in status.rules" :key="`${rule.hostname}|${rule.destination_ip}|${rule.profile_id}|${rule.protocol}|${rule.scope}`">
         <code>{{ rule.hostname }}</code> → <code>{{ rule.destination_ip }}</code>
-        <span>профиль {{ rule.profile_id }} · {{ rule.protocol === 'googlevideo-tcp' ? 'Googlevideo TCP media' : 'TLS' }} · {{ rule.scope }} · {{ rule.strategy_number === 0 ? 'DIRECT' : `стратегия ${rule.strategy_number}` }} · treatment {{ rule.treatment_variant }} · подтверждение {{ rule.evidence }} · TTL {{ Math.ceil(rule.ttl_seconds / 60) }} мин · действует до {{ eventTime(rule.expires) }}</span>
+        <span>профиль {{ rule.profile_id }} · {{ rule.protocol === 'googlevideo-tcp' ? 'Googlevideo TCP media' : rule.protocol === 'quic' ? 'QUIC' : 'TLS' }} · {{ rule.scope === 'shared' ? 'shared baseline для клиентов без отдельного scope' : rule.scope }} · {{ rule.strategy_number === 0 ? 'DIRECT' : `стратегия ${rule.strategy_number}` }} · treatment {{ rule.treatment_variant }} · подтверждение {{ rule.evidence }} · TTL {{ Math.ceil(rule.ttl_seconds / 60) }} мин · действует до {{ eventTime(rule.expires) }}</span>
         <button class="ghost" :disabled="busyActive" @click="act('reset-rule', rule)">Сбросить правило</button>
       </li>
     </ul>
-      <p v-if="status?.mode === 'AGENT_BETA' && !status.default_scope_apply" class="form-hint">Beta применяет только проверенные точные правила для явно маркированного client scope. События со scope default остаются в режиме проверки.</p>
+      <p v-if="status?.mode === 'AGENT_BETA' && !status.default_scope_apply" class="form-hint">Новые browser trials остаются в маркированном scope. Подтверждённая доменная стратегия также применяется клиентам без отдельного scope; их manual lock и policy выше неё.</p>
       <p v-else-if="status?.mode === 'AGENT_BETA'" class="settings-alert">Beta может применять проверенные точные правила ко всему LAN. Для браузерной авторотации Windows watcher не нужен; он используется только для отдельных тестовых проверок.</p>
       <p v-else class="form-hint">Стратегия автоматически не применяется. Windows watcher нужен только для изолированных проверок в TEST_ONLY.</p>
     <div class="card-actions">
