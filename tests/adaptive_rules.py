@@ -46,6 +46,18 @@ assert(locked_adaptive_strategy_for_tuple("rr1---sn-a5mekn6e.googlevideo.com", "
   "exact Googlevideo media rule was rejected")
 assert(locked_adaptive_strategy_for_tuple("rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.37", "2", "tls", "default", 1000) == nil,
   "Googlevideo media result was mixed into the TLS recipe")
+local quic = table.concat({"1", "rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.41", "5", "quic", "mark:7", "9", fp, cat, stamp, "5000"}, "\t")
+locked_load_adaptive_lines_for_tests({quic}, 1000, stamp)
+assert(locked_adaptive_strategy_for_tuple("rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.41", "5", "quic", "mark:7", 1000) == 9,
+  "exact profile-5 QUIC rule was rejected")
+assert(locked_adaptive_strategy_for_tuple("rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.41", "5", "tls", "mark:7", 1000) == nil,
+  "QUIC result leaked into the TCP strategy category")
+assert(locked_adaptive_strategy_for_tuple("rr1---sn-a5mekn6e.googlevideo.com", "93.184.216.41", "5", "quic", "mark:8", 1000) == nil,
+  "QUIC rule ignored its client scope")
+local invalid_quic = quic:gsub("rr1%-%-%-sn%-a5mekn6e%.googlevideo%.com", "cdn.example.org")
+locked_load_adaptive_lines_for_tests({invalid_quic}, 1000, stamp)
+assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.41", "5", "quic", "mark:7", 1000) == nil,
+  "QUIC adaptive rule accepted a non-YouTube host")
 local invalid_gv = gv:gsub("rr1%-%-%-sn%-a5mekn6e%.googlevideo%.com", "cdn.example.org")
 locked_load_adaptive_lines_for_tests({invalid_gv}, 1000, stamp)
 assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.37", "2", "tls", "default", 1000) == nil,
