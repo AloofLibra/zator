@@ -382,6 +382,7 @@ if ($Watch) {
         throw '-Watch cannot be combined with a one-shot action or explicit target.'
     }
     $processed = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $script:AdaptiveCooldownNotices = @{}
     $failureRetryState = Read-AdaptiveFailureRetryState
     $script:AdaptiveFailureRetryState = $failureRetryState
     $script:AdaptiveFailureRetryCooldownTargets = Get-AdaptiveFailureRetryCooldownCount -State $failureRetryState
@@ -401,6 +402,19 @@ if ($Watch) {
                 throw 'Router returned an invalid observation response.'
             }
             Send-AdaptiveAgentStatus -Stage 'idle'
+            $currentCooldowns = @{}
+            foreach ($cooldown in @(Get-AdaptiveWatchFailureCooldowns -State $failureRetryState -Events @($queue.events))) {
+                $currentCooldowns[$cooldown.Key] = $true
+                if ($script:AdaptiveCooldownNotices[$cooldown.Key] -ne $cooldown.NextAt) {
+                    $remainingMinutes = [Math]::Max(1, [Math]::Ceiling($cooldown.RemainingSeconds / 60))
+                    Write-Output ("Adaptive retry cooldown: {0} ({1}, profile {2}, {3}); retry in {4} min." -f `
+                        $cooldown.Hostname, $cooldown.DestinationIp, $cooldown.ProfileId, $cooldown.Scope, $remainingMinutes)
+                    $script:AdaptiveCooldownNotices[$cooldown.Key] = $cooldown.NextAt
+                }
+            }
+            foreach ($key in @($script:AdaptiveCooldownNotices.Keys)) {
+                if (-not $currentCooldowns.ContainsKey($key)) { [void]$script:AdaptiveCooldownNotices.Remove($key) }
+            }
             if ($queue.mode -in @('TEST_ONLY', 'AGENT_BETA')) {
                 $exploreInterval = if ($UploadStatistics) { [Math]::Max(240, $ExploreIntervalSeconds) } else { $ExploreIntervalSeconds }
                 $exploreDue = -not $Explore -or ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $exploreState.Last -ge ($exploreInterval + $exploreState.Jitter))

@@ -87,6 +87,29 @@ function Get-AdaptiveFailureRetryCooldownCount {
     return [Math]::Min(128, @($State.Rows | Where-Object { [long]$_.NextAt -gt $Now }).Count)
 }
 
+function Get-AdaptiveWatchFailureCooldowns {
+    param([Parameter(Mandatory = $true)][hashtable]$State,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Events,
+        [long]$Now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    $cooldowns = @()
+    foreach ($event in $Events) {
+        if ($event.protocol -ne 'tls' -or $event.status -notin @('suspected_failure', 'active_rule_degraded') -or
+            [string]$event.hostname -notmatch '^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$' -or
+            [string]$event.destination_ip -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}$' -or
+            [int]$event.profile_id -lt 1 -or [int]$event.profile_id -gt 4 -or
+            [string]$event.scope -notmatch '^(default|mark:[1-9][0-9]{0,4})$') { continue }
+        $key = Get-AdaptiveFailureRetryKey -Event $event
+        $row = @($State.Rows | Where-Object { $_.Key -eq $key -and [long]$_.NextAt -gt $Now } | Select-Object -First 1)
+        if ($row.Count -eq 0) { continue }
+        $cooldowns += [pscustomobject]@{
+            Key = $key; Hostname = [string]$event.hostname; DestinationIp = [string]$event.destination_ip
+            ProfileId = [int]$event.profile_id; Scope = [string]$event.scope
+            NextAt = [long]$row[0].NextAt; RemainingSeconds = [long]$row[0].NextAt - $Now
+        }
+    }
+    return $cooldowns
+}
+
 function Test-AdaptiveWatchCooldownPending {
     param([Parameter(Mandatory = $true)][hashtable]$State,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Events,

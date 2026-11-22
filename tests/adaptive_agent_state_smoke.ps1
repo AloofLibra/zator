@@ -58,8 +58,16 @@ try {
     $retryNow = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     Save-AdaptiveFailureRetry -State $retryState -Event $retryEvent -DelayBaseSeconds 60 -Now $retryNow
     $retryState = Read-AdaptiveFailureRetryState
+    $cooldownEvent = [pscustomobject]@{
+        hostname = 'cdn.example.org'; destination_ip = '93.184.216.34'; profile_id = 1; scope = 'default'
+        protocol = 'tls'; status = 'active_rule_degraded'
+    }
+    $watchCooldowns = @(Get-AdaptiveWatchFailureCooldowns -State $retryState -Events @($cooldownEvent) -Now ($retryNow + 1))
     if ((Get-AdaptiveFailureRetryCooldownCount -State $retryState -Now ($retryNow + 1)) -ne 1 -or
         (Get-AdaptiveFailureRetryCooldownCount -State $retryState -Now ($retryNow + 60)) -ne 0 -or
+        $watchCooldowns.Count -ne 1 -or $watchCooldowns[0].Hostname -ne 'cdn.example.org' -or
+        $watchCooldowns[0].RemainingSeconds -ne 59 -or
+        @(Get-AdaptiveWatchFailureCooldowns -State $retryState -Events @($cooldownEvent) -Now ($retryNow + 60)).Count -ne 0 -or
         -not (Test-AdaptiveWatchCooldownPending -State $retryState -Events @([pscustomobject]@{
             hostname = 'cdn.example.org'; destination_ip = '93.184.216.34'; profile_id = 1; scope = 'default'
             protocol = 'tls'; status = 'active_rule_degraded'

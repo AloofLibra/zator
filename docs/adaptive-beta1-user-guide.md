@@ -34,7 +34,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\adaptive-agent.p
 
 `TEST_ONLY` can observe and probe, but does not apply stored strategy results. Optional low-priority exploration requires an explicit `-Watch -Explore`; it checks one observed target at a time and pauses when the machine or router exceeds its resource limits.
 
-The WebUI reports whether the paired watcher is online and its current phase (FastSearch, DeepSearch, Explore, Ramp audit, or a retry cooldown). It also shows the watcher’s separate statistics-upload and shared-ranking opt-ins, plus aggregate counts and timing for its last strategy search. Search status is temporary and expires when the watcher stops checking in; it does not include the search target.
+The WebUI reports whether the paired watcher is online and its current phase (FastSearch, DeepSearch, Explore, Ramp audit, or a retry cooldown). It also shows the watcher’s separate statistics-upload and shared-ranking opt-ins, plus aggregate counts and timing for its last strategy search. Search status is temporary and expires when the watcher stops checking in; it does not include the search target. During `-Watch`, active per-target retry cooldowns are shown in the local Windows console with the hostname, IP, profile, and remaining delay. Those identifiers are not sent in the status snapshot or to the statistics service.
 
 ## Evaluate gated Beta behavior
 
