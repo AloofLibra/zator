@@ -10,6 +10,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/zator/tools" "$tmp/zator/z2r_lib" "$tmp/zator/extra_strats/cache/adaptive" \
   "$tmp/runs/0123456789abcdef0123456789abcdef"
+printf '#!/bin/sh\nexit 127\n' > "$tmp/bin/od"
 cat > "$tmp/bin/id" <<'ID'
 #!/bin/sh
 echo 0
@@ -22,12 +23,13 @@ cat > "$tmp/bin/sleep" <<'SLEEP'
 #!/bin/sh
 exit 0
 SLEEP
-chmod +x "$tmp/bin/id"
+chmod +x "$tmp/bin/id" "$tmp/bin/od"
 chmod +x "$tmp/bin/chown"
 chmod +x "$tmp/bin/sleep"
 cp "$ROOT/tools/adaptive-pair.sh" "$tmp/zator/tools/adaptive-pair.sh"
 cp "$ROOT/tools/adaptive-ramp-proof.sh" "$tmp/zator/tools/adaptive-ramp-proof.sh"
 cp "$ROOT/lib/adaptive_rules.sh" "$tmp/zator/z2r_lib/adaptive_rules.sh"
+cp "$ROOT/lib/adaptive_queue.sh" "$tmp/zator/z2r_lib/adaptive_queue.sh"
 cp "$ROOT/lib/adaptive_lan_transport.sh" "$tmp/zator/z2r_lib/adaptive_lan_transport.sh"
 cp "$ROOT/lib/supersweep_transport.sh" "$ROOT/lib/config.sh" "$tmp/zator/z2r_lib/"
 cp "$ROOT/lib/googlevideo_ips.sh" "$tmp/zator/z2r_lib/"

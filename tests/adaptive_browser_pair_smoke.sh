@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 export ZATOR_ROOT="$TMP_DIR/zator" ZAPRET2_ROOT="$TMP_DIR/zapret2"
 export CLIENT_SCOPE_MAP_FILE="$ZATOR_ROOT/extra_strats/cache/client_scope.tsv"
 mkdir -p "$ZATOR_ROOT/z2r_lib" "$ZATOR_ROOT/tools" "$ZATOR_ROOT/extra_strats/cache/adaptive" "$ZAPRET2_ROOT" "$TMP_DIR/bin"
+printf '#!/bin/sh\nexit 127\n' > "$TMP_DIR/bin/od"
 cp "$ROOT/tools/adaptive-browser-pair.sh" "$ZATOR_ROOT/tools/adaptive-browser-pair.sh"
 cp "$ROOT/lib/config.sh" "$ROOT/lib/orchestra_state.sh" "$ROOT/lib/adaptive_browser.sh" "$ZATOR_ROOT/z2r_lib/"
 printf 'CLIENT_SCOPE_ENABLE=1\nCLIENT_SCOPE_MARK_MAX=65535\n' > "$ZAPRET2_ROOT/config"
@@ -19,7 +20,7 @@ cat > "$TMP_DIR/bin/id" <<'ID'
 #!/bin/sh
 if [ "${1:-}" = -u ]; then printf '0\n'; else exec /usr/bin/id "$@"; fi
 ID
-chmod +x "$TMP_DIR/bin/id"
+chmod +x "$TMP_DIR/bin/id" "$TMP_DIR/bin/od"
 export PATH="$TMP_DIR/bin:$PATH"
 
 CLI="$ZATOR_ROOT/tools/adaptive-browser-pair.sh"

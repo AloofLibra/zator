@@ -6,6 +6,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" Z2R_ADAPTIVE_NDM_ROOT="$tmp/no-ndm"
 mkdir -p "$tmp/bin"
+printf '#!/bin/sh\nexit 127\n' > "$tmp/bin/od"
+chmod +x "$tmp/bin/od"
 cat > "$tmp/bin/id" <<'ROOT_ID'
 #!/bin/sh
 echo 0

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Browser-only pairing and bounded runtime state. Never shares the agent token.
 
+adaptive_browser_random_hex() {
+  local bytes="${1:-}" hex format
+  [[ "$bytes" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] || return 2
+  format="${bytes}/1 \"%02x\""
+  hex="$(dd if=/dev/urandom bs="$bytes" count=1 2>/dev/null | hexdump -v -e "$format" 2>/dev/null)" || return 1
+  [[ ${#hex} -eq $((bytes * 2)) && "$hex" =~ ^[a-f0-9]+$ ]] || return 1
+  printf '%s\n' "$hex"
+}
+
 adaptive_browser_clients_file() {
   printf '%s\n' "${Z2R_ADAPTIVE_BROWSER_CLIENTS_FILE:-${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/browser-clients.tsv}"
 }
@@ -396,7 +405,7 @@ adaptive_browser_stats_flush() {
   rm -f "$snapshot"
   if (( count == 0 )); then rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 0; fi
   local request_id
-  request_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  request_id="$(adaptive_browser_random_hex 16)"
   [[ "$request_id" =~ ^[a-f0-9]{32}$ ]] || { rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
   payload="$(mktemp /tmp/z2r-browser-flow-payload.XXXXXX)" || { rm -f "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }
   response="$(mktemp /tmp/z2r-browser-flow-response.XXXXXX)" || { rm -f "$payload" "$upload_lock/pid"; rmdir "$upload_lock"; return 1; }

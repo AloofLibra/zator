@@ -93,12 +93,12 @@ browser_start_trial() {
   elif [[ "$(id -u)" = 0 ]]; then
     chmod 700 "$flow_dir" || return 1
   fi
-  raw_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  raw_id="$(adaptive_browser_random_hex 16)"
   [[ "$raw_id" =~ ^[a-f0-9]{32}$ ]] || return 1
   id="$raw_id"; now="$(date +%s)"; expires=$((now + 45))
-  raw_id="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' \n')"
-  [[ "$raw_id" =~ ^[0-9]{1,10}$ ]] || return 1
-  generation=$((raw_id % 999999999 + 1))
+  raw_id="$(adaptive_browser_random_hex 4)"
+  [[ "$raw_id" =~ ^[a-f0-9]{8}$ ]] || return 1
+  generation=$((16#$raw_id % 999999999 + 1))
   candidate_dir="$(adaptive_browser_state_dir)/candidates/$id"
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$(dirname "$candidate_dir")" && ! -e "$candidate_dir" ]] || return 1
   mkdir -p "$candidate_dir" || return 1

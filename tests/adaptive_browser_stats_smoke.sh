@@ -5,6 +5,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_BROWSER_DIR="$tmp/runtime/browser"
 mkdir -p "$ZATOR_ROOT/extra_strats/cache/adaptive" "$ZATOR_ROOT/extra_strats/cache" "$tmp/mockbin"
+printf '#!/bin/sh\nexit 127\n' > "$tmp/mockbin/od"
 . "$ROOT/lib/adaptive_browser.sh"
 
 attempt=abcdefabcdefabcdefabcdefabcdefab
@@ -52,7 +53,7 @@ cp "$payload" "$Z2R_TEST_STATS_PAYLOAD"
 [[ "${Z2R_TEST_STATS_FAIL:-0}" != 1 ]] || exit 22
 printf '{"ok": true, "accepted": 1, "source": "browser_flow"}\n' > "$response"
 MOCK_CURL
-chmod +x "$tmp/mockbin/curl"
+chmod +x "$tmp/mockbin/curl" "$tmp/mockbin/od"
 export PATH="$tmp/mockbin:$PATH"
 export Z2R_TEST_STATS_URL="$tmp/upload-url" Z2R_TEST_STATS_CURL_CONFIG="$tmp/curl.conf" Z2R_TEST_STATS_PAYLOAD="$tmp/payload.json"
 if Z2R_TEST_STATS_FAIL=1 adaptive_browser_stats_flush; then echo 'failed upload was reported as success' >&2; exit 1; fi

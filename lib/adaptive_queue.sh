@@ -2,6 +2,15 @@
 # Persistent, bounded handoff queue for explicit adaptive verification requests.
 set -u
 
+adaptive_queue_random_hex() {
+  local bytes="${1:-}" hex format
+  [[ "$bytes" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] || return 2
+  format="${bytes}/1 \"%02x\""
+  hex="$(dd if=/dev/urandom bs="$bytes" count=1 2>/dev/null | hexdump -v -e "$format" 2>/dev/null)" || return 1
+  [[ ${#hex} -eq $((bytes * 2)) && "$hex" =~ ^[a-f0-9]+$ ]] || return 1
+  printf '%s\n' "$hex"
+}
+
 adaptive_queue_file() { printf '%s\n' "${Z2R_ADAPTIVE_REQUESTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/requests.tsv}"; }
 adaptive_queue_processed_file() { printf '%s\n' "${Z2R_ADAPTIVE_PROCESSED_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/processed.tsv}"; }
 
@@ -128,7 +137,7 @@ adaptive_queue_request() {
   fi
   if (( cooldown )); then rm -f "$tmp"; rmdir "$lock"; return 6; fi
   (( count < 32 )) || { rm -f "$tmp"; rmdir "$lock"; return 5; }
-  id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  id="$(adaptive_queue_random_hex 16)"
   [[ "$id" =~ ^[a-f0-9]{32}$ ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
   printf '1\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$host" "$ip" "$profile" "$scope" "$now" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
   owner="$(stat -c '%u:%g' "$file" 2>/dev/null || true)"

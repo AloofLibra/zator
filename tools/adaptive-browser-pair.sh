@@ -165,8 +165,8 @@ case "$action" in
   create)
     [[ $# = 3 ]] || { echo 'Usage: adaptive-browser-pair.sh create CLIENT_IPV4 mark:N|default' >&2; exit 2; }
     client_ip="$2"; scope="$3"; validate_scope "$client_ip" "$scope"
-    id="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
-    token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    id="$(adaptive_browser_random_hex 16)"
+    token="$(adaptive_browser_random_hex 32)"
     [[ "$id" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{64}$ ]] || { echo 'Secure random token generation failed.' >&2; exit 1; }
     now="$(date +%s)"; expiry=$((now + 2592000)); hash="$(printf '%s' "$token" | sha256sum | awk '{print $1}')"
     if with_locked_file write_record "$id" "$hash" "$client_ip" "$scope" "$expiry" create; then
@@ -181,7 +181,7 @@ case "$action" in
     id="$2"; current="$(awk -F '\t' -v id="$id" '$1==1 && $2==id {print $4 "\t" $5; exit}' "$CLIENTS_FILE" 2>/dev/null)"
     [[ -n "$current" ]] || { echo 'Browser client not found.' >&2; exit 1; }
     IFS=$'\t' read -r client_ip scope <<< "$current"; validate_scope "$client_ip" "$scope"
-    token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"; [[ "$token" =~ ^[a-f0-9]{64}$ ]] || exit 1
+    token="$(adaptive_browser_random_hex 32)"; [[ "$token" =~ ^[a-f0-9]{64}$ ]] || exit 1
     now="$(date +%s)"; expiry=$((now + 2592000)); hash="$(printf '%s' "$token" | sha256sum | awk '{print $1}')"
     with_locked_file write_record "$id" "$hash" "$client_ip" "$scope" "$expiry" rotate || { echo 'Browser token rotation failed.' >&2; exit 1; }
     printf 'Browser token rotated (shown once): %s\nExpires in 30 days.\n' "$token"

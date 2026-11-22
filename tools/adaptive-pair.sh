@@ -572,7 +572,7 @@ if [ "$action" = create ] && [ -e "$TOKEN_FILE" ]; then
 fi
 mkdir -p "$TOKEN_DIR"
 umask 077
-token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+token="$(adaptive_queue_random_hex 32)"
 case "$token" in *[!a-f0-9]*|'') echo 'Secure random token generation failed.' >&2; exit 1 ;; esac
 [ "${#token}" = 64 ] || { echo 'Secure random token generation failed.' >&2; exit 1; }
 now="$(date +%s)" || exit 1
