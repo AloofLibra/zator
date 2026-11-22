@@ -92,10 +92,83 @@ adaptive_browser_profile_lock_check() {
   return 1
 }
 
+adaptive_browser_rankings_opted_in() {
+  local file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/browser-rankings-opt-in"
+  [[ -f "$file" && ! -L "$file" && "$(cat "$file" 2>/dev/null)" = 1 ]]
+}
+
+# Redis may only reorder fingerprints already present in this exact local catalog.
+adaptive_browser_redis_ranked_candidates() {
+  [[ $# = 8 ]] || return 2
+  adaptive_browser_rankings_opted_in || return 0
+  [[ "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 0
+  local profile="$1" proto="$2" recipe="$3" stamp="$4" max="$5" args_file="$6" nfqws="$7" cache_dir="$8"
+  local provider_file="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/provider.txt" provider url protocol now raw fingerprints catalog ordered
+  local raw_file catalog_file fingerprint_file
+  [[ -f "$provider_file" && ! -L "$provider_file" && -r "$provider_file" && $(wc -c < "$provider_file") -le 256 ]] || return 0
+  provider="$(head -n1 "$provider_file" | tr -d '\r')"
+  provider="${provider%% - *}"
+  case "$provider" in ''|'Не определён'|'Не удалось определить'|Unknown) return 0 ;; esac
+  [[ -n "$provider" && ${#provider} -le 120 && ! "$provider" =~ [$'\t\r\n'] &&
+     ! -L "$cache_dir" && ! -L "$(dirname "$cache_dir")" ]] || return 0
+  case "$proto" in
+    tls) protocol=tls ;;
+    googlevideo-tcp) protocol=tcp-media ;;
+    quic) protocol=quic ;;
+    *) return 0 ;;
+  esac
+  url="${Z2R_ADAPTIVE_RANKINGS_URL:-https://alooflibra.fun/z4r/adaptive-v2/rankings.tsv}"
+  [[ "$url" = https://* && "$url" != *[[:space:]]* ]] || return 0
+  raw_file="$(mktemp /tmp/z2r-browser-ranking.XXXXXX)" || return 0
+  catalog_file="${cache_dir%/}/rankings-catalog-${profile}-${recipe}.tsv"
+  fingerprint_file="${raw_file}.fingerprints"
+  if ! curl -4 -fsS --connect-timeout 1 --max-time 2 --max-filesize 8192 --get \
+      --data-urlencode "provider=$provider" --data-urlencode "profile=$profile" \
+      --data-urlencode "protocol=$protocol" --data-urlencode "recipe=$recipe" \
+      --data-urlencode "treatment=standard" "$url" -o "$raw_file" 2>/dev/null; then
+    rm -f "$raw_file" "$fingerprint_file"
+    return 0
+  fi
+  now="$(date +%s)" || { rm -f "$raw_file" "$fingerprint_file"; return 0; }
+  raw="$(awk -F '\t' -v now="$now" -v profile="$profile" -v protocol="$protocol" -v recipe="$recipe" '
+    function uint(x) { return x ~ /^(0|[1-9][0-9]{0,9})$/ }
+    function val(line, key, p) { p=index(line,"="); return p && substr(line,1,p-1)==key ? substr(line,p+1) : "" }
+    NR==1 { if ($0!="schema_version=2") bad=1; next }
+    /^status=/ { v=val($0,"status"); if (status!="" || (v!="fresh" && v!="stale" && v!="not_ready")) bad=1; status=v; next }
+    /^generated_at=/ { v=val($0,"generated_at"); if (generated!="" || !uint(v)) bad=1; generated=v+0; next }
+    /^profile_id=/ { v=val($0,"profile_id"); if (got_profile || !uint(v)) bad=1; got_profile=1; got_profile_value=v; next }
+    /^protocol=/ { v=val($0,"protocol"); if (got_protocol || v !~ /^(tls|tcp-media|quic)$/) bad=1; got_protocol=1; got_protocol_value=v; next }
+    /^recipe_id=/ { v=val($0,"recipe_id"); if (got_recipe || v !~ /^(tls-http1-v1|googlevideo-tcp-media-v1|googlevideo-quic-h3-media-v1)$/) bad=1; got_recipe=1; got_recipe_value=v; next }
+    /^treatment_variant=/ { v=val($0,"treatment_variant"); if (got_treatment || v!="standard") bad=1; got_treatment=1; next }
+    $1=="strategy" {
+      if (NF!=6 || $2 !~ /^sha256:[a-f0-9]{64}$/ || $3 !~ /^(0(\.[0-9]+)?|1(\.0+)?)$/ || $3+0>1 || !uint($4) || !uint($5) || !uint($6) || seen[$2]++ || ++rows>20) bad=1
+      else fingerprints[rows]=$2
+      next
+    }
+    { bad=1 }
+    END {
+      if (status!="fresh" || !uint(generated) || generated>now+5 || generated<now-900 ||
+          got_profile!=1 || got_profile_value!=profile || got_protocol!=1 || got_protocol_value!=protocol ||
+          (got_recipe && got_recipe_value!=recipe) || (!got_recipe && recipe!="tls-http1-v1") ||
+          (recipe!="tls-http1-v1" && !got_treatment) || rows<1 || bad) exit 1
+      for (i=1;i<=rows;i++) print fingerprints[i]
+    }
+  ' "$raw_file" 2>/dev/null)" || { rm -f "$raw_file" "$fingerprint_file"; return 0; }
+  printf '%s\n' "$raw" > "$fingerprint_file" || { rm -f "$raw_file" "$fingerprint_file"; return 0; }
+  catalog="$(adaptive_strategy_fingerprint_catalog "$profile" "$max" "$args_file" "$nfqws" standard "$recipe" "$stamp" "$cache_dir" 2>/dev/null)" || {
+    rm -f "$raw_file" "$fingerprint_file"; return 0;
+  }
+  printf '%s\n' "$catalog" > "$catalog_file" || { rm -f "$raw_file" "$fingerprint_file" "$catalog_file"; return 0; }
+  ordered="$(awk -F '\t' 'FNR==NR { rank[++n]=$1; next } NF==2 { number[$2]=$1 } END { for(i=1;i<=n;i++) if(rank[i] in number) print number[rank[i]] }' \
+    "$fingerprint_file" "$catalog_file")"
+  rm -f "$raw_file" "$fingerprint_file" "$catalog_file"
+  [[ -z "$ordered" ]] || printf '%s\n' "$ordered"
+}
+
 adaptive_browser_candidate_select() {
   [[ $# = 9 ]] || return 2
   local host="$1" ip="$2" profile="$3" proto="$4" scope="$5" args_file="$6" nfqws="$7" orch_dir="$8" client_id="$9"
-  local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" max current state stamp exact ranked family identity strategy fingerprint now
+  local config="${ZAPRET2_ROOT:-/opt/zapret2}/config" max current state stamp exact ranked group_ranked remote family identity strategy fingerprint recipe now
   local -A seen=()
   local -a candidates=()
   [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) || ( "$profile" = 5 && "$proto" = quic ) ) &&
@@ -108,9 +181,19 @@ adaptive_browser_candidate_select() {
   if [[ -n "$exact" ]]; then IFS=$'\t' read -r current _ <<< "$exact"; fi
   max="$(config_profile_max_strategy "$profile" "$config")"
   [[ "$max" =~ ^[1-9][0-9]{0,2}$ ]] || return 3
-  if [[ "$proto" = googlevideo-tcp ]]; then identity="$(adaptive_rules_googlevideo_group_id "$host")"; else identity=""; fi
+  identity="exactip:$host:$ip"
   ranked="$(adaptive_rules_ranked_candidates "$profile" "$proto" "$scope" "$stamp" "$max" "$identity" 2>/dev/null || true)"
   while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$(printf '%s\n' "$ranked" | head -n 5)"
+  if [[ "$proto" = googlevideo-tcp ]]; then
+    identity="$(adaptive_rules_googlevideo_group_id "$host")" || identity=""
+    if [[ -n "$identity" ]]; then
+      group_ranked="$(adaptive_rules_ranked_candidates "$profile" "$proto" "$scope" "$stamp" "$max" "$identity" 2>/dev/null || true)"
+      while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$(printf '%s\n' "$group_ranked" | head -n 5)"
+    fi
+  fi
+  case "$proto" in googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; quic) recipe=googlevideo-quic-h3-media-v1 ;; *) recipe=tls-http1-v1 ;; esac
+  remote="$(adaptive_browser_redis_ranked_candidates "$profile" "$proto" "$recipe" "$stamp" "$max" "$args_file" "$nfqws" "$(adaptive_browser_state_dir)/catalog-cache" || true)"
+  while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$remote"
   family="$(adaptive_exploration_strategy_order "$args_file" "$max" 2>/dev/null || true)"
   while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$family"
   now="$(date +%s)" || return 1
@@ -118,7 +201,6 @@ adaptive_browser_candidate_select() {
     [[ "$strategy" != "$current" && ! ${seen[$strategy]+yes} ]] || continue
     seen[$strategy]=1
     if adaptive_browser_candidate_confirmed_failed "$client_id" "$host" "$ip" "$profile" "$proto" "$scope" "$strategy" "$now"; then continue; fi
-    case "$proto" in googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; quic) recipe=googlevideo-quic-h3-media-v1 ;; *) recipe=tls-http1-v1 ;; esac
     fingerprint="$(adaptive_strategy_fingerprint "$profile" "$strategy" "$args_file" "$nfqws" standard "$recipe" 2>/dev/null)" || continue
     [[ "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ ]] || continue
     printf '%s\t%s\n' "$strategy" "$fingerprint"

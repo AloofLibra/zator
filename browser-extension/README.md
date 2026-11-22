@@ -17,7 +17,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\package-browser-
 
 The output is written to `webui-src/dist/` and is not part of a router deployment archive.
 
-This prototype reports eligible main-frame transport failures immediately and repeated critical script/XHR/media failures after the second occurrence in 30 seconds. A user can also press `Fix this site` on any supported current page without waiting for a particular network error. Strategy changes remain disabled until the separate browser API, scoped trial lifecycle, and production-flow evidence gates are implemented. The button sends an explicit user request and does not reload the tab or repeat its request.
+The extension reports eligible main-frame transport failures immediately and repeated critical script/XHR/media failures after the second occurrence in 30 seconds. A user can also press `Fix this site` on any supported current page without waiting for a particular network error. In `AGENT_BETA`, Zator may start a short scoped trial only for a managed target and only when policy, manual-lock, transport, scope and cooldown checks allow it. Success or failure is assessed only after a new production flow proves the selected strategy; without that proof, the result is `NOT_TESTED`/`UNKNOWN`. The button sends an explicit request and does not reload the tab or replay its request; retry or reload safely after Zator reports `WAIT_NEW_FLOW`.
+
+Browser pairing is separate from the Windows-agent token:
+
+```sh
+/opt/zator/tools/adaptive-browser-pair.sh create 192.168.1.42 mark:7
+```
+
+Shared Redis rankings are a second, independent opt-in and are disabled by default. To enable them, run `adaptive-browser-pair.sh rankings-on` on the router and confirm the typed prompt; `rankings-off` revokes this choice. When enabled, trial selection may request only provider/profile/protocol rankings and maps returned fingerprints to the router's current local catalog. It never sends the target hostname, destination IP, browser token, or result history. The stats host can see the router's public source IP. The extension Settings page reports the current consent state.
 
 The extension stores at most 64 sanitized recent events in trusted extension storage. It omits paths, query strings, tab IDs, client IPs, and successful visits from reports. Incognito is not monitored. Internal, local, and router hostnames are ignored. Certificate, DNS, offline, network-changed, cancellation, and HTTP response errors do not start an automatic trial; a user can still explicitly request help for a recent listed event.
 

@@ -594,11 +594,16 @@ adaptive_rules_googlevideo_group_id() {
 adaptive_rules_ranked_candidates() {
   [[ $# = 5 || $# = 6 ]] || return 2
   local profile="$1" proto="$2" scope="$3" stamp="$4" max="$5" identity="${6:-}"
-  local file snapshot row ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now catalog_seen row_identity pair remaining
+  local file snapshot row ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now catalog_seen row_identity pair remaining exact_host exact_ip
   local -A scores=() seen_catalog=() seen_pairs=()
   local best_score=0 best_ties=0
   [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ ) && "$stamp" =~ ^[0-9:|]{1,2048}$ && "$max" =~ ^[1-9][0-9]{0,2}$ ]] || return 2
-  [[ -z "$identity" || "$identity" =~ ^(gv1:(rr|r):[a-z0-9.-]+|exact:[a-z0-9.-]+)$ ]] || return 2
+  [[ -z "$identity" || "$identity" =~ ^(gv1:(rr|r):[a-z0-9.-]+|exact:[a-z0-9.-]+|exactip:[a-z0-9.-]+:[0-9.]+)$ ]] || return 2
+  if [[ "$identity" = exactip:* ]]; then
+    exact_host="${identity#exactip:}"; exact_ip="${exact_host##*:}"; exact_host="${exact_host%:*}"
+    [[ "$exact_host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ &&
+       "$exact_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 2
+  fi
   file="$(adaptive_rules_file)"; snapshot="$(adaptive_rules_snapshot_file)"
   [[ -f "$file" && ! -L "$file" ]] || file="$snapshot"
   [[ -r "$file" && ! -L "$file" ]] || return 0
@@ -614,7 +619,8 @@ adaptive_rules_ranked_candidates() {
        "$(adaptive_rules_kind_valid "$old_profile" "$old_proto" "$host" && printf valid)" = valid &&
        "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ &&
        "$old_stamp" = "$stamp" && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
-    if [[ -n "$identity" ]]; then row_identity="$(adaptive_rules_googlevideo_group_id "$host" 2>/dev/null)" || continue; [[ "$row_identity" = "$identity" ]] || continue; fi
+    if [[ "$identity" = exactip:* ]]; then [[ "$host" = "$exact_host" && "$ip" = "$exact_ip" ]] || continue
+    elif [[ -n "$identity" ]]; then row_identity="$(adaptive_rules_googlevideo_group_id "$host" 2>/dev/null)" || continue; [[ "$row_identity" = "$identity" ]] || continue; fi
     (( expiry > now )) || continue
     seen_catalog["$catalog"]=1
   done
@@ -626,7 +632,8 @@ adaptive_rules_ranked_candidates() {
        "$(adaptive_rules_kind_valid "$old_profile" "$old_proto" "$host" && printf valid)" = valid &&
        "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" = "$catalog_seen" &&
        "$old_stamp" = "$stamp" && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
-    if [[ -n "$identity" ]]; then row_identity="$(adaptive_rules_googlevideo_group_id "$host" 2>/dev/null)" || continue; [[ "$row_identity" = "$identity" ]] || continue; fi
+    if [[ "$identity" = exactip:* ]]; then [[ "$host" = "$exact_host" && "$ip" = "$exact_ip" ]] || continue
+    elif [[ -n "$identity" ]]; then row_identity="$(adaptive_rules_googlevideo_group_id "$host" 2>/dev/null)" || continue; [[ "$row_identity" = "$identity" ]] || continue; fi
     (( expiry > now )) || continue
     pair="$host|$ip"
     [[ ! ${seen_pairs[$pair]+yes} ]] || continue

@@ -63,7 +63,7 @@ document.querySelector("#check-router").addEventListener("click", async () => {
     if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("Enter the browser token created by Zator.");
     if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) throw new Error("Allow the router address first.");
     const data = await routerHello(origin, token);
-    saveState.textContent = `Paired to ${data.scope}; adaptive mode ${data.mode}.`;
+    saveState.textContent = `Paired to ${data.scope}; adaptive mode ${data.mode}; shared rankings ${data.ranking_opt_in ? "enabled" : "disabled"}. Change ranking consent with adaptive-browser-pair.sh rankings-on/off on the router.`;
   } catch (error) { saveState.textContent = error.message; }
 });
 

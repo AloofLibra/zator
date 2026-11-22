@@ -15,9 +15,10 @@ ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
 CLIENT_SCOPE_MAP_FILE="${CLIENT_SCOPE_MAP_FILE:-$ROOT/extra_strats/cache/client_scope.tsv}"
 
 action="${1:-list}"
-case "$action" in create|rotate|revoke|revoke-all|list) ;; *) echo 'Usage: adaptive-browser-pair.sh {create IPv4 mark:N|default|rotate ID|revoke ID|revoke-all|list}' >&2; exit 2 ;; esac
+RANKINGS_OPT_IN="$TOKEN_DIR/browser-rankings-opt-in"
+case "$action" in create|rotate|revoke|revoke-all|list|rankings-on|rankings-off|rankings-status) ;; *) echo 'Usage: adaptive-browser-pair.sh {create IPv4 mark:N|default|rotate ID|revoke ID|revoke-all|list|rankings-on|rankings-off|rankings-status}' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run as root on the router.' >&2; exit 1; }
-[ ! -L "$TOKEN_DIR" ] && [ ! -L "$CLIENTS_FILE" ] || { echo 'Refusing symlinked browser pairing state.' >&2; exit 1; }
+[ ! -L "$TOKEN_DIR" ] && [ ! -L "$CLIENTS_FILE" ] && [ ! -L "$RANKINGS_OPT_IN" ] || { echo 'Refusing symlinked browser pairing state.' >&2; exit 1; }
 mkdir -p "$TOKEN_DIR"
 
 private_lan_ipv4() {
@@ -112,6 +113,22 @@ show_clients() {
 case "$action" in
   list)
     show_clients
+    ;;
+  rankings-status)
+    if adaptive_browser_rankings_opted_in; then echo 'Shared adaptive rankings: enabled.'; else echo 'Shared adaptive rankings: disabled.'; fi
+    ;;
+  rankings-on)
+    [ -t 0 ] || { echo 'Ranking consent requires an interactive terminal.' >&2; exit 1; }
+    echo 'The router may request provider/profile/protocol rankings from the configured HTTPS stats endpoint while selecting a browser trial.' >&2
+    echo 'The request sends no target hostname, destination IP, browser token, or result history; the stats host still sees the router public IP.' >&2
+    read -r -p 'Type USE-REDIS-RANKINGS to enable this separate opt-in: ' confirmation
+    [[ "$confirmation" = USE-REDIS-RANKINGS ]] || { echo 'Ranking opt-in cancelled.' >&2; exit 1; }
+    printf '1\n' > "$RANKINGS_OPT_IN.tmp.$$" && chmod 600 "$RANKINGS_OPT_IN.tmp.$$" && mv -f "$RANKINGS_OPT_IN.tmp.$$" "$RANKINGS_OPT_IN"
+    echo 'Shared adaptive rankings enabled.'
+    ;;
+  rankings-off)
+    rm -f "$RANKINGS_OPT_IN"
+    echo 'Shared adaptive rankings disabled.'
     ;;
   create)
     [[ $# = 3 ]] || { echo 'Usage: adaptive-browser-pair.sh create CLIENT_IPV4 mark:N|default' >&2; exit 2; }

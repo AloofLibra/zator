@@ -188,7 +188,10 @@ case "${f[action]:-}" in
     [[ ${#f[@]} -eq 2 ]] || fail '400 Bad Request' 'browser_hello takes no parameters'
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null || printf OFF)"
     case "$mode" in OFF|OBSERVE|TEST_ONLY|AGENT_BETA|PAUSED) ;; *) mode=OFF ;; esac
-    send '200 OK' "{\"schema_version\":1,\"client_id\":\"$client_id\",\"scope\":\"$scope\",\"mode\":\"$mode\",\"status\":\"paired\"}"
+    ranking_opt_in=false
+    [[ ! -f "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" || -L "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" ]] ||
+      [[ "$(cat "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" 2>/dev/null)" != 1 ]] || ranking_opt_in=true
+    send '200 OK' "{\"schema_version\":1,\"client_id\":\"$client_id\",\"scope\":\"$scope\",\"mode\":\"$mode\",\"ranking_opt_in\":$ranking_opt_in,\"status\":\"paired\"}"
     ;;
   browser_report_failure)
     [[ ${#f[@]} -eq 10 && "${f[trigger]:-}" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&

@@ -30,6 +30,7 @@ response="$(printf '%s' "$body" | env REQUEST_METHOD=POST CONTENT_TYPE=applicati
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 \
   bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"status":"paired"' <<< "$response"
+grep -q '"ranking_opt_in":false' <<< "$response"
 grep -q "Access-Control-Allow-Origin: $origin" <<< "$response"
 preflight="$(env REQUEST_METHOD=OPTIONS HTTP_ORIGIN="$origin" HTTP_ACCESS_CONTROL_REQUEST_METHOD=POST \
   HTTP_ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK=true bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi" </dev/null)"
@@ -122,6 +123,44 @@ ORCH_DIR="$tmp/orchestra"
 . "$ROOT/lib/supersweep_probe.sh"
 selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
 [[ "${selected%%$'\t'*}" = 2 ]]
+printf 'Example ISP - Test City\n' > "$ZATOR_ROOT/extra_strats/cache/provider.txt"
+printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in"
+adaptive_browser_rankings_opted_in
+ranking_status_body='schema_version=1&action=browser_status'
+ranking_status="$(printf '%s' "$ranking_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#ranking_status_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"ranking_opt_in":true' <<< "$ranking_status"
+printf '%s\n' '--lua-desync=split:strategy=3' >> "$tmp/args/strategies"
+sed -i '/--lua-desync=multisplit:strategy=2/a --lua-desync=split:strategy=3' "$ZAPRET2_ROOT/config"
+rank_fp="$(adaptive_strategy_fingerprint 1 3 "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" standard tls-http1-v1)"
+ranking_file="$tmp/rankings.tsv"
+printf 'schema_version=2\nstatus=fresh\ngenerated_at=%s\nprofile_id=1\nprotocol=tls\nstrategy\t%s\t0.900000\t10\t9\t1\n' "$(date +%s)" "$rank_fp" > "$ranking_file"
+mkdir -p "$tmp/mockbin"
+cat > "$tmp/mockbin/curl" <<'EOF'
+#!/usr/bin/env sh
+printf '%s\n' "$*" >> "$Z2R_TEST_CURL_ARGS"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then cp "$Z2R_TEST_RANKING_FILE" "$2"; exit $?; fi
+  shift
+done
+exit 2
+EOF
+chmod +x "$tmp/mockbin/curl"
+old_path="$PATH"
+PATH="$tmp/mockbin:$PATH"
+export Z2R_TEST_RANKING_FILE="$ranking_file" Z2R_TEST_CURL_ARGS="$tmp/curl-args"
+selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
+PATH="$old_path"
+[[ "${selected%%$'\t'*}" = 3 ]]
+! grep -q 'example.org\|8\.8\.8\.8' "$tmp/curl-args"
+sed -i 's#sha256:.*#sha256:0000000000000000000000000000000000000000000000000000000000000000#' "$ranking_file"
+PATH="$tmp/mockbin:$PATH"
+selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
+PATH="$old_path"
+[[ "${selected%%$'\t'*}" = 2 ]]
+rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in"
+sed -i '/--lua-desync=split:strategy=3/d' "$ZAPRET2_ROOT/config"
+printf '%s\n' '--lua-desync=fake:strategy=1' '--lua-desync=multisplit:strategy=2' > "$tmp/args/strategies"
 printf '1\ttls\t6\n' > "$ORCH_DIR/locked.tsv"
 if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi
 rm -f "$ORCH_DIR/locked.tsv"
