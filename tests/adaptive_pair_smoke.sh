@@ -120,6 +120,33 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "
    ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool" ]] || {
   echo 'Ramp-first opt-out did not restore the preexisting disabled state' >&2; exit 1;
 }
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null
+sed -i 's/^Z2R_WSSIZE_RAMP_WSIZE=1$/Z2R_WSSIZE_RAMP_WSIZE=2/' "$tmp/zapret2/config"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-off > "$tmp/ramp-manual-preserved.out"
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=1 &&
+   "$(grep '^Z2R_WSSIZE_RAMP_WSIZE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_WSIZE=2 &&
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool" &&
+   "$(cat "$tmp/ramp-manual-preserved.out")" == *'preserving the current manual config'* ]] || {
+  echo "Ramp-first rollback overwrote the user's later Ramp parameter edit" >&2; exit 1;
+}
+sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=1$/Z2R_WSSIZE_RAMP_ENABLE=0/; s/^Z2R_WSSIZE_RAMP_WSIZE=2$/Z2R_WSSIZE_RAMP_WSIZE=1/' "$tmp/zapret2/config"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" pause >/dev/null
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=0 &&
+   ! -e "$tmp/zator/extra_strats/cache/adaptive/ramp-pool" ]] || {
+  echo 'pausing Beta did not restore a Beta-managed Ramp setting' >&2; exit 1;
+}
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" beta-lan >/dev/null
+sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=0$/Z2R_WSSIZE_RAMP_ENABLE=1/' "$tmp/zapret2/config"
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-on >/dev/null
+[[ "$(cut -f2 "$tmp/zator/extra_strats/cache/adaptive/ramp-pool")" = preexisting ]] || {
+  echo 'manually enabled Ramp was not recorded as preexisting' >&2; exit 1;
+}
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" bash "$tmp/zator/tools/adaptive-pair.sh" ramp-pool-off >/dev/null
+[[ "$(grep '^Z2R_WSSIZE_RAMP_ENABLE=' "$tmp/zapret2/config")" = Z2R_WSSIZE_RAMP_ENABLE=1 ]] || {
+  echo 'Ramp-first opt-out disabled a preexisting manual Ramp setting' >&2; exit 1;
+}
+sed -i 's/^Z2R_WSSIZE_RAMP_ENABLE=1$/Z2R_WSSIZE_RAMP_ENABLE=0/' "$tmp/zapret2/config"
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" test-only >/dev/null
 [[ ! -e "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope" ]] || {
   echo 'leaving Beta retained LAN-wide scope consent' >&2; exit 1;
