@@ -53,6 +53,7 @@ local function packet(ack, win)
 end
 local before = packet(1001)
 assert(wssize_ramp({}, before) == nil and before.dis.tcp.th_win == 1)
+assert(not state.wssize_ramp_late_ack_confirmed, "Ramp late ACK was confirmed below the configured threshold")
 if os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH") then
   local f = assert(io.open(os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH"), "r"))
   assert(f:read("*l") == "1\t1\t0", "ACK below the Ramp threshold was recorded")
@@ -60,6 +61,7 @@ if os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH") then
 end
 local open = packet(1002, 65535)
 assert(wssize_ramp({}, open) == nil and open.dis.tcp.th_win == 65535)
+assert(state.wssize_ramp_late_ack_confirmed, "Ramp threshold ACK was not confirmed on its flow state")
 if os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH") then
   local f = assert(io.open(os.getenv("Z2R_ADAPTIVE_RAMP_AUDIT_PATH"), "r"))
   assert(f:read("*l") == "1\t1\t1", "Ramp ACK threshold was not recorded")

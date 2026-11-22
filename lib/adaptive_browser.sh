@@ -457,19 +457,23 @@ adaptive_browser_flow_read() {
   lines="$(awk 'END {print NR+0}' "$file")"
   [[ "$lines" = 1 ]] || return 2
   IFS= read -r row < "$file" || return 2
-  local ver id generation client_id scope host ip profile proto strategy fingerprint syn_at selected_at ramp_treatment extra
-  IFS=$'\t' read -r ver id generation client_id scope host ip profile proto strategy fingerprint syn_at selected_at ramp_treatment extra <<< "$row"
+  local ver id generation client_id scope host ip profile proto strategy fingerprint syn_at selected_at ramp_treatment ramp_ack_evidence extra
+  IFS=$'\t' read -r ver id generation client_id scope host ip profile proto strategy fingerprint syn_at selected_at ramp_treatment ramp_ack_evidence extra <<< "$row"
   # Rows written before Ramp treatment evidence was added remain readable.
   [[ -n "${ramp_treatment:-}" ]] || ramp_treatment=unknown
+  [[ -n "${ramp_ack_evidence:-}" ]] || ramp_ack_evidence=unknown
   [[ "$ver" = 1 && "$id" = "$1" && "$generation" = "$2" && "$client_id" =~ ^[a-f0-9]{32}$ &&
      ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$host" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ &&
      "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( "$profile" =~ ^[1-4]$ || "$profile" = 5 ) &&
      ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) || ( "$proto" = quic && "$profile" = 5 ) ) &&
      "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ &&
      "$syn_at" =~ ^[0-9]{1,10}$ && "$selected_at" =~ ^[0-9]{1,10}$ &&
-     "$ramp_treatment" =~ ^(not_applicable|unknown|applied|bypassed|unchanged|no_window_scale)$ && -z "${extra:-}" ]] || return 2
+     "$ramp_treatment" =~ ^(not_applicable|unknown|applied|bypassed|unchanged|no_window_scale)$ &&
+     "$ramp_ack_evidence" =~ ^(not_applicable|unknown|confirmed|pending)$ && -z "${extra:-}" ]] || return 2
   [[ "$proto" != googlevideo-tcp || "$ramp_treatment" != not_applicable ]] || return 2
   [[ "$proto" = googlevideo-tcp || "$ramp_treatment" = not_applicable || "$ramp_treatment" = unknown ]] || return 2
+  [[ "$proto" != googlevideo-tcp || "$ramp_ack_evidence" != not_applicable || "$ramp_treatment" != applied ]] || return 2
+  [[ "$proto" = googlevideo-tcp || "$ramp_ack_evidence" = not_applicable || "$ramp_ack_evidence" = unknown ]] || return 2
   [[ "$proto" != quic ]] || adaptive_browser_quic_host_valid "$host" || return 2
   printf '%s\n' "$row"
 }

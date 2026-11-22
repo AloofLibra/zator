@@ -254,13 +254,16 @@ video_now="$(date +%s)"
 video_expires=$((video_now + 30))
 video_fingerprint="sha256:$(printf '%064d' 0 | tr 0 c)"
 adaptive_browser_attempt_write "$video_attempt" "$client_id" 192.168.1.42 mark:7 "$video_host" 8.8.8.8 2 googlevideo-tcp main_frame_network_failure WAIT_NEW_FLOW 4 "$video_fingerprint" "$video_now" "$video_expires" 11
-printf '1\t%s\t11\t%s\tmark:7\t%s\t8.8.8.8\t2\tgooglevideo-tcp\t4\t%s\t%s\t%s\tapplied\n' \
+printf '1\t%s\t11\t%s\tmark:7\t%s\t8.8.8.8\t2\tgooglevideo-tcp\t4\t%s\t%s\t%s\tapplied\tconfirmed\n' \
   "$video_attempt" "$client_id" "$video_host" "$video_fingerprint" "$video_now" "$video_now" > "$flow_dir/$video_attempt.11.tsv"
+video_flow_row="$(adaptive_browser_flow_read "$video_attempt" 11)" || { echo 'Googlevideo flow evidence was rejected by parser' >&2; exit 1; }
+[[ "$video_flow_row" = *$'\tapplied\tconfirmed' ]] || { echo "unexpected flow evidence: $video_flow_row" >&2; exit 1; }
 video_status_body="schema_version=1&action=browser_attempt_status&attempt_id=$video_attempt"
 video_status_response="$(printf '%s' "$video_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_status_body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"FLOW_CONFIRMED"' <<< "$video_status_response"
 grep -q '"ramp_treatment":"applied"' <<< "$video_status_response"
+grep -q '"ramp_ack_evidence":"confirmed"' <<< "$video_status_response"
 observed_result_ms="$(( $(date +%s) * 1000 ))"
 wrong_ip_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_flow&browser_event_id=dddddddddddddddddddddddddddddddd&result=network_success&request_class=main_frame&browser_ip=1.1.1.1&observed_at=$observed_result_ms"
 wrong_ip_response="$(printf '%s' "$wrong_ip_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#wrong_ip_body}" \

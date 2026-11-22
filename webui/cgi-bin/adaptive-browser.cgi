@@ -129,9 +129,9 @@ browser_start_trial() {
 }
 
 browser_confirm_flow() {
-  local row ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment extra now
+  local row ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment ramp_ack_evidence extra now
   row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || return 1
-  IFS=$'\t' read -r ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment extra <<< "$row"
+  IFS=$'\t' read -r ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment ramp_ack_evidence extra <<< "$row"
   now="$(date +%s)"
   [[ "$ver" = 1 && "$flow_id" = "$attempt_id" && "$flow_generation" = "$generation" && "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" &&
      "$flow_host" = "$host" && "$flow_ip" = "$ip" && "$flow_profile" = "$profile" && "$flow_proto" = "$proto" &&
@@ -277,11 +277,13 @@ case "${f[action]:-}" in
     esac
     if [[ "$proto" = googlevideo-tcp ]]; then
       BROWSER_FLOW_RAMP_TREATMENT=unknown
+      BROWSER_FLOW_RAMP_ACK_EVIDENCE=unknown
       if flow_row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)"; then
-        IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_ramp_treatment flow_extra <<< "$flow_row"
+        IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_ramp_treatment flow_ramp_ack_evidence flow_extra <<< "$flow_row"
         [[ "${flow_ramp_treatment:-}" =~ ^(unknown|applied|bypassed|unchanged|no_window_scale)$ ]] && BROWSER_FLOW_RAMP_TREATMENT="$flow_ramp_treatment"
+        [[ "${flow_ramp_ack_evidence:-}" =~ ^(unknown|confirmed|pending)$ ]] && BROWSER_FLOW_RAMP_ACK_EVIDENCE="$flow_ramp_ack_evidence"
       fi
-      send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires,\"ramp_treatment\":\"$BROWSER_FLOW_RAMP_TREATMENT\"}"
+      send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires,\"ramp_treatment\":\"$BROWSER_FLOW_RAMP_TREATMENT\",\"ramp_ack_evidence\":\"$BROWSER_FLOW_RAMP_ACK_EVIDENCE\"}"
     fi
     send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"$state\",\"expires_at\":$expires}"
     ;;

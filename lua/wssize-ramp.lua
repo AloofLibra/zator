@@ -176,6 +176,7 @@ function wssize_ramp(ctx, desync)
 			local acked = (tcp.th_ack - server.seq0 - 1) % 4294967296
 			if acked < 2147483648 and acked >= state.wssize_ramp_open then
 				state.wssize_ramp_opened = true
+				state.wssize_ramp_late_ack_confirmed = true
 				adaptive_ramp_audit("ack")
 			end
 		end

@@ -202,7 +202,8 @@
     latest.events = latest.events.map(row => row.id === eventId ? {
       ...row,
       router_status: status.data.state || row.router_status,
-      ramp_treatment: status.data.ramp_treatment || row.ramp_treatment
+      ramp_treatment: status.data.ramp_treatment || row.ramp_treatment,
+      ramp_ack_evidence: status.data.ramp_ack_evidence || row.ramp_ack_evidence
     } : row);
     await chrome.storage.local.set({ events: latest.events });
     const current = latest.events.find(row => row && row.id === eventId);
