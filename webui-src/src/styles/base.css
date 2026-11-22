@@ -198,6 +198,12 @@ button.ghost { color: var(--text); }
 
 .hero-copy { display: grid; gap: 6px; }
 
+/* Кнопка «Поддержать проект» и выбор темы живут под подзаголовком (вне ряда
+   меню), чтобы шесть вкладок на десктопе не растягивали header-controls. */
+.hero-support { display: flex; gap: 8px; align-items: stretch; }
+.hero-support .support-button { flex: 0 0 auto; padding: 0.45rem 0.9rem; font-size: 0.85rem; }
+.hero-support .theme-field select { padding: 0.45rem 0.9rem; font-size: 0.85rem; min-width: 7rem; }
+
 .header-controls {
   display: flex;
   gap: 12px;
@@ -229,6 +235,7 @@ h3 { font-size: 1rem; line-height: 1.25; }
 
 .tabs, .subtabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -1089,7 +1096,10 @@ button.port-remove:not(:disabled):hover {
   min-width: 0;
 }
 
-@media (min-width: 900px) {
+/* Две колонки шапки (текст | меню) — только когда меню гарантированно
+   влезает рядом с текстом. С 900 до ~1200 левая колонка сжималась до
+   ~110px и подзаголовок упирался в панель вкладок. */
+@media (min-width: 1200px) {
   .hero {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;

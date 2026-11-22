@@ -666,7 +666,7 @@ whitelist символов/примитивов/ключей по транспо
 | `edit` | `id=<N>&block=&value=&comment=` | заменить spec/блок/комментарий; `assigned` сбрасывается |
 | `enable` | `id=<N>&value=0\|1` | вкл/выкл запись (выключенные не инжектятся, нумерация сжимается) |
 | `delete` | `id=<N>` | удалить (ID уплотняются) |
-| `import` | `block=&text=<многострочно>` | по строке на запись, ≤64; `added/skipped/errors[{line,reason}]` |
+| `import` | `block=&text=<многострочно>` | по строке на запись, ≤256 (строки сверх лимита НЕ обрабатываются и считаются в `total` — фронтенд предупреждает); каждая строка — готовая стратегия `--lua-desync=…`, строка SUMMARY blockcheck2 (`… : nfqws2 …`) или команда `nfqws2 …` целиком: лишнее демона (`--blob/--payload/--lua-init`, `:strategy=N`) вырезается, необъявленные блобы переезжают на объявленные (гугловский `tlsgoogle` → `maxru` из живого конфига, `clone_www2` → `clone_vk`) с отчётом в `notes[]`; дубликаты (в партии и против имеющихся записей блока) пропускаются; `added/dups/skipped/errors[{line,reason}]/notes[]/total/limit` |
 | `apply` | — | инжект в config (номера после максимума блока) + ремап локов + авто-рестарт |
 
 Успех: `{ "ok": true, "apply_required": true }` (apply: `+ "restarted": true|false,
@@ -675,6 +675,44 @@ whitelist символов/примитивов/ключей по транспо
 
 **Dev:** fake-router держит `FakeRouterState.custom_strategies` (одна демо-запись
 QUIC), `apply` назначает номера 101+ и вызывает штатный `_apply_restart`.
+
+### Пользовательские блобы — `blobs.cgi`
+
+Страница «Свои блобы»: файлы блобов загружаются через браузер в
+`/opt/zator/files/fake/custom_blob/` (каталог и `extra_strats/cache/orchestra/custom_blobs.tsv`
+едут в бэкапах), декларации `--blob=ИМЯ:@…` инжектятся в config между
+`#Z2R_CUSTOM_BLOBS_BEGIN/END` (сразу после штатных деклараций). Валидация имён/файлов —
+на бэкенде (`lib/custom_blobs.sh`); имя не должно совпадать со штатным; переименование
+правит ссылки на имя в «Своих стратегиях» (только пользовательские записи).
+
+`GET /cgi-bin/blobs.cgi`:
+
+```jsonc
+{
+  "dir": "/opt/zator/files/fake/custom_blob",
+  "blobs": [ { "id": 1, "name": "my_fake", "file": "my_fake.bin",
+               "comment": "загружен из панели", "refs": 2 } ],
+  "files": [ "my_fake.bin" ],   // что уже лежит в custom_blob/
+  "stock": [ "maxru", "…" ],    // занятые (штатные) имена
+  "config_dirty": true          // TSV != секция #Z2R_CUSTOM_BLOBS в config
+}
+```
+
+`POST /cgi-bin/blobs.cgi` (`action=…`):
+
+| `action` | параметры | Что делает |
+| --- | --- | --- |
+| `upload` | query `name=<файл.bin>` + **бинарное тело** (octet-stream, 1 Б…256 КиБ) | сохранить файл в `custom_blob/` и авто-создать декларацию (имя = файл без расширения, если свободно); тело читается в цикле до `Content-Length` (частичные чтения stdin не теряются); `{"ok":true,"file":…,"created":id\|null}` |
+| `add` | `value=<имя>&file=<файл>&comment=` | добавить декларацию (файл должен быть загружен; имя свободно) |
+| `edit` | `id=<N>&value=&file=&comment=` | изменить; смена имени правит ссылки в `custom_strategies.tsv` |
+| `delete` | `id=<N>` | удалить запись + файл; блоб, на который ссылаются стратегии, — 400 |
+| `apply` | — | инжект деклараций в config (`#Z2R_CUSTOM_BLOBS`) + переинжект «Своих стратегий» + авто-рестарт |
+
+Успех: `{ "ok": true, "apply_required": true }` (apply: `+ "restarted": true|false,
+"restart_required": true`).
+
+**Dev:** fake-router держит `FakeRouterState.custom_blobs`/`custom_blob_files`
+(по умолчанию пусто), `apply` вызывает штатный `_apply_restart`.
 
 ### POST — применение настроек
 

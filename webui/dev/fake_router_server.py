@@ -1687,6 +1687,9 @@ class FakeRouterState:
              "spec": "fake:blob=fakewgblob:ipfrag:ipfrag_pos_udp=8:ipfrag_disorder:repeats=3:out_range=-d10",
              "enabled": True, "comment": "авторский QUIC", "assigned": ""},
         ]
+        # Пользовательские блобы (blobs.cgi): файлы + декларации --blob=.
+        self.custom_blob_files = []
+        self.custom_blobs = []
         self.supersweep_report = {
             "available": False, "state": "idle", "active": False, "source": "none",
             "started": 0, "updated": 0, "scope": "default", "phase": "",
@@ -2664,7 +2667,16 @@ class FakeRouterState:
 
     @staticmethod
     def _custom_normalize(spec):
-        """custom_strategies_normalize() — срезает --lua-desync= и хвост :strategy=N."""
+        """custom_strategies_normalize() — срезает --lua-desync= и хвост :strategy=N.
+        Строки SUMMARY blockcheck2 / команды nfqws2: берётся только часть после
+        «: nfqws2», прочие --токены демона (--blob/--payload/--lua-init) вырезаются."""
+        spec = spec.strip()
+        if ": nfqws2 " in spec:
+            spec = spec.split(": nfqws2 ", 1)[1]
+        elif spec.startswith("nfqws2 "):
+            spec = spec[len("nfqws2 "):]
+        spec = " ".join(t for t in spec.split()
+                        if t.startswith("--lua-desync="))
         spec = spec.strip()
         if spec.startswith("--lua-desync="):
             spec = spec[len("--lua-desync="):]
@@ -2723,13 +2735,15 @@ class FakeRouterState:
 
         if action == "import":
             self._custom_block_info(block)
-            added, skipped, errors = 0, 0, []
+            added, dups, skipped, errors = 0, 0, 0, []
+            seen = set()
+            existing = {s["spec"] for s in self.custom_strategies if s["block"] == block}
             for i, line in enumerate(params.get("text", "").splitlines()):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     skipped += 1
                     continue
-                if i >= 64:
+                if i >= 256:
                     skipped += 1
                     continue
                 try:
@@ -2738,11 +2752,15 @@ class FakeRouterState:
                     errors.append({"line": line, "reason": str(e)})
                     skipped += 1
                     continue
+                if spec in seen or spec in existing:
+                    dups += 1
+                    continue
+                seen.add(spec)
                 new_id = max((s["id"] for s in self.custom_strategies), default=0) + 1
                 self.custom_strategies.append({"id": new_id, "block": block, "spec": spec,
                                                "enabled": True, "comment": "импорт", "assigned": ""})
                 added += 1
-            return {"ok": True, "added": added, "skipped": skipped,
+            return {"ok": True, "added": added, "dups": dups, "skipped": skipped,
                     "errors": errors, "apply_required": True}
 
         if action == "apply":
@@ -3033,6 +3051,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._log("{0} {1} -> 500 (simulate-error)".format(
                 self.command, parsed.path))
             self._send_error_json(500, "Симуляция ошибки эндпоинта '{0}'".format(endpoint))
+            return
+
+        if endpoint == "blobs":
+            self._handle_blobs(parsed, params, body_raw)
             return
 
         if endpoint == "scopes":
@@ -3643,6 +3665,177 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
 
         self._send_error_json(405, "Метод не поддерживается")
+
+    # --- Пользовательские блобы (blobs.cgi) -----------------------------------
+    _STOCK_BLOBS = [
+        "maxru", "z2r_prof_1", "z2r_prof_2", "z2r_prof_3", "z2r_prof_4", "z2r_prof_5",
+        "z2r_prof_8", "google_www", "tls4", "custom", "tls5", "quic_google", "quic5",
+        "discord_fake", "stun_fake", "blob_rdp", "fakewgblob", "discord_udp_1",
+        "discord_udp_2", "fake_default_tls", "fake_default_http",
+        "clone_vk", "clone_hcaptcha", "clone_vk_fmd", "clone_hcaptcha_fms",
+    ]
+
+    def _handle_blobs(self, parsed, params, body_raw=None):
+        """Обработчик endpoint /cgi-bin/blobs.cgi (пользовательские блобы).
+
+        GET  -> {dir, blobs[{id,name,file,comment,refs}], files[], stock[]}
+        POST action=upload&name=файл.bin — бинарное тело (octet-stream)
+        POST action=add|edit|delete|apply
+        """
+        import re as _re
+        st = self.state
+
+        def blob_refs(name):
+            """custom_strategies_blob_ref_rows(): сколько spec'ов ссылаются на имя."""
+            pat = _re.compile(r"^(blob|fake_blob|fallback|pattern|seqovl_pattern)="
+                              + _re.escape(name) + r"$")
+            rows = 0
+            with st.lock:
+                for s in st.custom_strategies:
+                    if not s.get("enabled", True):
+                        continue
+                    for group in s["spec"].split(" --lua-desync="):
+                        for tok in group.split(":"):
+                            if pat.match(tok):
+                                rows += 1
+                                break
+            return rows
+
+        def rename_blob_in_spec(spec, old, new):
+            """custom_strategies_rename_blob(): токен-точная замена значения."""
+            out_groups = []
+            for group in spec.split(" --lua-desync="):
+                toks = []
+                for tok in group.split(":"):
+                    if "=" in tok:
+                        key, val = tok.split("=", 1)
+                        if key in ("blob", "fake_blob", "fallback", "pattern",
+                                   "seqovl_pattern") and val == old:
+                            tok = key + "=" + new
+                    toks.append(tok)
+                out_groups.append(":".join(toks))
+            return " --lua-desync=".join(out_groups)
+
+        if self.command == "GET":
+            with st.lock:
+                blobs = [{"id": b["id"], "name": b["name"], "file": b["file"],
+                          "comment": b.get("comment", ""), "refs": blob_refs(b["name"])}
+                         for b in st.custom_blobs]
+                self._log("GET {0} | blobs list".format(parsed.path))
+                self._send_json({
+                    "dir": "/opt/zator/files/fake/custom_blob",
+                    "blobs": blobs,
+                    "files": list(st.custom_blob_files),
+                    "stock": list(self._STOCK_BLOBS),
+                })
+            return
+
+        if self.command != "POST":
+            self._send_error_json(405, "Метод не поддерживается")
+            return
+
+        action = params.get("action", "")
+        try:
+            with st.lock:
+                if action == "upload":
+                    name = params.get("name", "")
+                    if (not name or "/" in name or ".." in name
+                            or _re.search(r"[^A-Za-z0-9._-]", name) or len(name) > 64):
+                        raise ValueError("Некорректное имя файла.")
+                    size = len(body_raw or b"")
+                    if size < 1 or size > 262144:
+                        raise ValueError("Размер файла 1 Б…256 КиБ.")
+                    if name not in st.custom_blob_files:
+                        st.custom_blob_files.append(name)
+                    created = None
+                    bound = any(b["file"] == name for b in st.custom_blobs)
+                    if not bound:
+                        base = name.rsplit(".", 1)[0]
+                        auto = _re.sub(r"[^A-Za-z0-9_]", "_", base) or "blob_1"
+                        if auto[0].isdigit():
+                            auto = "blob_" + auto
+                        taken = {b["name"] for b in st.custom_blobs} | set(self._STOCK_BLOBS)
+                        if auto not in taken:
+                            new_id = max((b["id"] for b in st.custom_blobs), default=0) + 1
+                            st.custom_blobs.append({"id": new_id, "name": auto, "file": name,
+                                                    "comment": "загружен из панели"})
+                            created = new_id
+                    self._log("POST {0} | blobs upload {1} ({2} Б)".format(parsed.path, name, size))
+                    self._send_json({"ok": True, "file": name, "created": created,
+                                     "apply_required": True})
+                    return
+
+                if action == "add":
+                    name = params.get("value", "")
+                    file = params.get("file", "")
+                    if not _re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$", name):
+                        raise ValueError("Имя блоба: буква/подчёркивание, дальше буквы/цифры/подчёркивание.")
+                    taken = {b["name"] for b in st.custom_blobs} | set(self._STOCK_BLOBS)
+                    if name in taken:
+                        raise ValueError("Имя «{0}» уже занято.".format(name))
+                    if file not in st.custom_blob_files:
+                        raise ValueError("Файла {0} нет в custom_blob.".format(file))
+                    new_id = max((b["id"] for b in st.custom_blobs), default=0) + 1
+                    st.custom_blobs.append({"id": new_id, "name": name, "file": file,
+                                            "comment": params.get("comment", "")})
+                    self._send_json({"ok": True, "id": new_id, "apply_required": True})
+                    return
+
+                if action == "edit":
+                    try:
+                        bid = int(params.get("id", ""))
+                    except ValueError:
+                        raise ValueError("Некорректный ID")
+                    row = next((b for b in st.custom_blobs if b["id"] == bid), None)
+                    if row is None:
+                        raise ValueError("Нет записи {0}".format(bid))
+                    name = params.get("value", "")
+                    file = params.get("file", "")
+                    if not _re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$", name):
+                        raise ValueError("Имя блоба: буква/подчёркивание, дальше буквы/цифры/подчёркивание.")
+                    taken = {b["name"] for b in st.custom_blobs if b["id"] != bid} | set(self._STOCK_BLOBS)
+                    if name in taken:
+                        raise ValueError("Имя «{0}» уже занято.".format(name))
+                    if file not in st.custom_blob_files:
+                        raise ValueError("Файла {0} нет в custom_blob.".format(file))
+                    old = row["name"]
+                    row["name"], row["file"] = name, file
+                    row["comment"] = params.get("comment", row.get("comment", ""))
+                    if old != name:
+                        # смена имени — правим ссылки в пользовательских стратегиях
+                        for s in st.custom_strategies:
+                            s["spec"] = rename_blob_in_spec(s["spec"], old, name)
+                    self._send_json({"ok": True, "renamed": True, "apply_required": True})
+                    return
+
+                if action == "delete":
+                    try:
+                        bid = int(params.get("id", ""))
+                    except ValueError:
+                        raise ValueError("Некорректный ID")
+                    row = next((b for b in st.custom_blobs if b["id"] == bid), None)
+                    if row is None:
+                        raise ValueError("Нет записи {0}".format(bid))
+                    refs = blob_refs(row["name"])
+                    if refs:
+                        raise ValueError("Блоб «{0}» используется в {1} стратеги(ях) — сначала уберите ссылки.".format(row["name"], refs))
+                    st.custom_blobs = [b for b in st.custom_blobs if b["id"] != bid]
+                    if row["file"] in st.custom_blob_files and not any(
+                            b["file"] == row["file"] for b in st.custom_blobs):
+                        st.custom_blob_files.remove(row["file"])
+                    self._send_json({"ok": True, "apply_required": True})
+                    return
+
+                if action == "apply":
+                    restarted = st._apply_restart()
+                    self._log("POST {0} | blobs apply".format(parsed.path))
+                    self._send_json({"ok": True, "restarted": restarted,
+                                     "restart_required": True})
+                    return
+
+                raise ValueError("Неизвестное действие: {0}".format(action))
+        except ValueError as e:
+            self._send_error_json(400, str(e))
 
     def _handle_backups(self, params, parsed, body_raw=None):
         """Обработчик endpoint /cgi-bin/backups.cgi (api_backups_* из _lib.sh).

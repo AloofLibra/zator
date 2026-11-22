@@ -189,10 +189,39 @@ export interface CustomListPayload {
   strategies?: CustomStrategy[]
 }
 
+// Пользовательский блоб («Свои блобы»): декларация --blob=ИМЯ:@custom_blob/файл
+export interface CustomBlobInfo {
+  id: number
+  name: string
+  file: string
+  comment: string
+  // Сколько пользовательских стратегий ссылаются на имя (защита от удаления)
+  refs: number
+}
+
+export interface CustomBlobsPayload {
+  dir?: string
+  blobs?: CustomBlobInfo[]
+  // Файлы, уже лежащие в custom_blob/ (для привязки при редактировании)
+  files?: string[]
+  // Штатные имена блобов — их пользовательские имена занимать нельзя
+  stock?: string[]
+  // Серверный признак «TSV ≠ секция #Z2R_CUSTOM_BLOBS в конфиге» —
+  // переживает обновление страницы (Vue-флаг needsApply был только в памяти)
+  config_dirty?: boolean
+}
+
 export interface CustomImportResult {
   added?: number
+  // Дубликаты (внутри партии и против уже имеющихся записей блока) — не ошибка
+  dups?: number
   skipped?: number
   errors?: { line: string; reason: string }[]
+  // Подстановки необъявленных блобов («tlsgoogle → maxru») — информационные
+  notes?: string[]
+  // Лимит импорта и полный объём вставки (NR>limit не обрабатывались)
+  total?: number
+  limit?: number
 }
 
 export interface TlsBlobSettings {

@@ -148,19 +148,324 @@ custom_strategies_normalize() {
   echo "$out"
 }
 
+# --- импорт строк blockcheck2 (SUMMARY) / команд nfqws2 ------------------------
+
+# Куда переехать блобу, которого нет в конфиге (значение — имя, не литерал).
+# Гугловский блоб блокчека (tlsgoogle → tls_clienthello_www_google_com_2.bin)
+# на машине пользователя не существует: все ссылки на него получают имя
+# дефолтного TLS-блоба конфига maxru — а файл за объявлением --blob=maxru:@…
+# пользователь может заменить когда угодно (п.16/панель), имя не меняется.
+# Остальные неизвестные имена — на дефолт транспорта (maxru / quic_google).
+# Имена-цели клона (tls_client_hello_clone:blob=…) сюда не попадают — они
+# остаются как есть: nfqws2 создаёт такие блобы сам в рантайме.
+custom_strategies_bc_blob_target() {
+  local name="$1" transport="$2"
+  case "$name" in
+    tlsgoogle|google_www|tls_clienthello*) echo maxru ;;
+    *)
+      case "$transport" in
+        udp) echo quic_google ;;
+        *)   echo maxru ;;
+      esac
+    ;;
+  esac
+}
+
+# Разбирает сырую строку импорта: полную строку SUMMARY блокчека
+# («curl_test_https_tls12 ipv4 domain : nfqws2 …»), голую команду «nfqws2 …».
+# stdout — группы desync по одной на строку (без «--lua-desync=»), домен из
+# заголовка блокчека — в глобальной BC_DOMAIN. Не блокчек и не команда — rc=1
+# (вызывающий код откатывается к обычному normalize). Лишние аргументы демона
+# вырезаются: --blob/--lua-init/--payload и служебные — молча, прочие --токены
+# — с пометкой в stderr.
+BC_DOMAIN=""
+custom_strategies_bc_groups() {
+  local line="$1" args="" head tok groups=""
+  line="${line%$'\r'}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  case "$line" in
+    *": nfqws2 "*)
+      head="${line%% : nfqws2 *}"
+      args="${line#* : nfqws2 }"
+      BC_DOMAIN="$(printf '%s' "$head" | awk '{print $3}')"
+      ;;
+    nfqws2\ *) args="${line#nfqws2 }" ;;
+    *) return 1 ;;
+  esac
+  set -f
+  for tok in $args; do
+    case "$tok" in
+      --lua-desync=*)
+        g="${tok#--lua-desync=}"
+        # хвостовые :strategy=N срезаем здесь же (номера принадлежат инжектору)
+        while :; do
+          case "$g" in
+            *:strategy=[0-9][0-9]*) g="${g%:strategy=[0-9]*}" ;;
+            *:strategy=[0-9]) g="${g%:strategy=[0-9]}" ;;
+            *) break ;;
+          esac
+        done
+        groups="${groups}${groups:+$'\n'}$g"
+        ;;
+      --blob=*|--lua-init=*|--payload=*|--template=*|--out-range=*|--in-range=*|\
+      --import=*|--filter-*|--hostlist*|--new|--skip|--daemon*|--pidfile=*|\
+      --uid=*|--gid=*|--user=*|--qnum=*|--fwmark=*|--debug=*|--dry-run|--comment=*)
+        : ;;
+      *) echo "вырезано лишнее: $tok" >&2 ;;
+    esac
+  done
+  set +f
+  [ -n "$groups" ] || return 1
+  printf '%s\n' "$groups"
+}
+
+# Подменяет в группе имена необъявленных блобов на объявленные
+# (custom_strategies_bc_blob_target). Литералы (0x…, числа), blob= самого
+# tls_client_hello_clone и ссылки на имена-цели клона ($4) не трогает —
+# такие блобы nfqws2 создаёт сам в рантайме.
+custom_strategies_bc_fix_group() {
+  local group="$1" transport="$2" cfg="$3" clones="${4:-}" out="" tok key val
+  local IFS=':'
+  for tok in $group; do
+    case "$tok" in
+      *=*)
+        key="${tok%%=*}"; val="${tok#*=}"
+        case "$key" in
+          blob|fake_blob|fallback|pattern|seqovl_pattern)
+            if [ "$key" = "blob" ]; then
+              case "$group" in
+                tls_client_hello_clone:*) out="${out:+$out:}$tok"; continue ;;
+              esac
+            fi
+            case " ${clones} " in
+              *" $val "*) out="${out:+$out:}$tok"; continue ;;
+            esac
+            case "$val" in
+              0x*|[0-9]*) out="${out:+$out:}$tok"; continue ;;
+            esac
+            if _custom_blob_known "$val" "$cfg"; then
+              out="${out:+$out:}$tok"
+            else
+              val="$(custom_strategies_bc_blob_target "$val" "$transport")"
+              echo "блоб «${tok#*=}» не объявлен — заменён на $val" >&2
+              out="${out:+$out:}$key=$val"
+            fi
+            ;;
+          *) out="${out:+$out:}$tok" ;;
+        esac
+        ;;
+      *) out="${out:+$out:}$tok" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# Склейка жёстких переносов (копипаста из чатов/textarea рвёт длинные строки):
+# кусок, который сам не начинается запись — нет « : nfqws2 », не «nfqws2 …»,
+# нет «--lua-desync=» — приклеивается к предыдущей строке БЕЗ разделителя
+# (перенос обычно рвёт строку посреди токена). Пустые, «#…» и «* SUMMARY» — мимо.
+# Подряд идущие ПЛОСКИЕ строки «--lua-desync=группа:strategy=N» с ОДИНАКОВЫМ
+# НЕПУСТЫМ номером — комбо из конфига (одна запись = один номер); строки без
+# номера НЕ склеиваются — «одна строка = одна стратегия» (замечание автора
+# PR #82: массовый импорт безномерных строк схлопывался в одну стратегию).
+_custom_strats_strategy_tail() {
+  local t
+  t="$(printf '%s' "$1" | grep -oE ':strategy=[0-9]+$' | tail -n1)"
+  printf '%s' "${t#*:strategy=}"
+}
+
+custom_strategies_join_wraps() {
+  local joined="" linebuf="" line
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    case "$line" in ''|'#'*|'*'*) continue ;; esac
+    case "$line" in
+      *" : nfqws2 "*|nfqws2\ *)
+        if [ -n "$linebuf" ]; then
+          joined="$joined$linebuf"$'\n'
+          linebuf=""
+        fi
+        linebuf="$line"
+        ;;
+      *--lua-desync=*)
+        line="${line#"${line%%[![:space:]]*}"}"
+        if [ -n "$linebuf" ] \
+           && case "$linebuf" in --lua-desync=*) true ;; *) false ;; esac \
+           && [ -n "$(_custom_strats_strategy_tail "$linebuf")" ] \
+           && [ "$(_custom_strats_strategy_tail "$linebuf")" = "$(_custom_strats_strategy_tail "$line")" ]; then
+          linebuf="$linebuf $line"
+        else
+          if [ -n "$linebuf" ]; then
+            joined="$joined$linebuf"$'\n'
+          fi
+          linebuf="$line"
+        fi
+        ;;
+      *)
+        line="${line#"${line%%[![:space:]]*}"}"
+        linebuf="$linebuf$line"
+        ;;
+    esac
+  done <<<"$1"
+  if [ -n "$linebuf" ]; then
+    joined="$joined$linebuf"$'\n'
+  fi
+  printf '%s' "$joined"
+}
+
+# Полный импорт одной строки: SUMMARY блокчека, команда nfqws2 или обычная
+# строка --lua-desync=. stdout — канонический spec (готов к custom_strategies_add);
+# rc: 0 — ok, 1 — не распознано/не разобралось (сообщения — в stderr).
+custom_strategies_import_spec() {
+  local line="$1" block="${2:-tpl}" cfg="${3:-}" spec="" groups g fixed transport targets rest
+  # $4 — разрешить подмену необъявленных блобов (по умолчанию да). Ручное
+  # добавление/правка вызывает с 0: неизвестное имя — честная ошибка валидатора,
+  # а не молчаливая замена на maxru (замечание автора PR #82).
+  local allow_remap="${4:-1}"
+  [ -n "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+  transport="$(custom_strategies_block_transport "$block")"
+  BC_DOMAIN=""
+  if groups="$(custom_strategies_bc_groups "$line")"; then
+    :
+  else
+    # обычная строка (без шапки блокчека) — тоже может прийти с чужими именами
+    # блобов (копипаста из чужого блокчека или чужой установки), разберём группы
+    rest="${line// --lua-desync=/$'\x01'}"
+    groups=""
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      groups="${groups}${groups:+$'\n'}${g#--lua-desync=}"
+    done <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")"
+  fi
+  targets="$(_custom_clone_targets <<<"$groups")"
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    if [ "$allow_remap" = "1" ]; then
+      fixed="$(custom_strategies_bc_fix_group "$g" "$transport" "$cfg" "$targets")"
+    else
+      fixed="$g"
+    fi
+    if [ -z "$spec" ]; then spec="$fixed"; else spec="$spec --lua-desync=$fixed"; fi
+  done <<<"$groups"
+  spec="$(custom_strategies_normalize "$spec")" || return 1
+  printf '%s' "$spec"
+}
+
+# Пакетное добавление уже провалидированных spec'ов: ОДНА перезапись TSV
+# на весь пакет (custom_strategies_add на каждую строку давал квадратичный
+# рост на больших импортах — замечание автора PR #82). Файл $2: spec<TAB>comment.
+custom_strategies_bulk_add() {
+  local block="$1" list="$2" id content rows spec comment
+  [ -f "$list" ] || return 1
+  id="$(custom_strategies_next_id)"
+  rows="$(custom_strategies_list)"
+  content="$(_custom_strats_header)"
+  [ -n "$rows" ] && content="$content"$'\n'"$rows"
+  while IFS="$(printf '\t')" read -r spec comment; do
+    [ -n "$spec" ] || continue
+    content="$content"$'\n'"$(printf '%s\t%s\t%s\t1\t%s\t' "$id" "$block" "$spec" "${comment:-}")"
+    id=$((id + 1))
+  done < "$list"
+  _custom_strats_write "$content"
+}
+
+# Импорт многострочного текста (паста или файл блокчека) в блок $2.
+# stdout — машина-читаемый отчёт: первая строка «RESULT<TAB>added<TAB>dups<TAB>failed»,
+# дальше по одной «ERR<TAB>строка<TAB>причина» на пропущенную запись.
+# Дубликаты (внутри партии и против уже имеющихся записей того же блока)
+# пропускаются, а не задваиваются. Записям из блокчека комментарий —
+# «blockcheck <домен из заголовка>», обычной вставке — «импорт».
+custom_strategies_import_text() {
+  local text="$1" block="$2" line spec reason existing
+  local bcdomain="" comment
+  local cfg_imp="${ZAPRET2_ROOT:-/opt/zapret2}/config"
+  [ -f "$cfg_imp" ] || cfg_imp="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+  existing="$(custom_strategies_list "$block" | awk -F '\t' '{print $3}')"$'\n'
+  local added=0 dups=0 failed=0
+  local -A seen_map=()
+  local TMP_DIR_IMP="/tmp/z2r-imp-$$"
+  mkdir -p "$TMP_DIR_IMP" || return 1
+  local rows_file="$TMP_DIR_IMP/rows" notes_file="$TMP_DIR_IMP/notes"
+  : > "$rows_file"; : > "$notes_file"
+  # кеш имён блобов на время пакета (сброс после цикла)
+  local _prev_blob_cache="${_CUSTOM_BLOBS_NAMES_CACHE:-}"
+  _CUSTOM_BLOBS_NAMES_CACHE=1
+
+  # Склейка жёстких переносов (см. custom_strategies_join_wraps)
+  text="$(custom_strategies_join_wraps "$text")"
+
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    # пустые, комментарии и заголовки отчёта блокчека («* SUMMARY») — молча
+    case "$line" in ''|'#'*|'*'*) continue ;; esac
+    case "$line" in
+      *nfqws2*|*--lua-desync=*) : ;;
+      *)
+        printf 'ERR\t%s\t%s\n' "$(printf '%s' "$line" | tr '\t' ' ')" "строка не похожа на стратегию или вывод блокчека"
+        failed=$((failed + 1)); continue ;;
+    esac
+    # домен из заголовка блокчека (для комментария) — до подшелл-вызовов
+    bcdomain=""
+    case "$line" in
+      *": nfqws2 "*) bcdomain="$(printf '%s' "${line%% : nfqws2 *}" | awk '{print $3}')" ;;
+    esac
+    spec="$(custom_strategies_import_spec "$line" "$block" "$cfg_imp" 1 2>>"$notes_file")" || {
+      printf 'ERR\t%s\t%s\n' "$(printf '%s' "$line" | tr '\t' ' ')" "не удалось разобрать строку"
+      failed=$((failed + 1)); continue
+    }
+    if [[ -n "${seen_map[$spec]+x}" ]]; then dups=$((dups + 1)); continue; fi
+    if grep -Fxq "$spec" <<<"$existing"; then dups=$((dups + 1)); continue; fi
+    comment="импорт"
+    [ -n "$bcdomain" ] && comment="blockcheck ${bcdomain}"
+    if ! custom_strategies_validate "$block" "$spec" 2>/dev/null; then
+      reason="$(custom_strategies_validate "$block" "$spec" 2>&1 | head -n1)"
+      printf 'ERR\t%s\t%s\n' "$(printf '%s' "$spec" | tr '\t' ' ')" "${reason:-не прошла валидация}"
+      failed=$((failed + 1)); continue
+    fi
+    printf '%s\t%s\n' "$spec" "$comment" >> "$rows_file"
+    seen_map["$spec"]=1
+    added=$((added + 1))
+  done <<<"$text"
+
+  # одна перезапись TSV на весь пакет (замечание автора: add-на-строку давал
+  # квадратичный рост — каждый вызов читал TSV и переписывал файл целиком)
+  if [ -s "$rows_file" ]; then
+    if ! custom_strategies_bulk_add "$block" "$rows_file"; then
+      printf 'ERR\t%s\t%s\n' "*" "не удалось записать TSV (пакет добавлений откатан)"
+      failed=$((failed + added)); added=0
+    fi
+  fi
+  # подстановки блобов — отдельными NOTE-строками (панель показывает их список)
+  if [ -s "$notes_file" ]; then
+    while IFS= read -r note; do
+      [ -n "$note" ] || continue
+      printf 'NOTE\t%s\n' "$(printf '%s' "$note" | tr '\t' ' ')"
+    done < "$notes_file"
+  fi
+  rm -rf "$TMP_DIR_IMP"
+  _CUSTOM_BLOBS_NAMES_CACHE="$_prev_blob_cache"
+  printf 'RESULT\t%s\t%s\t%s\n' "$added" "$dups" "$failed"
+}
+
 # --- валидация ----------------------------------------------------------------
 
 # Таблицы примитивов/параметров (зеркало строк config.default; при добавлении
 # новых возможностей zapret2 расширять здесь). Z2R_CUSTOM_STRICT=0 понижает
 # неизвестные ключи/флаги до предупреждения.
-custom_strategies_primitives_tcp="fake multisplit multidisorder fakeddisorder fakedsplit fakemultisplit fakemultidisorder hostfakesplit send tls_client_hello_clone"
+# Примитивы/ключи — зеркало строк config.default + вывод blockcheck2 (SUMMARY).
+# wssize/syndata/tcpseg/multidisorder_legacy и nofake2/nofake4/tls_mod/midhost
+# встречаются только в выводе блокчека; disorder_after бывает и флагом (конфиг),
+# и ключом со значением (блокчек: disorder_after=-1) — потому в обоих списках.
+custom_strategies_primitives_tcp="fake multisplit multidisorder multidisorder_legacy fakeddisorder fakedsplit fakemultisplit fakemultidisorder hostfakesplit syndata wssize tcpseg send tls_client_hello_clone oob"
 custom_strategies_primitives_udp="fake send udplen dnsclone"
 
-custom_strategies_keys_tcp="fake_blob fallback host pos seqovl seqovl_pattern sni_first sni_snt_new tcp_seq tcp_ack tcp_ts fake_count"
-custom_strategies_keys_udp="increment min pattern ipfrag_pos_udp"
-custom_strategies_keys_both="blob repeats out_range ip_autottl ip6_autottl ip_ttl ip6_ttl ip_id payload"
+custom_strategies_keys_tcp="fake_blob fallback host midhost pos seqovl seqovl_pattern sni_first sni_snt_new tcp_seq tcp_ack tcp_ts fake_count wsize scale disorder_after urp char byte"
+custom_strategies_keys_udp="increment min ipfrag_pos_udp"
+custom_strategies_keys_both="blob repeats out_range ip_autottl ip6_autottl ip_ttl ip6_ttl ip_id payload tls_mod pattern"
 
-custom_strategies_flags_tcp="tcp_md5 ip6_destopt disorder_after nofake1 nofake3 fake_all nodrop tcp_ts_up sni_del"
+custom_strategies_flags_tcp="tcp_md5 ip6_destopt disorder_after nofake1 nofake2 nofake3 nofake4 fake_all nodrop tcp_ts_up sni_del"
 custom_strategies_flags_udp=""
 custom_strategies_flags_both="badsum ipfrag ipfrag_disorder"
 
@@ -170,14 +475,40 @@ _custom_in_list() {
   return 1
 }
 
-# Объявленные в конфиге имена блобов (--blob=ИМЯ:@...) + встроенные/литеральные.
+# Объявленные в конфиге имена блобов (--blob=ИМЯ:@...) + встроенные/литеральные
+# + пользовательские из custom_blobs.tsv (декларация может ждать apply —
+# ссылки на имя уже валидны и не переписываются импортом).
+# Кеш на время пакетного импорта (_CUSTOM_BLOBS_NAMES_CACHE=1 выставляет
+# custom_strategies_import_text): без него каждая валидация строки перечитывала
+# конфиг — квадратичный рост на сотнях строк (замечание автора PR #82).
+# Инвалидация — переменной окружения: любой другой поток сбрасывает её просто
+# не выставляя; конфиг не меняется, пока импорт крутит свой цикл.
+__CBN_CFG=""; __CBN_VAL=""
 custom_strategies_blob_names() {
   local cfg="${1:-${ZAPRET2_ROOT:-/opt/zapret2}/config}"
   [ -f "$cfg" ] || cfg="${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
-  [ -f "$cfg" ] || return 0
-  sed -n -E 's/^[[:space:]]*--blob=([A-Za-z0-9_]+):.*/\1/p' "$cfg" | sort -u
-  printf '%s\n' fake_default_tls fake_default_http \
-    clone_vk clone_hcaptcha clone_vk_fmd clone_hcaptcha_fms
+  if [ "${_CUSTOM_BLOBS_NAMES_CACHE:-0}" = "1" ] && [ "$__CBN_CFG" = "$cfg" ]; then
+    printf '%s\n' "$__CBN_VAL"
+    return 0
+  fi
+  local val=""
+  if [ -f "$cfg" ]; then
+    val="$(sed -n -E 's/^[[:space:]]*--blob=([A-Za-z0-9_]+):.*/\1/p' "$cfg" | sort -u)"
+  fi
+  val="$val
+fake_default_tls
+fake_default_http
+clone_vk
+clone_hcaptcha
+clone_vk_fmd
+clone_hcaptcha_fms"
+  if type custom_blobs_list >/dev/null 2>&1; then
+    val="$val
+$(custom_blobs_list | awk -F '\t' '{print $2}')"
+  fi
+  __CBN_CFG="$cfg"; __CBN_VAL="$val"
+  printf '%s\n' "$val"
+  return 0
 }
 
 _custom_blob_known() {
@@ -191,6 +522,26 @@ _custom_blob_known() {
     [ "$known" = "$name" ] && return 0
   done < <(custom_strategies_blob_names "$cfg")
   return 1
+}
+
+# Имена блобов-целей tls_client_hello_clone:blob= в перечне групп (по одной на
+# строку). nfqws2 создаёт/перезаписывает их сам в рантайме, поэтому декларация
+# --blob= для них не нужна — имя валидно в ссылках той же стратегии.
+_custom_clone_targets() {
+  local g body tok
+  while IFS= read -r g; do
+    case "$g" in
+      tls_client_hello_clone:*)
+        body="${g#*:}"
+        while [ -n "$body" ]; do
+          tok="${body%%:*}"
+          [ "$tok" = "$body" ] && body="" || body="${body#*:}"
+          case "$tok" in
+            blob=*) printf '%s ' "${tok#blob=}"; break ;;
+          esac
+        done ;;
+    esac
+  done
 }
 
 # Валидирует spec блока. Сообщения — в stderr; rc: 0 — годен (возможны warning),
@@ -209,10 +560,11 @@ custom_strategies_validate() {
       return 2 ;;
   esac
 
-  local rest="${spec// --lua-desync=/$'\x01'}" ngroups=0 g
+  local rest="${spec// --lua-desync=/$'\x01'}" ngroups=0 g targets
+  targets="$(_custom_clone_targets <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")")"
   while IFS= read -r g; do
     ngroups=$((ngroups + 1))
-    _custom_validate_group "$g" "$transport" "$cfg" || return 2
+    _custom_validate_group "$g" "$transport" "$cfg" "$targets" || return 2
   done <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")"
   [ "$ngroups" -ge 1 ] && [ "$ngroups" -le 8 ] || {
     echo "От 1 до 8 групп --lua-desync= в одной стратегии." >&2
@@ -222,7 +574,7 @@ custom_strategies_validate() {
 }
 
 _custom_validate_group() {
-  local group="$1" transport="$2" cfg="$3"
+  local group="$1" transport="$2" cfg="$3" clones="${4:-}"
   case "$group" in
     *' '*) echo "Пробел внутри группы (группы разделяются « --lua-desync=»)." >&2; return 1 ;;
   esac
@@ -252,8 +604,19 @@ _custom_validate_group() {
       key="${tok%%=*}"; val="${tok#*=}"
       _custom_validate_kv "$key" "$val" "$transport" || return 1
       case "$key" in
-        blob|fake_blob|fallback)
-          if ! _custom_blob_known "$val" "$cfg"; then
+        blob|fake_blob|fallback|pattern|seqovl_pattern)
+          # pattern=/seqovl_pattern= бывают и литералами (0x…, число) — их не сверяем
+          local _blit=0
+          case "$key" in
+            pattern|seqovl_pattern) case "$val" in 0x*|[0-9]*) _blit=1 ;; esac ;;
+          esac
+          # blob= самого клона не обязан быть объявленным (nfqws2 создаёт блоб
+          # сам), и ссылки на имя-цель клона той же стратегии валидны как есть
+          if [ "$prim" = "tls_client_hello_clone" ] && [ "$key" = "blob" ]; then
+            _blit=1
+          fi
+          case " ${clones} " in *" $val "*) _blit=1 ;; esac
+          if [ "$_blit" = "0" ] && ! _custom_blob_known "$val" "$cfg"; then
             echo "Блоб «$val» не объявлен в конфиге." >&2
             echo "Доступные: $(custom_strategies_blob_names "$cfg" | tr '\n' ' ')0x…" >&2
             return 1
@@ -283,14 +646,31 @@ _custom_validate_kv() {
     return 1
   fi
   case "$key" in
-    repeats|fake_count|tcp_seq|tcp_ack|tcp_ts|seqovl|increment|min|ipfrag_pos_udp|sni_snt_new)
+    repeats|fake_count|tcp_seq|tcp_ack|tcp_ts|increment|min|ipfrag_pos_udp|sni_snt_new|wsize|scale|disorder_after|byte)
       printf '%s' "$val" | grep -Eq '^-?[0-9]+$' || { echo "Ключ $key= ждёт целое число." >&2; return 1; } ;;
+    seqovl)
+      # число или маркер-позиция (блокчек: seqovl=midsld-1, host+1, sniext)
+      printf '%s' "$val" | grep -Eq '^(-?[0-9]+|[A-Za-z_][A-Za-z0-9_]*([+-][0-9]+)?)$' \
+        || { echo "Ключ seqovl= ждёт число или маркер (midsld-1, host+1, sniext)." >&2; return 1; } ;;
+    urp)
+      # позиционный маркер urgent pointer: "b"|"e" (док. fork) или число
+      printf '%s' "$val" | grep -Eq '^([bBeE]|[0-9]+)$'         || { echo "Ключ urp= ждёт b, e или число." >&2; return 1; } ;;
+    char)
+      printf '%s' "$val" | grep -Eq '^[A-Za-z0-9]$'         || { echo "Ключ char= ждёт ровно один символ (букву/цифру)." >&2; return 1; } ;;
+    midhost)
+      printf '%s' "$val" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$' \
+        || { echo "Ключ midhost= ждёт маркер позиции (midsld и т.п.)." >&2; return 1; } ;;
+    tls_mod)
+      printf '%s' "$val" | grep -Eq '^[a-z0-9_,]+$' \
+        || { echo "Ключ tls_mod= ждёт список модов через запятую (rnd,dupsid,padencap,…)." >&2; return 1; } ;;
     ip_autottl|ip6_autottl)
       printf '%s' "$val" | grep -Eq '^-?[0-9]+([,-][0-9]+)*' || { echo "Ключ $key= ждёт диапазон вида -1,4-20." >&2; return 1; } ;;
     out_range)
       printf '%s' "$val" | grep -Eq '^-[dnsp][0-9]+$' || { echo "Ключ out_range= ждёт вид -dN/-nN/-sN." >&2; return 1; } ;;
     pattern)
-      printf '%s' "$val" | grep -Eq '^(0x[0-9A-Fa-f]+|[0-9]+)$' || { echo "Ключ pattern= ждёт hex или число." >&2; return 1; } ;;
+      # hex-литерал, число или имя блоба (блокчек: pattern=tlsgoogle)
+      printf '%s' "$val" | grep -Eq '^(0x[0-9A-Fa-f]+|[0-9]+|[A-Za-z_][A-Za-z0-9_]*)$' \
+        || { echo "Ключ pattern= ждёт hex (0x…), число или имя блоба." >&2; return 1; } ;;
     seqovl_pattern)
       printf '%s' "$val" | grep -Eq '^[0-9A-Za-z_]+$' || { echo "Ключ seqovl_pattern= ждёт имя/шаблон." >&2; return 1; } ;;
     blob|fake_blob|fallback)
@@ -418,6 +798,77 @@ custom_strategies_delete() {
 "
   done < <(custom_strategies_list)
   _custom_strats_write "$content" || return 1
+}
+
+# Сколько записей TSV ссылаются на блоб ИМЯ (токен-точно: blob=/fake_blob=/
+# fallback=/pattern=/seqovl_pattern= и цели tls_client_hello_clone:blob=).
+custom_strategies_blob_ref_rows() {
+  local name="$1"
+  [ -n "$name" ] || { echo 0; return 0; }
+  custom_strategies_list | awk -F '\t' -v name="$name" '
+    {
+      n = split($3, groups, / --lua-desync=/)
+      for (gi = 1; gi <= n; gi++) {
+        cnt = split(groups[gi], toks, /:/)
+        for (ti = 1; ti <= cnt; ti++) {
+          if (toks[ti] ~ /^(blob|fake_blob|fallback|pattern|seqovl_pattern)=/ \
+              && substr(toks[ti], index(toks[ti], "=") + 1) == name) { found = 1; break }
+          if (toks[ti] == "blob=" name) { found = 1; break }
+        }
+        if (found) break
+      }
+      if (found) { rows++; found = 0 }
+    }
+    END { print rows + 0 }
+  '
+}
+
+# Переименование пользовательского блоба: правит ссылки на старое имя во всех
+# spec'ах custom_strategies.tsv (только пользовательские записи — штатный
+# конфиг собственных имён не содержит). Токен-точно: заменяется именно ЗНАЧЕНИЕ
+# blob=/fake_blob=/fallback=/pattern=/seqovl_pattern=/blob= (цель клона).
+custom_strategies_rename_blob() {
+  local old="$1" new="$2" content row newspec changed=0
+  [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ] || return 2
+  _custom_rename_blob_in_group() {
+    local group="$1" out="" tok key val
+    local IFS=':'
+    for tok in $group; do
+      case "$tok" in
+        *=*)
+          key="${tok%%=*}"; val="${tok#*=}"
+          case "$key" in
+            blob|fake_blob|fallback|pattern|seqovl_pattern)
+              [ "$val" = "$old" ] && val="$new"
+              out="${out:+$out:}$key=$val"
+              ;;
+            *) out="${out:+$out:}$tok" ;;
+          esac
+          ;;
+        *) out="${out:+$out:}$tok" ;;
+      esac
+    done
+    printf '%s' "$out"
+  }
+  content="$(_custom_strats_header)"$'
+'
+  while IFS= read -r row; do
+    _custom_strats_split "$row" || continue
+    newspec=""
+    local rest="${_CS_SPEC// --lua-desync=/$'\x01'}" g
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      g="$(_custom_rename_blob_in_group "$g")"
+      if [ -z "$newspec" ]; then newspec="$g"; else newspec="$newspec --lua-desync=$g"; fi
+    done <<<"$(printf '%s\n' "${rest//$'\x01'/$'\n'}")"
+    if [ "$newspec" != "$_CS_SPEC" ]; then changed=$((changed + 1)); fi
+    content="$content$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$_CS_ID" "$_CS_BLOCK" "$newspec" "$_CS_ENABLED" "$_CS_COMMENT" "${_CS_ASSIGNED:-}")"$'\n'
+  done < <(custom_strategies_list)
+  if [ "$changed" -gt 0 ]; then
+    _custom_strats_write "$content" || return 1
+    printf '%s\n' "custom strategies: блоб $old -> $new, правлено записей: $changed" >&2
+  fi
+  return 0
 }
 
 # --- инжект в конфиг ----------------------------------------------------------
@@ -803,7 +1254,7 @@ custom_strategies_submenu() {
       "2") _custom_edit_flow ;;
       "3")
         read -re -p "ID записи (0 - отмена): " id || id=""
-        case "$id" in ""|0|*[!0-9]*) ui_invalid_input; continue ;; esac
+        case "$id" in ""|0) continue ;; *[!0-9]*) ui_invalid_input; continue ;; esac
         if [ "$(awk -F '\t' -v i="$id" '$1==i {print $4; exit}' < <(custom_strategies_list))" = "1" ]; then
           if custom_strategies_set_enabled "$id" 0; then
             echo -e "${green}Запись $id выключена.${plain}"
@@ -821,7 +1272,7 @@ custom_strategies_submenu() {
         ;;
       "4")
         read -re -p "ID записи (0 - отмена): " id || id=""
-        case "$id" in ""|0|*[!0-9]*) ui_invalid_input; continue ;; esac
+        case "$id" in ""|0) continue ;; *[!0-9]*) ui_invalid_input; continue ;; esac
         custom_strategies_delete "$id" && echo -e "${green}Удалено (ID уплотнены).${plain}"
         pause_enter
         ;;
@@ -857,7 +1308,7 @@ _custom_pick_block() {
     submenu_item "0" "Отмена" >&2
     echo "" >&2
     read -re -p "Ваш выбор: " choice || choice=""
-    [ -z "$choice" ] && return 0
+    case "$choice" in ""|0) return 0 ;; esac
     local n=0
     while IFS="$(printf '\t')" read -r b _rest; do
       n=$((n + 1))
@@ -895,7 +1346,10 @@ _custom_ask_spec() {
     echo -e "${yellow}  • комбо — несколько групп через « --lua-desync=», всем им${plain}" >&2
     echo -e "${yellow}    присвоится ОДИН номер стратегии (как строкам 20/21 конфига);${plain}" >&2
     echo -e "${yellow}  • можно вставить готовую строку из конфига целиком —${plain}" >&2
-    echo -e "${yellow}    «--lua-desync=» и «:strategy=N» срежутся автоматически.${plain}" >&2
+    echo -e "${yellow}    «--lua-desync=» и «:strategy=N» срежутся автоматически;${plain}" >&2
+    echo -e "${yellow}  • можно вставить строку SUMMARY blockcheck2 или команду nfqws2 —${plain}" >&2
+    echo -e "${yellow}    шапка «curl_test_… : nfqws2» и лишние аргументы вырежутся,${plain}" >&2
+    echo -e "${yellow}    гугловский блоб блокчека заменится на дефолтный из конфига.${plain}" >&2
     echo "" >&2
     echo -e "${yellow}Пример (${transport}):${plain}" >&2
     echo -e "${cyan}${example}${plain}" >&2
@@ -904,13 +1358,31 @@ _custom_ask_spec() {
     echo "" >&2
     read -re -p "Стратегия (Enter - отмена): " input || input=""
     [ -z "$input" ] && return 0
-    spec="$(custom_strategies_normalize "$input")" || {
+    # импортный разбор: понимает и обычную строку, и SUMMARY блокчека, и команду
+    # nfqws2 (шапка curl_test_… и лишние аргументы демона вырезаются сами)
+    spec="$(custom_strategies_import_spec "$(custom_strategies_join_wraps "$input")" "$_CUSTOM_BLOCK" "" 0)" || {
       echo -e "${red}Не удалось разобрать строку: «strategy=» допустим только в конце групп.${plain}" >&2
       continue
     }
     if custom_strategies_validate "$_CUSTOM_BLOCK" "$spec"; then
       echo "$spec"
       return 0
+    fi
+    # необъявленные блобы — не молчаливая подмена, а явное согласие
+    # (замечание автора PR #82)
+    local spec_alt
+    if spec_alt="$(custom_strategies_import_spec "$(custom_strategies_join_wraps "$input")" "$_CUSTOM_BLOCK" "" 1 2>/dev/null)" \
+       && custom_strategies_validate "$_CUSTOM_BLOCK" "$spec_alt" 2>/dev/null; then
+      echo -e "${yellow}В стратегии есть необъявленные блобы (например, из чужого блокчека).${plain}" >&2
+      echo -e "${yellow}Могу заменить их на стандартные из вашего конфига (список в ошибке выше).${plain}" >&2
+      read -re -p "Заменить необъявленные блобы на стандартные? 1 - да, Enter - нет: " _swap || _swap=""
+      if [ "$_swap" = "1" ]; then
+        echo "$spec_alt"
+        return 0
+      fi
+      echo -e "${red}Стратегия не прошла валидацию — исправьте по сообщениям выше.${plain}" >&2
+      read -re -p "Enter — вернуться к вводу: " _retry || _retry=""
+      continue
     fi
     echo -e "${red}Стратегия не прошла валидацию — исправьте по сообщениям выше.${plain}" >&2
     read -re -p "Enter — вернуться к вводу: " _retry || _retry=""
@@ -937,7 +1409,7 @@ _custom_add_flow() {
 _custom_edit_flow() {
   local id row block spec comment enabled
   read -re -p "ID записи (0 - отмена): " id || id=""
-  case "$id" in ""|0|*[!0-9]*) ui_invalid_input; return ;; esac
+  case "$id" in ""|0) return ;; *[!0-9]*) ui_invalid_input; return ;; esac
   row="$(custom_strategies_row "$id")"
   [ -n "$row" ] || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }
   _custom_strats_split "$row" || { echo -e "${red}Нет записи $id.${plain}"; pause_enter; return; }
@@ -959,30 +1431,39 @@ _custom_edit_flow() {
 }
 
 _custom_import_flow() {
-  local block line spec ok=0 fail=0 tmpf="/tmp/z2r-custom-import.$$"
+  local block line res tmpf="/tmp/z2r-custom-import.$$" srcfile added dups failed
   block="$(_custom_pick_block)" || block=""
   [ -n "$block" ] || { echo "Отменено."; pause_enter; return; }
   _CUSTOM_BLOCK="$block"
-  echo -e "${yellow}Вставьте строки --lua-desync=..., по одной на запись; номера :strategy=N${plain}"
-  echo -e "${yellow}срезутся сами. Комбо из нескольких групп в одной строке (разделитель${plain}"
-  echo -e "${yellow}« --lua-desync=») станет одной записью с одним номером. Пустая строка — конец.${plain}"
+  echo -e "${yellow}Вставьте строки --lua-desync=..., строки SUMMARY blockcheck2 или команду${plain}"
+  echo -e "${yellow}nfqws2 целиком. Лишнее (--blob/--payload/--lua-init, :strategy=N) вырежется${plain}"
+  echo -e "${yellow}само; гугловский блоб блокчека заменится на дефолтный из вашего конфига${plain}"
+  echo -e "${yellow}(--blob=maxru:@…, файл вы могли заменить в п.16 — имя не меняется).${plain}"
+  echo -e "${yellow}Комбо из нескольких групп (разделитель « --lua-desync=») станет одной${plain}"
+  echo -e "${yellow}записью с одним номером. Вместо вставки можно указать путь к файлу${plain}"
+  echo -e "${yellow}(например, /tmp/blockcheck2_summary.txt). Пустая строка — конец ввода.${plain}"
   : > "$tmpf"
   while IFS= read -re line; do
     [ -z "$line" ] && break
     printf '%s\n' "$line" >> "$tmpf"
   done
   [ -s "$tmpf" ] || { echo "Ничего не введено."; pause_enter; rm -f "$tmpf"; return; }
-  while IFS= read -r line; do
-    spec="$(custom_strategies_normalize "$line")" || { echo -e "${red}SKIP (разбор): $line${plain}"; fail=$((fail+1)); continue; }
-    if custom_strategies_add "$block" "$spec" "импорт" >/dev/null 2>&1; then
-      ok=$((ok + 1))
-    else
-      echo -e "${red}SKIP (валидация): $spec${plain}"
-      fail=$((fail + 1))
-    fi
-  done < "$tmpf"
+  # одна строка-путь к существующему файлу: импортируем его содержимое целиком
+  srcfile="$(head -n 1 "$tmpf" | tr -d '[:space:]')"
+  if [ "$(awk 'END{print NR}' "$tmpf")" = "1" ] && [ -f "$srcfile" ]; then
+    cat "$srcfile" > "$tmpf"
+    echo -e "${cyan}Импорт из файла: $srcfile${plain}"
+  fi
+  res="$(custom_strategies_import_text "$(cat "$tmpf")" "$block")" || res=""
   rm -f "$tmpf"
-  echo -e "${green}Импортировано: $ok, пропущено: $fail (блок $block).${plain}"
+  added="$(printf '%s\n' "$res" | sed -n 's/^RESULT\t\(.*\)\t\(.*\)\t\(.*\)$/\1/p')"
+  dups="$(printf '%s\n' "$res" | sed -n 's/^RESULT\t\(.*\)\t\(.*\)\t\(.*\)$/\2/p')"
+  failed="$(printf '%s\n' "$res" | sed -n 's/^RESULT\t\(.*\)\t\(.*\)\t\(.*\)$/\3/p')"
+  printf '%s\n' "$res" | while IFS="$(printf '\t')" read -r tag eline ereason; do
+    [ "$tag" = "ERR" ] || continue
+    echo -e "${red}SKIP (валидация): ${plain}${yellow}$eline${plain} — $ereason"
+  done
+  echo -e "${green}Импортировано: ${added:-0}, дубликатов: ${dups:-0}, пропущено: ${failed:-0} (блок $block).${plain}"
   echo -e "${yellow}Примените к конфигу (п.6) и перезапустите zapret2.${plain}"
   pause_enter
 }

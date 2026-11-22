@@ -1,7 +1,7 @@
 import { api, formBody } from './client'
 import type {
   ApplyResult, BackupsPayload, CheckPayload, CustomImportResult, CustomListPayload,
-  AdaptiveActionResult, AdaptiveStatus,
+  AdaptiveActionResult, AdaptiveStatus, CustomBlobsPayload,
   DomainsImportResult, DomainsListPayload, FallbackSettings, H3CurlStatus, ModeSettingData,
   PortInfo, PortsSettings, ProfileInfo, ProviderSettings, ScopesPayload, StatePayload,
   StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult, WgBlobSettings,
@@ -47,6 +47,28 @@ export const customStrats = {
   import: (block: string, text: string) => customStratsPost({ action: 'import', block, text }),
   apply: () => customStratsPost({ action: 'apply' }),
 }
+
+// Пользовательские блобы («Свои блобы»): CRUD деклараций --blob= + загрузка
+// файлов в files/fake/custom_blob/ (бинарное тело запроса, без multipart).
+export const fetchCustomBlobs = (signal?: AbortSignal) =>
+  api<CustomBlobsPayload>('/cgi-bin/blobs.cgi', { signal })
+
+export const customBlobsPost = (body: Record<string, string>) =>
+  api<ApplyResult & { renamed?: boolean }>('/cgi-bin/blobs.cgi', formBody(body))
+
+export const customBlobs = {
+  add: (name: string, file: string, comment: string) =>
+    customBlobsPost({ action: 'add', value: name, file, comment }),
+  edit: (id: string, name: string, file: string, comment: string) =>
+    customBlobsPost({ action: 'edit', id, value: name, file, comment }),
+  remove: (id: string) => customBlobsPost({ action: 'delete', id }),
+  apply: () => customBlobsPost({ action: 'apply' }),
+}
+
+export const customBlobsUpload = (name: string, data: ArrayBuffer) =>
+  api<{ ok?: boolean; file?: string; created?: number | null }>(
+    `/cgi-bin/blobs.cgi?action=upload&name=${encodeURIComponent(name)}`,
+    { method: 'POST', body: data, headers: { 'Content-Type': 'application/octet-stream' } })
 
 export const fetchScopes = () => api<ScopesPayload>('/cgi-bin/scopes.cgi')
 

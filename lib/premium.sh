@@ -66,11 +66,12 @@ premium_get_or_set_title() {
 zefeer_premium_777() {
   mkdir -p "$CACHE_DIR"
 
+  # повторный 777 — выключатель: снимаем флаг и титул; строка «Титул:» в шапке
+  # и пункт 999 исчезают сами (показываются только при живом флаге)
   if [[ -f "$PREMIUM_FLAG" ]]; then
-    local title
-    title="$(premium_get_or_set_title)"
-    echo -e "${yellow}ZEFEER PREMIUM уже активирован.${plain}"
-    echo -e "Ваш титул: ${green}${title}${plain}"
+    rm -f "$PREMIUM_FLAG" "$PREMIUM_TITLE_FILE" || true
+    echo -e "${yellow}ZEFEER PREMIUM деактивирован, титул сброшен.${plain}"
+    echo -e "Строка «Титул:» и пункт 999 скрыты. Повторный ввод 777 снова активирует premium."
     return 0
   fi
 

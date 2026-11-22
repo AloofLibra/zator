@@ -333,6 +333,7 @@ find_runtime_libs orchestra_state.sh config.sh strategies.sh netcheck.sh || { ec
 [ -f "$LIB_DIR/googlevideo_ips.sh" ] && . "$LIB_DIR/googlevideo_ips.sh"
 [ -f "$LIB_DIR/supersweep.sh" ] && . "$LIB_DIR/supersweep.sh"
 [ -f "$LIB_DIR/custom_strategies.sh" ] && . "$LIB_DIR/custom_strategies.sh"
+[ -f "$LIB_DIR/custom_blobs.sh" ] && . "$LIB_DIR/custom_blobs.sh"
 
 telemetry_notify() {
   type send_stats >/dev/null 2>&1 && send_stats || true
@@ -368,6 +369,7 @@ parse_params() {
   PARAM_HOSTNAME=""
   PARAM_DESTINATION_IP=""
   PARAM_PROFILE_ID=""
+  PARAM_FILE=""
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
@@ -402,6 +404,7 @@ parse_params() {
       hostname) PARAM_HOSTNAME="$value" ;;
       destination_ip) PARAM_DESTINATION_IP="$value" ;;
       profile_id) PARAM_PROFILE_ID="$value" ;;
+      file) PARAM_FILE="$value" ;;
     esac
   done
 }
@@ -2345,12 +2348,19 @@ api_custom_list() {
 
 # Нормализация + валидация spec от пользователя — ВЫЗЫВАТЬ ТОЛЬКО на верхнем
 # уровне api-функции (не в подшелле!): send_error должен прервать весь CGI.
-# Нормализатор срезает «--lua-desync=» и хвостовые «:strategy=N» (клиент может
-# вставить готовую строку из конфига целиком); ошибки — 400 с текстом валидатора.
+# Разбор — импортный движок custom_strategies_import_spec: клиент может
+# вставить готовую строку из конфига целиком, строку SUMMARY blockcheck2 или
+# команду nfqws2 («--lua-desync=», «:strategy=N», шапка «curl_test_… : nfqws2»
+# и лишние аргументы демона срезаются). Подмена необъявленных блобов для
+# add/edit ОТКЛЮЧЕНА (allow_remap=0): пользователь вводит имя осознанно —
+# неизвестное имя даёт честную 400 с текстом валидатора (замечание автора
+# PR #82), подмена с выводом NOTE остаётся только в action=import.
 _custom_normalize_and_check() {
   local block="$1" raw="$2" cfg="$3"
   local spec err
-  spec="$(custom_strategies_normalize "$raw" 2>/dev/null)" || \
+  # textarea может прийти многострочной (копипаста с жёсткими переносами)
+  raw="$(custom_strategies_join_wraps "$raw")"
+  spec="$(custom_strategies_import_spec "$raw" "$block" "$cfg" 0 2>/dev/null)" || \
     send_error "400 Bad Request" "Не удалось разобрать строку: «strategy=» допустим только в конце групп"
   _custom_capture_err custom_strategies_validate "$block" "$spec" "$cfg"
   if [ "$REPLY_RC" != "0" ]; then
@@ -2405,32 +2415,39 @@ api_custom_action() {
       custom_strategies_block_valid "$block" || send_error "400 Bad Request" "Некорректный блок: $block"
       text="${PARAM_TEXT:-}"
       [ -n "$text" ] || send_error "400 Bad Request" "Пустой импорт"
-      local IFS=$'\n' line ispec count=0
-      local added=0 skipped=0 errors=""
-      set -f
-      for line in $text; do
-        set +f
-        count=$((count + 1))
-        [ "$count" -le 64 ] || { skipped=$((skipped + 1)); continue; }
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [ -n "$line" ] || { skipped=$((skipped + 1)); continue; }
-        printf '%s' "$line" | grep -Eq '^[[:space:]]*#' && { skipped=$((skipped + 1)); continue; }
-        ispec="$(custom_strategies_normalize "$line" 2>/dev/null)" || {
-          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"не удалось разобрать строку\"}"
-          skipped=$((skipped + 1)); continue;
-        }
-        _custom_capture_err custom_strategies_add "$block" "$ispec" "импорт"
-        if [ "$REPLY_RC" = "0" ]; then
-          added=$((added + 1))
-        else
-          err="${REPLY_ERR:-не прошла валидация}"; err="${err//$'\n'/ }"
-          errors="${errors}${errors:+,}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$(printf '%s' "$err" | head -n1)")\"}"
-          skipped=$((skipped + 1))
-        fi
-      done
-      set +f
-      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"skipped\":$skipped,\"errors\":[$errors],\"apply_required\":true}"
+      # общий движок с CLI (custom_strategies_import_text): понимает и строки
+      # SUMMARY blockcheck2 (лишнее вырезается, гугловский блоб -> maxru из
+      # живого конфига), и обычные строки --lua-desync=. Лимит — 256 строк
+      # за раз (целый SUMMARY блокчека влезает).
+      local added=0 dups=0 failed=0 skipped=0 errors="" notes="" report line ereason sep="" sep_n="" tab total=0
+      tab=$'\t'
+      # не обрезать молча: лимит 256 строк, полный объём уходит в ответ (total)
+      total="$(printf '%s\n' "$text" | awk 'END{print NR+0}')"
+      _custom_capture_err custom_strategies_import_text "$(printf '%s\n' "$text" | awk 'NR<=256')" "$block"
+      report="$REPLY_OUT"
+      added="$(printf '%s\n' "$report" | awk -F '\t' '$1=="RESULT"{print $2; exit}')"
+      dups="$(printf '%s\n' "$report" | awk -F '\t' '$1=="RESULT"{print $3; exit}')"
+      failed="$(printf '%s\n' "$report" | awk -F '\t' '$1=="RESULT"{print $4; exit}')"
+      added="${added:-0}"; dups="${dups:-0}"; failed="${failed:-0}"
+      skipped=$((dups + failed))
+      while IFS= read -r line; do
+        case "$line" in
+          ERR$tab*)
+            line="${line#ERR$tab}"
+            ereason="${line#*$tab}"
+            line="${line%$tab*}"
+            errors="${errors}${sep}{\"line\":\"$(json_escape "$line")\",\"reason\":\"$(json_escape "$ereason")\"}"
+            sep=","
+            ;;
+          NOTE$tab*)
+            notes="${notes}${sep_n}\"$(json_escape "${line#NOTE$tab}")\""
+            sep_n=","
+            ;;
+        esac
+      done <<EOF
+$report
+EOF
+      send_json "200 OK" "{\"ok\":true,\"added\":$added,\"dups\":$dups,\"skipped\":$skipped,\"errors\":[$errors],\"notes\":[$notes],\"total\":${total:-0},\"limit\":256,\"apply_required\":true}"
       ;;
     apply)
       _custom_capture_err custom_strategies_apply_file "$cfg"
