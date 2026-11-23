@@ -70,7 +70,8 @@ protocol=tcp
 [[ "$recipe" != googlevideo-quic-h3-media-v1 ]] || protocol=udp
 printf '{"schema_version":1,"test_id":"%s","source_ip":"%s","source_port":%s,"destination_ip":"%s","port":443,"protocol":"%s","expires":%s,"recipe_id":"%s","treatment_variant":"%s","profile_id":%s,"scope":"%s","local_strategy_number":%s,"strategy_fingerprint":"%s","catalog_version":"%s"%s}\n' "$id" "$ip" "$port" "$dst" "$protocol" "$expiry" "$recipe" "$treatment" "$profile" "$scope" "$strategy" "$fingerprint" "$catalog" "$media_json" > "$run/lease.json"
 (
-  while [[ ! -s "$run/complete.tsv" ]]; do sleep .05; done
+  while [[ -d "$run" && ! -s "$run/complete.tsv" ]]; do sleep .05; done
+  [[ -d "$run" ]] || exit 0
   IFS=$'\t' read -r schema test_id observed transport application reason host dst profile fp strategy catalog recipe treatment client result_scope < "$run/complete.tsv"
   printf '{"schema_version":1,"test_id":"%s","route_verified":true,"transport":"%s","application":"%s","overall":"SUCCESS","reason":"%s","treatment_variant":"%s"}\n' "$test_id" "$transport" "$application" "$reason" "$treatment" > "$run/result.json"
   printf 'complete\n' > "$run/state"
