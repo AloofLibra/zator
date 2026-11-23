@@ -555,7 +555,7 @@ detect_os() {
     echo "OS: $release $hardware"
   fi
 
-  if [[ "$release" == "ubuntu" || "$release" == "debian" || "$release" == "endeavouros" || "$release" == "arch" ]]; then
+  if [[ "$release" == "ubuntu" || "$release" == "debian" || "$release" == "endeavouros" || "$release" == "arch" || "$release" == "raspbian" ]]; then
     OSystem="VPS"
   elif [[ "$release" == "openwrt" || "$release" == "immortalwrt" || "$release" == "asuswrt" || "$release" == "x-wrt" || "$release" == "kwrt" || "$release" == "istoreos" ]]; then
     OSystem="WRT"
