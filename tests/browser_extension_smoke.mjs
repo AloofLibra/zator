@@ -23,6 +23,8 @@ assert.match(popupScript, /TCP_FALLBACK: "browser used TCP; QUIC strategy was no
 assert.match(popupScript, /Router API is unreachable\. Check the router address, network, and API service\./)
 assert.match(popupScript, /Router rejected this pairing\. Pair the extension again in Settings\./)
 assert.match(popupScript, /Router browser API is unavailable\. Update or enable it on the router\./)
+assert.match(popupScript, /profile default/)
+assert.doesNotMatch(popupScript, /automatic start/)
 assert.ok(manifest.permissions.includes('webRequest'))
 assert.ok(manifest.permissions.includes('scripting'))
 assert.ok(!manifest.permissions.includes('webNavigation'), 'extension must not request an unused navigation permission')

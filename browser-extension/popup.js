@@ -43,7 +43,7 @@ function renderRouterStatus(state) {
         row.strategy_source === "verified_rule" ? `#${row.strategy_number} · confirmed` :
         row.strategy_source === "router_auto_trial" ? `#${row.strategy_number} · router trial` :
         row.strategy_source === "profile_lock" ? (row.strategy_number === 0 ? "profile disabled" : `#${row.strategy_number} · profile lock`) :
-        `#${row.strategy_number} · automatic start`;
+        `#${row.strategy_number} · profile default`;
       addStatusItem(targets, `${row.hostname} · ${proto} · ${strategy}`);
     }
   }
