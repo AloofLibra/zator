@@ -1595,7 +1595,11 @@ local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
   if tostring(profile) == "2" then adaptive_ramp_target_seen(host, ip, scope, now, profile) end
   local old = ADAPTIVE_OBSERVE_EVENTS[key]
   if old then
-    if (old.status == "router_exhausted" or old.router_candidate) and now - (old.seen or 0) > 1800 then
+    local old_seen = old.seen or 0
+    if old.status == "seen" and now - old_seen >= 30 then
+      old.seen = now
+      if not adaptive_observe_rewrite() then old.seen = old_seen end
+    elseif (old.status == "router_exhausted" or old.router_candidate) and now - old_seen > 1800 then
       old.status, old.router_candidate, old.failure_count, old.failure_strategy = "seen", nil, 0, nil
       old.seen = now
       adaptive_observe_rewrite()

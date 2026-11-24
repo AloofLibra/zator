@@ -75,6 +75,13 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-observe-") as tmp:
     assert len(rows) == 2, f"observation should dedupe tuples indefinitely and exclude other ports/manual lock: {rows!r}"
     assert all(len(row.split("\t")) == 8 and "http" not in row for row in rows), "event schema leaked unexpected fields"
     assert rows[0].split("\t")[:7] == ["1", "seen", "cdn.example.org", "93.184.216.34", "1", "tls", "default"]
+    assert rows[0].split("\t")[7] == "5000", "re-observed production tuple must refresh stale discovery time"
+    lua.execute('test_now = 5029; test_invoke("cdn.example.org", "93.184.216.34", 443)')
+    assert events.read_text().splitlines()[0].split("\t")[7] == "5000", \
+        "repeat flows inside the refresh interval must not rewrite the bounded observation journal"
+    lua.execute('test_now = 5030; test_invoke("cdn.example.org", "93.184.216.34", 443)')
+    assert events.read_text().splitlines()[0].split("\t")[7] == "5030", \
+        "observation timestamp should refresh again after the throttle interval"
     lua.execute('for i=1,130 do test_invoke("host"..i..".example.org", "94.0.0."..i, 443) end')
     rows = events.read_text().splitlines()
     assert len(rows) == 128, f"observation ring must stay bounded at 128 rows: {len(rows)}"
