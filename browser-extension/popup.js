@@ -105,7 +105,11 @@ async function render() {
     ? ` · Ramp ${({ applied: "applied on SYN", bypassed: "bypassed for exact target", unchanged: "no SYN change", no_window_scale: "no window-scale option", unknown: "not observed" })[row.ramp_treatment] || "not observed"}${row.ramp_treatment === "applied" ? ` · late ACK ${row.ramp_ack_evidence === "confirmed" ? "confirmed" : row.ramp_ack_evidence === "pending" ? "pending" : "unknown"}` : ""}`
     : "";
   const mediaEvidence = row.media_quality ? ` · media playback ${row.media_quality}` : "";
-  const triggerEvidence = !row.router_status && !row.trigger ? " · no trial started from this request" : "";
+  const triggerEvidence = !row.router_status && !row.trigger
+    ? (["script", "xmlhttprequest", "media"].includes(row.request_class)
+      ? ` · ${row.failure_count || 1}/2 critical-resource failures; waiting for a repeat`
+      : " · no eligible automatic trigger")
+    : "";
   const reason = ({
     h3_protocol_evidence_unavailable: "H3 protocol evidence unavailable; QUIC success not confirmed",
     ambiguous_recent_flows: "multiple recent connections match; no trial started",
