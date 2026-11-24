@@ -38,11 +38,11 @@ adaptive_mode() {
 }
 adaptive_set_mode() {
   local mode="$1" tmp
-  if [ "$mode" != AGENT_BETA ] && [ "$(adaptive_mode)" = AGENT_BETA ]; then
+  if [ "$mode" != AGENT_BETA ] && [ "$mode" != AUTO ] && { [ "$(adaptive_mode)" = AGENT_BETA ] || [ "$(adaptive_mode)" = AUTO ]; }; then
     adaptive_ramp_pool_restore || return 1
   fi
   mkdir -p "$TOKEN_DIR" || return 1
-  if [ "$mode" != AGENT_BETA ]; then rm -f "$DEFAULT_SCOPE_FILE" || return 1; fi
+  if [ "$mode" != AGENT_BETA ] && [ "$mode" != AUTO ]; then rm -f "$DEFAULT_SCOPE_FILE" || return 1; fi
   tmp="$(mktemp "$TOKEN_DIR/.mode.XXXXXX")" || return 1
   printf '%s\n' "$mode" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$MODE_FILE" || {
     rm -f "$tmp"; return 1;
@@ -51,9 +51,9 @@ adaptive_set_mode() {
 adaptive_set_default_scope() {
   local value="$1" tmp
   case "$value" in 0|1) ;; *) return 2 ;; esac
-  if [ "$value" = 0 ]; then rm -f "$DEFAULT_SCOPE_FILE"; return $?; fi
+  mkdir -p "$TOKEN_DIR" || return 1
   tmp="$(mktemp "$TOKEN_DIR/.default-scope.XXXXXX")" || return 1
-  printf '1\n' > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$DEFAULT_SCOPE_FILE" || {
+  printf '%s\n' "$value" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$DEFAULT_SCOPE_FILE" || {
     rm -f "$tmp"; return 1;
   }
 }
@@ -120,15 +120,17 @@ adaptive_ramp_pool_armed() {
   [ -f "$RAMP_POOL_ARM_FILE" ] && [ ! -L "$RAMP_POOL_ARM_FILE" ] && [ "$(wc -c < "$RAMP_POOL_ARM_FILE")" -le 256 ] || return 1
   IFS=$'\t' read -r version state fingerprint extra < "$RAMP_POOL_ARM_FILE" || return 1
   [[ "$version" = 1 && "$state" = armed && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] || return 1
-  [ "$(adaptive_mode)" = AGENT_BETA ] && [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || return 1
+  case "$(adaptive_mode)" in AUTO|AGENT_BETA) ;; *) return 1 ;; esac
+  [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || return 1
   [ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')" = 0 ] || return 1
   current="$(adaptive_ramp_pool_fingerprint)" || return 1
   [ "$fingerprint" = "$current" ]
 }
 adaptive_ramp_pool_arm() {
   local current fingerprint tmp
-  [ "$(adaptive_mode)" = AGENT_BETA ] && [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || {
-    echo 'Proof-triggered Ramp-first requires AGENT_BETA with explicit LAN-wide scope consent.' >&2; return 1;
+  case "$(adaptive_mode)" in AUTO|AGENT_BETA) ;; *) echo 'Ramp-first requires autorotation mode.' >&2; return 1 ;; esac
+  [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || {
+    echo 'Proof-triggered Ramp-first requires explicit LAN-wide scope consent.' >&2; return 1;
   }
   adaptive_ramp_pool_supported || { echo 'Ramp-first is unavailable on this platform or its Googlevideo pool is not ready.' >&2; return 1; }
   current="$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
@@ -194,8 +196,9 @@ adaptive_ramp_pool_set_config() {
 }
 adaptive_ramp_pool_enable() {
   local current fingerprint
-  [ "$(adaptive_mode)" = AGENT_BETA ] && [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || {
-    echo 'Ramp-first requires AGENT_BETA with explicit LAN-wide scope consent.' >&2; return 1;
+  case "$(adaptive_mode)" in AUTO|AGENT_BETA) ;; *) echo 'Ramp-first requires autorotation mode.' >&2; return 1 ;; esac
+  [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ] || {
+    echo 'Ramp-first requires explicit LAN-wide scope consent.' >&2; return 1;
   }
   adaptive_ramp_pool_supported || { echo 'Ramp-first is unavailable on this platform or its Googlevideo pool is not ready.' >&2; return 1; }
   [ ! -e "$RAMP_POOL_ARM_FILE" ] || { echo 'Proof-triggered Ramp-first is armed; use ramp-pool-off before choosing manual enable.' >&2; return 1; }
@@ -360,11 +363,10 @@ if [ "$action" = status ]; then
     echo 'Adaptive agent pairing: disabled'
   fi
   printf 'Adaptive mode: %s\n' "$(adaptive_mode)"
-  if [ "$(adaptive_mode)" = AUTO ]; then
-    echo 'Automatic strategy application: router-only, default scope, low-confidence production feedback'
-  elif [ "$(adaptive_mode)" = AGENT_BETA ]; then
-    if [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ]; then echo 'Beta application: exact rules including default/LAN scope'
-    else echo 'Beta application: exact marked-client scopes only; default/LAN scope disabled'; fi
+  if [ "$(adaptive_mode)" = AUTO ] || [ "$(adaptive_mode)" = AGENT_BETA ]; then
+    echo 'Autorotation: passive router signals always available; browser feedback adds higher-confidence results when paired'
+    if [ "$(cat "$DEFAULT_SCOPE_FILE" 2>/dev/null || true)" = 1 ]; then echo 'Browser trials: default/LAN scope explicitly enabled'
+    else echo 'Browser trials: marked scopes only; default/LAN browser trials are disabled'; fi
   else echo 'Automatic strategy application: disabled'; fi
   if adaptive_ramp_pool_enabled; then
     IFS=$'\t' read -r _ramp_version _ramp_owner _ramp_basis _ramp_fingerprint < "$RAMP_POOL_FILE" || :
@@ -469,13 +471,10 @@ if [ "$action" = router-auto ]; then
   adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; router AUTO was not changed.' >&2; exit 1; }
   adaptive_prepare_events || { echo 'Could not prepare private router observation files.' >&2; exit 1; }
   adaptive_set_mode AUTO || { echo 'Could not enable router AUTO.' >&2; exit 1; }
-  echo 'Router AUTO enabled without browser/agent pairing. Two independent production transport failures advance the exact host/IP/profile/scope to the next configured strategy; outcome confidence remains low and no isolated probe runs. Restart zapret2 to activate.'
+  echo 'Unified autorotation enabled. Passive router rotation works without pairing; browser feedback adds higher-confidence results when an extension is paired. Restart zapret2 to activate.'
   exit 0
 fi
 if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
-  adaptive_token_valid || adaptive_browser_pairing_valid || {
-    echo 'Pair a Windows agent or browser first; browser pairing: adaptive-browser-pair.sh create CLIENT_IPV4 mark:N' >&2; exit 1;
-  }
   adaptive_wait_probe_cleanup || { echo 'Active probe cleanup did not finish; Beta mode was not changed.' >&2; exit 1; }
   adaptive_prepare_events || { echo 'Could not prepare private observation queue.' >&2; exit 1; }
   if [ "$action" = beta-lan ]; then
@@ -484,11 +483,11 @@ if [ "$action" = beta ] || [ "$action" = beta-lan ]; then
     adaptive_ramp_pool_restore || { echo 'Could not restore Ramp before removing LAN-wide consent.' >&2; exit 1; }
     adaptive_set_default_scope 0 || { echo 'Could not clear LAN-wide scope consent.' >&2; exit 1; }
   fi
-  adaptive_set_mode AGENT_BETA || { echo 'Could not enable AGENT_BETA.' >&2; exit 1; }
+  adaptive_set_mode AUTO || { echo 'Could not enable autorotation.' >&2; exit 1; }
   if [ "$action" = beta-lan ]; then
-    echo 'AGENT_BETA enabled. Verified exact rules may apply to the whole LAN (default scope); restart zapret2 to activate.'
+    echo 'Autorotation enabled. Browser trials may use default scope because explicit LAN consent is active; passive router rotation remains available without pairing. Restart zapret2 to activate.'
   else
-    echo 'AGENT_BETA enabled. Verified exact rules may apply only to explicitly marked client scopes; default/LAN scope stays test-only. Windows agent is optional for browser feedback. Restart zapret2 to activate.'
+    echo 'Autorotation enabled for passive router feedback and browser feedback in marked scopes. Browser extension is optional; restart zapret2 to activate.'
   fi
   exit 0
 fi

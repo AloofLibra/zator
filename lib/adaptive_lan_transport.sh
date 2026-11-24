@@ -482,7 +482,7 @@ _adaptive_lan_reconcile_one() {
      ( "$state_recipe" = tls-http1-v1 || "$state_recipe" = googlevideo-tcp-media-v1 || "$state_recipe" = googlevideo-quic-h3-media-v1 ) ]] || return 1
   state_proto="$(_adaptive_lan_recipe_proto "$state_recipe")" || return 1
   [[ "$(cat "$run_dir/state" 2>/dev/null)" != complete && "$(cat "$run_dir/state" 2>/dev/null)" != failed ]] || return 0
-  case "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)" in TEST_ONLY|AGENT_BETA) ;; *) return 0 ;; esac
+  case "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)" in TEST_ONLY|AGENT_BETA|AUTO) ;; *) return 0 ;; esac
   now="$(date +%s)" || return 1
   lease="$(adaptive_lan_lease_read "$run_dir/leases" "$run_id" "$now")" || return 0
   set -- $lease

@@ -98,11 +98,32 @@ assert manual_domain[0] == 2, f"manual domain lock did not win: {manual_domain}"
 manual_profile = run_selection(True, ["1\ttls\t3"])
 assert manual_profile[0] == 3, f"manual profile lock did not win: {manual_profile}"
 other_ip = run_selection(True, ip="93.184.216.35")
-assert other_ip[0] == 1, f"exact IP rule leaked to another destination: {other_ip}"
+assert other_ip[0] == 7, f"same-scope strategy did not follow a DNS/IP change: {other_ip}"
 other_port = run_selection(True)
 assert other_port[3] == 1, f"exact TLS rule leaked to another destination port: {other_port}"
 googlevideo_media = run_selection(True, strategy=7, hostname="rr1---sn-a5mekn6e.googlevideo.com", profile="2", rule_proto="googlevideo-tcp")
 assert googlevideo_media[0] == 7, f"exact Googlevideo media rule was not applied to its TCP profile-2 flow: {googlevideo_media}"
+
+with tempfile.TemporaryDirectory(prefix="adaptive-googlevideo-family-") as tmp:
+    root = Path(tmp)
+    mode = root / "extra_strats/cache/adaptive/mode"
+    mode.parent.mkdir(parents=True)
+    mode.write_text("AUTO\n")
+    lua = LuaRuntime(unpack_returned_tuples=True)
+    env = {"Z2R_ADAPTIVE_RULES_FILE": "/nonexistent/adaptive-rules.tsv",
+           "Z2R_ADAPTIVE_RULES_APPLY": "1", "ZATOR_ROOT": str(root)}
+    lua.globals().fake_getenv = lambda key: env.get(key)
+    lua.execute("os.getenv = fake_getenv")
+    lua.execute(f"dofile({json.dumps(str(repo / 'orchestra/locked.lua'))})")
+    lua.execute("""
+      locked_load_lines_for_tests({})
+      locked_load_adaptive_lines_for_tests({"1\\tgooglevideo.com\\t93.184.216.34\\t2\\tgooglevideo-tcp\\tshared\\t7\\t" ..
+        "sha256:" .. string.rep("c", 64) .. "\\tsha256:" .. string.rep("d", 64) .. "\\t" ..
+        "1:2|3:4|5:6|7:8|9:10|11:12|13:14|15:16|17:18|19:20|21:22|23:24|25:26|27:28|29:30\\t9999999999"},
+        1000, "1:2|3:4|5:6|7:8|9:10|11:12|13:14|15:16|17:18|19:20|21:22|23:24|25:26|27:28|29:30")
+    """)
+    family_baseline = lua.eval('locked_adaptive_shared_strategy_for_tuple("rr3---sn-example.googlevideo.com", "93.184.216.35", "2", "googlevideo-tcp", 5000)')
+    assert family_baseline[0] == 7, f"Googlevideo family baseline failed across CDN hosts: {family_baseline!r}"
 disabled = run_selection(False)
 assert disabled[0] == 1, f"disabled adaptive mode applied a rule: {disabled}"
 test_only = run_selection(True, mode="TEST_ONLY")
@@ -110,7 +131,7 @@ assert test_only[0] == 1, f"TEST_ONLY applied an adaptive rule despite a stale e
 observe = run_selection(True, mode="OBSERVE")
 assert observe[0] == 1, f"OBSERVE applied an adaptive rule: {observe}"
 beta_default_blocked = run_selection(False, mode="AGENT_BETA")
-assert beta_default_blocked[0] == 1, f"Beta applied a LAN-wide default-scope rule without consent: {beta_default_blocked}"
+assert beta_default_blocked[0] == 7, f"confirmed default-scope strategy was not shared without browser trial consent: {beta_default_blocked}"
 beta_default_allowed = run_selection(False, mode="AGENT_BETA", allow_default_scope=True)
 assert beta_default_allowed[0] == 7, f"explicit Beta LAN-scope consent did not apply the exact rule: {beta_default_allowed}"
 stale = run_selection(True, process_stamp="99:98|97:96|95:94|93:92|91:90|89:88|87:86")

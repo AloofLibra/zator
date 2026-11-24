@@ -135,7 +135,7 @@ api_adaptive_get() {
   local base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   local events_file="${Z2R_ADAPTIVE_EVENTS_FILE:-$base/events.tsv}"
   local requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$base/requests.tsv}"
-  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' quic_health_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state browser_status_json='{"paired_clients":0,"connected_clients":0,"active_attempts":[]}'
+  local mode=OFF paired=false pairing_expired=false pairing_expiry_json=null agent_online=false agent_last_seen=null heartbeat_age=0 agent_file heartbeat_value event_count=0 pending_requests=0 events_json='[]' rules_json='[]' quic_health_json='[]' last_probe_json=null agent_status_json=null adaptive_rule_flipflops=0 resources_json=null active=0 cleanup_failed=0 run state run_id event_data rule_file token_expiry now default_scope_apply=false browser_default_scope_consent=false automatic_apply=false ramp_audit_supported=true ramp_audit_unsupported_reason=null ramp_exemptions_supported=true ramp_exemptions_unsupported_reason=null ramp_pool_enabled=false ramp_pool_consent=false ramp_pool_basis=off ramp_config_enabled ramp_pool_state browser_status_json='{"paired_clients":0,"connected_clients":0,"active_attempts":[]}'
   mode="$(cat "$mode_file" 2>/dev/null || printf OFF)"
   case "$mode" in OBSERVE|TEST_ONLY|AUTO|AGENT_BETA) ;; *) mode=OFF ;; esac
   if [ "$mode" = AGENT_BETA ]; then
@@ -143,8 +143,9 @@ api_adaptive_get() {
     [ "$(cat "$default_scope_file" 2>/dev/null || true)" != 1 ] || default_scope_apply=true
   elif [ "$mode" = AUTO ]; then
     automatic_apply=true
-    default_scope_apply=true
+    [ "$(cat "$default_scope_file" 2>/dev/null || true)" != 1 ] || default_scope_apply=true
   fi
+  [ "$(cat "$default_scope_file" 2>/dev/null || true)" != 1 ] || browser_default_scope_consent=true
   if [ -d "${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}" ]; then
     ramp_exemptions_supported=false
     ramp_exemptions_unsupported_reason='"keenetic_late_ack_gate_unverified"'
@@ -154,7 +155,7 @@ api_adaptive_get() {
   if [ "$ramp_config_enabled" = 1 ]; then
     ramp_pool_enabled=true
     ramp_pool_basis=manual
-    if [ "$mode" = AGENT_BETA ] && [ "$default_scope_apply" = true ] && [ -f "$ramp_pool_state" ] && [ ! -L "$ramp_pool_state" ] &&
+    if { [ "$mode" = AGENT_BETA ] || [ "$mode" = AUTO ]; } && [ "$default_scope_apply" = true ] && [ -f "$ramp_pool_state" ] && [ ! -L "$ramp_pool_state" ] &&
        (( $(wc -c < "$ramp_pool_state") <= 256 )) &&
        awk -F '\t' 'NR==1 && (($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4 ~ /^[a-f0-9]{64}$/ && NF==4)) {ok=1} END {exit !ok}' "$ramp_pool_state"; then
       ramp_pool_consent=true
@@ -195,7 +196,7 @@ api_adaptive_get() {
   if [ -r "$events_file" ] && [ ! -L "$events_file" ]; then
     event_data="$(awk -F '\t' '
       BEGIN { printf "[" }
-      NR<=128 && NF==8 && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") &&
+      NR<=128 && (NF==8 || NF==9 || NF==10) && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") &&
         length($3)<=253 && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ &&
         (( $5 ~ /^[1-4]$/ && $6=="tls" ) || ( $5==5 && $6=="quic" && ($3 ~ /\.googlevideo\.com$/ || $3 ~ /\.youtube\.com$/ || $3 ~ /\.youtubei\.googleapis\.com$/) )) &&
         ($7=="default" || ($7 ~ /^mark:[1-9][0-9]*$/ && length($7)<=10 && substr($7,6)+0<=65535)) &&
@@ -207,7 +208,8 @@ api_adaptive_get() {
             !(o[1]==198 && (o[2]==18 || o[2]==19 || (o[2]==51 && o[3]==100))) && !(o[1]==203 && o[2]==0 && o[3]==113))
           if (!valid) next
           if (n++) printf ","
-          printf "{\"status\":\"%s\",\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"observed_at\":%s}", $2,$3,$4,$5,$6,$7,$8
+          selected=($9 ~ /^[1-9][0-9]{0,2}$/ ? $9 : "null")
+          printf "{\"status\":\"%s\",\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"profile_id\":%s,\"protocol\":\"%s\",\"scope\":\"%s\",\"observed_at\":%s,\"selected_strategy\":%s}", $2,$3,$4,$5,$6,$7,$8,selected
         }
       END { printf "]\n%d", n+0 }
     ' "$events_file")"
@@ -254,7 +256,7 @@ api_adaptive_get() {
     done
   fi
   printf 'Cache-Control: no-store\r\n'
-  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"browser\":$browser_status_json,\"quic_health\":$quic_health_json,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason,\"ramp_exemptions_supported\":$ramp_exemptions_supported,\"ramp_exemptions_unsupported_reason\":$ramp_exemptions_unsupported_reason,\"ramp_pool_enabled\":$ramp_pool_enabled,\"ramp_pool_consent\":$ramp_pool_consent,\"ramp_pool_basis\":\"$ramp_pool_basis\"}"
+  send_json '200 OK' "{\"paired\":$paired,\"pairing_expired\":$pairing_expired,\"pairing_expires_at\":$pairing_expiry_json,\"agent_online\":$agent_online,\"agent_last_seen\":$agent_last_seen,\"agent_status\":$agent_status_json,\"adaptive_rule_flipflops\":$adaptive_rule_flipflops,\"mode\":\"$mode\",\"default_scope_apply\":$default_scope_apply,\"browser_default_scope_consent\":$browser_default_scope_consent,\"browser\":$browser_status_json,\"quic_health\":$quic_health_json,\"event_count\":$event_count,\"event_capacity\":128,\"pending_requests\":$pending_requests,\"events\":$events_json,\"rules\":$rules_json,\"last_probe\":$last_probe_json,\"active_probes\":$active,\"cleanup_failures\":$cleanup_failed,\"resources\":$resources_json,\"automatic_apply\":$automatic_apply,\"ramp_audit_supported\":$ramp_audit_supported,\"ramp_audit_unsupported_reason\":$ramp_audit_unsupported_reason,\"ramp_exemptions_supported\":$ramp_exemptions_supported,\"ramp_exemptions_unsupported_reason\":$ramp_exemptions_unsupported_reason,\"ramp_pool_enabled\":$ramp_pool_enabled,\"ramp_pool_consent\":$ramp_pool_consent,\"ramp_pool_basis\":\"$ramp_pool_basis\"}"
 }
 
 adaptive_quic_health_json() {
@@ -263,12 +265,13 @@ adaptive_quic_health_json() {
   [ -r "$file" ] && [ ! -L "$file" ] && (( $(wc -c < "$file") <= 32768 )) || { printf '[]'; return; }
   awk -F '\t' -v now="$(date +%s)" '
     BEGIN { printf "[" }
-    NR<=64 && NF==9 && $1==1 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
+    NR<=64 && NF==11 && $1==2 && $2 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ && length($2)<=253 &&
       ($2=="youtube.com" || $2 ~ /\.youtube\.com$/ || $2=="googlevideo.com" || $2 ~ /\.googlevideo\.com$/ ||
        $2=="youtubei.googleapis.com" || $2 ~ /\.youtubei\.googleapis\.com$/) &&
       $3 ~ /^[0-9.]+$/ && ($4=="default" || ($4 ~ /^mark:[1-9][0-9]*$/ && length($4)<=10 && substr($4,6)+0<=65535)) &&
-      $5 ~ /^[1-9][0-9]{0,4}$/ && $5<=65535 && $6 ~ /^[0-9]{1,5}$/ && $6<=65535 &&
-      $7 ~ /^[01]$/ && $8 ~ /^[01]$/ && $9 ~ /^[0-9]{10}$/ && $9<=now+60 && $9>=now-1800 {
+      $5 ~ /^[1-9][0-9]{0,4}$/ && $5<=65535 && $6 ~ /^[0-9a-f-]+$/ && length($6)<=64 &&
+      $7 ~ /^[0-9]{1,5}$/ && $7<=65535 && $8 ~ /^[0-9]{1,5}$/ && $8<=65535 &&
+      $9 ~ /^[01]$/ && $10 ~ /^[01]$/ && $11 ~ /^[0-9]{10}$/ && $11<=now+60 && $11>=now-1800 {
         split($3,o,"."); valid=(length($3)<=15 && o[1]<=255 && o[2]<=255 && o[3]<=255 && o[4]<=255 &&
           o[1]>0 && o[1]!=10 && o[1]!=127 && o[1]<224 &&
           !(o[1]==100 && o[2]>=64 && o[2]<=127) && !(o[1]==169 && o[2]==254) &&
@@ -276,8 +279,8 @@ adaptive_quic_health_json() {
           !(o[1]==198 && (o[2]==18 || o[2]==19 || (o[2]==51 && o[3]==100))) && !(o[1]==203 && o[2]==0 && o[3]==113))
         if (!valid) next
         if (n++) printf ","
-        printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"scope\":\"%s\",\"initials\":%s,\"retries\":%s,\"response_observed\":%s,\"possible_tcp_fallback\":%s,\"observed_at\":%s,\"confidence\":\"low\"}",
-          $2,$3,$4,$5,$6,($7==1?"true":"false"),($8==1?"true":"false"),$9
+        printf "{\"hostname\":\"%s\",\"destination_ip\":\"%s\",\"scope\":\"%s\",\"source_port\":%s,\"connection_id\":\"%s\",\"initials\":%s,\"retries\":%s,\"response_observed\":%s,\"possible_tcp_fallback\":%s,\"observed_at\":%s,\"confidence\":\"low\"}",
+          $2,$3,$4,$5,$6,$7,$8,($9==1?"true":"false"),($10==1?"true":"false"),$11
       }
     END { printf "]" }
   ' "$file"
@@ -340,7 +343,7 @@ api_adaptive_action() {
       request_rc=$?
       case "$request_rc" in
         2) send_error '400 Bad Request' 'Некорректная цель проверки' ;;
-        3) send_error '409 Conflict' 'Для постановки проверки включите TEST_ONLY или AGENT_BETA' ;;
+        3) send_error '409 Conflict' 'Для постановки проверки включите TEST_ONLY или авторотацию' ;;
         4) send_error '404 Not Found' 'Цель отсутствует в свежих наблюдениях' ;;
         5) send_error '429 Too Many Requests' 'Очередь проверок заполнена' ;;
         6) send_error '429 Too Many Requests' 'Для этой цели недавно уже запрашивали проверку' ;;

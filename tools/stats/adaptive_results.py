@@ -547,6 +547,103 @@ def refresh_rankings(rdb, now=None, min_sources=MIN_SOURCES, limit=10):
                  1, lock_key, lock_token)
 
 
+def refresh_browser_rankings(rdb, now=None, min_sources=MIN_SOURCES, limit=10):
+    """Materialize browser-only confirmed outcomes under a separate keyspace."""
+    now = int(time.time()) if now is None else int(now)
+    min_sources = max(2, min(int(min_sources), 1000))
+    limit = max(1, min(int(limit), 20))
+    days = [datetime.fromtimestamp(now - delta * 86400, timezone.utc).strftime("%Y%m%d")
+            for delta in range(8)]
+    dimensions = set()
+    for day in days:
+        dimensions.update(_decode(x) for x in rdb.smembers(f"z4r:adaptive:v2:browser:dimensions:{day}"))
+    if not dimensions:
+        return 0
+    pipe = rdb.pipeline(transaction=False)
+    decoded = sorted(dimensions)
+    for dim in decoded:
+        for day in days:
+            pipe.hgetall(f"z4r:adaptive:v2:browser:agg:{day}:{dim}")
+        pipe.pfcount(*(f"z4r:adaptive:v2:browser:sources:{day}:{dim}" for day in days))
+    values = pipe.execute()
+    grouped = defaultdict(lambda: {"successes": 0, "failures": 0, "samples": 0})
+    for index, dim in enumerate(decoded):
+        parts = dim.split("|")
+        if len(parts) != 8:
+            continue
+        phash, profile, protocol, fingerprint, treatment, state, proven, confidence = parts
+        expected_protocol = _BROWSER_PROTOCOLS.get(int(profile)) if profile.isdigit() else None
+        expected_protocol = "tcp-media" if expected_protocol == "googlevideo-tcp" else expected_protocol
+        if (not re.fullmatch(r"[a-f0-9]{24}", phash) or profile not in {str(x) for x in _BROWSER_PROTOCOLS}
+                or protocol != expected_protocol or not _HEX64.fullmatch(fingerprint)
+                or treatment not in _BROWSER_TREATMENTS or state not in ("CONFIRMED_SUCCESS", "CONFIRMED_FAILURE")
+                or proven != "1" or confidence == "low"):
+            continue
+        totals = grouped[(phash, profile, protocol, fingerprint, treatment)]
+        start = index * (len(days) + 1)
+        for day_index in range(len(days)):
+            agg = values[start + day_index]
+            if agg:
+                counts = {_decode(k): int(v) for k, v in agg.items()}
+                totals["successes"] += counts.get("CONFIRMED_SUCCESS", 0)
+                totals["failures"] += counts.get("CONFIRMED_FAILURE", 0)
+        totals["samples"] += int(values[start + len(days)] or 0)
+    published = 0
+    by_key = defaultdict(list)
+    for (phash, profile, protocol, fingerprint, treatment), totals in grouped.items():
+        if totals["samples"] < min_sources or totals["successes"] + totals["failures"] < min_sources:
+            continue
+        score = (totals["successes"] + 2) / (totals["successes"] + totals["failures"] + 4)
+        by_key[(phash, profile, protocol, treatment)].append({
+            "fingerprint": "sha256:" + fingerprint, **totals, "score": round(score, 6),
+            "weighted_successes": float(totals["successes"]),
+            "weighted_failures": float(totals["failures"]),
+            "recipe_id": ("googlevideo-tcp-media-v1" if protocol == "tcp-media" else
+                          "googlevideo-quic-h3-media-v1" if protocol == "quic" else "tls-http1-v1"),
+            "treatment_variant": treatment, "media_bytes": 0, "media_speed_bps": 0,
+            "media_duration_ms": 0})
+    for (phash, profile, protocol, treatment), rows in by_key.items():
+        recipe = rows[0]["recipe_id"]
+        rows.sort(key=lambda row: (-row["score"], -row["samples"], row["fingerprint"]))
+        payload = {"schema_version": 2, "generated_at": now, "profile_id": int(profile),
+                   "protocol": protocol, "recipe_id": recipe, "treatment_variant": treatment,
+                   "rankings": rows[:limit]}
+        suffix = "" if recipe == "tls-http1-v1" and treatment == "standard" else f":{recipe}:{treatment}"
+        rdb.setex(f"z4r:adaptive:v2:browser:ranking:{phash}:{profile}:{protocol}{suffix}",
+                  RANKING_TTL, json.dumps(payload, separators=(",", ":")))
+        published += 1
+    return published
+
+
+def get_browser_rankings(rdb, provider, profile, protocol="tls", aliases=None, now=None,
+                          recipe="tls-http1-v1", treatment="standard"):
+    """Read the isolated browser feedback ranking; agent probe keys are never consulted."""
+    provider = canonical(validate_provider(provider), aliases)
+    try:
+        profile_number = int(profile)
+    except (TypeError, ValueError):
+        raise ValueError("invalid ranking dimension")
+    if (isinstance(profile, bool) or not isinstance(protocol, str) or protocol not in PROTOCOLS
+            or recipe not in RECIPES or treatment not in RECIPES[recipe][4]
+            or profile_number < RECIPES[recipe][1] or profile_number > RECIPES[recipe][2]
+            or protocol != RECIPES[recipe][3]):
+        raise ValueError("invalid ranking dimension")
+    phash = hashlib.sha256(provider.casefold().encode("utf-8")).hexdigest()[:24]
+    suffix = "" if recipe == "tls-http1-v1" and treatment == "standard" else f":{recipe}:{treatment}"
+    raw = rdb.get(f"z4r:adaptive:v2:browser:ranking:{phash}:{profile}:{protocol}{suffix}")
+    if raw is None:
+        return {"schema_version": 2, "status": "not_ready", "profile_id": profile_number,
+                "protocol": protocol, "recipe_id": recipe, "treatment_variant": treatment, "rankings": []}
+    data = json.loads(_decode(raw))
+    if (data.get("profile_id") != profile_number or data.get("protocol") != protocol
+            or data.get("recipe_id") != recipe or data.get("treatment_variant") != treatment):
+        return {"schema_version": 2, "status": "not_ready", "rankings": []}
+    now = int(time.time()) if now is None else int(now)
+    age = now - int(data.get("generated_at", 0))
+    data["status"] = "fresh" if 0 <= age <= 900 else "stale"
+    return data
+
+
 def get_rankings(rdb, provider, profile, protocol="tls", aliases=None, now=None,
                  recipe="tls-http1-v1", treatment="standard"):
     """Read only a precomputed ranking key; never aggregate or scan in request path."""
@@ -615,3 +712,9 @@ def render_rankings_tsv(data):
     if len(body.encode("ascii")) > 8192:
         raise ValueError("ranking response too large")
     return body
+
+
+def render_browser_rankings_tsv(data):
+    """Mark the separate browser-feedback evidence source on the wire."""
+    body = render_rankings_tsv(data)
+    return body.replace("schema_version=2\n", "schema_version=2\nsource=browser_feedback\n", 1)

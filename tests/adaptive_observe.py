@@ -72,8 +72,8 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-observe-") as tmp:
     root = Path(tmp)
     lua, events, ramp_targets = runtime(root, "OBSERVE")
     rows = events.read_text().splitlines()
-    assert len(rows) == 2, f"observation should dedupe tuples indefinitely and exclude other ports/manual lock: {rows!r}"
-    assert all(len(row.split("\t")) == 8 and "http" not in row for row in rows), "event schema leaked unexpected fields"
+    assert len(rows) == 1, f"observation should dedupe host/scope across client IPs and exclude other ports/manual lock: {rows!r}"
+    assert len(rows[0].split("\t")) == 10 and "http" not in rows[0], "event schema leaked unexpected fields"
     assert rows[0].split("\t")[:7] == ["1", "seen", "cdn.example.org", "93.184.216.34", "1", "tls", "default"]
     assert rows[0].split("\t")[7] == "5000", "re-observed production tuple must refresh stale discovery time"
     lua.execute('test_now = 5029; test_invoke("cdn.example.org", "93.184.216.34", 443)')
@@ -95,14 +95,14 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-off-") as tmp:
 with tempfile.TemporaryDirectory(prefix="zator-adaptive-test-only-") as tmp:
     _, events, ramp_targets = runtime(Path(tmp), "TEST_ONLY")
     rows = events.read_text().splitlines()
-    assert len(rows) == 2 and all(row.split("\t")[1] == "seen" for row in rows), \
+    assert len(rows) == 1 and all(row.split("\t")[1] == "seen" for row in rows), \
         "TEST_ONLY must continue observing without applying production strategy rules"
     assert ramp_targets.read_text() == "", "TEST_ONLY must not create the AGENT_BETA Ramp audit catalog"
 
 with tempfile.TemporaryDirectory(prefix="zator-adaptive-beta-") as tmp:
     lua, events, ramp_targets = runtime(Path(tmp), "AGENT_BETA")
     rows = events.read_text().splitlines()
-    assert len(rows) == 2 and all(row.split("\t")[1] == "seen" for row in rows), \
+    assert len(rows) == 1 and all(row.split("\t")[1] == "seen" for row in rows), \
         "AGENT_BETA must keep discovery active while applying verified rules"
     lua.execute("""
       function observe_ramp(host, ip, scope)
@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-suspected-") as tmp:
         "two independent failed connections should create a suspected_failure event"
     stored_rows = [row.split("\t") for row in events.read_text().splitlines() if row]
     tuple_rows = [row for row in stored_rows if row[2:4] == ["cdn.example.org", "93.184.216.34"]]
-    assert len(tuple_rows) == 1 and len(stored_rows) == 2, \
+    assert len(tuple_rows) == 1 and len(stored_rows) == 1, \
         f"suspected failure must update its tuple row without duplication: {stored_rows!r}"
 
 with tempfile.TemporaryDirectory(prefix="zator-adaptive-router-auto-") as tmp:
@@ -222,25 +222,27 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-router-auto-quic-") as t
     lua.execute("""
       local function flow(track)
         local desync = {outgoing=true, profile="5", hostname="rr1.googlevideo.com", l7payload="quic_initial",
-          arg={proto="udp"}, dis={destination="94.0.3.5", ip={}, udp={th_dport=443}}, track=track,
+          arg={proto="udp"}, dis={destination="94.0.3.5", ip={}, udp={th_dport=443, th_sport=49152}}, track=track,
           plan={{arg={strategy=1}}, {arg={strategy=2}}, {arg={strategy=3}}}}
         circular_locked({}, desync)
         return desync
       end
+      function quic_one_initial(track)
+        return flow(track).track.lua_state.adaptive_observe_context.selected_strategy
+      end
       function quic_retry(track)
-        local desync = flow(track)
-        flow(track)
-        return desync.track.lua_state.adaptive_observe_context.selected_strategy
+        return flow(track).track.lua_state.adaptive_observe_context.selected_strategy
       end
       function quic_auto_selected()
         return flow({lua_state={}}).track.lua_state.adaptive_observe_context.selected_strategy
       end
     """)
-    assert lua.globals().quic_retry(lua.eval("{lua_state={}}")) == 1 and quic_router_status() == "seen", \
-        "one unanswered QUIC Initial retry must not rotate the profile"
-    quic_second_selected = lua.globals().quic_retry(lua.eval("{lua_state={}}"))
+    quic_track = lua.eval("{lua_state={}}")
+    assert lua.globals().quic_one_initial(quic_track) == 1 and quic_router_status() == "seen", \
+        "one unanswered QUIC Initial must remain a weak observation"
+    quic_second_selected = lua.globals().quic_retry(quic_track)
     assert quic_second_selected == 1 and quic_router_status() == "router_trial_2", \
-        f"two independent unanswered QUIC Initial retries should start a low-confidence next-strategy trial: selected={quic_second_selected!r}, event={quic_router_status()!r}, health={(Path(tmp) / 'quic-health.tsv').read_text()!r}"
+        f"a repeated Initial on the same QUIC connection should start a low-confidence next-strategy trial: selected={quic_second_selected!r}, event={quic_router_status()!r}, health={(Path(tmp) / 'quic-health.tsv').read_text()!r}"
     assert lua.globals().quic_auto_selected() == 2, "QUIC router AUTO did not apply the next production strategy"
 
 with tempfile.TemporaryDirectory(prefix="zator-adaptive-degraded-") as tmp:
@@ -263,8 +265,10 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-degraded-") as tmp:
     lua.globals().test_failure()
     assert events.read_text().split("\t")[1] == "seen", "one failed connection must not mark an active rule degraded"
     lua.globals().test_failure()
-    assert events.read_text().split("\t")[1] == "active_rule_degraded", \
-        f"two failures on flows where the exact adaptive rule was selected must identify active_rule_degraded: {events.read_text()!r}"
+    assert events.read_text().split("\t")[1] == "router_exhausted", \
+        f"passive rotation should exhaust only its own router candidates while preserving the browser rule: {events.read_text()!r}"
+    retained_rule = lua.eval('locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.34", "1", "tls", "default", 5000)')
+    assert retained_rule[0] == 1, f"passive failure suspicion overwrote the browser-confirmed strategy: {retained_rule!r}"
 
 with tempfile.TemporaryDirectory(prefix="zator-adaptive-shared-rule-") as tmp:
     lua, _, _ = runtime(Path(tmp), "AGENT_BETA")
@@ -317,27 +321,32 @@ with tempfile.TemporaryDirectory(prefix="zator-quic-health-") as tmp:
       bitand = function(a, b) return (a % (b * 2)) >= b and b or 0 end
       TH_SYN, TH_ACK = 2, 16
       local state = {lua_state={}}
-      local function qinitial()
+      local function qinitial(port)
         locked_quic_health_observe_for_tests({outgoing=true, l7payload="quic_initial",
-          dis={destination="94.0.1.5", udp={th_dport=443}}, track=state},
+          dis={destination="94.0.1.5", udp={th_dport=443, th_sport=port}}, track=state},
           "rr1.googlevideo.com", "5", "mark:4")
       end
-      qinitial(); qinitial()
+      qinitial(49152); qinitial(49152)
       locked_quic_health_observe_for_tests({outgoing=false,
         dis={udp={th_sport=443}}, track=state}, "rr1.googlevideo.com", "5", "mark:4")
+      local fallback_state = {lua_state={}}
+      locked_quic_health_observe_for_tests({outgoing=true, l7payload="quic_initial",
+        dis={destination="94.0.1.5", udp={th_dport=443, th_sport=49153}}, track=fallback_state},
+        "rr1.googlevideo.com", "5", "mark:4")
       locked_quic_health_observe_for_tests({outgoing=true,
         dis={destination="94.0.1.5", tcp={th_dport=443, th_flags=2}}, track={lua_state={}}},
         "rr1.googlevideo.com", "1", "mark:4")
     """)
     health_rows = [row.split("\t") for row in (Path(tmp) / "quic-health.tsv").read_text().splitlines() if row]
-    assert len(health_rows) == 1 and health_rows[0][4:8] == ["2", "1", "1", "1"], \
-        f"QUIC monitor should count Initial/retry/response and possible TCP fallback: {health_rows!r}"
+    assert len(health_rows) == 2 and health_rows[0][4] == "49152" and health_rows[0][6:10] == ["2", "1", "1", "0"] \
+        and health_rows[1][4] == "49153" and health_rows[1][9] == "1", \
+        f"QUIC monitor should count per-connection Initial/retry/response/fallback: {health_rows!r}"
 
     lua.execute("""
       for i=1,70 do
         test_now = test_now + 2
         locked_quic_health_observe_for_tests({outgoing=true, l7payload="quic_initial",
-          dis={destination="94.0.2."..i, udp={th_dport=443}}, track={lua_state={}}},
+          dis={destination="94.0.2."..i, udp={th_dport=443, th_sport=50000+i}}, track={lua_state={}}},
           "v"..i..".youtube.com", "5", "mark:4")
       end
     """)

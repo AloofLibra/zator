@@ -105,6 +105,7 @@ export interface AdaptiveStatus {
   } | null
   mode: 'OFF' | 'OBSERVE' | 'TEST_ONLY' | 'AUTO' | 'AGENT_BETA'
   default_scope_apply: boolean
+  browser_default_scope_consent?: boolean
   browser?: {
     paired_clients: number
     connected_clients: number
@@ -144,6 +145,7 @@ export interface AdaptiveStatus {
     protocol: 'tls' | 'quic'
     scope: string
     observed_at: number
+    selected_strategy?: number | null
   }>
     rules: Array<{
       hostname: string

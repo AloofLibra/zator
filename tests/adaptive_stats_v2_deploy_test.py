@@ -2,6 +2,7 @@
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 import importlib.util
+import hashlib
 import json
 import os
 import sys
@@ -42,6 +43,8 @@ compile(patched, "server_redis.py", "exec")
 assert 'get_rankings as get_adaptive_rankings' in patched
 assert 'authenticate_client_token as authenticate_adaptive_client' in patched
 assert '"/adaptive-v2/rankings.tsv"' in patched
+assert '"/adaptive-v2/browser-rankings.tsv"' in patched
+assert 'get_browser_rankings as get_adaptive_browser_rankings' in patched
 assert 'parsed.path == "/adaptive-v2/results"' in patched
 assert 'parsed.path == "/adaptive-v2/browser-flow"' in patched
 assert 'source_digest=source' in patched
@@ -50,6 +53,7 @@ nginx = 'location = /z4r/recommendations.tsv {\n    proxy_pass http://127.0.0.1:
 patched_nginx = deploy.patch_nginx(nginx)
 assert ('/z4r/adaptive-v2/rankings' in patched_nginx and '/z4r/adaptive-v2/rankings.tsv' in patched_nginx
         and '/z4r/adaptive-v2/results' in patched_nginx and '/z4r/adaptive-v2/browser-flow' in patched_nginx)
+assert '/z4r/adaptive-v2/browser-rankings.tsv' in patched_nginx
 assert deploy.patch_nginx(patched_nginx) == patched_nginx
 
 # Exercise the patched handler over a real loopback HTTP socket. The narrow
@@ -128,6 +132,14 @@ try:
     assert request("/adaptive-v2/rankings?provider=ISP")[0] == 400
     status, headers, body = request("/adaptive-v2/rankings.tsv?provider=ISP&profile=1")
     assert status == 200 and headers.get_content_type() == "text/tab-separated-values" and body.startswith(b"schema_version=2\nstatus=not_ready\n")
+    phash = hashlib.sha256("Example ISP".casefold().encode()).hexdigest()[:24]
+    browser_key = f"z4r:adaptive:v2:browser:ranking:{phash}:1:tls"
+    http_db.strings[browser_key] = json.dumps({"schema_version": 2, "generated_at": int(time.time()),
+        "profile_id": 1, "protocol": "tls", "recipe_id": "tls-http1-v1", "treatment_variant": "standard",
+        "rankings": [{"fingerprint": "sha256:" + "c" * 64, "score": .75, "samples": 4,
+                      "successes": 3, "failures": 1}]})
+    status, _, body = request("/adaptive-v2/browser-rankings.tsv?provider=Example%20ISP&profile=1")
+    assert status == 200 and body.startswith(b"schema_version=2\nsource=browser_feedback\nstatus=fresh\n")
     payload = {"schema_version": 2, "request_id": "b" * 32, "provider": "Example ISP", "observed_at": time.time_ns() // 1_000_000_000,
                "recipe_id": "tls-http1-v1", "client_profile": "curl-windows-v1",
                "results": [{"profile_id": 1, "protocol": "tls", "fingerprint": "sha256:" + "c" * 64,

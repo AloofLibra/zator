@@ -72,12 +72,16 @@ const fakeRouter = createServer(async (request, response) => {
     : action === 'browser_attempt_status'
       ? params.get('attempt_id') === 'w'.repeat(32)
         ? { schema_version: 1, state: 'EXPIRED' }
+        : params.get('attempt_id') === 'q'.repeat(32)
+          ? { schema_version: 1, state: 'FLOW_CONFIRMED' }
         : { schema_version: 1, state: 'FLOW_CONFIRMED', ramp_treatment: 'applied', ramp_ack_evidence: 'confirmed' }
       : action === 'browser_report_result'
         ? params.get('attempt_id') === 'g'.repeat(32)
           ? { schema_version: 1, state: 'UNKNOWN', status: 'PROTOCOL_UNKNOWN', reason: 'h3_protocol_evidence_unavailable' }
           : params.get('attempt_id') === 'p'.repeat(32)
             ? { schema_version: 1, state: 'NEXT_CANDIDATE', next_attempt: { state: 'WAIT_NEW_FLOW', attempt_id: '1'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 } }
+          : params.get('attempt_id') === 'q'.repeat(32)
+            ? { schema_version: 1, state: 'NEXT_CANDIDATE', next_attempt: { state: 'WAIT_NEW_FLOW', attempt_id: 'x'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 } }
           : { schema_version: 1, state: params.get('result') === 'network_failure' ? 'NEXT_CANDIDATE' : 'PROVISIONAL_SUCCESS' }
         : { schema_version: 1, state: action === 'browser_cancel_attempt' ? 'CANCELLED' : 'WAITING_FOR_NEW_FLOW' }
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
@@ -115,6 +119,16 @@ const context = {
 context.globalThis = context
 vm.runInNewContext(readFileSync(resolve(root, 'browser-extension/service-worker.js'), 'utf8'), context)
 const api = context.__Z2R_BROWSER_TEST__.api
+
+stored.events.push({ id: 'i'.repeat(32), hostname: 'missing-ip.example.test', tab_id: 55,
+  attempt_id: 'j'.repeat(32), router_status: 'WAIT_NEW_FLOW', trigger: 'main_frame_network_failure' })
+const savedToken = stored.config.token
+stored.config.token = '' // keep this isolated unit case from sending an unrelated mock request
+assert.equal(await api.captureAttemptResult(stored, 'missing-ip.example.test', 55, 'network_failure', 'main_frame', Date.now(), ''), true,
+  'router-correlated transport failure should be retained even when Chromium omits the IP')
+assert.equal(stored.events.at(-1).pending_result.browser_ip, '')
+await new Promise(resolve => setTimeout(resolve, 0))
+stored.config.token = savedToken
 
 stored.config.mediaQualityOptIn = true
 scriptedMediaResult = { quality: 'healthy', sample_ms: 8000, progress_ms: 7000, stall_ms: 0, dropped_frames: 1, total_frames: 240 }
@@ -360,6 +374,14 @@ assert.equal(stored.events.at(-1).attempt_id, '1'.repeat(32), 'next server candi
 assert.equal(stored.events.at(-1).router_status, 'WAIT_NEW_FLOW')
 assert.equal(reloads.length, 3, 'each server-issued candidate gets one controlled browser retry')
 assert.ok(stored.autoRetriedAttempts.includes('1'.repeat(32)))
+
+stored.events.push({ id: 'q'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'q'.repeat(32),
+  router_status: 'WAIT_NEW_FLOW', media_quality_sampled: true,
+  media_quality: { quality: 'healthy' }, pending_result: { id: '2'.repeat(32), result: 'network_failure', request_class: 'main_frame', browser_ip: '8.8.8.8', observed_at: Date.now() } })
+await api.syncAttempt('q'.repeat(32))
+assert.equal(stored.events.at(-1).attempt_id, 'x'.repeat(32))
+assert.equal(stored.events.at(-1).media_quality_sampled, false, 'new attempt inherited the prior sampling latch')
+assert.equal(stored.events.at(-1).media_quality, null, 'new attempt inherited stale media quality')
 
 stored.events.push({ id: 'u'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'z'.repeat(32),
   trigger: 'main_frame_network_failure', request_class: 'main_frame', method: 'GET', failure_class: 'network_failure', router_status: 'FLOW_CONFIRMED',

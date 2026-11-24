@@ -88,13 +88,13 @@ rm -f "$tmp/zator/extra_strats/cache/adaptive/token" "$tmp/zator/extra_strats/ca
 router_auto="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" Z2R_ADAPTIVE_DIR="$tmp/runs" \
   bash "$tmp/zator/tools/adaptive-pair.sh" router-auto)"
 [[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AUTO &&
-   "$router_auto" == *'without browser/agent pairing'* && "$router_auto" == *'no isolated probe runs'* &&
+   "$router_auto" == *'without pairing'* && "$router_auto" == *'browser feedback adds higher-confidence results'* &&
    "$(stat -c '%a' "$tmp/runs/events.tsv")" = 600 && "$(stat -c '%a' "$tmp/runs/quic-health.tsv")" = 600 ]] || {
   echo 'router AUTO incorrectly required pairing or did not prepare private passive state' >&2; exit 1;
 }
 auto_status="$(PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret2" Z2R_ADAPTIVE_DIR="$tmp/runs" \
   bash "$tmp/zator/tools/adaptive-pair.sh" status)"
-[[ "$auto_status" == *'Adaptive agent pairing: disabled'* && "$auto_status" == *'router-only, default scope, low-confidence production feedback'* ]] || {
+[[ "$auto_status" == *'Adaptive agent pairing: disabled'* && "$auto_status" == *'passive router signals always available; browser feedback adds higher-confidence results when paired'* ]] || {
   echo 'router AUTO status hid its no-pairing/low-confidence state' >&2; exit 1;
 }
 mv "$tmp/token.saved" "$tmp/zator/extra_strats/cache/adaptive/token"
@@ -102,12 +102,12 @@ mv "$tmp/token-expiry.saved" "$tmp/zator/extra_strats/cache/adaptive/token.expir
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" test-only >/dev/null
 [[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = TEST_ONLY ]] || { echo 'test-only mode was not persisted' >&2; exit 1; }
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null
-[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AGENT_BETA &&
-   ! -e "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope" ]] || {
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AUTO &&
+   "$(cat "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope")" = 0 ]] || {
   echo 'scoped Beta mode enabled LAN-wide application without explicit consent' >&2; exit 1;
 }
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta-lan >/dev/null
-[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AGENT_BETA &&
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AUTO &&
    "$(cat "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope")" = 1 &&
    "$(stat -c '%a' "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope")" = 600 ]] || {
   echo 'explicit LAN-wide Beta consent was not stored privately' >&2; exit 1;
@@ -199,7 +199,7 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pa
 }
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta-lan >/dev/null
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null
-[[ ! -e "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope" ]] || {
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/apply-default-scope")" = 0 ]] || {
   echo 'scoped Beta mode retained LAN-wide consent' >&2; exit 1;
 }
 mkdir -p "$tmp/zapret"
@@ -243,25 +243,21 @@ PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" Z2R_ADAPTIVE_DIR="$tmp/runs" \
    -e "$tmp/runs/0123456789abcdef0123456789abcdef/cancel" &&
    ! -s "$tmp/runs/rules.tsv" ]] || { echo 'disable did not revoke/cancel/clear state' >&2; exit 1; }
 
-# Browser-only beta activation must not require the separate Windows-agent token.
+# Unified autorotation does not require browser or Windows-agent pairing.
 browser_expiry=$(( $(date +%s) + 3600 ))
-if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
-  bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null 2>&1; then
-  echo 'Beta enabled without either agent or browser pairing' >&2; exit 1;
-fi
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null
 printf '1\t12121212121212121212121212121212\t%s\t192.168.1.42\tmark:7\t%s\n' \
   "$(printf '%064d' 0 | tr 0 b)" "$(( $(date +%s) - 1 ))" > "$tmp/zator/extra_strats/cache/adaptive/browser-clients.tsv"
-if PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
-  bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null 2>&1; then
-  echo 'expired browser pairing enabled Beta' >&2; exit 1;
-fi
+PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
+  bash "$tmp/zator/tools/adaptive-pair.sh" beta >/dev/null
 printf '1\t12121212121212121212121212121212\t%s\t192.168.1.42\tmark:7\t%s\n' \
   "$(printf '%064d' 0 | tr 0 b)" "$browser_expiry" > "$tmp/zator/extra_strats/cache/adaptive/browser-clients.tsv"
 PATH="$tmp/bin:$PATH" ZATOR_ROOT="$tmp/zator" ZAPRET2_ROOT="$tmp/zapret" Z2R_ADAPTIVE_DIR="$tmp/runs" \
   bash "$tmp/zator/tools/adaptive-pair.sh" beta > "$tmp/browser-beta.out"
-[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AGENT_BETA &&
-   "$(cat "$tmp/browser-beta.out")" == *'Windows agent is optional'* ]] || {
-  echo 'browser pairing could not enable scoped Beta without a Windows-agent token' >&2; exit 1;
+[[ "$(cat "$tmp/zator/extra_strats/cache/adaptive/mode")" = AUTO &&
+   "$(cat "$tmp/browser-beta.out")" == *'Browser extension is optional'* ]] || {
+  echo 'unified autorotation could not enable without browser or agent pairing' >&2; exit 1;
 }
 
 crash_id=abcdef0123456789abcdef0123456789

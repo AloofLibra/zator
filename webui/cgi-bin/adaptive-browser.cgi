@@ -59,12 +59,12 @@ adaptive_browser_presence_touch "$client_id" >/dev/null 2>&1 || :
 
 browser_start_trial() {
   local target="$1" trigger="$2" client_id="$3" client_ip="$4" scope="$5"
-  local fixed_strategy="${6:-}" fixed_fingerprint="${7:-}"
+  local fixed_strategy="${6:-}" fixed_fingerprint="${7:-}" exclude_strategy="${8:-}"
   local host ip profile proto seen nfqws orch_dir now expires generation raw_id id
   local candidate_dir args_file candidate fingerprint recipe config_value flow_dir flow_user flow_uid flow_gid flow_owner trial_kind=standard
   IFS=$'\t' read -r host ip profile proto target_scope seen <<< "$target"
   [[ "$target_scope" = "$scope" && "$client_ip" = "$REMOTE_ADDR" ]] || return 2
-  [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 5
+  adaptive_browser_rotation_enabled || return 5
   [[ ! -d "${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}" ]] || return 4
   [[ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" NFQWS2_ENABLE 2>/dev/null | tr -d '"\047')" = 1 ]] || return 5
   grep -q '^#Z2R_AUTO_MODE=1$' "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null || return 8
@@ -125,7 +125,7 @@ browser_start_trial() {
     [[ "$candidate_fingerprint" = "$fixed_fingerprint" ]] || { rm -rf "$candidate_dir"; return 3; }
     candidate="$fixed_strategy"$'\t'"$fixed_fingerprint"
   else
-    candidate="$(adaptive_browser_candidate_select "$host" "$ip" "$profile" "$proto" "$scope" "$args_file" "$nfqws" "$ORCH_DIR" "$client_id")"
+    candidate="$(adaptive_browser_candidate_select "$host" "$ip" "$profile" "$proto" "$scope" "$args_file" "$nfqws" "$ORCH_DIR" "$client_id" "$exclude_strategy")"
     if [[ $? -ne 0 || -z "$candidate" ]]; then rm -rf "$candidate_dir"; return 3; fi
   fi
   IFS=$'\t' read -r strategy fingerprint <<< "$candidate"
@@ -152,7 +152,7 @@ browser_start_trial() {
 }
 
 browser_learning_status() {
-  local events now rows row ver status host ip profile proto row_scope seen extra host_key strategy strategy_source lock lock_proto stamp nfqws
+  local events now rows row ver status host ip profile proto row_scope seen selected_strategy extra host_key strategy strategy_source strategy_json lock lock_proto stamp nfqws
   local targets='[' first=1 count=0 ranking=false stats=false ramp=false quic=false autorotation=false
   events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
   now="$(date +%s)" || now=0
@@ -171,7 +171,7 @@ browser_learning_status() {
   if [[ -r "$events" && ! -L "$events" && $(wc -c < "$events") -le 32768 ]]; then
     rows="$(awk -F '\t' -v now="$now" -v scope="$scope" '
       function ipok(ip, a,n) { if (split(ip,a,".")!=4) return 0; for(n=1;n<=4;n++) if(a[n]!~/^(0|[1-9][0-9]{0,2})$/ || a[n]>255) return 0; return 1 }
-      NF==8 && $1==1 && $7==scope && $8~/^[0-9]{10}$/ && $8>=now-300 && $8<=now+10 &&
+       (NF==8 || NF==9 || NF==10) && $1==1 && $7==scope && $8~/^[0-9]{10}$/ && $8>=now-300 && $8<=now+10 &&
         $3~/^([a-z0-9][a-z0-9-]*\.)+[a-z0-9][a-z0-9-]*$/ && length($3)<=253 && ipok($4) &&
         (($6=="tls" && $5~/^[1-4]$/) || ($6=="googlevideo-tcp" && $5==2 && $3~/\.googlevideo\.com$/) || ($6=="quic" && $5==5)) &&
         ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2~/^router_trial_[1-9][0-9]*$/ || $2=="router_exhausted") {
@@ -180,7 +180,7 @@ browser_learning_status() {
         }
       END { for (key in value) print value[key] }
     ' "$events" | sort -t "$(printf '\t')" -k8,8nr | head -n 24)"
-    while IFS=$'\t' read -r ver status host ip profile proto row_scope seen extra; do
+    while IFS=$'\t' read -r ver status host ip profile proto row_scope seen selected_strategy strategy_count extra; do
       [[ "$ver" = 1 && "$row_scope" = "$scope" && "$host" =~ ^([a-z0-9][a-z0-9-]*\.)+[a-z0-9][a-z0-9-]*$ && "$profile" =~ ^[1-5]$ ]] || continue
       if [[ "$profile" = 2 && "$host" =~ \.googlevideo\.com$ && "$proto" = tls ]]; then proto=googlevideo-tcp; fi
       (( count < 24 )) || break
@@ -197,8 +197,8 @@ browser_learning_status() {
       else
         strategy=''; strategy_source=profile_auto
         if [[ -r "$(adaptive_browser_state_dir)/trials.tsv" && ! -L "$(adaptive_browser_state_dir)/trials.tsv" ]]; then
-          strategy="$(awk -F '\t' -v now="$now" -v client="$client_id" -v scope="$scope" -v host="$host" -v profile="$profile" -v proto="$proto" '
-            NF==14 && $1==1 && $4==client && $6==scope && $9==profile && $10==proto && $11~/^[1-9][0-9]{0,2}$/ && $14~/^[0-9]{10}$/ && $14>now &&
+          strategy="$(awk -F '\t' -v now="$now" -v scope="$scope" -v host="$host" -v profile="$profile" -v proto="$proto" '
+            NF==14 && $1==1 && $6==scope && $9==profile && $10==proto && $11~/^[1-9][0-9]{0,2}$/ && $14~/^[0-9]{10}$/ && $14>now &&
               ($7==host || (profile==2 && proto=="googlevideo-tcp" && $7~/\.googlevideo\.com$/ && host~/\.googlevideo\.com$/) || (profile==5 && proto=="quic" && $7==host)) { if ($13>created) {created=$13; strategy=$11} }
             END {print strategy}
           ' "$(adaptive_browser_state_dir)/trials.tsv")"
@@ -208,15 +208,21 @@ browser_learning_status() {
           local rule
           rule="$(adaptive_rule_lookup_local "$host" "$ip" "$profile" "$proto" "$scope" "$stamp" 2>/dev/null || true)"
           if [[ -n "$rule" ]]; then IFS=$'\t' read -r strategy _ _ _ _ <<< "$rule"; strategy_source=verified_rule; fi
+          if [[ -z "$strategy" && "$proto" = googlevideo-tcp ]]; then
+            rule="$(adaptive_rule_lookup_local googlevideo.com "$ip" "$profile" "$proto" "$scope" "$stamp" 2>/dev/null || true)"
+            if [[ -n "$rule" ]]; then IFS=$'\t' read -r strategy _ _ _ _ <<< "$rule"; strategy_source=googlevideo_family_baseline; fi
+          fi
         fi
         if [[ -z "$strategy" && "$status" =~ ^router_trial_([1-9][0-9]{0,2})$ ]]; then
           strategy="${BASH_REMATCH[1]}"; strategy_source=router_auto_trial
         fi
-        [[ -n "$strategy" ]] || strategy=1
+        [[ -n "$strategy" ]] || strategy="${selected_strategy:-}"
       fi
+      strategy_json=null
+      [[ "$strategy" =~ ^[0-9]{1,3}$ ]] && strategy_json="$strategy"
       [[ "$first" = 1 ]] || targets+=','
       first=0
-      targets+="{\"hostname\":\"$host_key\",\"profile_id\":$profile,\"protocol\":\"$proto\",\"observed_at\":$seen,\"strategy_number\":$strategy,\"strategy_source\":\"$strategy_source\",\"learning_state\":\"$status\"}"
+      targets+="{\"hostname\":\"$host_key\",\"profile_id\":$profile,\"protocol\":\"$proto\",\"observed_at\":$seen,\"strategy_number\":$strategy_json,\"strategy_source\":\"$strategy_source\",\"learning_state\":\"$status\"}"
     done <<< "$rows"
   fi
   targets+=']'
@@ -255,7 +261,7 @@ browser_ramp_canary_target_allowed() {
   mode="$ROOT/extra_strats/cache/adaptive/mode"
   marker="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
   ramp_state="$ROOT/extra_strats/cache/adaptive/ramp-pool"
-  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$marker" 2>/dev/null)" = 1 &&
+  adaptive_browser_rotation_enabled && [[ "$(cat "$marker" 2>/dev/null)" = 1 &&
      -f "$ramp_state" && ! -L "$ramp_state" && $(wc -c < "$ramp_state") -le 256 ]] || return 1
   awk -F '\t' 'NR==1 && ((($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4~/^[a-f0-9]{64}$/ && NF==4) || ($1==1 && $2=="managed" && $3=="proof_verified" && $4~/^[a-f0-9]{64}$/ && $5~/^[a-f0-9]{64}$/ && NF==5))) {ok=1} END {exit !ok}' "$ramp_state" || return 1
   [[ ! -d "${Z2R_ADAPTIVE_NDM_ROOT:-/opt/etc/ndm}" ]] || return 1
@@ -461,7 +467,7 @@ browser_ramp_canary_handle_result() {
 
 browser_promote_attempt() {
   local dir args_file recipe config_value config nfqws max stamp current_fp catalog_rows catalog_version catalog_fp now expires
-  [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 1
+  adaptive_browser_rotation_enabled || return 1
   adaptive_browser_profile_lock_check "$profile" "$attempt_scope" "$ROOT/extra_strats/cache/orchestra"
   [[ "$?" = 1 ]] || return 1
   case "$proto" in tls) recipe=tls-http1-v1 ;; googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; quic) recipe=googlevideo-quic-h3-media-v1 ;; *) return 1 ;; esac
@@ -491,15 +497,24 @@ browser_promote_attempt() {
   catalog_version="sha256:$(printf '%s\n' "$catalog_rows" | sha256sum | awk '{print $1}')"
   [[ "$catalog_version" =~ ^sha256:[a-f0-9]{64}$ ]] || { rm -rf "$dir"; return 1; }
   now="$(date +%s)"; expires=$((now + 900))
-  # Keep the confirmed rule for the browser's client scope, and publish the
-  # same result as a default-scope baseline for clients without a configured
-  # scope. Marked clients never inherit the shared row.
+  # A strategy belongs to the configured mark (or to the unmarked shared
+  # population). A marked result must never leak into the default scope.
   if [[ "$attempt_scope" != default ]]; then
     adaptive_rule_add "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
       "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+    if [[ "$proto" = googlevideo-tcp ]]; then
+      adaptive_rule_add googlevideo.com "$ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
+        "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+    fi
+    rm -rf "$dir"
+    return 0
   fi
   adaptive_rule_add "$host" "$ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
-    "$catalog_version" "$stamp" "$expires" browser-confirmed
+    "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+  if [[ "$proto" = googlevideo-tcp ]]; then
+    adaptive_rule_add googlevideo.com "$ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
+      "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+  fi
   local rc=$?
   rm -rf "$dir"
   return "$rc"
@@ -509,7 +524,7 @@ case "${f[action]:-}" in
   browser_hello|browser_status)
     [[ ${#f[@]} -eq 2 ]] || fail '400 Bad Request' 'browser_hello takes no parameters'
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null || printf OFF)"
-    case "$mode" in OFF|OBSERVE|TEST_ONLY|AGENT_BETA|PAUSED) ;; *) mode=OFF ;; esac
+    case "$mode" in OFF|OBSERVE|TEST_ONLY|AUTO|AGENT_BETA|PAUSED) ;; *) mode=OFF ;; esac
     ranking_opt_in=false
     [[ ! -f "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" || -L "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" ]] ||
       [[ "$(cat "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" 2>/dev/null)" != 1 ]] || ranking_opt_in=true
@@ -528,7 +543,7 @@ case "${f[action]:-}" in
        "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ ]] || fail '400 Bad Request' 'invalid failure event'
     trigger="${f[trigger]}"; klass="${f[request_class]}"; method="${f[method]}"; failure="${f[failure_class]}"
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null || printf OFF)"
-    [[ "$mode" = AGENT_BETA ]] || send '200 OK' "{\"schema_version\":1,\"status\":\"MODE_DISABLED\",\"state\":\"NOT_TESTED\",\"mode\":\"$mode\"}"
+    adaptive_browser_rotation_enabled || send '200 OK' "{\"schema_version\":1,\"status\":\"MODE_DISABLED\",\"state\":\"NOT_TESTED\",\"mode\":\"$mode\"}"
     if [[ "$trigger" = main_frame_network_failure ]]; then
       [[ "$klass" = main_frame && "$method" = GET && "$failure" = network_failure && "${f[failure_count]}" = 1 ]] || fail '400 Bad Request' 'main-frame trigger mismatch'
     elif [[ "$trigger" = critical_resource_repeated_failure ]]; then
@@ -538,7 +553,7 @@ case "${f[action]:-}" in
     host="${f[hostname],,}"
     adaptive_browser_host_valid "$host" || fail '400 Bad Request' 'invalid target hostname'
     host="$ADAPTIVE_BROWSER_HOST"
-    [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || send '200 OK' '{"schema_version":1,"status":"MODE_DISABLED","state":"NOT_TESTED"}'
+    adaptive_browser_rotation_enabled || send '200 OK' '{"schema_version":1,"status":"MODE_DISABLED","state":"NOT_TESTED"}'
     now_ms="$(( $(date +%s) * 1000 ))"; observed="${f[observed_at]}"
     (( observed <= now_ms + 5000 && observed >= now_ms - 60000 )) || fail '400 Bad Request' 'stale failure event'
     [[ "$trigger" = user_fix || "$failure" = network_failure ]] || send '200 OK' '{"schema_version":1,"status":"MANUAL_ONLY","state":"NOT_TESTED"}'
@@ -556,12 +571,13 @@ case "${f[action]:-}" in
       3) send '200 OK' '{"schema_version":1,"status":"UNKNOWN","state":"UNKNOWN","reason":"ambiguous_recent_flows"}' ;;
       *) send '200 OK' '{"schema_version":1,"status":"TARGET_NOT_MANAGED","state":"TARGET_NOT_MANAGED"}' ;;
     esac
-    IFS=$'\t' read -r obs_host obs_ip obs_profile obs_proto obs_scope obs_seen <<< "$matches"
+    IFS=$'\t' read -r obs_host obs_ip obs_profile obs_proto obs_scope obs_seen exclude_strategy <<< "$matches"
     if [[ "$obs_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$obs_profile" = 2 ]]; then
       obs_proto=googlevideo-tcp
-      matches="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$obs_host" "$obs_ip" "$obs_profile" "$obs_proto" "$obs_scope" "$obs_seen")"
+      matches="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$obs_host" "$obs_ip" "$obs_profile" "$obs_proto" "$obs_scope" "$obs_seen" "$exclude_strategy")"
     fi
-    trial_json="$(browser_start_trial "$matches" "$trigger" "$client_id" "${REMOTE_ADDR:-}" "$scope")"
+    [[ "$exclude_strategy" =~ ^(0|[1-9][0-9]{0,2})$ ]] || send '200 OK' '{"schema_version":1,"status":"NOT_TESTED","state":"NOT_TESTED","reason":"router_strategy_unknown"}'
+    trial_json="$(browser_start_trial "$matches" "$trigger" "$client_id" "${REMOTE_ADDR:-}" "$scope" "" "" "$exclude_strategy")"
     trial_rc=$?
     case "$trial_rc" in
       0) send '200 OK' "$trial_json" ;;
@@ -588,7 +604,7 @@ case "${f[action]:-}" in
       adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
       state=CANCELLED
     fi
-    if [[ "$trigger" = ramp_canary && "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" != AGENT_BETA &&
+    if [[ "$trigger" = ramp_canary ]] && ! adaptive_browser_rotation_enabled && [[
           "$state" =~ ^(WAIT_NEW_FLOW|FLOW_CONFIRMED|WAIT_BROWSER_RESULT|PROVISIONAL_SUCCESS)$ ]]; then
       adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || :
       adaptive_browser_trial_remove "$attempt_id" "$generation" || :
@@ -624,7 +640,7 @@ case "${f[action]:-}" in
   browser_report_result)
     [[ ${#f[@]} -ge 8 && ${#f[@]} -le 16 && "${f[attempt_id]:-}" =~ ^[a-f0-9]{32}$ && "${f[browser_event_id]:-}" =~ ^[a-f0-9]{32}$ &&
        "${f[result]:-}" =~ ^(network_success|network_failure)$ && "${f[request_class]:-}" =~ ^(main_frame|script|xmlhttprequest|media)$ &&
-       "${f[browser_ip]:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "${f[observed_at]:-}" =~ ^[0-9]{13}$ &&
+       ( -z "${f[browser_ip]:-}" || "${f[browser_ip]}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ) && "${f[observed_at]:-}" =~ ^[0-9]{13}$ &&
        ( -z "${f[browser_protocol]:-}" || "${f[browser_protocol]}" =~ ^(h3|tcp)$ ) &&
        ( -z "${f[ramp_canary_opt_in]:-}" || "${f[ramp_canary_opt_in]}" =~ ^[01]$ ) ]] || fail '400 Bad Request' 'invalid browser result'
     media_fields=0
@@ -646,7 +662,11 @@ case "${f[action]:-}" in
       fi
       [[ "${f[result]}" = network_success ]] || fail '400 Bad Request' 'media evidence requires a successful resource'
     fi
-    awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; exit 0} {exit 1}' <<< "${f[browser_ip]}" || fail '400 Bad Request' 'invalid browser IP'
+    if [[ -n "${f[browser_ip]}" ]]; then
+      awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; exit 0} {exit 1}' <<< "${f[browser_ip]}" || fail '400 Bad Request' 'invalid browser IP'
+    elif [[ "${f[result]}" != network_failure ]]; then
+      fail '400 Bad Request' 'browser IP is required for successful outcomes'
+    fi
     row="$(adaptive_browser_attempt_read "${f[attempt_id]}")" || fail '404 Not Found' 'attempt not found'
     IFS=$'\t' read -r ver attempt_id owner owner_ip attempt_scope host ip profile proto trigger state strategy attempt_fingerprint created expires generation extra <<< "$row"
     [[ "$ver" = 1 && "$owner" = "$client_id" && "$owner_ip" = "${REMOTE_ADDR:-}" && "$attempt_scope" = "$scope" && -z "${extra:-}" ]] || fail '404 Not Found' 'attempt not found'
@@ -692,13 +712,14 @@ case "${f[action]:-}" in
     flow_row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || fail '409 Conflict' 'production flow evidence is unavailable'
     IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_ramp_treatment flow_ramp_ack_evidence flow_extra <<< "$flow_row"
     [[ "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" &&
-       ( ( "$flow_host" = "$host" && "$flow_ip" = "$ip" ) ||
-         ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$flow_proto" = googlevideo-tcp && "$flow_profile" = 2 &&
-           "$flow_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) && "${f[browser_ip]}" = "$flow_ip" &&
+        ( ( "$flow_host" = "$host" && "$flow_ip" = "$ip" ) ||
+          ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$flow_proto" = googlevideo-tcp && "$flow_profile" = 2 &&
+            "$flow_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) &&
+        ( ( -z "${f[browser_ip]}" && "${f[result]}" = network_failure ) || "${f[browser_ip]}" = "$flow_ip" ) &&
        "$flow_profile" = "$profile" && "$flow_proto" = "$proto" && "$flow_strategy" = "$strategy" && "$flow_fingerprint" = "$attempt_fingerprint" ]] || fail '409 Conflict' 'production flow does not match this attempt'
     (( f[observed_at] >= selected_at * 1000 && f[observed_at] <= now_ms + 5000 && f[observed_at] <= expires * 1000 )) || fail '400 Bad Request' 'result is outside the confirmed flow window'
     [[ "$state" = WAIT_BROWSER_RESULT || "$state" = PROVISIONAL_SUCCESS ]] || fail '409 Conflict' 'attempt is not waiting for a browser result'
-    if [[ "$proto" = quic && "${f[browser_protocol]:-}" != h3 ]]; then
+    if [[ "$proto" = quic && "${f[result]}" != network_failure && "${f[browser_protocol]:-}" != h3 ]]; then
       adaptive_browser_attempt_transition "$attempt_id" "$state" UNKNOWN || fail '409 Conflict' 'attempt changed concurrently'
       adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
@@ -765,13 +786,16 @@ case "${f[action]:-}" in
     if [[ "$proto" = googlevideo-tcp && ( "$trigger" = ramp_canary || "${f[ramp_canary_opt_in]:-0}" = 1 ) ]]; then
       browser_ramp_canary_handle_result "$attempt_id" "$state" "${f[ramp_canary_opt_in]:-0}" "$trigger" \
         "$flow_ramp_treatment" "$flow_ramp_ack_evidence" "$generation" || :
-      ramp_canary_json=",$BROWSER_RAMP_CANARY_RESPONSE"
+      if [[ "$BROWSER_RAMP_CANARY_RESPONSE" = \{*\} ]]; then
+        ramp_canary_json="${BROWSER_RAMP_CANARY_RESPONSE:1:${#BROWSER_RAMP_CANARY_RESPONSE}-2}"
+        [[ -z "$ramp_canary_json" ]] || ramp_canary_json=",$ramp_canary_json"
+      fi
     fi
     if [[ "$state" = CONFIRMED_FAILURE && "$trigger" != ramp_canary ]]; then
       next_claim="$(adaptive_browser_event_claim "$client_id" "${f[browser_event_id]}" "$host" "$trigger" "$(date +%s)")" || next_claim=unavailable
       if [[ "$next_claim" = accepted ]]; then
-        next_target="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$(date +%s)")"
-        next_trial_json="$(browser_start_trial "$next_target" "$trigger" "$client_id" "${REMOTE_ADDR:-}" "$attempt_scope")"
+        next_target="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$(date +%s)" "$strategy")"
+        next_trial_json="$(browser_start_trial "$next_target" "$trigger" "$client_id" "${REMOTE_ADDR:-}" "$attempt_scope" "" "" "$strategy")"
         next_trial_rc=$?
         if [[ "$next_trial_rc" = 0 ]]; then
           send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"NEXT_CANDIDATE\",\"next_attempt\":$next_trial_json}"

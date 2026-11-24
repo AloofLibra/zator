@@ -26,7 +26,7 @@ adaptive_ramp_pool_consent_active() {
   local mode="$ROOT/extra_strats/cache/adaptive/mode"
   local lan="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
   local state="$ROOT/extra_strats/cache/adaptive/ramp-pool"
-  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$lan" 2>/dev/null)" = 1 &&
+  [[ "$(cat "$mode" 2>/dev/null)" =~ ^(AUTO|AGENT_BETA)$ && "$(cat "$lan" 2>/dev/null)" = 1 &&
      -f "$state" && ! -L "$state" && $(wc -c < "$state") -le 256 ]] || return 1
   awk -F '\t' 'NR==1 && (($1==1 && $2=="preexisting" && $3=="manual_unverified" && NF==3) || ($1==1 && $2=="managed" && $3=="manual_unverified" && $4 ~ /^[a-f0-9]{64}$/ && NF==4) || ($1==1 && $2=="managed" && $3=="proof_verified" && $4 ~ /^[a-f0-9]{64}$/ && $5 ~ /^[a-f0-9]{64}$/ && NF==5)) {ok=1} END {exit !ok}' "$state"
 }
@@ -35,7 +35,7 @@ adaptive_ramp_pool_armed() {
   local mode="$ROOT/extra_strats/cache/adaptive/mode" lan="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
   local state="$ROOT/extra_strats/cache/adaptive/ramp-pool-armed" config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   local version status fingerprint extra key value current
-  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$lan" 2>/dev/null)" = 1 &&
+  [[ "$(cat "$mode" 2>/dev/null)" =~ ^(AUTO|AGENT_BETA)$ && "$(cat "$lan" 2>/dev/null)" = 1 &&
      -f "$state" && ! -L "$state" && $(wc -c < "$state") -le 256 && -r "$config" && ! -L "$config" ]] || return 1
   IFS=$'\t' read -r version status fingerprint extra < "$state" || return 1
   [[ "$version" = 1 && "$status" = armed && "$fingerprint" =~ ^[a-f0-9]{64}$ && -z "$extra" &&
@@ -142,8 +142,8 @@ json_events() {
   local file="${Z2R_ADAPTIVE_EVENTS_FILE:-$BASE/events.tsv}" requests_file="${Z2R_ADAPTIVE_REQUESTS_FILE:-$BASE/requests.tsv}" processed_file="$(adaptive_queue_processed_file)" now line ver status host ip profile proto scope seen first=1 count=0 event_limit=128 mode req_ver req_id req_host req_ip req_profile req_scope req_created pver phost pip pprofile pscope pcompleted key
   local -A processed=()
   mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null || printf OFF)"
-  case "$mode" in OBSERVE|TEST_ONLY|AGENT_BETA) ;; *) mode=OFF ;; esac
-  if [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] && [[ -s "$requests_file" && ! -L "$requests_file" ]]; then event_limit=96; fi
+  case "$mode" in OBSERVE|TEST_ONLY|AUTO|AGENT_BETA) ;; *) mode=OFF ;; esac
+  if [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA || "$mode" = AUTO ]] && [[ -s "$requests_file" && ! -L "$requests_file" ]]; then event_limit=96; fi
   [[ ( -r "$file" && ! -L "$file" ) || ( -r "$requests_file" && ! -L "$requests_file" ) ]] || { printf '{"schema_version":1,"mode":"%s","events":[]}' "$mode"; return; }
   now="$(date +%s)" || { printf '{"schema_version":1,"mode":"%s","events":[]}' "$mode"; return; }
   if [[ -r "$processed_file" && ! -L "$processed_file" ]]; then
@@ -173,7 +173,7 @@ json_events() {
     count=$((count + 1))
   done < "$file"
   fi
-  if [[ ( "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ) && -r "$requests_file" && ! -L "$requests_file" ]]; then
+  if [[ ( "$mode" = TEST_ONLY || "$mode" = AGENT_BETA || "$mode" = AUTO ) && -r "$requests_file" && ! -L "$requests_file" ]]; then
     while IFS=$'\t' read -r req_ver req_id req_host req_ip req_profile req_scope req_created || [[ -n "$req_ver$req_id" ]]; do
       (( count < 128 )) || break
       [[ "$req_ver" = 1 && "$req_id" =~ ^[a-f0-9]{32}$ && "$req_host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ &&
@@ -362,7 +362,7 @@ adaptive_ramp_exemption_apply() {
   [[ "${test_ids[0]}" != "${test_ids[1]}" && "${test_ids[0]}" != "${test_ids[2]}" && "${test_ids[0]}" != "${test_ids[3]}" &&
      "${test_ids[1]}" != "${test_ids[2]}" && "${test_ids[1]}" != "${test_ids[3]}" && "${test_ids[2]}" != "${test_ids[3]}" ]] || fail '400 Bad Request' 'Ramp proof IDs must be unique'
   mode="$ROOT/extra_strats/cache/adaptive/mode"; marker="$ROOT/extra_strats/cache/adaptive/apply-default-scope"
-  [[ "$(cat "$mode" 2>/dev/null)" = AGENT_BETA && "$(cat "$marker" 2>/dev/null)" = 1 ]] || fail '403 Forbidden' 'Ramp exemptions require AGENT_BETA LAN consent'
+  [[ "$(cat "$mode" 2>/dev/null)" =~ ^(AUTO|AGENT_BETA)$ && "$(cat "$marker" 2>/dev/null)" = 1 ]] || fail '403 Forbidden' 'Ramp exemptions require autorotation mode and explicit LAN consent'
   adaptive_ramp_pool_consent_active || fail '403 Forbidden' 'Ramp exemptions require explicit Ramp-first pool consent'
   config="${ZAPRET2_ROOT:-/opt/zapret2}/config"
   ramp_enable="$(config_get_var "$config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')"
@@ -759,8 +759,8 @@ case "$action" in
     ;;
   ramp_targets)
     [[ "${#fields[@]}" -eq 1 ]] || fail '400 Bad Request' 'ramp_targets accepts no parameters'
-    [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || \
-      fail '403 Forbidden' 'Ramp audit targets are available only in AGENT_BETA'
+    [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" =~ ^(AUTO|AGENT_BETA)$ ]] || \
+      fail '403 Forbidden' 'Ramp audit targets require autorotation mode'
     if ! adaptive_ramp_pool_probe_authorized; then
       send_json '200 OK' '{"schema_version":1,"supported":false,"reason":"ramp_pool_consent_required","targets":[]}'
     fi
@@ -832,7 +832,7 @@ case "$action" in
     ;;
   candidates)
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
-    [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || fail '403 Forbidden' 'adaptive probe mode does not allow candidates'
+    [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA || "$mode" = AUTO ]] || fail '403 Forbidden' 'adaptive probe mode does not allow candidates'
     if candidate_json="$(json_candidates "${fields[hostname]:-}" "${fields[destination_ip]:-}" "${fields[profile_id]:-}" "${fields[scope]:-default}" "${fields[offset]:-0}" "${fields[limit]:-10}" "${fields[order]:-ranked}" "${fields[candidate_set_version]:-}" "${fields[ranked_fingerprints]:-}" "${ZAPRET2_ROOT:-/opt/zapret2}" "${fields[force_revalidate]:-0}")"; then
       send_json '200 OK' "$candidate_json"
     else
@@ -850,7 +850,7 @@ case "$action" in
     adaptive_recover_abandoned_probe || fail '503 Service Unavailable' 'adaptive probe recovery could not verify its queue owner or clean its rules'
     [[ -x "$CONTROLLER" ]] || fail '503 Service Unavailable' 'adaptive controller is not installed'
     mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
-    [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || fail '403 Forbidden' 'adaptive probe mode does not allow probes'
+    [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA || "$mode" = AUTO ]] || fail '403 Forbidden' 'adaptive probe mode does not allow probes'
     host="${fields[hostname]:-}"
     dst_ip="${fields[destination_ip]:-}"
     profile="${fields[profile_id]:-}"
@@ -870,7 +870,7 @@ case "$action" in
         [[ "$profile" = 2 && "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+googlevideo\.com$ ]] || \
           fail '400 Bad Request' 'Googlevideo media recipe requires a profile-2 Googlevideo hostname'
         case "$treatment" in standard|gv_tcp_plain|gv_tcp_ramp|gv_tcp_ramp_syndata) ;; *) fail '400 Bad Request' 'invalid Googlevideo treatment' ;; esac
-        if [[ "$mode" = AGENT_BETA && "$treatment" =~ ^gv_tcp_ramp ]]; then
+        if [[ "$mode" =~ ^(AUTO|AGENT_BETA)$ && "$treatment" =~ ^gv_tcp_ramp ]]; then
           adaptive_ramp_pool_probe_authorized || fail '403 Forbidden' 'Ramp probes require explicit Ramp-first pool consent'
         fi ;;
       googlevideo-quic-h3-media-v1)

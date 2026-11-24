@@ -89,7 +89,7 @@ assert(ambiguous_flow == "AMBIGUOUS\n", "repeated competing TCP flows must keep 
 local no_syn = {track={}}
 assert(not locked_browser_record_flow_for_tests(no_syn, trial_obj, "cdn.example.org", "8.8.8.8", "1", "tls", "mark:7", 2),
   "strategy selection without a SYN was accepted")
-assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.4.4", 1, "tls", "mark:7", now) == nil, "destination was not exact")
+assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.4.4", 1, "tls", "mark:7", now), "same-mark trial was not shared across client IP changes")
 locked_load_browser_trials_for_tests({valid:gsub("192%.168%.1%.42", "8.8.8.8")}, now)
 assert(locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "mark:7", now) == nil, "public client IP accepted")
 locked_load_browser_trials_for_tests({valid}, now)

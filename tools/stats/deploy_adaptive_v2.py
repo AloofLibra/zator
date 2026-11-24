@@ -20,10 +20,7 @@ GET_ROUTE = '''        if parsed.path in ("/adaptive-v2/rankings", "/adaptive-v2
                 if (len(providers) != 1 or len(profiles) != 1 or len(protocols) != 1
                         or len(recipes) != 1 or len(treatments) != 1):
                     raise ValueError("invalid ranking request")
-                global ADAPTIVE_V2_ALIASES
-                if ADAPTIVE_V2_ALIASES is None:
-                    ADAPTIVE_V2_ALIASES = load_aliases(ADAPTIVE_V2_ALIASES_PATH)
-                result = get_adaptive_rankings(rdb, providers[0], profiles[0], protocols[0], ADAPTIVE_V2_ALIASES,
+                result = get_adaptive_rankings(rdb, providers[0], profiles[0], protocols[0], adaptive_aliases(),
                                                recipe=recipes[0], treatment=treatments[0])
             except ValueError:
                 self.send_json(400, {"ok": False, "error": "invalid ranking request"})
@@ -43,6 +40,19 @@ GET_ROUTE = '''        if parsed.path in ("/adaptive-v2/rankings", "/adaptive-v2
                 self.send_json(200, result)
             return
 '''
+BROWSER_GET_ROUTE = GET_ROUTE.replace(
+    'parsed.path in ("/adaptive-v2/rankings", "/adaptive-v2/rankings.tsv")',
+    'parsed.path in ("/adaptive-v2/browser-rankings", "/adaptive-v2/browser-rankings.tsv")')
+BROWSER_GET_ROUTE = BROWSER_GET_ROUTE.replace(
+    'get_adaptive_rankings(rdb,', 'get_adaptive_browser_rankings(rdb,')
+BROWSER_GET_ROUTE = BROWSER_GET_ROUTE.replace(
+    'ADAPTIVE_V2_ALIASES,', 'adaptive_aliases(),')
+BROWSER_GET_ROUTE = BROWSER_GET_ROUTE.replace(
+    'render_adaptive_rankings_tsv(result)', 'render_adaptive_browser_rankings_tsv(result)')
+BROWSER_GET_ROUTE = BROWSER_GET_ROUTE.replace(
+    'adaptive rankings unavailable', 'browser feedback rankings unavailable')
+BROWSER_GET_ROUTE = BROWSER_GET_ROUTE.replace(
+    'public, max-age=600', 'public, max-age=600')
 POST_BROWSER_FLOW_ROUTE = '''        parsed = urlparse(self.path)
         if parsed.path == "/adaptive-v2/browser-flow":
             expected = os.environ.get("Z4R_ADAPTIVE_V2_INGEST_TOKEN", "")
@@ -131,13 +141,15 @@ def patch_server(server):
     if adaptive_import:
         names = set(adaptive_import.group(1).split(", "))
         names.update(("authenticate_client_token as authenticate_adaptive_client", "get_rankings as get_adaptive_rankings",
+                      "get_browser_rankings as get_adaptive_browser_rankings",
                       "ingest_batch as ingest_adaptive_batch", "load_aliases",
                       "ingest_browser_batch as ingest_browser_flow_batch",
-                      "render_rankings_tsv as render_adaptive_rankings_tsv"))
+                      "render_rankings_tsv as render_adaptive_rankings_tsv",
+                      "render_browser_rankings_tsv as render_adaptive_browser_rankings_tsv"))
         server = server[:adaptive_import.start()] + "from adaptive_results import " + ", ".join(sorted(names)) + server[adaptive_import.end():]
     else:
         server, count = re.subn(r"(?m)^(import redis\n)",
-            r"\1from adaptive_results import authenticate_client_token as authenticate_adaptive_client, get_rankings as get_adaptive_rankings, ingest_batch as ingest_adaptive_batch, ingest_browser_batch as ingest_browser_flow_batch, load_aliases, render_rankings_tsv as render_adaptive_rankings_tsv\n",
+            r"\1from adaptive_results import authenticate_client_token as authenticate_adaptive_client, get_browser_rankings as get_adaptive_browser_rankings, get_rankings as get_adaptive_rankings, ingest_batch as ingest_adaptive_batch, ingest_browser_batch as ingest_browser_flow_batch, load_aliases, render_browser_rankings_tsv as render_adaptive_browser_rankings_tsv, render_rankings_tsv as render_adaptive_rankings_tsv\n",
             server, count=1)
         if count != 1:
             raise RuntimeError("cannot find redis import in stats server")
@@ -168,6 +180,11 @@ def adaptive_aliases():
         if server.count(anchor) != 1:
             raise RuntimeError("cannot find unique GET insertion point")
         server = server.replace(anchor, anchor + GET_ROUTE, 1)
+    if 'parsed.path in ("/adaptive-v2/browser-rankings", "/adaptive-v2/browser-rankings.tsv")' not in server:
+        anchor = '        if parsed.path in ("/adaptive-v2/rankings", "/adaptive-v2/rankings.tsv"):\n'
+        if server.count(anchor) != 1:
+            raise RuntimeError("cannot find unique adaptive ranking route")
+        server = server.replace(anchor, BROWSER_GET_ROUTE + anchor, 1)
     if 'parsed.path == "/adaptive-v2/browser-flow"' not in server:
         anchor = "    def do_POST(self):\n"
         if server.count(anchor) != 1:
@@ -189,6 +206,11 @@ def patch_nginx(config):
 '''
     ranking_tsv = '''location = /z4r/adaptive-v2/rankings.tsv {
     proxy_pass http://127.0.0.1:17683/adaptive-v2/rankings.tsv$is_args$args;
+}
+
+'''
+    browser_ranking = '''location = /z4r/adaptive-v2/browser-rankings.tsv {
+    proxy_pass http://127.0.0.1:17683/adaptive-v2/browser-rankings.tsv$is_args$args;
 }
 
 '''
@@ -214,6 +236,11 @@ def patch_nginx(config):
         if config.count(anchor) != 1:
             raise RuntimeError("cannot find recommendations nginx route")
         config = config.replace(anchor, ranking_tsv + anchor, 1)
+    if "/z4r/adaptive-v2/browser-rankings.tsv" not in config:
+        anchor = "location = /z4r/recommendations.tsv {"
+        if config.count(anchor) != 1:
+            raise RuntimeError("cannot find recommendations nginx route")
+        config = config.replace(anchor, browser_ranking + anchor, 1)
     if "/z4r/adaptive-v2/results" not in config:
         anchor = "location = /z4r/recommendations.tsv {"
         if config.count(anchor) != 1:

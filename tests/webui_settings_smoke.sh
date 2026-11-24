@@ -147,7 +147,7 @@ mkdir -p "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 printf '1\t%s\t%s\tSUCCESS\tmedia_ok\tgooglevideo-tcp-media-v1\tstandard\t2\tmark:4\t9\ttrue\ttrue\ttrue\t1048576\t2000000\t524\t12\n' "$(date +%s)" "$(date +%s)" > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/status.tsv"
 printf '{"probe_network_bytes":1234567}\n' > "$TMP_DIR/adaptive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/result.json"
 printf '%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/agent.last"
-printf '1\trr1.googlevideo.com\t94.0.1.5\tdefault\t2\t1\t1\t1\t%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/quic-health.tsv"
+printf '2\trr1.googlevideo.com\t94.0.1.5\tdefault\t49152\tbeef-1\t2\t1\t1\t1\t%s\n' "$(date +%s)" > "$TMP_DIR/adaptive/quic-health.tsv"
 browser_client_id=12121212121212121212121212121212
 browser_token_hash="$(printf '%064d' 3)"
 browser_expiry=$(( $(date +%s) + 3600 ))
@@ -175,7 +175,7 @@ grep -Fq '"mode":"TEST_ONLY"' <<< "$adaptive_status" || fail 'adaptive mode miss
 grep -Fq '"adaptive_rule_flipflops":0' <<< "$adaptive_status" || fail 'adaptive panel omitted the semantic flip-flop count'
 grep -Fq '"event_count":2' <<< "$adaptive_status" || fail 'adaptive event count missing'
 grep -Fq '"pending_requests":0' <<< "$adaptive_status" || fail 'adaptive request count missing'
-grep -Fq '"quic_health":[{"hostname":"rr1.googlevideo.com","destination_ip":"94.0.1.5","scope":"default","initials":2,"retries":1,"response_observed":true,"possible_tcp_fallback":true' <<< "$adaptive_status" || fail 'adaptive panel omitted passive QUIC health data'
+grep -Fq '"quic_health":[{"hostname":"rr1.googlevideo.com","destination_ip":"94.0.1.5","scope":"default","source_port":49152,"connection_id":"beef-1","initials":2,"retries":1,"response_observed":true,"possible_tcp_fallback":true' <<< "$adaptive_status" || fail 'adaptive panel omitted passive QUIC health data'
 grep -Fq '"hostname":"cdn.example.org"' <<< "$adaptive_status" || fail 'adaptive queue details missing'
 grep -Fq '"strategy_number":7' <<< "$adaptive_status" || fail 'adaptive exact rule details missing'
 grep -Fq '"last_probe":{"observed_at":' <<< "$adaptive_status" || fail 'adaptive status omitted the last probe summary'
@@ -198,8 +198,8 @@ grep -Fq '"paired_clients":1,"connected_clients":1' <<< "$adaptive_status" || fa
 grep -Fq '"hostname":"browser.example.org"' <<< "$adaptive_status" || fail 'adaptive status omitted an active browser trial'
 grep -Fq '"state":"WAIT_NEW_FLOW","strategy_number":2' <<< "$adaptive_status" || fail 'adaptive status omitted browser trial state/strategy'
 grep -Fq 'paired_clients' "$REPO_DIR/webui-src/src/components/settings/AdaptivePanel.vue" || fail 'adaptive panel omitted browser pairing status'
-grep -Fq 'browserBetaAvailable' "$REPO_DIR/webui-src/src/components/settings/AdaptivePanel.vue" || fail 'browser-only pairing cannot enable Beta controls'
-grep -Fq 'Windows watcher не нужен' "$REPO_DIR/webui-src/src/components/settings/AdaptivePanel.vue" || fail 'adaptive panel still requires Windows watcher for browser Beta'
+grep -Fq 'Включить авторотацию' "$REPO_DIR/webui-src/src/components/settings/AdaptivePanel.vue" || fail 'unified autorotation control is missing without browser pairing'
+grep -Fq 'Windows watcher нужен только для изолированных проверок в TEST_ONLY' "$REPO_DIR/webui-src/src/components/settings/AdaptivePanel.vue" || fail 'adaptive panel misstated the optional Windows watcher role'
 assert_not_contains "$adaptive_status" "$browser_client_id" 'adaptive GET exposed browser client identity'
 assert_not_contains "$adaptive_status" 192.168.1.42 'adaptive GET exposed browser client IP'
 assert_not_contains "$adaptive_status" 'sha256:' 'adaptive GET exposed internal fingerprints'
@@ -239,8 +239,7 @@ grep -Fq '"action":"test-only"' <<< "$adaptive_action" || fail 'adaptive control
 grep -Fq '"restarted":true' <<< "$adaptive_action" || fail 'adaptive control did not reload the mode'
 grep -Fxq 'test-only' "$ADAPTIVE_ACTION_LOG" || fail 'adaptive control did not delegate to CLI'
 grep -Fxq 'restart' "$ADAPTIVE_RESTART_LOG" || fail 'adaptive mode change did not restart zapret2'
-# Exercise the actual WebUI -> adaptive-pair CLI path with only a valid browser
-# pairing. The separate Windows-agent token must not be required.
+# Exercise the actual WebUI -> adaptive-pair CLI path without either pairing.
 rm -f "$TMP_DIR/runtime/extra_strats/cache/adaptive/token" "$TMP_DIR/runtime/extra_strats/cache/adaptive/token.expires"
 cp "$REPO_DIR/tools/adaptive-pair.sh" "$TMP_DIR/runtime/tools/adaptive-pair.sh"
 cp "$REPO_DIR/tools/adaptive-ramp-proof.sh" "$TMP_DIR/runtime/tools/adaptive-ramp-proof.sh"
@@ -262,10 +261,10 @@ browser_beta_action="$(printf '%s' "$browser_beta_body" | env ZATOR_ROOT="$TMP_D
   Z2R_ADAPTIVE_DIR="$TMP_DIR/browser-beta-runtime" PATH="$TMP_DIR/bin:$PATH" REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded \
   CONTENT_LENGTH="${#browser_beta_body}" HTTP_HOST=router.lan HTTP_ORIGIN=http://router.lan REMOTE_ADDR=192.168.1.7 \
   bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
-grep -Fq 'Status: 200 OK' <<< "$browser_beta_action" || fail 'WebUI could not enable Beta from browser-only pairing'
-grep -Fq '"action":"beta"' <<< "$browser_beta_action" || fail 'browser-only WebUI response omitted the Beta action'
-[[ "$(cat "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode")" = AGENT_BETA ]] || fail 'browser-only WebUI action did not persist Beta mode'
-grep -Fq 'Windows agent is optional' <<< "$browser_beta_action" || fail 'browser-only WebUI action response implied an agent requirement'
+grep -Fq 'Status: 200 OK' <<< "$browser_beta_action" || fail 'WebUI could not enable unified autorotation without pairing'
+grep -Fq '"action":"beta"' <<< "$browser_beta_action" || fail 'WebUI autorotation response omitted the action'
+[[ "$(cat "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode")" = AUTO ]] || fail 'WebUI autorotation action did not persist AUTO mode'
+grep -Fq 'Browser extension is optional' <<< "$browser_beta_action" || fail 'WebUI autorotation response implied an extension requirement'
 # Router AUTO can be enabled with neither Windows-agent pairing nor browser pairing.
 rm -f "$TMP_DIR/runtime/extra_strats/cache/adaptive/browser-clients.tsv"
 router_auto_body='setting=adaptive_action&action=router-auto'
@@ -279,7 +278,7 @@ grep -Fq '"action":"router-auto"' <<< "$router_auto_action" || fail 'router AUTO
 [[ "$(cat "$TMP_DIR/runtime/extra_strats/cache/adaptive/mode")" = AUTO ]] || fail 'WebUI router AUTO did not persist AUTO mode'
 router_auto_status="$(ZATOR_ROOT="$TMP_DIR/runtime" ZAPRET2_ROOT="$TMP_DIR/zapret2" Z2R_ADAPTIVE_DIR="$TMP_DIR/router-auto-runtime" \
   REQUEST_METHOD=GET QUERY_STRING=setting=adaptive bash "$TMP_DIR/panel/cgi-bin/settings.cgi")"
-grep -Fq '"mode":"AUTO","default_scope_apply":true' <<< "$router_auto_status" || fail 'router AUTO status did not report default-scope application'
+grep -Fq '"mode":"AUTO","default_scope_apply":false,"browser_default_scope_consent":false' <<< "$router_auto_status" || fail 'router AUTO status overstated browser trial scope consent'
 grep -Fq '"automatic_apply":true' <<< "$router_auto_status" || fail 'router AUTO status did not report its active fallback mode'
 printf '1\trouter_trial_2\tcdn.example.org\t93.184.216.34\t1\ttls\tdefault\t%s\n' "$(date +%s)" >> "$TMP_DIR/router-auto-runtime/events.tsv"
 printf '1\trouter_trial_3\trr1.googlevideo.com\t94.0.3.5\t5\tquic\tdefault\t%s\n' "$(date +%s)" >> "$TMP_DIR/router-auto-runtime/events.tsv"

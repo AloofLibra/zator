@@ -352,15 +352,18 @@
       const remaining = result.ok
         ? result.data.next_attempt?.attempt_id ? [] : queue.filter(item => item.id !== pending.id)
         : queue;
+      const nextAttemptId = result.data.next_attempt?.attempt_id || row.attempt_id;
+      const attemptChanged = nextAttemptId !== row.attempt_id;
       return {
         ...row,
-        attempt_id: result.data.next_attempt?.attempt_id || row.attempt_id,
+        attempt_id: nextAttemptId,
         candidate_protocol: result.data.next_attempt?.candidate?.protocol || row.candidate_protocol || null,
         candidate_profile: result.data.next_attempt?.candidate?.profile_id || row.candidate_profile || null,
         attempt_expires_at: result.data.next_attempt?.expires_at || row.attempt_expires_at,
         router_status: result.data.next_attempt?.state || result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
         router_reason: result.data.reason || row.router_reason || null,
         media_quality: result.data.media_quality || row.media_quality || null,
+        ...(attemptChanged ? { media_quality_sampled: false, media_quality: null } : {}),
         pending_results: remaining,
         pending_result: remaining[0] || null
       };
@@ -444,14 +447,13 @@
   }
 
   async function captureAttemptResult(state, host, tabId, result, requestClass, observedAt, browserIp, resourceId = "", browserProtocol = "", mediaQuality = null) {
-    if (!safeRemoteIp(browserIp)) return false;
     const event = findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId);
-    if (!event) return false;
+    if (!event || (!safeRemoteIp(browserIp) && result !== "network_failure")) return false;
     const queue = Array.isArray(event.pending_results)
       ? event.pending_results
       : event.pending_result ? [event.pending_result] : [];
     if (queue.length >= 4) return false;
-    queue.push({ id: opaqueId(), result, request_class: requestClass, browser_ip: browserIp, observed_at: observedAt,
+    queue.push({ id: opaqueId(), result, request_class: requestClass, browser_ip: safeRemoteIp(browserIp) ? browserIp : "", observed_at: observedAt,
       ...(browserProtocol ? { browser_protocol: browserProtocol } : {}),
       ...(mediaQuality ? { media_quality: mediaQuality } : {}) });
     event.pending_results = queue;
@@ -542,6 +544,6 @@
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-  globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, readBrowserProtocol, readMediaQuality, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt, getLearningStatus };
+  globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, readBrowserProtocol, readMediaQuality, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, captureAttemptResult, syncAttempt, queueSyncAttempt, cancelAttempt, getLearningStatus };
   }
 })();

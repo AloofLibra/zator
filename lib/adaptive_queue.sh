@@ -102,7 +102,7 @@ adaptive_queue_request() {
   local host="${1,,}" ip="$2" profile="$3" scope="$4" base="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}"
   local file lock tmp now id row ver old_id old_host old_ip old_profile old_scope created count=0 cooldown=0 tries=0 owner events
   mode="$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/mode" 2>/dev/null)"
-  [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || return 3
+  [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA || "$mode" = AUTO ]] || return 3
   [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$profile" =~ ^[1-4]$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
   if [[ "$scope" = mark:* ]]; then (( ${scope#mark:} <= 65535 )) || return 2; fi

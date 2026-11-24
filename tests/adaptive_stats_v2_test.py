@@ -21,8 +21,8 @@ class Pipeline:
         self.ops.append(("hgetall", key))
         return self
 
-    def pfcount(self, key):
-        self.ops.append(("pfcount", key))
+    def pfcount(self, *keys):
+        self.ops.append(("pfcount", *keys))
         return self
 
     def srem(self, key, member):
@@ -35,7 +35,9 @@ class Pipeline:
             if op[0] == "hgetall":
                 output.append(self.db.hashes.get(op[1], {}).copy())
             elif op[0] == "pfcount":
-                output.append(len(self.db.hlls.get(op[1], set())))
+                merged = set()
+                for key in op[1:]: merged.update(self.db.hlls.get(key, set()))
+                output.append(len(merged))
             elif op[0] == "srem":
                 output.append(int(op[2] in self.db.sets.get(op[1], set())))
                 self.db.sets.get(op[1], set()).discard(op[2])
@@ -59,6 +61,13 @@ class FakeRedis:
 
     def get(self, key):
         return self.strings.get(key)
+
+    def smembers(self, key):
+        return set(self.sets.get(key, set()))
+
+    def setex(self, key, ttl, value):
+        self.strings[key] = value
+        return True
 
     def eval(self, script, key_count, *args):
         keys = args[:key_count]
@@ -227,6 +236,19 @@ except ValueError:
     pass
 else:
     raise AssertionError("browser host telemetry was accepted")
+
+# Browser-confirmed outcomes materialize into their own keyspace, and the
+# normal isolated-probe getter remains empty for the same provider/dimension.
+for source, state in (("a" * 64, "CONFIRMED_SUCCESS"), ("b" * 64, "CONFIRMED_FAILURE")):
+    outcome = browser_batch(request=source[:32], results=[{"profile_id": 1, "protocol": "tls", "fingerprint": FP1,
+        "state": state, "treatment_variant": "standard", "protocol_proven": True, "confidence": "high"}])
+    adaptive.ingest_browser_batch(browser_db, outcome, SECRET, now=NOW, source_digest=source)
+assert adaptive.refresh_browser_rankings(browser_db, now=NOW, min_sources=2) == 1
+browser_rank = adaptive.get_browser_rankings(browser_db, "Example ISP", 1, "tls", now=NOW)
+assert browser_rank["status"] == "fresh" and browser_rank["rankings"][0]["successes"] == 1
+assert adaptive.get_rankings(browser_db, "Example ISP", 1, "tls", now=NOW)["status"] == "not_ready", \
+    "browser feedback was mixed into isolated-agent rankings"
+assert "source=browser_feedback" in adaptive.render_browser_rankings_tsv(browser_rank)
 for recipe, profile, protocol, treatment in (
     ("googlevideo-tcp-media-v1", 2, "tcp-media", "gv_tcp_plain"),
     ("googlevideo-tcp-media-v1", 2, "tcp-media", "gv_tcp_ramp"),

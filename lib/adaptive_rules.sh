@@ -15,12 +15,16 @@ adaptive_rules_quic_host_valid() {
   [[ $# = 1 && "${1,,}" =~ (^|\.)(googlevideo\.com|youtube\.com|youtubei\.googleapis\.com)$ ]]
 }
 
+adaptive_rules_googlevideo_host_valid() {
+  [[ $# = 1 && "${1,,}" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*googlevideo\.com$ ]]
+}
+
 adaptive_rules_kind_valid() {
   [[ $# = 3 ]] || return 1
   local profile="$1" proto="$2" host="${3,,}"
   case "$proto" in
     tls) [[ "$profile" =~ ^[1-4]$ ]] ;;
-    googlevideo-tcp) [[ "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ]] ;;
+    googlevideo-tcp) [[ "$profile" = 2 ]] && adaptive_rules_googlevideo_host_valid "$host" ;;
     quic) [[ "$profile" = 5 ]] && adaptive_rules_quic_host_valid "$host" ;;
     *) return 1 ;;
   esac
@@ -295,7 +299,7 @@ adaptive_router_trials_reset() {
   [[ "$owner" =~ ^[0-9]+:[0-9]+$ && "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
   tmp="$(mktemp "$dir/.events-reset.XXXXXX")" || return 1
   awk -F '\t' 'BEGIN { OFS="\t" }
-    NR<=128 && NF==8 && $1==1 && ($2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") { $2="seen" }
+    NR<=128 && (NF==8 || NF==9 || NF==10) && $1==1 && ($2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") { $2="seen"; if (NF>=9) $9=0 }
     { print }
   ' "$events" > "$tmp" || { rm -f "$tmp"; return 1; }
   chown "$owner" "$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$events" || {
@@ -460,7 +464,7 @@ adaptive_rule_add() {
   local strategy="$6" fingerprint="$7" catalog="$8" runtime_stamp="$9" expires="${10}"
   local rule_origin="${11:-}"
   local now file dir lock tmp row count=0 lock_tries=0 snapshot source_file owner previous_fingerprint=""
-  [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
+  [[ ( "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ || ( "$proto" = googlevideo-tcp && "$host" = googlevideo.com ) ) && ${#host} -le 253 ]] || return 2
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 2
   awk -F. 'NF==4 {
     for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || length($i)>3 || $i>255 || ($i ~ /^0[0-9]+$/)) exit 1
@@ -471,7 +475,7 @@ adaptive_rule_add() {
        (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1
     exit 0
   } {exit 1}' <<< "$ip" || return 2
-  [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ || ( "$scope" = shared && "$rule_origin" = browser-confirmed ) ) ]] || return 2
+  [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$(adaptive_rules_googlevideo_host_valid "$host" && printf yes)" = yes ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" =~ ^mark:[0-9]{1,5}$ || ( "$scope" = shared && "$rule_origin" = browser-confirmed ) ) ]] || return 2
   [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   [[ "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ && "$fingerprint" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ ]] || return 2
   [[ "$runtime_stamp" =~ ^[0-9:|]{1,2048}$ ]] || return 2
@@ -494,7 +498,7 @@ adaptive_rule_add() {
       IFS=$'\t' read -r ver old_host old_ip old_profile old_proto old_scope old_strategy old_fp old_catalog old_stamp old_expiry extra <<< "$row"
       [[ "$ver" = 1 && -z "${extra:-}" && "$old_expiry" =~ ^[0-9]{1,10}$ ]] || continue
       (( old_expiry > now )) || continue
-      if [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" ]]; then
+      if [[ "$old_host" = "$host" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" ]]; then
         [[ "$old_fp" =~ ^sha256:[a-f0-9]{64}$ ]] && previous_fingerprint="$old_fp"
         continue
       fi
@@ -522,8 +526,8 @@ adaptive_rule_remove() {
   [[ $# = 4 || $# = 5 ]] || return 2
   local host="${1,,}" ip="$2" profile="$3" scope="$4" proto="${5:-tls}"
   local file dir lock snapshot source tmp row ver old_host old_ip old_profile old_proto old_scope old_strategy old_fp old_catalog old_stamp old_expiry extra tries=0 owner removed=0 count=0
-  [[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ && ${#host} -le 253 ]] || return 2
-  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" = shared || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
+  [[ ( "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ || ( "$proto" = googlevideo-tcp && "$host" = googlevideo.com ) ) && ${#host} -le 253 ]] || return 2
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$(adaptive_rules_googlevideo_host_valid "$host" && printf yes)" = yes ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) && ( "$scope" = default || "$scope" = shared || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) ]] || return 2
   [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   file="$(adaptive_rules_file)"; dir="$(dirname "$file")"; lock="$file.lock"; snapshot="$(adaptive_rules_snapshot_file)"
   mkdir -p "$dir" "$(dirname "$snapshot")" || return 1
@@ -538,7 +542,7 @@ adaptive_rule_remove() {
     while IFS= read -r row; do
       count=$((count + 1)); (( count <= 256 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
       IFS=$'\t' read -r ver old_host old_ip old_profile old_proto old_scope old_strategy old_fp old_catalog old_stamp old_expiry extra <<< "$row"
-      if [[ "$ver" = 1 && "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" && -z "${extra:-}" ]]; then
+      if [[ "$ver" = 1 && "$old_host" = "$host" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" && -z "${extra:-}" ]]; then
         removed=1; continue
       fi
       printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }
@@ -561,8 +565,8 @@ adaptive_rule_remove() {
 adaptive_rule_lookup_local() {
   [[ $# = 6 ]] || return 2
   local host="${1,,}" ip="$2" profile="$3" proto="$4" scope="$5" stamp="$6"
-  local file snapshot row ver old_host old_ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now
-  local found='' found_scope='' matches=0 shared_found='' shared_matches=0 count=0
+  local file snapshot row ver old_host old_ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra now found_value current_value conflict=0
+  local found='' found_scope='' matches=0 shared_found='' shared_found_value='' shared_matches=0 count=0
   [[ "$proto" != quic ]] || adaptive_rules_quic_host_valid "$host" || return 2
   file="$(adaptive_rules_file)"; snapshot="$(adaptive_rules_snapshot_file)"
   [[ -f "$file" && ! -L "$file" ]] || file="$snapshot"
@@ -571,24 +575,29 @@ adaptive_rule_lookup_local() {
   while IFS= read -r row; do
     count=$((count + 1)); (( count <= 256 )) || return 1
     IFS=$'\t' read -r ver old_host old_ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra <<< "$row"
-    [[ "$ver" = 1 && -z "${extra:-}" && "$old_host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ &&
-       "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$old_profile" =~ ^[1-4]$ && ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 && "$old_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$old_profile" = 5 && "$old_proto" = quic ) ) &&
+    [[ "$ver" = 1 && -z "${extra:-}" && ( "$old_host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ || ( "$old_proto" = googlevideo-tcp && "$old_host" = googlevideo.com ) ) &&
+       "$old_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( ( "$old_profile" =~ ^[1-4]$ && ( "$old_proto" = tls || ( "$old_proto" = googlevideo-tcp && "$old_profile" = 2 && "$(adaptive_rules_googlevideo_host_valid "$old_host" && printf yes)" = yes ) ) ) || ( "$old_profile" = 5 && "$old_proto" = quic ) ) &&
        ( "$old_scope" = default || "$old_scope" = shared || "$old_scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$strategy" =~ ^(0|[1-9][0-9]{0,2})$ &&
        "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
-    [[ "$old_host" = "$host" && "$old_ip" = "$ip" && "$old_profile" = "$profile" && "$old_proto" = "$proto" &&
+    [[ "$old_host" = "$host" && "$old_profile" = "$profile" && "$old_proto" = "$proto" &&
        ( "$old_scope" = "$scope" || ( "$scope" = default && "$old_scope" = shared ) ) && "$old_stamp" = "$stamp" ]] || continue
     (( expiry > now )) || continue
     if [[ "$old_scope" = "$scope" ]]; then
+      current_value="${strategy}\t${fp}\t${catalog}\t${old_stamp}"
+      if (( matches )); then [[ "$current_value" = "$found_value" ]] || conflict=1
+      else found_value="$current_value"; found="${strategy}\t${fp}\t${catalog}\t${expiry}"; fi
       matches=$((matches + 1))
-      found="${strategy}\t${fp}\t${catalog}\t${expiry}"
       found_scope="$old_scope"
     else
+      current_value="${strategy}\t${fp}\t${catalog}\t${old_stamp}"
+      if (( shared_matches )); then [[ "$current_value" = "$shared_found_value" ]] || conflict=1
+      else shared_found_value="$current_value"; shared_found="${strategy}\t${fp}\t${catalog}\t${expiry}"; fi
       shared_matches=$((shared_matches + 1))
-      shared_found="${strategy}\t${fp}\t${catalog}\t${expiry}"
     fi
   done < "$file"
-  if (( matches == 1 )); then printf '%b\t%s\n' "$found" "$found_scope"; return 0; fi
-  (( matches == 0 && shared_matches == 1 )) || return 1
+  (( conflict == 0 )) || return 1
+  if (( matches > 0 )); then printf '%b\t%s\n' "$found" "$found_scope"; return 0; fi
+  (( shared_matches > 0 )) || return 1
   printf '%b\tshared\n' "$shared_found"
 }
 
@@ -614,7 +623,7 @@ adaptive_rules_googlevideo_group_id() {
   [[ $# = 1 ]] || return 2
   local host="${1,,}"
   host="${host%.}"
-  [[ "$host" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ && ${#host} -le 253 ]] || return 2
+  adaptive_rules_googlevideo_host_valid "$host" && [[ ${#host} -le 253 ]] || return 2
   if [[ ! "$host" =~ (^|\.)googlevideo\.com$ ]]; then printf 'exact:%s\n' "$host"; return; fi
   if [[ "$host" =~ ^rr[0-9]+-(.+)\.googlevideo\.com$ ]]; then printf 'gv1:rr:%s\n' "${BASH_REMATCH[1]}"
   elif [[ "$host" =~ ^r[0-9]+(---sn-[a-z0-9-]+)\.googlevideo\.com$ ]]; then printf 'gv1:r:%s\n' "${BASH_REMATCH[1]}"
@@ -645,7 +654,8 @@ adaptive_rules_ranked_candidates() {
   # Avoid combining catalogs when a remap/update was observed during writes.
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra <<< "$row"
-    [[ "$ver" = 1 && -z "${extra:-}" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" &&
+    [[ "$ver" = 1 && -z "${extra:-}" && "$old_profile" = "$profile" && "$old_proto" = "$proto" &&
+       ( "$old_scope" = "$scope" || ( "$scope" = default && "$old_scope" = shared ) ) &&
        "$(adaptive_rules_kind_valid "$old_profile" "$old_proto" "$host" && printf valid)" = valid &&
        "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" =~ ^sha256:[a-f0-9]{64}$ &&
        "$old_stamp" = "$stamp" && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue
@@ -658,7 +668,8 @@ adaptive_rules_ranked_candidates() {
   catalog_seen="${!seen_catalog[@]}"
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r ver host ip old_profile old_proto old_scope strategy fp catalog old_stamp expiry extra <<< "$row"
-    [[ "$ver" = 1 && -z "${extra:-}" && "$old_profile" = "$profile" && "$old_proto" = "$proto" && "$old_scope" = "$scope" &&
+    [[ "$ver" = 1 && -z "${extra:-}" && "$old_profile" = "$profile" && "$old_proto" = "$proto" &&
+       ( "$old_scope" = "$scope" || ( "$scope" = default && "$old_scope" = shared ) ) &&
        "$(adaptive_rules_kind_valid "$old_profile" "$old_proto" "$host" && printf valid)" = valid &&
        "$strategy" =~ ^[1-9][0-9]{0,2}$ && "$fp" =~ ^sha256:[a-f0-9]{64}$ && "$catalog" = "$catalog_seen" &&
        "$old_stamp" = "$stamp" && "$expiry" =~ ^[1-9][0-9]{0,9}$ ]] || continue

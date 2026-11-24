@@ -59,7 +59,7 @@ wrong_origin="$(printf '%s' "$body" | env REQUEST_METHOD=POST CONTENT_TYPE=appli
   bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q 'Status: 403 Forbidden' <<< "$wrong_origin"
 status_now="$(date +%s)"
-printf '1\tseen\texample.org\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$status_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+printf '1\tseen\texample.org\t8.8.8.8\t1\ttls\tmark:7\t%s\t1\t8\n' "$status_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
 learning_status_body='schema_version=1&action=browser_learning_status'
 learning_status="$(printf '%s' "$learning_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#learning_status_body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
@@ -89,33 +89,33 @@ now="$(date +%s)"
 
 now="$(date +%s)"
 events="$tmp/runtime/events.tsv"
-printf '1\tseen\texample.org\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$now" > "$events"
+printf '1\tseen\texample.org\t8.8.8.8\t1\ttls\tmark:7\t%s\t1\t8\n' "$now" > "$events"
 resolved="$(adaptive_browser_resolve_observation example.org mark:7 "$events" "$now")"
-[[ "$resolved" = $'example.org\t8.8.8.8\t1\ttls\tmark:7\t'"$now" ]]
-printf '1\tseen\texample.org\t1.1.1.1\t1\ttls\tmark:7\t%s\n' "$now" >> "$events"
+[[ "$resolved" = $'example.org\t8.8.8.8\t1\ttls\tmark:7\t'"$now"$'\t1' ]]
+printf '1\tseen\texample.org\t1.1.1.1\t1\ttls\tmark:7\t%s\t2\t8\n' "$now" >> "$events"
 if adaptive_browser_resolve_observation example.org mark:7 "$events" "$now"; then exit 1; else [[ "$?" = 3 ]]; fi
-printf '1\tseen\twww.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$now" > "$events"
-printf '1\tseen\twww.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t%s\n' "$now" >> "$events"
+printf '1\tseen\twww.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t%s\t1\t8\n' "$now" > "$events"
+printf '1\tseen\twww.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t%s\t1\t8\n' "$now" >> "$events"
 if adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now"; then exit 1; fi
 resolved="$(adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now" quic)"
-[[ "$resolved" = $'www.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t'"$now" ]]
+[[ "$resolved" = $'www.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t'"$now"$'\t1' ]]
 resolved="$(adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now" tls)"
-[[ "$resolved" = $'www.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t'"$now" ]]
+[[ "$resolved" = $'www.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t'"$now"$'\t1' ]]
 
 # YouTube may retry a failed media request against a different Googlevideo CDN
 # hostname. Reuse only the freshest same-scope profile-2 TCP observation.
 new_cdn=rr1---sn-new.googlevideo.com
-printf '1\tseen\trr2---sn-old.googlevideo.com\t8.8.8.8\t2\ttls\tmark:7\t%s\n' "$((now - 2))" > "$events"
-printf '1\tseen\trr3---sn-other.googlevideo.com\t1.1.1.1\t2\ttls\tmark:8\t%s\n' "$now" >> "$events"
+printf '1\tseen\trr2---sn-old.googlevideo.com\t8.8.8.8\t2\ttls\tmark:7\t%s\t1\t8\n' "$((now - 2))" > "$events"
+printf '1\tseen\trr3---sn-other.googlevideo.com\t1.1.1.1\t2\ttls\tmark:8\t%s\t1\t8\n' "$now" >> "$events"
 resolved="$(adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls)"
-[[ "$resolved" = $'rr2---sn-old.googlevideo.com\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t'"$((now - 2))" ]]
+[[ "$resolved" = $'rr2---sn-old.googlevideo.com\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t'"$((now - 2))"$'\t1' ]]
 # An exact observation wins over a newer family fallback.
-printf '1\tseen\t%s\t9.9.9.9\t2\ttls\tmark:7\t%s\n' "$new_cdn" "$((now - 3))" >> "$events"
+printf '1\tseen\t%s\t9.9.9.9\t2\ttls\tmark:7\t%s\t2\t8\n' "$new_cdn" "$((now - 3))" >> "$events"
 resolved="$(adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls)"
-expected="$(printf '%s\t9.9.9.9\t2\ttls\tmark:7\t%s' "$new_cdn" "$((now - 3))")"
+expected="$(printf '%s\t9.9.9.9\t2\ttls\tmark:7\t%s\t2' "$new_cdn" "$((now - 3))")"
 [[ "$resolved" = "$expected" ]]
 # Equally recent distinct CDN tuples are ambiguous; QUIC never borrows TCP state.
-printf '1\tseen\trr4---sn-tie.googlevideo.com\t4.4.4.4\t2\ttls\tmark:7\t%s\n1\tseen\trr5---sn-tie.googlevideo.com\t5.5.5.5\t2\ttls\tmark:7\t%s\n' "$((now - 2))" "$((now - 2))" > "$events"
+printf '1\tseen\trr4---sn-tie.googlevideo.com\t4.4.4.4\t2\ttls\tmark:7\t%s\t1\t8\n1\tseen\trr5---sn-tie.googlevideo.com\t5.5.5.5\t2\ttls\tmark:7\t%s\t1\t8\n' "$((now - 2))" "$((now - 2))" > "$events"
 if adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls; then exit 1; else [[ "$?" = 3 ]]; fi
 if adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" quic; then exit 1; fi
 
@@ -236,14 +236,14 @@ ORCH_DIR="$tmp/orchestra"
 . "$ROOT/lib/config.sh"
 . "$ROOT/lib/adaptive_rules.sh"
 . "$ROOT/lib/supersweep_probe.sh"
-selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
+selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id" 1)"
 [[ "${selected%%$'\t'*}" = 2 ]]
 # One eligible managed main-frame failure starts a scoped trial immediately;
 # the first attempt must not perform a curl/DNS diagnosis.
 mkdir -p "$ZATOR_ROOT/extra_strats/cache/orchestra"
 trial_host=immediate.example.org
 trial_now="$(date +%s)"
-printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$trial_host" "$trial_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\t1\t8\n' "$trial_host" "$trial_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
 mkdir -p "$tmp/mock-diagnostics"
 for diagnostic in curl nslookup; do
   cat > "$tmp/mock-diagnostics/$diagnostic" <<'EOF'
@@ -268,7 +268,7 @@ manual_host=manual-lock.example.org
 manual_now="$(date +%s)"
 mkdir -p "$ZATOR_ROOT/extra_strats/cache/orchestra"
 printf '1\ttls\t6\n' > "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.manual.tsv"
-printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$manual_host" "$manual_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\t1\t8\n' "$manual_host" "$manual_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
 manual_body="schema_version=1&action=browser_report_failure&browser_event_id=15151515151515151515151515151515&trigger=main_frame_network_failure&request_class=main_frame&hostname=$manual_host&method=GET&failure_class=network_failure&failure_count=1&observed_at=$((manual_now * 1000))"
 manual_response="$(printf '%s' "$manual_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#manual_body}" HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"status":"MANUAL_LOCKED"' <<< "$manual_response"
@@ -277,7 +277,7 @@ rm -f "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.manual.tsv"
 # Browser trials must not start when router autorotation is off.
 auto_off_host=auto-off.example.org
 auto_off_now="$(date +%s)"
-printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$auto_off_host" "$auto_off_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\t1\t8\n' "$auto_off_host" "$auto_off_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
 sed -i 's/^#Z2R_AUTO_MODE=1$/#Z2R_AUTO_MODE=0/' "$ZAPRET2_ROOT/config"
 auto_off_body="schema_version=1&action=browser_report_failure&browser_event_id=14141414141414141414141414141414&trigger=main_frame_network_failure&request_class=main_frame&hostname=$auto_off_host&method=GET&failure_class=network_failure&failure_count=1&observed_at=$((auto_off_now * 1000))"
 auto_off_response="$(printf '%s' "$auto_off_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#auto_off_body}" HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
@@ -288,7 +288,7 @@ sed -i 's/^#Z2R_AUTO_MODE=0$/#Z2R_AUTO_MODE=1/' "$ZAPRET2_ROOT/config"
 # must not create a trial.
 ambiguous_now="$(date +%s)"
 ambiguous_host=r1---sn.googlevideo.com
-printf '1\tseen\t%s\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t%s\n1\tseen\t%s\t1.1.1.1\t5\tquic\tmark:7\t%s\n' \
+printf '1\tseen\t%s\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t%s\t1\t8\n1\tseen\t%s\t1.1.1.1\t5\tquic\tmark:7\t%s\t1\t8\n' \
   "$ambiguous_host" "$ambiguous_now" "$ambiguous_host" "$ambiguous_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
 ambiguous_event=13131313131313131313131313131313
 ambiguous_body="schema_version=1&action=browser_report_failure&browser_event_id=$ambiguous_event&trigger=main_frame_network_failure&request_class=main_frame&hostname=$ambiguous_host&method=GET&failure_class=network_failure&failure_count=1&observed_at=$((ambiguous_now * 1000))"
@@ -308,7 +308,7 @@ printf '%s\n' '--lua-desync=split:strategy=3' >> "$tmp/args/strategies"
 sed -i '/--lua-desync=multisplit:strategy=2/a --lua-desync=split:strategy=3' "$ZAPRET2_ROOT/config"
 rank_fp="$(adaptive_strategy_fingerprint 1 3 "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" standard tls-http1-v1)"
 ranking_file="$tmp/rankings.tsv"
-printf 'schema_version=2\nstatus=fresh\ngenerated_at=%s\nprofile_id=1\nprotocol=tls\nstrategy\t%s\t0.900000\t10\t9\t1\n' "$(date +%s)" "$rank_fp" > "$ranking_file"
+printf 'schema_version=2\nsource=browser_feedback\nstatus=fresh\ngenerated_at=%s\nprofile_id=1\nprotocol=tls\nstrategy\t%s\t0.900000\t10\t9\t1\n' "$(date +%s)" "$rank_fp" > "$ranking_file"
 mkdir -p "$tmp/mockbin"
 cat > "$tmp/mockbin/curl" <<'EOF'
 #!/usr/bin/env sh
@@ -323,13 +323,13 @@ chmod +x "$tmp/mockbin/curl"
 old_path="$PATH"
 PATH="$tmp/mockbin:$PATH"
 export Z2R_TEST_RANKING_FILE="$ranking_file" Z2R_TEST_CURL_ARGS="$tmp/curl-args"
-selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
+selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id" 1)"
 PATH="$old_path"
 [[ "${selected%%$'\t'*}" = 3 ]]
 ! grep -q 'example.org\|8\.8\.8\.8' "$tmp/curl-args"
 sed -i 's#sha256:.*#sha256:0000000000000000000000000000000000000000000000000000000000000000#' "$ranking_file"
 PATH="$tmp/mockbin:$PATH"
-selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id")"
+selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id" 1)"
 PATH="$old_path"
 [[ "${selected%%$'\t'*}" = 2 ]]
 rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in"
@@ -492,11 +492,11 @@ result_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_f
 result_response="$(printf '%s' "$result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#result_body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$result_response"
-grep -q $'^1\texample.org\t8.8.8.8\t1\ttls\tshared\t' "$Z2R_ADAPTIVE_DIR/rules.tsv" || {
-  echo 'browser-confirmed strategy was not stored as a shared domain baseline' >&2; exit 1;
-}
 grep -q $'^1\texample.org\t8.8.8.8\t1\ttls\tmark:7\t' "$Z2R_ADAPTIVE_DIR/rules.tsv" || {
-  echo 'browser-confirmed strategy was not retained for the originating client scope' >&2; exit 1;
+  echo 'browser-confirmed strategy was not retained for its mark' >&2; exit 1;
+}
+! grep -Eq $'^1\texample.org\t.*\t1\ttls\t(shared|default)\t' "$Z2R_ADAPTIVE_DIR/rules.tsv" || {
+  echo 'mark-scoped browser result leaked into the unmarked strategy group' >&2; exit 1;
 }
 
 critical_attempt=efefefefefefefefefefefefefefefef
@@ -539,14 +539,14 @@ grep -q '"attempt_id":"[a-f0-9]\{32\}"' <<< "$failed_response"
 grep -q '"strategy":1' <<< "$failed_response"
 
 # A browser success after a confirmed profile-5 flow is not QUIC success unless
-# Chromium provides reliable H3 protocol evidence (the current extension does not).
+# Chromium provides reliable H3 protocol evidence; transport failure needs no H3 proof.
 quic_attempt=abababababababababababababababab
 quic_generation=10
 quic_host=rr1---sn-a5mekn6e.googlevideo.com
 quic_now="$(date +%s)"
 quic_expires=$((quic_now + 30))
 quic_fingerprint="sha256:$(printf '%064d' 0 | tr 0 c)"
-quic_strategy=2
+quic_strategy=1
 adaptive_browser_attempt_write "$quic_attempt" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic main_frame_network_failure WAIT_BROWSER_RESULT "$quic_strategy" "$quic_fingerprint" "$quic_now" "$quic_expires" "$quic_generation"
 printf '1\t%s\t%s\t%s\tmark:7\t%s\t8.8.8.8\t5\tquic\t%s\t%s\t%s\t%s\n' \
   "$quic_attempt" "$quic_generation" "$client_id" "$quic_host" "$quic_strategy" "$quic_fingerprint" "$quic_now" "$quic_now" > "$flow_dir/$quic_attempt.$quic_generation.tsv"
@@ -559,6 +559,18 @@ grep -q '"reason":"h3_protocol_evidence_unavailable"' <<< "$quic_result_response
 if grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$quic_result_response"; then
   echo 'browser success on a QUIC trial was incorrectly counted as H3 success' >&2; exit 1;
 fi
+
+quic_failed_attempt=abababababababababababababababac
+quic_failed_generation=13
+adaptive_browser_attempt_write "$quic_failed_attempt" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic main_frame_network_failure WAIT_NEW_FLOW "$quic_strategy" "$quic_fingerprint" "$quic_now" "$quic_expires" "$quic_failed_generation"
+printf '1\t%s\t%s\t%s\tmark:7\t%s\t8.8.8.8\t5\tquic\t%s\t%s\t%s\t%s\n' \
+  "$quic_failed_attempt" "$quic_failed_generation" "$client_id" "$quic_host" "$quic_strategy" "$quic_fingerprint" "$quic_now" "$quic_now" > "$flow_dir/$quic_failed_attempt.$quic_failed_generation.tsv"
+quic_failed_body="schema_version=1&action=browser_report_result&attempt_id=$quic_failed_attempt&browser_event_id=abababababababababababababababac&result=network_failure&request_class=main_frame&browser_ip=&observed_at=$((quic_now * 1000))"
+quic_failed_response="$(printf '%s' "$quic_failed_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#quic_failed_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"CONFIRMED_FAILURE"' <<< "$quic_failed_response" && ! grep -q '"status":"PROTOCOL_UNKNOWN"' <<< "$quic_failed_response" || {
+  echo "router-confirmed QUIC transport failure without browser IP/H3 was not actionable: $quic_failed_response" >&2; exit 1;
+}
 
 # A browser timing entry that proves TCP fallback ends the QUIC trial without
 # requiring a QUIC Initial, promoting the strategy, or advancing a candidate.
@@ -638,8 +650,14 @@ canary_result() {
   local attempt_id="$1" event_id="$2" quality_fields="${3:-}" result_body
   local observed_at="$(( $(date +%s) * 1000 ))"
   result_body="schema_version=1&action=browser_report_result&attempt_id=$attempt_id&browser_event_id=$event_id&result=network_success&request_class=media&browser_ip=$canary_ip&observed_at=$observed_at&ramp_canary_opt_in=1$quality_fields"
-  printf '%s' "$result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#result_body}" \
+  local response
+  response="$(printf '%s' "$result_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#result_body}" \
     HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
+  )"
+  python3 -c 'import json,sys; value=json.loads(sys.argv[1].splitlines()[-1]); assert isinstance(value,dict)' "$response" || {
+    printf 'invalid ramp canary JSON response:\n%s\n' "$response" >&2; return 1;
+  }
+  printf '%s\n' "$response"
 }
 canary_first_quality='&media_quality=healthy&media_sample_ms=8000&media_progress_ms=7000&media_stall_ms=0&media_dropped_frames=2&media_total_frames=240'
 first_sample="$(canary_result "$canary_attempt" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$canary_first_quality")"

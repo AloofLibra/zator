@@ -21,7 +21,7 @@ local valid = table.concat({"1", "cdn.example.org", "93.184.216.34", "1", "tls",
 locked_load_adaptive_lines_for_tests({valid}, 1000, stamp)
 local n, found_fp, found_cat, expires = locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.34", "1", "tls", "default", 1000)
 assert(n == 7 and found_fp == fp and found_cat == cat and expires == 5000, "exact rule not returned")
-assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.35", "1", "tls", "default", 1000) == nil, "destination IP was not exact")
+assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.35", "1", "tls", "default", 1000) == 7, "same-scope strategy did not survive a client IP change")
 assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.34", "2", "tls", "default", 1000) == nil, "profile was not exact")
 assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.34", "1", "http", "default", 1000) == nil, "application protocol was not exact")
 assert(locked_adaptive_strategy_for_tuple("cdn.example.org", "93.184.216.34", "1", "tls", "mark:4", 1000) == nil, "scope was not exact")
