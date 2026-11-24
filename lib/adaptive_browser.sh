@@ -64,25 +64,47 @@ adaptive_browser_resolve_observation() {
   host="$ADAPTIVE_BROWSER_HOST"
   [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] && [[ "$now" =~ ^[0-9]{1,10}$ ]] && [[ "$transport" =~ ^(unknown|tls|quic)$ ]] || return 2
   [[ -r "$file" && ! -L "$file" && $(wc -c < "$file") -le 32768 ]] || return 1
-  local -a rows=()
+  local -a rows=() family_rows=()
   while IFS= read -r row || [[ -n "$row" ]]; do
     IFS=$'\t' read -r ver status old_host ip profile proto old_scope seen extra <<< "$row"
     case "$transport" in
       tls) [[ "$proto" = tls || "$proto" = googlevideo-tcp ]] || continue ;;
       quic) [[ "$proto" = quic ]] || continue ;;
     esac
-    [[ "$ver" = 1 && "$status" = seen && "$old_host" = "$host" && "$old_scope" = "$scope" &&
+    [[ "$ver" = 1 && "$status" = seen && "$old_scope" = "$scope" &&
        ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) &&
        "$seen" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || continue
     [[ "$proto" != quic ]] || adaptive_browser_quic_host_valid "$old_host" || continue
+    if [[ "$old_host" != "$host" ]]; then
+      [[ "$transport" != quic && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$old_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ &&
+         "$profile" = 2 && ( "$proto" = tls || "$proto" = googlevideo-tcp ) ]] || continue
+    else
+      [[ ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ]] || continue
+    fi
     (( seen >= now - 300 && seen <= now + 10 )) || continue
     awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; c=$3+0; if(a==0 || a==10 || a==127 || a>=224 || (a==100 && b>=64 && b<=127) || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && (b==168 || (b==0 && (c==0 || c==2)) || (b==88 && c==99))) || (a==198 && (b==18 || b==19 || (b==51 && c==100))) || (a==203 && b==0 && c==113)) exit 1; exit 0} {exit 1}' <<< "$ip" || continue
-    printf -v tuple '%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$scope" "$seen"
-    rows+=("$tuple")
-    (( ${#rows[@]} <= 1 )) || return 3
+    if [[ "$old_host" = "$host" ]]; then
+      printf -v tuple '%s\t%s\t%s\t%s\t%s\t%s' "$host" "$ip" "$profile" "$proto" "$scope" "$seen"
+      rows+=("$tuple")
+      (( ${#rows[@]} <= 1 )) || return 3
+    else
+      printf -v tuple '%s\t%s\t%s\t%s\t%s\t%s' "$old_host" "$ip" "$profile" googlevideo-tcp "$scope" "$seen"
+      family_rows+=("$tuple")
+    fi
   done < "$file"
-  (( ${#rows[@]} == 1 )) || return 1
-  printf '%s\n' "${rows[0]}"
+  if (( ${#rows[@]} == 1 )); then printf '%s\n' "${rows[0]}"; return 0; fi
+  (( ${#family_rows[@]} )) || return 1
+  local newest=0 selected='' selected_tuple
+  for tuple in "${family_rows[@]}"; do
+    IFS=$'\t' read -r old_host ip profile proto old_scope seen <<< "$tuple"
+    if (( seen > newest )); then newest=$seen; selected="$tuple"; selected_tuple="$old_host\t$ip\t$profile\t$proto\t$old_scope"; continue; fi
+    if (( seen == newest )); then
+      local current_tuple
+      current_tuple="$old_host\t$ip\t$profile\t$proto\t$old_scope"
+      [[ "$current_tuple" = "$selected_tuple" ]] || return 3
+    fi
+  done
+  printf '%s\n' "$selected"
 }
 
 # Choose one numbered strategy without running curl, DNS, or an isolated probe.

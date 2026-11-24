@@ -2,14 +2,64 @@ const mode = document.querySelector("#mode");
 const latest = document.querySelector("#latest");
 const fix = document.querySelector("#fix");
 const cancel = document.querySelector("#cancel");
+const targets = document.querySelector("#targets");
+const features = document.querySelector("#features");
 let activeEvent = null;
 let activeTab = null;
+let cachedRouterStatus = null;
+let lastRouterStatusAt = 0;
+
+function addStatusItem(list, text, muted = false) {
+  const item = document.createElement("li");
+  item.textContent = text;
+  if (muted) item.className = "muted";
+  list.append(item);
+}
+
+function renderRouterStatus(state) {
+  targets.replaceChildren();
+  features.replaceChildren();
+  if (!state?.ok) {
+    addStatusItem(targets, state?.status === "not_paired" ? "Pair a router to see managed domains." : "Router status unavailable.", true);
+    addStatusItem(features, "Feature status unavailable.", true);
+    return;
+  }
+  const status = state.data;
+  const active = ["AGENT_BETA", "AUTO"].includes(status.mode);
+  if (!Array.isArray(status.targets) || status.targets.length === 0) {
+    addStatusItem(targets, active ? "No recent managed domains yet. Open sites to populate observations." : `Learning is off (${status.mode || "unknown"}).`, true);
+  } else {
+    for (const row of status.targets.slice(0, 24)) {
+      const proto = row.protocol === "quic" ? "QUIC" : row.protocol === "googlevideo-tcp" ? "Googlevideo TCP" : "TLS";
+      const strategy = row.strategy_source === "active_trial" ? `#${row.strategy_number} · temporary trial` :
+        row.strategy_source === "verified_rule" ? `#${row.strategy_number} · confirmed` :
+        row.strategy_source === "router_auto_trial" ? `#${row.strategy_number} · router trial` :
+        row.strategy_source === "profile_lock" ? (row.strategy_number === 0 ? "profile disabled" : `#${row.strategy_number} · profile lock`) :
+        `#${row.strategy_number} · automatic start`;
+      addStatusItem(targets, `${row.hostname} · ${proto} · ${strategy}`);
+    }
+  }
+  const local = cachedConfig || {};
+  addStatusItem(features, `Browser learning: ${active ? "active" : status.mode || "off"}`);
+  addStatusItem(features, `Media quality sampling: ${local.mediaQualityOptIn === true ? "enabled" : "off"}`);
+  addStatusItem(features, `Ramp canary: ${status.ramp_configured && local.mediaQualityOptIn === true && local.rampCanaryOptIn === true ? "enabled by consent" : "off"}`);
+  addStatusItem(features, `Shared rankings: ${status.ranking_opt_in ? "enabled" : "off"}`);
+  addStatusItem(features, `Browser outcome upload: ${status.stats_opt_in ? "enabled" : "off"}`);
+  addStatusItem(features, `QUIC profile: ${status.quic_profile_available ? "available" : "not configured"}`);
+}
+let cachedConfig = {};
 
 async function render() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tabId = tabs[0]?.id;
   activeTab = tabs[0] || null;
   let state = await chrome.runtime.sendMessage({ type: "z2r:get-state" });
+  cachedConfig = state.config || {};
+  if (!cachedRouterStatus || Date.now() - lastRouterStatusAt > 15_000) {
+    cachedRouterStatus = await chrome.runtime.sendMessage({ type: "z2r:get-learning-status" }).catch(() => ({ ok: false, status: "unavailable" }));
+    lastRouterStatusAt = Date.now();
+  }
+  renderRouterStatus(cachedRouterStatus);
   let row = (state.events || []).slice().reverse().find(item => item && item.hostname && item.tab_id === tabId);
   if (row?.attempt_id) {
     await chrome.runtime.sendMessage({ type: "z2r:sync-attempt", eventId: row.id });
@@ -22,7 +72,7 @@ async function render() {
   cancel.hidden = true;
   if (!row) {
     activeEvent = null;
-    latest.textContent = "No recent eligible network error. You can still ask Zator to try this site.";
+    latest.textContent = "No recent eligible network error.";
     return;
   }
   activeEvent = row;
@@ -56,7 +106,7 @@ async function render() {
     ? `${row.hostname} · ${status}${reason ? ` · ${reason}` : ""}${rampEvidence}${mediaEvidence}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · reloading once for retry" : ""}`
     : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}${reason ? ` · ${reason}` : ""}${rampEvidence}${mediaEvidence}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
-  cancel.hidden = !attemptActive;
+  cancel.hidden = !row.attempt_id || !attemptActive;
 }
 
 fix.addEventListener("click", async () => {

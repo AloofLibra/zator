@@ -403,6 +403,12 @@
     return { ok: result.ok, state: result.data.state || result.status };
   }
 
+  async function getLearningStatus() {
+    const state = await loadState();
+    if (!state.config.router || !state.config.token) return { ok: false, status: "not_paired", data: {} };
+    return postRouterForm(state.config, { schema_version: "1", action: "browser_learning_status" });
+  }
+
   function findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId = "") {
     const event = [...state.events].reverse().find(row => row && row.attempt_id &&
       (row.hostname === host || (row.candidate_protocol === "googlevideo-tcp" && row.candidate_profile === 2 &&
@@ -513,6 +519,10 @@
       void loadState().then(sendResponse).catch(() => sendResponse({ events: [], config: {} }));
       return true;
     }
+    if (message && message.type === "z2r:get-learning-status") {
+      void getLearningStatus().then(sendResponse).catch(() => sendResponse({ ok: false, status: "error", data: {} }));
+      return true;
+    }
     if (message && message.type === "z2r:fix" && typeof message.eventId === "string") {
       void requestFix(message.eventId).then(sendResponse).catch(() => sendResponse({ ok: false, reason: "error" }));
       return true;
@@ -532,6 +542,6 @@
   });
 
   if (globalThis.__Z2R_BROWSER_TEST__) {
-  globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, readBrowserProtocol, readMediaQuality, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt };
+  globalThis.__Z2R_BROWSER_TEST__.api = { safeHost, failureClass, failureTransport, readBrowserProtocol, readMediaQuality, rememberFailure, reportFailure, retryFailedGetOnce, requestFix, requestCurrentPageFix, recordHttpResponse, syncAttempt, queueSyncAttempt, cancelAttempt, getLearningStatus };
   }
 })();

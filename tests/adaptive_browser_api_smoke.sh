@@ -57,6 +57,14 @@ wrong_origin="$(printf '%s' "$body" | env REQUEST_METHOD=POST CONTENT_TYPE=appli
   HTTP_ORIGIN=https://example.org HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 \
   bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q 'Status: 403 Forbidden' <<< "$wrong_origin"
+status_now="$(date +%s)"
+printf '1\tseen\texample.org\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$status_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+learning_status_body='schema_version=1&action=browser_learning_status'
+learning_status="$(printf '%s' "$learning_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#learning_status_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"hostname":"example.org"' <<< "$learning_status"
+grep -q '"strategy_number":1,"strategy_source":"profile_auto"' <<< "$learning_status"
+grep -q '"quic_profile_available":false' <<< "$learning_status"
 observed_ms="$(( $(date +%s) * 1000 ))"
 critical_body="schema_version=1&action=browser_report_failure&browser_event_id=11111111111111111111111111111111&trigger=critical_resource_repeated_failure&request_class=script&hostname=unseen.example.org&method=GET&failure_class=network_failure&failure_count=2&observed_at=$observed_ms"
 critical="$(printf '%s' "$critical_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#critical_body}" \
@@ -91,6 +99,23 @@ resolved="$(adaptive_browser_resolve_observation www.youtube.com mark:7 "$events
 [[ "$resolved" = $'www.youtube.com\t1.1.1.1\t5\tquic\tmark:7\t'"$now" ]]
 resolved="$(adaptive_browser_resolve_observation www.youtube.com mark:7 "$events" "$now" tls)"
 [[ "$resolved" = $'www.youtube.com\t8.8.8.8\t1\ttls\tmark:7\t'"$now" ]]
+
+# YouTube may retry a failed media request against a different Googlevideo CDN
+# hostname. Reuse only the freshest same-scope profile-2 TCP observation.
+new_cdn=rr1---sn-new.googlevideo.com
+printf '1\tseen\trr2---sn-old.googlevideo.com\t8.8.8.8\t2\ttls\tmark:7\t%s\n' "$((now - 2))" > "$events"
+printf '1\tseen\trr3---sn-other.googlevideo.com\t1.1.1.1\t2\ttls\tmark:8\t%s\n' "$now" >> "$events"
+resolved="$(adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls)"
+[[ "$resolved" = $'rr2---sn-old.googlevideo.com\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t'"$((now - 2))" ]]
+# An exact observation wins over a newer family fallback.
+printf '1\tseen\t%s\t9.9.9.9\t2\ttls\tmark:7\t%s\n' "$new_cdn" "$((now - 3))" >> "$events"
+resolved="$(adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls)"
+expected="$(printf '%s\t9.9.9.9\t2\ttls\tmark:7\t%s' "$new_cdn" "$((now - 3))")"
+[[ "$resolved" = "$expected" ]]
+# Equally recent distinct CDN tuples are ambiguous; QUIC never borrows TCP state.
+printf '1\tseen\trr4---sn-tie.googlevideo.com\t4.4.4.4\t2\ttls\tmark:7\t%s\n1\tseen\trr5---sn-tie.googlevideo.com\t5.5.5.5\t2\ttls\tmark:7\t%s\n' "$((now - 2))" "$((now - 2))" > "$events"
+if adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls; then exit 1; else [[ "$?" = 3 ]]; fi
+if adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" quic; then exit 1; fi
 
 attempt=abcdefabcdefabcdefabcdefabcdefab
 adaptive_browser_attempt_write "$attempt" "$client_id" 192.168.1.42 mark:7 example.org 203.0.113.10 1 tls main_frame_network_failure WAIT_NEW_FLOW 2 - "$(date +%s)" "$(( $(date +%s) + 30 ))" 1

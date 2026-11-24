@@ -150,6 +150,77 @@ browser_start_trial() {
     "$id" "$profile" "$strategy" "$proto" "$scope" "$expires" "$retry_hint"
 }
 
+browser_learning_status() {
+  local events now rows row ver status host ip profile proto row_scope seen extra host_key strategy strategy_source lock lock_proto stamp nfqws
+  local targets='[' first=1 count=0 ranking=false stats=false ramp=false quic=false
+  events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
+  now="$(date +%s)" || now=0
+  ORCH_DIR="$ROOT/extra_strats/cache/orchestra"
+  ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
+  nfqws="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+  stamp=''
+  if [[ -x "$nfqws" && -r "${ZAPRET2_ROOT:-/opt/zapret2}/config" ]]; then
+    stamp="$(adaptive_rules_runtime_stamp "${ZAPRET2_ROOT:-/opt/zapret2}/config" "$nfqws" "$ORCH_DIR" 2>/dev/null || true)"
+  fi
+  adaptive_browser_rankings_opted_in && ranking=true
+  adaptive_browser_stats_opted_in && stats=true
+  [[ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d '"\047')" = 1 ]] && ramp=true
+  [[ "$(config_profile_max_strategy 5 "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null)" =~ ^[1-9][0-9]{0,2}$ ]] && quic=true
+  if [[ -r "$events" && ! -L "$events" && $(wc -c < "$events") -le 32768 ]]; then
+    rows="$(awk -F '\t' -v now="$now" -v scope="$scope" '
+      function ipok(ip, a,n) { if (split(ip,a,".")!=4) return 0; for(n=1;n<=4;n++) if(a[n]!~/^(0|[1-9][0-9]{0,2})$/ || a[n]>255) return 0; return 1 }
+      NF==8 && $1==1 && $7==scope && $8~/^[0-9]{10}$/ && $8>=now-300 && $8<=now+10 &&
+        $3~/^([a-z0-9][a-z0-9-]*\.)+[a-z0-9][a-z0-9-]*$/ && length($3)<=253 && ipok($4) &&
+        (($6=="tls" && $5~/^[1-4]$/) || ($6=="googlevideo-tcp" && $5==2 && $3~/\.googlevideo\.com$/) || ($6=="quic" && $5==5)) &&
+        ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2~/^router_trial_[1-9][0-9]*$/ || $2=="router_exhausted") {
+          key=$3 SUBSEP $5 SUBSEP $6
+          if (!(key in newest) || $8>newest[key]) { newest[key]=$8; value[key]=$0 }
+        }
+      END { for (key in value) print value[key] }
+    ' "$events" | sort -t "$(printf '\t')" -k8,8nr | head -n 24)"
+    while IFS=$'\t' read -r ver status host ip profile proto row_scope seen extra; do
+      [[ "$ver" = 1 && "$row_scope" = "$scope" && "$host" =~ ^([a-z0-9][a-z0-9-]*\.)+[a-z0-9][a-z0-9-]*$ && "$profile" =~ ^[1-5]$ ]] || continue
+      if [[ "$profile" = 2 && "$host" =~ \.googlevideo\.com$ && "$proto" = tls ]]; then proto=googlevideo-tcp; fi
+      (( count < 24 )) || break
+      count=$((count + 1)); host_key="$host"
+      case "$proto" in googlevideo-tcp) lock_proto=tls ;; quic) lock_proto=udp ;; *) lock_proto=tls ;; esac
+      ORCH_ACTIVE_SCOPE="$scope"
+      lock="$(profile_state_get "$profile" "$lock_proto" 2>/dev/null || printf auto)"
+      if [[ "$lock" = auto && "$scope" != default ]]; then
+        ORCH_ACTIVE_SCOPE=default
+        lock="$(profile_state_get "$profile" "$lock_proto" 2>/dev/null || printf auto)"
+      fi
+      if [[ "$lock" =~ ^[0-9]{1,3}$ ]]; then
+        strategy="$lock"; strategy_source=profile_lock
+      else
+        strategy=''; strategy_source=profile_auto
+        if [[ -r "$(adaptive_browser_state_dir)/trials.tsv" && ! -L "$(adaptive_browser_state_dir)/trials.tsv" ]]; then
+          strategy="$(awk -F '\t' -v now="$now" -v client="$client_id" -v scope="$scope" -v host="$host" -v profile="$profile" -v proto="$proto" '
+            NF==14 && $1==1 && $4==client && $6==scope && $9==profile && $10==proto && $11~/^[1-9][0-9]{0,2}$/ && $14~/^[0-9]{10}$/ && $14>now &&
+              ($7==host || (profile==2 && proto=="googlevideo-tcp" && $7~/\.googlevideo\.com$/ && host~/\.googlevideo\.com$/) || (profile==5 && proto=="quic" && $7==host)) { if ($13>created) {created=$13; strategy=$11} }
+            END {print strategy}
+          ' "$(adaptive_browser_state_dir)/trials.tsv")"
+          [[ -z "$strategy" ]] || strategy_source=active_trial
+        fi
+        if [[ -z "$strategy" && -n "$stamp" ]]; then
+          local rule
+          rule="$(adaptive_rule_lookup_local "$host" "$ip" "$profile" "$proto" "$scope" "$stamp" 2>/dev/null || true)"
+          if [[ -n "$rule" ]]; then IFS=$'\t' read -r strategy _ _ _ _ <<< "$rule"; strategy_source=verified_rule; fi
+        fi
+        if [[ -z "$strategy" && "$status" =~ ^router_trial_([1-9][0-9]{0,2})$ ]]; then
+          strategy="${BASH_REMATCH[1]}"; strategy_source=router_auto_trial
+        fi
+        [[ -n "$strategy" ]] || strategy=1
+      fi
+      [[ "$first" = 1 ]] || targets+=','
+      first=0
+      targets+="{\"hostname\":\"$host_key\",\"profile_id\":$profile,\"protocol\":\"$proto\",\"observed_at\":$seen,\"strategy_number\":$strategy,\"strategy_source\":\"$strategy_source\",\"learning_state\":\"$status\"}"
+    done <<< "$rows"
+  fi
+  targets+=']'
+  send '200 OK' "{\"schema_version\":1,\"status\":\"paired\",\"mode\":\"$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null | tr -cd 'A-Z_')\",\"scope\":\"$scope\",\"ranking_opt_in\":$ranking,\"stats_opt_in\":$stats,\"ramp_configured\":$ramp,\"quic_profile_available\":$quic,\"targets\":$targets}"
+}
+
 browser_confirm_flow() {
   local row ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment ramp_ack_evidence extra now
   row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || return 1
@@ -441,6 +512,10 @@ case "${f[action]:-}" in
     [[ ! -f "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" || -L "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" ]] ||
       [[ "$(cat "$ROOT/extra_strats/cache/adaptive/browser-rankings-opt-in" 2>/dev/null)" != 1 ]] || ranking_opt_in=true
     send '200 OK' "{\"schema_version\":1,\"client_id\":\"$client_id\",\"scope\":\"$scope\",\"mode\":\"$mode\",\"ranking_opt_in\":$ranking_opt_in,\"status\":\"paired\"}"
+    ;;
+  browser_learning_status)
+    [[ ${#f[@]} -eq 2 ]] || fail '400 Bad Request' 'browser_learning_status takes no parameters'
+    browser_learning_status
     ;;
   browser_report_failure)
     [[ ( ${#f[@]} -eq 10 || ${#f[@]} -eq 11 ) && "${f[trigger]:-}" =~ ^(main_frame_network_failure|critical_resource_repeated_failure|user_fix)$ &&
