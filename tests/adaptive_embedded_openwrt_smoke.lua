@@ -91,4 +91,36 @@ end
 f:close()
 assert(saw_trial, "two transport failures did not advance router AUTO to candidate 2")
 assert(saw_ignored, "application failures incorrectly advanced router AUTO")
-print("OpenWrt embedded LuaJIT smoke: router AUTO without browser, application exclusion, QHM counters and 64-row cap PASS")
+
+local gv_host, gv_ip = "rr1---sn-a1.googlevideo.com", "142.250.72.14"
+local now, trial_id = os.time(), string.rep("a", 32)
+local trial_row = table.concat({"1", trial_id, "1", string.rep("b", 32), "192.168.1.42", "mark:7",
+  gv_host, gv_ip, "2", "googlevideo-tcp", "2", "sha256:" .. string.rep("c", 64),
+  tostring(now), tostring(now + 600)}, "\t")
+locked_load_browser_trials_for_tests({trial_row}, now)
+assert(locked_browser_trial_for_tuple(gv_host, gv_ip, 2, "googlevideo-tcp", "mark:7", now),
+  "OpenWrt LuaJIT rejected the ten-minute Googlevideo browser retry window")
+local function googlevideo_failure()
+  local d = {outgoing=true, l7payload="tls_client_hello", arg={proto="tls"},
+    dis={tcp={th_dport=443}, ip=gv_ip}, track={lua_state={}}}
+  z2r_adaptive_observe_connection(d, 2, gv_host, "mark:7", true)
+  local context = assert(d.track.lua_state.adaptive_observe_context, "Googlevideo router AUTO missed the active trial tuple")
+  context.selected_strategy, context.strategy_count = 1, 10
+  z2r_adaptive_suspected_failure(d, {}, "transport")
+end
+googlevideo_failure(); googlevideo_failure()
+local function googlevideo_status()
+  local file = assert(io.open(events_path, "r"))
+  local status
+  for line in file:lines() do
+    local _, row_status, row_host = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)")
+    if row_host == gv_host then status = row_status end
+  end
+  file:close()
+  return status
+end
+assert(googlevideo_status() == "seen", "passive AUTO raced the active browser trial to another strategy")
+locked_load_browser_trials_for_tests({}, now)
+googlevideo_failure(); googlevideo_failure()
+assert(googlevideo_status() == "router_trial_2", "passive AUTO did not resume after the browser trial ended")
+print("OpenWrt embedded LuaJIT smoke: router AUTO without browser, browser-trial arbitration/600s parsing, application exclusion, QHM counters and 64-row cap PASS")

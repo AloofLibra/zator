@@ -497,7 +497,9 @@ local function adaptive_browser_trial_parse_line(line, now)
       (proto == "quic" and profile == 5 and adaptive_quic_host_allowed(host))) or
     (strategy < 1 or strategy > 999 or strategy % 1 ~= 0) or
     (fingerprint ~= "-" and (not fingerprint:match("^sha256:[0-9a-f]+$") or #fingerprint ~= 71)) or
-    not created or not expires or expires <= (now or os.time()) or expires > (now or os.time()) + 300 then return nil end
+    not created or not expires or expires <= (now or os.time()) then return nil end
+  local max_ttl = proto == "googlevideo-tcp" and 600 or 300
+  if expires > (now or os.time()) + max_ttl then return nil end
   if proto == "quic" and not adaptive_quic_host_allowed(host) then return nil end
   if scope == "default" and not ADAPTIVE_DEFAULT_SCOPE_APPLY then return nil end
   return {id=id, generation=generation, client_id=client_id, client_ip=client_ip, scope=scope,
@@ -1734,6 +1736,11 @@ end
 
 local function adaptive_observe_record_strategy(context, strategy, strategy_count)
   if type(context) ~= "table" or type(context.key) ~= "string" then return end
+  -- Browser-backed choices are temporary or independently confirmed state.
+  -- Do not copy them into the passive router baseline: cancellation/expiry
+  -- must resume the exact router candidate that was active before the trial.
+  if context.adaptive_source == "browser_trial" or context.adaptive_source == "browser_confirmed"
+    or context.adaptive_source == "browser_confirmed_shared" or context.adaptive_source == "manual_lock" then return end
   strategy = tonumber(strategy)
   if not strategy or strategy < 0 or strategy > 999 or strategy % 1 ~= 0 then return end
   strategy_count = tonumber(strategy_count) or 0
@@ -1923,6 +1930,13 @@ end
 local function adaptive_router_record_failure(event, strategy, count, threshold)
   if not ADAPTIVE_ROTATION_ENABLED or type(event) ~= "table" or event.status == "router_exhausted"
     or not strategy or not count or strategy < 1 or strategy > count then return false end
+  -- Browser trial owns this tuple/family until it is confirmed, cancelled, or
+  -- expires. Passive packet suspicion must not race it to another candidate.
+  if ADAPTIVE_BROWSER_ENABLED and type(locked_browser_trial_for_tuple) == "function" then
+    local profile, proto = tostring(event.profile or ""), tostring(event.proto or "tls")
+    if profile == "2" and adaptive_googlevideo_host_valid(event.host) then proto = "googlevideo-tcp" end
+    if locked_browser_trial_for_tuple(event.host, event.ip, profile, proto, event.scope) then return false end
+  end
   if event.router_candidate and event.router_candidate ~= strategy then return false end
   if event.failure_strategy == strategy then event.failure_count = (event.failure_count or 0) + 1
   else event.failure_strategy, event.failure_count = strategy, 1 end
@@ -2386,11 +2400,13 @@ function circular_locked(ctx, desync)
   if adaptive_strategy == nil then
     if router_pinned_strategy then
       adaptive_strategy = router_pinned_strategy
+      adaptive_strategy_source = "router_auto_pinned"
     elseif ADAPTIVE_ROTATION_ENABLED and router_event and router_event.status == "router_exhausted" then
       adaptive_strategy = nil
     elseif router_trial_candidate then
       if router_trial_candidate >= 1 and router_trial_candidate <= hrec.ctstrategy then
         adaptive_strategy = router_trial_candidate
+        adaptive_strategy_source = "router_auto_trial"
       else
         router_event.router_candidate = nil
         router_event.status = "router_exhausted"
@@ -2420,13 +2436,17 @@ function circular_locked(ctx, desync)
   end
 
   if desync.track and type(desync.track.lua_state) == "table" and desync.track.lua_state.adaptive_observe_context then
-    desync.track.lua_state.adaptive_observe_context.adaptive_rule_applied =
+    local context = desync.track.lua_state.adaptive_observe_context
+    context.adaptive_rule_applied =
       adaptive_strategy ~= nil and selected_strategy == adaptive_strategy
-    desync.track.lua_state.adaptive_observe_context.selected_strategy = selected_strategy
-    desync.track.lua_state.adaptive_observe_context.strategy_count = hrec.ctstrategy
-    adaptive_observe_record_strategy(desync.track.lua_state.adaptive_observe_context, selected_strategy, hrec.ctstrategy)
+    context.selected_strategy = selected_strategy
+    context.strategy_count = hrec.ctstrategy
+    context.adaptive_source = adaptive_strategy_source or (locked ~= nil and "manual_lock") or "router_auto_baseline"
+    adaptive_observe_record_strategy(context, selected_strategy, hrec.ctstrategy)
   end
-  if ADAPTIVE_ROTATION_ENABLED and locked == nil and desync.track and type(desync.track.lua_state) == "table" then
+  if ADAPTIVE_ROTATION_ENABLED and locked == nil and adaptive_strategy_source ~= "browser_trial"
+    and adaptive_strategy_source ~= "browser_confirmed" and adaptive_strategy_source ~= "browser_confirmed_shared"
+    and desync.track and type(desync.track.lua_state) == "table" then
     desync.track.lua_state.adaptive_router_auto_strategy = selected_strategy
   end
   if adaptive_trial and desync.track and type(desync.track.lua_state) == "table" and selected_strategy == adaptive_trial.strategy then

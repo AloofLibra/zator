@@ -19,12 +19,18 @@ with tempfile.TemporaryDirectory(prefix="zator-browser-trial-") as temp:
     (state / "apply-default-scope").write_text("1\n")
     flow_dir = root / "browser-flows"
     flow_dir.mkdir()
+    events_path = root / "events.tsv"
+    events_path.touch()
+    ramp_targets_path = root / "ramp-targets.tsv"
+    ramp_targets_path.touch()
 
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.globals().fake_getenv = lambda key: {
         "ZATOR_ROOT": str(root),
         "Z2R_ADAPTIVE_BROWSER_TRIALS_FILE": str(root / "trials.tsv"),
         "Z2R_ADAPTIVE_BROWSER_FLOW_DIR": str(flow_dir),
+        "Z2R_ADAPTIVE_EVENTS_FILE": str(events_path),
+        "Z2R_ADAPTIVE_RAMP_TARGETS_FILE": str(ramp_targets_path),
         "Z2R_ADAPTIVE_RULES_FILE": str(root / "rules.tsv"),
     }.get(key)
     lua.execute("os.getenv = fake_getenv")
@@ -122,10 +128,14 @@ local ramp_video_trial = video_trial:gsub("\t1045$", "\t1300")
 locked_load_browser_trials_for_tests({ramp_video_trial}, now)
 assert(locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now),
   "300-second Ramp canary trial was rejected")
-local overlong_video_trial = video_trial:gsub("\t1045$", "\t1301")
+local long_video_trial = video_trial:gsub("\t1045$", "\t1600")
+locked_load_browser_trials_for_tests({long_video_trial}, now)
+assert(locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now),
+  "600-second Googlevideo retry window was rejected")
+local overlong_video_trial = video_trial:gsub("\t1045$", "\t1601")
 locked_load_browser_trials_for_tests({overlong_video_trial}, now)
 assert(locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now) == nil,
-  "trial beyond the 300-second maximum was accepted")
+  "trial beyond the 600-second maximum was accepted")
 locked_load_browser_trials_for_tests({video_trial}, now)
 local alternate_video = "rr2---sn-b.googlevideo.com"
 local alternate_match = locked_browser_trial_for_tuple(alternate_video, "1.1.1.1", 2, "googlevideo-tcp", "mark:7", now)
@@ -133,6 +143,26 @@ assert(alternate_match and alternate_match.id == video_match.id and alternate_ma
   "Googlevideo retry on another CDN host/IP did not reuse the scoped trial")
 assert(locked_browser_trial_for_tuple(alternate_video, "1.1.1.1", 2, "googlevideo-tcp", "mark:8", now) == nil,
   "Googlevideo family trial escaped its client scope")
+locked_load_browser_trials_for_tests({long_video_trial}, now)
+local auto_track = {lua_state={}}
+local auto_desync = {outgoing=true, l7payload="tls_client_hello", arg={proto="tls"},
+  dis={dst="8.8.8.8", tcp={th_dport=443}}, track=auto_track}
+z2r_adaptive_observe_connection(auto_desync, 2, video_host, "mark:7", true)
+local auto_context = assert(auto_track.lua_state.adaptive_observe_context, "Googlevideo AUTO event missing")
+auto_context.selected_strategy, auto_context.strategy_count = 1, 10
+z2r_adaptive_suspected_failure(auto_desync, {}, "transport")
+z2r_adaptive_suspected_failure(auto_desync, {}, "transport")
+local event_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_EVENTS_FILE"), "r"))
+local active_trial_event = event_file:read("*l"); event_file:close()
+assert(active_trial_event and active_trial_event:match("^1\tseen\t" .. video_host:gsub("%-", "%%-") .. "\t"),
+  "passive AUTO advanced its candidate while a Googlevideo browser trial owned the family")
+locked_load_browser_trials_for_tests({}, now)
+z2r_adaptive_suspected_failure(auto_desync, {}, "transport")
+z2r_adaptive_suspected_failure(auto_desync, {}, "transport")
+event_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_EVENTS_FILE"), "r"))
+local resumed_event = event_file:read("*l"); event_file:close()
+assert(resumed_event and resumed_event:match("^1\trouter_trial_2\t" .. video_host:gsub("%-", "%%-") .. "\t"),
+  "passive AUTO did not resume after the browser trial was removed")
 local video_track = {lua_state={adaptive_browser_syn={ip="8.8.8.8",profile="2",proto="tcp",scope="mark:7",seen=1000},
   wssize_ramp_treatment="applied",wssize_ramp_late_ack_confirmed=true}}
 assert(locked_browser_record_flow_for_tests({track=video_track}, video_match, video_host, "8.8.8.8", "2", "googlevideo-tcp", "mark:7", 4),

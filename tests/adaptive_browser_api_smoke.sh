@@ -245,6 +245,24 @@ ORCH_DIR="$tmp/orchestra"
 . "$ROOT/lib/supersweep_probe.sh"
 selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id" 1)"
 [[ "${selected%%$'\t'*}" = 2 ]]
+# When family-diverse Explore begins at a high-numbered strategy (commonly
+# #31), ordinary fallback must still advance from the strategy actually used.
+cp "$ZAPRET2_ROOT/config" "$tmp/config.before-large-catalog"
+cp "$tmp/args/strategies" "$tmp/args/strategies.before-large-catalog"
+: > "$tmp/args/large-strategies"
+for strategy_number in $(seq 1 36); do
+  printf '%s\n' "--lua-desync=fake:strategy=$strategy_number" >> "$tmp/args/large-strategies"
+done
+awk -v insert="$tmp/args/large-strategies" '
+  /#Z2R_AUTO_STANDARD_1_END/ { while ((getline line < insert) > 0) print line; close(insert) }
+  { print }
+' "$ZAPRET2_ROOT/config" > "$tmp/config.large-catalog"
+cp "$tmp/config.large-catalog" "$ZAPRET2_ROOT/config"
+cp "$tmp/args/large-strategies" "$tmp/args/strategies"
+selected="$(adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id" 1)"
+[[ "${selected%%$'\t'*}" = 2 ]] || { echo "fallback skipped numeric successor and chose ${selected%%$'\t'*} instead" >&2; exit 1; }
+cp "$tmp/config.before-large-catalog" "$ZAPRET2_ROOT/config"
+cp "$tmp/args/strategies.before-large-catalog" "$tmp/args/strategies"
 # One eligible managed main-frame failure starts a scoped trial immediately;
 # the first attempt must not perform a curl/DNS diagnosis.
 mkdir -p "$ZATOR_ROOT/extra_strats/cache/orchestra"

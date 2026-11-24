@@ -1601,6 +1601,7 @@ function circular_quality(ctx, desync)
             context.adaptive_rule_applied = true
             context.selected_strategy = adaptive_strategy
             context.strategy_count = hrec.ctstrategy
+            context.adaptive_source = adaptive_source or "router_auto_baseline"
         end
         if adaptive_trial and type(locked_browser_record_quality_flow) == "function" then
             locked_browser_record_quality_flow(desync, adaptive_trial, observed_hostname or hostname,
