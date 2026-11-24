@@ -1595,6 +1595,21 @@ function circular_quality(ctx, desync)
             locked_adaptive_quality_selection(desync, observed_hostname or hostname, desync_profile_key(desync),
                 scope, hrec.nstrategy, hostkey)
     end
+    local passive_strategy_before = tonumber(hrec.nstrategy) or 1
+    if desync.outgoing == true and adaptive_strategy ~= nil and type(observe_state) == "table" then
+        local flow_host = string.lower(tostring(observed_hostname or hostname or "")):gsub("%.$", "")
+        observe_state.adaptive_quality_flow = {
+            host = flow_host, profile = desync_profile_key(desync), scope = scope,
+            strategy = adaptive_strategy, source = adaptive_source, trial = adaptive_trial,
+            ip = adaptive_ip, proto = adaptive_proto
+        }
+        if observe_context then
+            observe_context.host, observe_context.ip = flow_host, adaptive_ip or observe_context.ip
+            observe_context.profile, observe_context.proto = desync_profile_key(desync), adaptive_proto or observe_context.proto
+            observe_context.scope = scope
+            observe_context.passive_strategy = passive_strategy_before
+        end
+    end
     if adaptive_strategy == 0 then
         DLOG("circular_quality: adaptive DIRECT host=" .. tostring(observed_hostname or hostname))
         if ctx then lua_cutoff(ctx) end

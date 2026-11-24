@@ -172,7 +172,7 @@ browser_learning_status() {
   if [[ -r "$events" && ! -L "$events" && $(wc -c < "$events") -le 32768 ]]; then
     rows="$(awk -F '\t' -v now="$now" -v scope="$scope" '
       function ipok(ip, a,n) { if (split(ip,a,".")!=4) return 0; for(n=1;n<=4;n++) if(a[n]!~/^(0|[1-9][0-9]{0,2})$/ || a[n]>255) return 0; return 1 }
-       (NF==8 || NF==9 || NF==10) && $1==1 && $7==scope && $8~/^[0-9]{10}$/ && $8>=now-300 && $8<=now+10 &&
+       (NF==8 || NF==9 || NF==10 || NF==11) && $1==1 && $7==scope && $8~/^[0-9]{10}$/ && $8>=now-300 && $8<=now+10 &&
         $3~/^([a-z0-9][a-z0-9-]*\.)+[a-z0-9][a-z0-9-]*$/ && length($3)<=253 && ipok($4) &&
         (($6=="tls" && $5~/^[1-4]$/) || ($6=="googlevideo-tcp" && $5==2 && $3~/\.googlevideo\.com$/) || ($6=="quic" && $5==5)) &&
         ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2~/^router_trial_[1-9][0-9]*$/ || $2=="router_exhausted") {
@@ -505,8 +505,12 @@ browser_promote_attempt() {
     adaptive_rule_add "$rule_host" "$rule_ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
       "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
     if [[ "$proto" = googlevideo-tcp ]]; then
-      adaptive_rule_add googlevideo.com "$rule_ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
-        "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+      local family_rule
+      family_rule="$(adaptive_rule_lookup_local googlevideo.com "$rule_ip" "$profile" "$proto" "$attempt_scope" "$stamp" 2>/dev/null || true)"
+      if [[ -z "$family_rule" ]]; then
+        adaptive_rule_add googlevideo.com "$rule_ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
+          "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+      fi
     fi
     rm -rf "$dir"
     return 0
@@ -514,8 +518,12 @@ browser_promote_attempt() {
   adaptive_rule_add "$rule_host" "$rule_ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
     "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
   if [[ "$proto" = googlevideo-tcp ]]; then
-    adaptive_rule_add googlevideo.com "$rule_ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
-      "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+    local family_rule
+    family_rule="$(adaptive_rule_lookup_local googlevideo.com "$rule_ip" "$profile" "$proto" shared "$stamp" 2>/dev/null || true)"
+    if [[ -z "$family_rule" ]]; then
+      adaptive_rule_add googlevideo.com "$rule_ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
+        "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
+    fi
   fi
   local rc=$?
   rm -rf "$dir"
@@ -692,9 +700,17 @@ case "${f[action]:-}" in
         fail '503 Service Unavailable' 'browser result journal unavailable'
       }
       adaptive_browser_attempt_transition "$attempt_id" "$state" TCP_FALLBACK || fail '409 Conflict' 'attempt changed concurrently'
+      quic_recovery=false
+      if [[ "$proto" = quic ]]; then
+        recovery_count="$(config_profile_max_strategy 5 "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null || true)"
+        if [[ "$recovery_count" =~ ^[1-9][0-9]{0,2}$ ]]; then
+          adaptive_browser_quic_recovery_enqueue "$host" "$ip" "$attempt_scope" "$strategy" "$recovery_count" \
+            "$(date +%s)" "$(( $(date +%s) + 86400 ))" "$attempt_id" >/dev/null 2>&1 && quic_recovery=true
+        fi
+      fi
       adaptive_browser_trial_remove "$attempt_id" "$generation" || fail '503 Service Unavailable' 'trial cleanup failed'
       adaptive_browser_stats_queue_attempt "$attempt_id" >/dev/null 2>&1 && adaptive_browser_stats_schedule_flush >/dev/null 2>&1 || :
-      send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"TCP_FALLBACK\",\"status\":\"TCP_FALLBACK\",\"reason\":\"browser_negotiated_tcp\"}"
+      send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"TCP_FALLBACK\",\"status\":\"TCP_FALLBACK\",\"reason\":\"browser_negotiated_tcp\",\"quic_recovery\":$quic_recovery}"
     fi
     if [[ "$state" = WAIT_NEW_FLOW ]]; then
       if browser_confirm_flow; then state=FLOW_CONFIRMED

@@ -58,7 +58,7 @@ locked_load_browser_trials_for_tests({valid}, now)
 local found = locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "mark:7", now)
 assert(found and found.id == id and found.generation == 1 and found.strategy == 2, "exact trial not returned")
 local quality_track = {lua_state={adaptive_browser_syn={ip="8.8.8.8",profile="1",proto="tcp",scope="mark:7",seen=1000}}}
-local quality_desync = {profile="1",arg={key="1"},dis={dst="8.8.8.8",tcp={th_dport=443}},track=quality_track}
+local quality_desync = {outgoing=true,profile="1",arg={key="1"},dis={dst="8.8.8.8",tcp={th_dport=443}},track=quality_track}
 local quality_strategy, quality_source, quality_trial = locked_adaptive_quality_selection(
   quality_desync, "cdn.example.org", "1", "mark:7", 1, "cdn.example.org")
 assert(quality_strategy == 2 and quality_source == "browser_trial" and quality_trial.id == id,

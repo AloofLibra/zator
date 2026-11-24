@@ -24,6 +24,10 @@ printf '#Z2R_AUTO_MODE=1\n' >> "$tmp/zapret2/config"
 printf 'mark:7\t192.168.1.42\nmark:7\t192.168.1.43\n' > "$CLIENT_SCOPE_MAP_FILE"
 config_get_var() { awk -F= -v k="$2" '$1==k {print $2; exit}' "$1"; }
 . "$ROOT/lib/adaptive_browser.sh"
+queue_now="$(date +%s)"
+adaptive_browser_quic_recovery_enqueue rr1---sn-test.googlevideo.com 8.8.8.8 mark:7 1 3 "$queue_now" "$((queue_now + 3600))" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+grep -q $'^1\trr1---sn-test.googlevideo.com\t8.8.8.8\tmark:7\t1\t3\t' "$Z2R_ADAPTIVE_DIR/quic-recovery.tsv"
+rm -f "$Z2R_ADAPTIVE_DIR/quic-recovery.tsv"
 
 token="$(printf '%064d' 0 | tr 0 a)"
 hash="$(printf '%s' "$token" | sha256sum | awk '{print $1}')"
@@ -115,6 +119,11 @@ printf '1\tseen\trr2---sn-old.googlevideo.com\t8.8.8.8\t2\ttls\tmark:7\t%s\t1\t8
 printf '1\tseen\trr3---sn-other.googlevideo.com\t1.1.1.1\t2\ttls\tmark:8\t%s\t1\t8\n' "$now" >> "$events"
 resolved="$(adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls)"
 [[ "$resolved" = $'rr2---sn-old.googlevideo.com\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t'"$((now - 2))"$'\t1' ]]
+# The applied browser strategy is column 9; passive baseline column 11 must
+# never be mistaken for the strategy a repeated browser failure should exclude.
+printf '1\tseen\texample.org\t8.8.8.8\t1\ttls\tmark:7\t%s\t6\t8\t5\n' "$now" > "$events"
+resolved="$(adaptive_browser_resolve_observation example.org mark:7 "$events" "$now" tls)"
+[[ "${resolved##*$'\t'}" = 6 ]] || { echo "browser failure excluded passive strategy instead of applied #6: $resolved" >&2; exit 1; }
 # An exact observation wins over a newer family fallback.
 printf '1\tseen\t%s\t9.9.9.9\t2\ttls\tmark:7\t%s\t2\t8\n' "$new_cdn" "$((now - 3))" >> "$events"
 resolved="$(adaptive_browser_resolve_observation "$new_cdn" mark:7 "$events" "$now" tls)"
@@ -501,6 +510,41 @@ grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$video_media_confirm"
 grep -q $'^1\t'"$video_flow_host"$'\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t' "$Z2R_ADAPTIVE_DIR/rules.tsv" || {
   echo 'Googlevideo rule was saved for the original trial host instead of the verified CDN host' >&2; exit 1;
 }
+family_baseline="$(awk -F '\t' '$1==1 && $2=="googlevideo.com" && $4==2 && $5=="googlevideo-tcp" && $6=="mark:7" {print $7; exit}' "$Z2R_ADAPTIVE_DIR/rules.tsv")"
+[[ "$family_baseline" = 2 ]] || { echo "unexpected initial Googlevideo baseline: $family_baseline" >&2; exit 1; }
+# A later successful CDN-specific optimization may update its exact host rule,
+# but must preserve the family strategy used to recover other CDN hosts.
+next_video_host=rr9---sn-next.googlevideo.com
+next_video_attempt=abababababababababababababababac
+next_video_strategy=1
+next_video_ip=8.8.4.4
+Z2R_SUPERSWEEP_DIR="$tmp/video-next-plan"; export Z2R_SUPERSWEEP_DIR
+supersweep_probe_config 2 "$ZAPRET2_ROOT/config" standard "$next_video_ip" googlevideo-tcp-media-v1
+next_video_fingerprint="$(adaptive_strategy_fingerprint 2 "$next_video_strategy" "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args" "$ZAPRET2_ROOT/nfq2/nfqws2" standard googlevideo-tcp-media-v1)"
+attempt_id="$next_video_attempt" attempt_scope=mark:7 profile=2 proto=googlevideo-tcp strategy="$next_video_strategy"
+attempt_fingerprint="$next_video_fingerprint"
+next_video_now="$(date +%s)"; next_video_expires=$((next_video_now + 30)); next_video_generation=17
+adaptive_browser_attempt_write "$next_video_attempt" "$client_id" 192.168.1.42 mark:7 "$next_video_host" "$next_video_ip" 2 googlevideo-tcp \
+  critical_resource_repeated_failure WAIT_NEW_FLOW "$next_video_strategy" "$next_video_fingerprint" "$next_video_now" "$next_video_expires" "$next_video_generation"
+printf '1\t%s\t%s\t%s\tmark:7\t%s\t%s\t2\tgooglevideo-tcp\t%s\t%s\t%s\t%s\tapplied\tconfirmed\n' \
+  "$next_video_attempt" "$next_video_generation" "$client_id" "$next_video_host" "$next_video_ip" "$next_video_strategy" "$next_video_fingerprint" "$next_video_now" "$next_video_now" > "$flow_dir/$next_video_attempt.$next_video_generation.tsv"
+next_video_status_body="schema_version=1&action=browser_attempt_status&attempt_id=$next_video_attempt"
+next_video_status="$(printf '%s' "$next_video_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#next_video_status_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"FLOW_CONFIRMED"' <<< "$next_video_status"
+next_video_result="schema_version=1&action=browser_report_result&attempt_id=$next_video_attempt&browser_event_id=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcf&result=network_success&request_class=media&browser_ip=$next_video_ip&observed_at=$((next_video_now * 1000))&media_quality=healthy&media_sample_ms=8000&media_progress_ms=7000&media_stall_ms=0&media_dropped_frames=2&media_total_frames=240"
+next_video_response="$(printf '%s' "$next_video_result" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#next_video_result}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"PROVISIONAL_SUCCESS"' <<< "$next_video_response"
+next_video_result="${next_video_result//cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcf/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdce}"
+next_video_response="$(printf '%s' "$next_video_result" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#next_video_result}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$next_video_response"
+family_baseline_after="$(awk -F '\t' '$1==1 && $2=="googlevideo.com" && $4==2 && $5=="googlevideo-tcp" && $6=="mark:7" {print $7; exit}' "$Z2R_ADAPTIVE_DIR/rules.tsv")"
+exact_next_cdn="$(awk -F '\t' -v host="$next_video_host" '$1==1 && $2==host && $4==2 && $5=="googlevideo-tcp" && $6=="mark:7" {print $7; exit}' "$Z2R_ADAPTIVE_DIR/rules.tsv")"
+[[ "$family_baseline_after" = "$family_baseline" && "$exact_next_cdn" = "$next_video_strategy" ]] || {
+  echo "CDN optimization changed family baseline=$family_baseline_after exact=$exact_next_cdn" >&2; exit 1;
+}
 
 video_unknown_attempt=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
 video_unknown_event=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
@@ -624,11 +668,23 @@ fallback_expires=$((fallback_now + 30))
 adaptive_browser_attempt_write "$fallback_attempt" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic main_frame_network_failure WAIT_NEW_FLOW "$quic_strategy" "$quic_fingerprint" "$fallback_now" "$fallback_expires" "$fallback_generation"
 adaptive_browser_trial_add "$fallback_attempt" "$fallback_generation" "$client_id" 192.168.1.42 mark:7 "$quic_host" 8.8.8.8 5 quic "$quic_strategy" "$quic_fingerprint" "$fallback_now" "$fallback_expires"
 fallback_body="schema_version=1&action=browser_report_result&attempt_id=$fallback_attempt&browser_event_id=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdce&result=network_success&request_class=main_frame&browser_ip=8.8.8.8&observed_at=$((fallback_now * 1000))&browser_protocol=tcp"
+fallback_zapret="$tmp/fallback-zapret"
+mkdir -p "$fallback_zapret"
+cp "$ROOT/config.default" "$fallback_zapret/config"
+if grep -q '^CLIENT_SCOPE_ENABLE=' "$fallback_zapret/config"; then
+  sed -i 's/^CLIENT_SCOPE_ENABLE=.*/CLIENT_SCOPE_ENABLE=1/' "$fallback_zapret/config"
+else
+  printf 'CLIENT_SCOPE_ENABLE=1\n' >> "$fallback_zapret/config"
+fi
+printf '#Z2R_AUTO_MODE=1\n' >> "$fallback_zapret/config"
 fallback_response="$(printf '%s' "$fallback_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#fallback_body}" \
-  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
-grep -q '"state":"TCP_FALLBACK"' <<< "$fallback_response"
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 ZAPRET2_ROOT="$fallback_zapret" bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"TCP_FALLBACK"' <<< "$fallback_response" || { echo "unexpected QUIC fallback response: $fallback_response" >&2; exit 1; }
 grep -q '"reason":"browser_negotiated_tcp"' <<< "$fallback_response"
+grep -q '"quic_recovery":true' <<< "$fallback_response" || { echo "QUIC TCP fallback did not queue recovery: $fallback_response" >&2; exit 1; }
 [[ "$(adaptive_browser_attempt_read "$fallback_attempt" | cut -f11)" = TCP_FALLBACK ]]
+grep -q "$fallback_attempt" "$Z2R_ADAPTIVE_DIR/quic-recovery.tsv" || { echo 'browser fallback recovery row was not written' >&2; exit 1; }
+rm -f "$Z2R_ADAPTIVE_DIR/quic-recovery.tsv"
 ! grep -q "$fallback_attempt" "$(adaptive_browser_trials_file)"
 if grep -q '"state":"NEXT_CANDIDATE"' <<< "$fallback_response"; then
   echo 'TCP fallback must not advance the QUIC candidate' >&2; exit 1;

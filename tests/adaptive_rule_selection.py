@@ -81,9 +81,16 @@ def run_selection(enabled, lock_rows=(), strategy=7, ip="93.184.216.34", repeat=
       selected_cached = local_cached
       selected_other_ip = invoke("93.184.216.35")
       selected_other_port = invoke("93.184.216.34", 8443)
+      state.lua_state.adaptive_quality_flow = {{host={json.dumps(hostname)}, profile={json.dumps(profile)}, scope="default",
+        strategy={strategy}, source="browser_confirmed", ip={json.dumps(ip)}, proto={json.dumps(rule_proto)}}}
+      local inbound = {{outgoing=false, profile={json.dumps(profile)}, hostname={json.dumps(hostname)}, arg={{proto="tls"}},
+        dis={{ip={{}}, tcp={{th_sport=443}}}}, track=state}}
+      inbound_selected, inbound_source, ignored_trial, inbound_ip = locked_adaptive_quality_selection(
+        inbound, {json.dumps(hostname)}, {json.dumps(profile)}, "default", 1, {json.dumps(hostname)})
     ''')
     result = (lua.globals().selected_first, lua.globals().selected_cached,
-              lua.globals().selected_other_ip, lua.globals().selected_other_port)
+              lua.globals().selected_other_ip, lua.globals().selected_other_port,
+              lua.globals().inbound_selected, lua.globals().inbound_source, lua.globals().inbound_ip)
     temporary.cleanup()
     return result
 
@@ -104,6 +111,8 @@ other_port = run_selection(True)
 assert other_port[3] == 1, f"exact TLS rule leaked to another destination port: {other_port}"
 googlevideo_media = run_selection(True, strategy=7, hostname="rr1---sn-a5mekn6e.googlevideo.com", profile="2", rule_proto="googlevideo-tcp")
 assert googlevideo_media[0] == 7, f"exact Googlevideo media rule was not applied to its TCP profile-2 flow: {googlevideo_media}"
+assert googlevideo_media[4:] == (7, "browser_confirmed", "93.184.216.34"), \
+    f"incoming packet did not reuse the outgoing flow's strategy/source/IP: {googlevideo_media}"
 
 with tempfile.TemporaryDirectory(prefix="adaptive-googlevideo-family-") as tmp:
     root = Path(tmp)

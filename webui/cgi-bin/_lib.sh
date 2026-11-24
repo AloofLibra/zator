@@ -196,7 +196,7 @@ api_adaptive_get() {
   if [ -r "$events_file" ] && [ ! -L "$events_file" ]; then
     event_data="$(awk -F '\t' '
       BEGIN { printf "[" }
-      NR<=128 && (NF==8 || NF==9 || NF==10) && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") &&
+      NR<=128 && (NF==8 || NF==9 || NF==10 || NF==11) && $1==1 && ($2=="seen" || $2=="needs_verify" || $2=="suspected_failure" || $2=="active_rule_degraded" || $2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") &&
         length($3)<=253 && $3 ~ /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/ &&
         (( $5 ~ /^[1-4]$/ && $6=="tls" ) || ( $5==5 && $6=="quic" && ($3 ~ /\.googlevideo\.com$/ || $3 ~ /\.youtube\.com$/ || $3 ~ /\.youtubei\.googleapis\.com$/) )) &&
         ($7=="default" || ($7 ~ /^mark:[1-9][0-9]*$/ && length($7)<=10 && substr($7,6)+0<=65535)) &&

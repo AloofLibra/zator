@@ -18,6 +18,27 @@ adaptive_browser_state_dir() {
   printf '%s\n' "${Z2R_ADAPTIVE_BROWSER_DIR:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/browser}"
 }
 
+# Queue QUIC-only recovery after browser TCP fallback. The ordinary TCP rule is
+# untouched; Lua consumes this bounded request on the next matching QUIC flow.
+adaptive_browser_quic_recovery_enqueue() {
+  [[ $# = 8 ]] || return 2
+  local host="${1,,}" ip="$2" scope="$3" failed="$4" count="$5" now="$6" expires="$7" attempt="$8"
+  local dir="${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}" file tmp
+  file="$dir/quic-recovery.tsv"
+  adaptive_browser_quic_host_valid "$host" && [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ &&
+    ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) && "$failed" =~ ^[1-9][0-9]{0,2}$ &&
+    "$count" =~ ^[1-9][0-9]{0,2}$ && "$now" =~ ^[0-9]{10}$ && "$expires" =~ ^[0-9]{10}$ &&
+    "$attempt" =~ ^[a-f0-9]{32}$ && "$expires" -gt "$now" ]] || return 2
+  [[ ! -L "$dir" && ! -L "$file" ]] || return 1
+  mkdir -p "$dir" || return 1
+  chmod 700 "$dir" || return 1
+  [[ ! -f "$file" || $(wc -c < "$file") -le 32768 ]] || return 1
+  tmp="$(mktemp "$dir/.quic-recovery.XXXXXX")" || return 1
+  { [[ ! -f "$file" ]] || tail -n 63 "$file"; printf '1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$host" "$ip" "$scope" "$failed" "$count" "$expires" "$attempt"; } > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" && mv -f "$tmp" "$file"
+}
+
 # AUTO is the unified router mode. AGENT_BETA remains a compatibility alias
 # while existing installs and browser pairings migrate their mode file.
 adaptive_browser_rotation_enabled() {
@@ -72,14 +93,14 @@ adaptive_browser_context_valid() {
 # synthetic probing is performed here; ambiguous/malformed tuples are refused.
 adaptive_browser_resolve_observation() {
   [[ $# = 4 || $# = 5 ]] || return 2
-  local host="${1,,}" scope="$2" file="$3" now="$4" transport="${5:-unknown}" row ver status old_host ip profile proto old_scope seen selected_strategy strategy_count extra tuple
+  local host="${1,,}" scope="$2" file="$3" now="$4" transport="${5:-unknown}" row ver status old_host ip profile proto old_scope seen selected_strategy strategy_count passive_strategy extra tuple
   adaptive_browser_host_valid "$host" || return 1
   host="$ADAPTIVE_BROWSER_HOST"
   [[ "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] && [[ "$now" =~ ^[0-9]{1,10}$ ]] && [[ "$transport" =~ ^(unknown|tls|quic)$ ]] || return 2
   [[ -r "$file" && ! -L "$file" && $(wc -c < "$file") -le 32768 ]] || return 1
   local -a rows=() family_rows=()
   while IFS= read -r row || [[ -n "$row" ]]; do
-    IFS=$'\t' read -r ver status old_host ip profile proto old_scope seen selected_strategy strategy_count extra <<< "$row"
+    IFS=$'\t' read -r ver status old_host ip profile proto old_scope seen selected_strategy strategy_count passive_strategy extra <<< "$row"
     case "$transport" in
       tls) [[ "$proto" = tls || "$proto" = googlevideo-tcp ]] || continue ;;
       quic) [[ "$proto" = quic ]] || continue ;;
@@ -87,7 +108,8 @@ adaptive_browser_resolve_observation() {
     [[ "$ver" = 1 && ( "$status" = seen || "$status" =~ ^router_trial_[1-9][0-9]*$ ) && "$old_scope" = "$scope" &&
        ( ( "$profile" =~ ^[1-4]$ && ( "$proto" = tls || ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ) || ( "$profile" = 5 && "$proto" = quic ) ) &&
        "$seen" =~ ^[0-9]{1,10}$ && "${selected_strategy:-}" =~ ^(0|[1-9][0-9]{0,2})$ &&
-       "${strategy_count:-0}" =~ ^[1-9][0-9]{0,2}$ && -z "${extra:-}" ]] || continue
+       "${strategy_count:-0}" =~ ^[1-9][0-9]{0,2}$ &&
+       ( -z "${passive_strategy:-}" || "${passive_strategy:-}" =~ ^(0|[1-9][0-9]{0,2})$ ) && -z "${extra:-}" ]] || continue
     [[ "$proto" != quic ]] || adaptive_browser_quic_host_valid "$old_host" || continue
     if [[ "$old_host" != "$host" ]]; then
       [[ "$transport" != quic && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$old_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ &&

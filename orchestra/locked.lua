@@ -72,6 +72,7 @@ end
 local ADAPTIVE_EVENTS_PATH = os.getenv("Z2R_ADAPTIVE_EVENTS_FILE") or "/tmp/z2r-adaptive/events.tsv"
 local ADAPTIVE_QUIC_HEALTH_PATH = os.getenv("Z2R_ADAPTIVE_QUIC_HEALTH_FILE")
   or ((os.getenv("Z2R_ADAPTIVE_DIR") or "/tmp/z2r-adaptive") .. "/quic-health.tsv")
+local ADAPTIVE_QUIC_RECOVERY_PATH = (os.getenv("Z2R_ADAPTIVE_DIR") or "/tmp/z2r-adaptive") .. "/quic-recovery.tsv"
 local ADAPTIVE_RAMP_TARGETS_PATH = os.getenv("Z2R_ADAPTIVE_RAMP_TARGETS_FILE") or "/tmp/z2r-adaptive/ramp-targets.tsv"
 local ADAPTIVE_OBSERVE_ENABLED = ADAPTIVE_MODE == "OBSERVE" or ADAPTIVE_MODE == "TEST_ONLY"
   or ADAPTIVE_MODE == "AGENT_BETA" or ADAPTIVE_MODE == "AUTO"
@@ -109,10 +110,12 @@ if ADAPTIVE_OBSERVE_ENABLED then
           and (scope == "default" or scope:match("^mark:%d+$")) then
           local key = table.concat({host, profile, proto, scope}, "\0")
           if not ADAPTIVE_OBSERVE_EVENTS[key] then
+            local passive_strategy = tonumber((line .. "\t"):match("^[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t([^\t]*)"))
             local event = {key = key, host = host, ip = ip, profile = profile, proto = proto,
               scope = scope, status = status, seen = tonumber(seen) or 0,
               selected_strategy = tonumber(selected) or 0,
               strategy_count = tonumber(strategy_count) or 0,
+              passive_strategy = passive_strategy or tonumber(selected) or 0,
               failure_count = (status == "suspected_failure" or status == "active_rule_degraded") and 2 or 0}
             if router_candidate then event.router_candidate = tonumber(router_candidate) end
             ADAPTIVE_OBSERVE_EVENTS[key] = event
@@ -612,7 +615,9 @@ function z2r_adaptive_confirmed_rule_success(context, strategy)
   local now, rows, seen, renewed_keys, refreshed = os.time(), {}, {}, {}, false
   for key, rule in pairs(ADAPTIVE_RULES) do
     local scope_matches = rule.scope == scope or (scope == "default" and rule.scope == "shared")
-    local host_matches = rule.host == host or (proto == "googlevideo-tcp" and rule.host == "googlevideo.com")
+    -- A CDN success renews only that exact host rule. The family rule is a
+    -- startup baseline and must not inherit a lease from an unrelated CDN.
+    local host_matches = rule.host == host
     if scope_matches and host_matches and rule.profile == profile and rule.proto == proto and rule.strategy == strategy then
       local row_key = table.concat({rule.host, rule.ip, rule.profile, rule.proto, rule.scope, tostring(rule.strategy), rule.fingerprint}, "\0")
       if now - (ADAPTIVE_RULE_RENEWAL_LAST[row_key] or 0) >= 300 then
@@ -1778,7 +1783,7 @@ local function adaptive_observe_seen(host, ip, profile, proto, scope, track)
     for i, item in ipairs(next_order) do
       lines[i] = table.concat({"1", item.status, item.host, item.ip, item.profile,
         item.proto, item.scope, tostring(item.seen), tostring(item.selected_strategy or 0),
-        tostring(item.strategy_count or 0)}, "\t")
+        tostring(item.strategy_count or 0), tostring(item.passive_strategy or item.selected_strategy or 0)}, "\t")
     end
     for i = #lines + 1, 128 do lines[i] = "" end
     f:seek("set", 0)
@@ -1808,7 +1813,7 @@ adaptive_observe_rewrite = function()
   for i, event in ipairs(ADAPTIVE_OBSERVE_ORDER) do
     lines[i] = table.concat({"1", event.status, event.host, event.ip, event.profile,
       event.proto, event.scope, tostring(event.seen), tostring(event.selected_strategy or 0),
-      tostring(event.strategy_count or 0)}, "\t")
+      tostring(event.strategy_count or 0), tostring(event.passive_strategy or event.selected_strategy or 0)}, "\t")
   end
   f:seek("set", 0)
   local ok = f:write(table.concat(lines, "\n"), "\n")
@@ -1818,21 +1823,26 @@ end
 
 local function adaptive_observe_record_strategy(context, strategy, strategy_count)
   if type(context) ~= "table" or type(context.key) ~= "string" then return end
-  -- Browser-backed choices are temporary or independently confirmed state.
-  -- Do not copy them into the passive router baseline: cancellation/expiry
-  -- must resume the exact router candidate that was active before the trial.
-  if context.adaptive_source == "browser_trial" or context.adaptive_source == "browser_confirmed"
-    or context.adaptive_source == "browser_confirmed_shared" or context.adaptive_source == "manual_lock" then return end
+  -- Persist the strategy actually applied for browser/API candidate exclusion,
+  -- while keeping passive_strategy separate for router-only recovery.
   strategy = tonumber(strategy)
   if not strategy or strategy < 0 or strategy > 999 or strategy % 1 ~= 0 then return end
   strategy_count = tonumber(strategy_count) or 0
   if strategy_count < 0 or strategy_count > 999 or strategy_count % 1 ~= 0 then strategy_count = 0 end
   local event = ADAPTIVE_OBSERVE_EVENTS[context.key]
-  if not event or (event.selected_strategy == strategy and event.strategy_count == strategy_count) then return end
-  local previous, previous_count, previous_seen = event.selected_strategy, event.strategy_count, event.seen
+  if not event then return end
+  local passive = context.adaptive_source ~= "browser_trial" and context.adaptive_source ~= "browser_confirmed"
+    and context.adaptive_source ~= "browser_confirmed_shared" and context.adaptive_source ~= "manual_lock"
+  if event.selected_strategy == strategy and event.strategy_count == strategy_count
+    and (not passive or event.passive_strategy == strategy) then return end
+  local previous, previous_count, previous_seen, previous_passive = event.selected_strategy, event.strategy_count, event.seen, event.passive_strategy
   event.selected_strategy, event.strategy_count, event.seen = strategy, strategy_count, os.time()
+  if passive then event.passive_strategy = strategy
+  elseif not event.passive_strategy or event.passive_strategy < 1 then
+    event.passive_strategy = tonumber(context.passive_strategy) or strategy
+  end
   if not adaptive_observe_rewrite() then
-    event.selected_strategy, event.strategy_count, event.seen = previous, previous_count, previous_seen
+    event.selected_strategy, event.strategy_count, event.seen, event.passive_strategy = previous, previous_count, previous_seen, previous_passive
   end
 end
 
@@ -2045,6 +2055,48 @@ local function adaptive_router_record_failure(event, strategy, count, threshold)
   return true
 end
 
+local function adaptive_quic_recovery_apply(event, host, ip, scope, count)
+  if not event or event.router_candidate or type(host) ~= "string" or type(ip) ~= "string" then return false end
+  local f = io.open(ADAPTIVE_QUIC_RECOVERY_PATH, "r")
+  if not f then return false end
+  local now, rows, applied = os.time(), {}, false
+  for line in f:lines() do
+    local ver, queued_host, queued_ip, queued_scope, failed, queued_count, expires, attempt =
+      line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)\t(%d+)\t(%d+)\t([0-9a-f]+)$")
+    if ver == "1" and tonumber(expires) and tonumber(expires) > now then
+      if not applied and queued_host == host and queued_ip == ip and queued_scope == scope
+        and #attempt == 32 and tonumber(failed) < tonumber(count) then
+        local candidate = tonumber(failed) + 1
+        event.router_candidate, event.status = candidate, "router_trial_" .. tostring(candidate)
+        event.failure_count, event.failure_strategy, event.seen = 0, nil, now
+        applied = true
+      else rows[#rows + 1] = line end
+    end
+  end
+  f:close()
+  if not applied then return false end
+  if not adaptive_observe_rewrite() then
+    event.router_candidate, event.status, event.seen = nil, "seen", now
+    return false
+  end
+  local tmp = ADAPTIVE_QUIC_RECOVERY_PATH .. ".tmp"
+  f = io.open(tmp, "w")
+  if not f then return true end -- Event is durable; stale queue row is harmless and expires.
+  local ok = f:write(table.concat(rows, "\n"), #rows > 0 and "\n" or "")
+  f:close()
+  local renamed = ok and os.rename(tmp, ADAPTIVE_QUIC_RECOVERY_PATH)
+  if not renamed and ok then
+    -- Lua's Windows test runtime cannot replace an existing target with rename;
+    -- POSIX keeps the atomic first path, while the fallback keeps host tests portable.
+    os.remove(ADAPTIVE_QUIC_RECOVERY_PATH)
+    renamed = os.rename(tmp, ADAPTIVE_QUIC_RECOVERY_PATH)
+  end
+  if not renamed then
+    os.remove(tmp); return true
+  end
+  return true
+end
+
 adaptive_quic_health_failure = function(host, ip, scope, failure_kind)
   local key = table.concat({host, "5", "quic", scope}, "\0")
   local event = ADAPTIVE_OBSERVE_EVENTS[key]
@@ -2067,6 +2119,10 @@ function z2r_adaptive_suspected_failure(desync, crec, failure_kind)
   if ADAPTIVE_ROTATION_ENABLED then
     if failure_kind == "application" or failure_kind == "client_abort" or failure_kind == "ambiguous" then return end
     local strategy = tonumber(context.selected_strategy) or event.selected_strategy
+    if context.adaptive_source == "browser_trial" or context.adaptive_source == "browser_confirmed"
+      or context.adaptive_source == "browser_confirmed_shared" then
+      strategy = tonumber(event.passive_strategy) or tonumber(context.passive_strategy) or strategy
+    end
     local count = tonumber(context.strategy_count) or event.strategy_count
     local threshold = context.proto == "quic" and (failure_kind == "quic_retry" or failure_kind == "quic_tcp_fallback") and 1 or 2
     adaptive_router_record_failure(event, strategy, count, threshold)
@@ -2204,12 +2260,20 @@ end
 
 function locked_adaptive_quality_selection(desync, host, profile, scope, current_strategy, hostkey)
   if not ADAPTIVE_RULES_APPLY or type(desync) ~= "table" or type(desync.track) ~= "table"
-    or type(desync.dis) ~= "table" or type(dis_ipdst) ~= "function" or type(ntop) ~= "function" then return nil end
+    or type(desync.dis) ~= "table" then return nil end
   host = string.lower(tostring(host or ""):gsub("%.$", ""))
   profile, scope = tostring(profile or ""), string.lower(tostring(scope or "default"))
   local proto = desync_proto(desync)
   if not host:match("^[a-z0-9%-]+%.[a-z0-9%-%.]+$") then return nil end
-  if not desync.dis.tcp or tonumber(desync.dis.tcp.th_dport) ~= 443 or proto ~= "tls" then return nil end
+  local state = desync.track.lua_state
+  if type(state) ~= "table" then state = {}; desync.track.lua_state = state end
+  local flow = type(state) == "table" and state.adaptive_quality_flow or nil
+  if desync.outgoing == false and type(flow) == "table" and flow.host == host
+    and flow.profile == profile and flow.scope == scope then
+    return flow.strategy, flow.source, flow.trial, flow.ip, flow.proto
+  end
+  if desync.outgoing ~= true or type(dis_ipdst) ~= "function" or type(ntop) ~= "function"
+    or not desync.dis.tcp or tonumber(desync.dis.tcp.th_dport) ~= 443 or proto ~= "tls" then return nil end
   local adaptive_proto = profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$") and "googlevideo-tcp" or "tls"
   local lock_proto = "tls"
   local profile_lock = locked_strategy_for_profile(profile, lock_proto, scope)
@@ -2235,7 +2299,7 @@ function locked_adaptive_quality_selection(desync, host, profile, scope, current
     if strategy ~= nil then return strategy, "browser_confirmed_shared", nil, ip, adaptive_proto end
   end
   if ADAPTIVE_ROTATION_ENABLED then
-    local state = desync.track.lua_state
+    state = desync.track.lua_state
     local context = type(state) == "table" and state.adaptive_observe_context or nil
     local event = context and ADAPTIVE_OBSERVE_EVENTS[context.key] or nil
     local pinned = type(state) == "table" and tonumber(state.adaptive_router_auto_strategy) or nil
@@ -2477,6 +2541,10 @@ function circular_locked(ctx, desync)
 
   local router_event = desync.track and desync.track.lua_state and desync.track.lua_state.adaptive_observe_context
     and ADAPTIVE_OBSERVE_EVENTS[desync.track.lua_state.adaptive_observe_context.key] or nil
+  if locked == nil and adaptive_strategy_source == nil and ADAPTIVE_ROTATION_ENABLED
+    and adaptive_proto == "quic" and router_event then
+    adaptive_quic_recovery_apply(router_event, host, router_event.ip, scope, hrec.ctstrategy)
+  end
   local router_trial_candidate = ADAPTIVE_ROTATION_ENABLED and router_event and router_event.router_candidate or nil
   local router_pinned_strategy = ADAPTIVE_ROTATION_ENABLED and desync.track and desync.track.lua_state
     and tonumber(desync.track.lua_state.adaptive_router_auto_strategy) or nil
@@ -2502,6 +2570,7 @@ function circular_locked(ctx, desync)
     end
   end
 
+  local passive_strategy_before = tonumber(hrec.nstrategy) or 1
   local selected_strategy
   if locked and locked >= 1 and locked <= hrec.ctstrategy then
     selected_strategy = locked
@@ -2528,6 +2597,7 @@ function circular_locked(ctx, desync)
     context.selected_strategy = selected_strategy
     context.strategy_count = hrec.ctstrategy
     context.adaptive_source = adaptive_strategy_source or (locked ~= nil and "manual_lock") or "router_auto_baseline"
+    context.passive_strategy = passive_strategy_before
     adaptive_observe_record_strategy(context, selected_strategy, hrec.ctstrategy)
   end
   if ADAPTIVE_ROTATION_ENABLED and locked == nil and adaptive_strategy_source ~= "browser_trial"

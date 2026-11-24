@@ -24,6 +24,7 @@ def runtime(root: Path, mode: str, default_scope: bool = False):
     lua = LuaRuntime(unpack_returned_tuples=True)
     env = {
         "ZATOR_ROOT": str(root),
+        "Z2R_ADAPTIVE_DIR": str(root),
         "ZAPRET2_ROOT": "/nonexistent/zapret2",
         "Z2R_ADAPTIVE_RULES_FILE": str(root / "missing-rules.tsv"),
         "Z2R_ADAPTIVE_EVENTS_FILE": str(events),
@@ -73,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-observe-") as tmp:
     lua, events, ramp_targets = runtime(root, "OBSERVE")
     rows = events.read_text().splitlines()
     assert len(rows) == 1, f"observation should dedupe host/scope across client IPs and exclude other ports/manual lock: {rows!r}"
-    assert len(rows[0].split("\t")) == 10 and "http" not in rows[0], "event schema leaked unexpected fields"
+    assert len(rows[0].split("\t")) == 11 and "http" not in rows[0], "event schema leaked unexpected fields"
     assert rows[0].split("\t")[:7] == ["1", "seen", "cdn.example.org", "93.184.216.34", "1", "tls", "default"]
     assert rows[0].split("\t")[7] == "5000", "re-observed production tuple must refresh stale discovery time"
     lua.execute('test_now = 5029; test_invoke("cdn.example.org", "93.184.216.34", 443)')
@@ -244,6 +245,39 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-router-auto-quic-") as t
     assert quic_second_selected == 1 and quic_router_status() == "router_trial_2", \
         f"a repeated Initial on the same QUIC connection should start a low-confidence next-strategy trial: selected={quic_second_selected!r}, event={quic_router_status()!r}, health={(Path(tmp) / 'quic-health.tsv').read_text()!r}"
     assert lua.globals().quic_auto_selected() == 2, "QUIC router AUTO did not apply the next production strategy"
+
+with tempfile.TemporaryDirectory(prefix="zator-adaptive-applied-vs-passive-") as tmp:
+    lua, events, _ = runtime(Path(tmp), "AUTO")
+    lua.execute("""
+      local desync = {outgoing=true, profile="1", hostname="cdn.example.org", arg={proto="tls"},
+        dis={destination="93.184.216.34", ip={}, tcp={th_dport=443}}, track={lua_state={}}}
+      z2r_adaptive_observe_connection(desync, "1", "cdn.example.org", "default", true)
+      local context = desync.track.lua_state.adaptive_observe_context
+      context.adaptive_source = "router_auto_baseline"
+      z2r_adaptive_observe_record_strategy(context, 5, 12)
+      context.adaptive_source = "browser_confirmed"
+      z2r_adaptive_observe_record_strategy(context, 6, 12)
+    """)
+    row = events.read_text().strip().split("\t")
+    assert row[8:11] == ["6", "12", "5"], \
+        f"browser strategy must be visible as applied while passive baseline remains separate: {row!r}"
+
+with tempfile.TemporaryDirectory(prefix="zator-adaptive-quic-browser-fallback-") as tmp:
+    lua, events, _ = runtime(Path(tmp), "AUTO")
+    recovery = Path(tmp) / "quic-recovery.tsv"
+    recovery.write_text(f"1\trr1.googlevideo.com\t94.0.3.5\tdefault\t1\t3\t{9999999999}\t{'a' * 32}\n")
+    lua.execute("""
+      local desync = {outgoing=true, profile="5", hostname="rr1.googlevideo.com", l7payload="quic_initial",
+        arg={proto="udp"}, dis={destination="94.0.3.5", ip={}, udp={th_dport=443, th_sport=49152}},
+        track={lua_state={}}, plan={{arg={strategy=1}}, {arg={strategy=2}}, {arg={strategy=3}}}}
+      circular_locked({}, desync)
+      recovered_quic_strategy = desync.track.lua_state.adaptive_observe_context.selected_strategy
+    """)
+    row = next(row.split("\t") for row in events.read_text().splitlines()
+               if row.split("\t")[2] == "rr1.googlevideo.com")
+    assert lua.globals().recovered_quic_strategy == 2 and row[1] == "router_trial_2", \
+        f"browser TCP fallback must queue a low-priority next QUIC strategy: strategy={lua.globals().recovered_quic_strategy!r}, row={row!r}, queue={recovery.read_text()!r}"
+    assert recovery.read_text() == "", "applied QUIC recovery request was not consumed"
 
 with tempfile.TemporaryDirectory(prefix="zator-adaptive-degraded-") as tmp:
     lua, events, _ = runtime(Path(tmp), "AGENT_BETA", default_scope=True)

@@ -299,7 +299,7 @@ adaptive_router_trials_reset() {
   [[ "$owner" =~ ^[0-9]+:[0-9]+$ && "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
   tmp="$(mktemp "$dir/.events-reset.XXXXXX")" || return 1
   awk -F '\t' 'BEGIN { OFS="\t" }
-    NR<=128 && (NF==8 || NF==9 || NF==10) && $1==1 && ($2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") { $2="seen"; if (NF>=9) $9=0 }
+    NR<=128 && (NF==8 || NF==9 || NF==10 || NF==11) && $1==1 && ($2 ~ /^router_trial_[1-9][0-9]?[0-9]?$/ || $2=="router_exhausted") { $2="seen"; if (NF>=9) $9=0 }
     { print }
   ' "$events" > "$tmp" || { rm -f "$tmp"; return 1; }
   chown "$owner" "$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$events" || {
