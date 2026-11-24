@@ -110,6 +110,7 @@ scriptedMediaResult = null
 assert.equal((await api.readMediaQuality(2)).quality, 'unknown', 'missing video must remain unknown')
 
 assert.equal(api.failureClass('net::ERR_CONNECTION_RESET'), 'network_failure')
+assert.equal(api.failureClass('net::ERR_SOCKET_NOT_CONNECTED'), 'network_failure')
 assert.equal(api.failureClass('net::ERR_NAME_NOT_RESOLVED'), '')
 assert.equal(api.failureClass('net::ERR_CERT_DATE_INVALID'), '')
 assert.equal(api.failureClass('net::ERR_CONNECTION_ABORTED'), '')
