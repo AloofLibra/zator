@@ -16,12 +16,20 @@ function addStatusItem(list, text, muted = false) {
   list.append(item);
 }
 
+function routerStatusError(status) {
+  if (status === "not_paired") return "Pair a router to see managed domains.";
+  if (status === "unreachable") return "Router API is unreachable. Check the router address, network, and API service.";
+  if (status === 401 || status === 403) return "Router rejected this pairing. Pair the extension again in Settings.";
+  if (status === 404) return "Router browser API is unavailable. Update or enable it on the router.";
+  return "Router status request failed. Check pairing and router service.";
+}
+
 function renderRouterStatus(state) {
   targets.replaceChildren();
   features.replaceChildren();
   if (!state?.ok) {
-    addStatusItem(targets, state?.status === "not_paired" ? "Pair a router to see managed domains." : "Router status unavailable.", true);
-    addStatusItem(features, "Feature status unavailable.", true);
+    addStatusItem(targets, routerStatusError(state?.status), true);
+    addStatusItem(features, "Connect to the router to see feature status.", true);
     return;
   }
   const status = state.data;
