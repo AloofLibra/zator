@@ -1987,6 +1987,73 @@ local function adaptive_browser_record_flow(desync, trial, host, ip, profile, pr
   return ok ~= nil
 end
 
+function locked_browser_capture_syn_for_quality(desync, profile, scope)
+  if ADAPTIVE_MODE ~= "AGENT_BETA" then return false, "mode-disabled" end
+  return adaptive_browser_capture_syn(desync, profile, scope)
+end
+
+function locked_adaptive_quality_selection(desync, host, profile, scope, current_strategy, hostkey)
+  if not ADAPTIVE_RULES_APPLY or type(desync) ~= "table" or type(desync.track) ~= "table"
+    or type(desync.dis) ~= "table" or type(dis_ipdst) ~= "function" or type(ntop) ~= "function" then return nil end
+  host = string.lower(tostring(host or ""):gsub("%.$", ""))
+  profile, scope = tostring(profile or ""), string.lower(tostring(scope or "default"))
+  local proto = desync_proto(desync)
+  if not host:match("^[a-z0-9%-]+%.[a-z0-9%-%.]+$") then return nil end
+  if not desync.dis.tcp or tonumber(desync.dis.tcp.th_dport) ~= 443 or proto ~= "tls" then return nil end
+  local adaptive_proto = profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$") and "googlevideo-tcp" or "tls"
+  local lock_proto = "tls"
+  local profile_lock = locked_strategy_for_profile(profile, lock_proto, scope)
+  if profile_lock ~= nil then return profile_lock, "profile_lock" end
+  if type(slm_is_user_lock) == "function" and slm_is_user_lock(profile, hostkey or host, scope) then return nil end
+  local dst = dis_ipdst(desync.dis)
+  local ip = dst and ntop(dst) or nil
+  if type(ip) ~= "string" or ip == "" then return nil end
+
+  if ADAPTIVE_MODE == "AGENT_BETA" then
+    local trial = locked_browser_trial_for_tuple(host, ip, profile, adaptive_proto, scope)
+    local syn = desync.track.lua_state and desync.track.lua_state.adaptive_browser_syn
+    if trial and type(syn) == "table" and syn.ip == ip
+      and syn.profile == profile and syn.proto == "tcp" and syn.scope == scope and syn.seen >= trial.created then
+      return trial.strategy, "browser_trial", trial, ip, adaptive_proto
+    end
+  end
+
+  local strategy = locked_adaptive_strategy_for_tuple(host, ip, profile, adaptive_proto, scope)
+  if strategy ~= nil then return strategy, "verified_rule", nil, ip, adaptive_proto end
+  if scope == "default" then
+    strategy = locked_adaptive_shared_strategy_for_tuple(host, ip, profile, adaptive_proto)
+    if strategy ~= nil then return strategy, "browser_confirmed_shared", nil, ip, adaptive_proto end
+  end
+  if ADAPTIVE_MODE == "AUTO" then
+    local state = desync.track.lua_state
+    local context = type(state) == "table" and state.adaptive_observe_context or nil
+    local event = context and ADAPTIVE_OBSERVE_EVENTS[context.key] or nil
+    local pinned = type(state) == "table" and tonumber(state.adaptive_router_auto_strategy) or nil
+    local candidate = event and event.router_candidate or nil
+    if pinned and pinned >= 1 then return pinned, "router_auto_pinned", nil, ip, adaptive_proto end
+    if event and event.status ~= "router_exhausted" and candidate and candidate >= 1 then
+      return candidate, "router_auto_trial", nil, ip, adaptive_proto
+    end
+  end
+  return nil
+end
+
+function locked_browser_record_quality_flow(desync, trial, host, ip, profile, proto, scope, strategy)
+  if type(desync) ~= "table" or type(desync.track) ~= "table" or type(desync.track.lua_state) ~= "table"
+    or type(trial) ~= "table" or trial.strategy ~= strategy then return false end
+  local state = desync.track.lua_state
+  state.adaptive_browser_trial_id = trial.id
+  state.adaptive_browser_trial_generation = trial.generation
+  state.adaptive_browser_trial_strategy = trial.strategy
+  if state.adaptive_browser_flow_recorded then return true end
+  local dst = dis_ipdst(desync.dis)
+  local flow_ip = dst and ntop(dst) or nil
+  if not flow_ip then return false end
+  state.adaptive_browser_flow_recorded = adaptive_browser_record_flow(
+    desync, trial, host, flow_ip, profile, proto, scope, strategy)
+  return state.adaptive_browser_flow_recorded
+end
+
 function locked_browser_capture_syn_for_tests(desync, profile, scope)
   return adaptive_browser_capture_syn(desync, profile, scope)
 end

@@ -51,6 +51,20 @@ local valid = trial("8.8.8.8", "mark:7", "tls", 1, 2, 1045)
 locked_load_browser_trials_for_tests({valid}, now)
 local found = locked_browser_trial_for_tuple("cdn.example.org", "8.8.8.8", 1, "tls", "mark:7", now)
 assert(found and found.id == id and found.generation == 1 and found.strategy == 2, "exact trial not returned")
+local quality_track = {lua_state={adaptive_browser_syn={ip="8.8.8.8",profile="1",proto="tcp",scope="mark:7",seen=1000}}}
+local quality_desync = {profile="1",arg={key="1"},dis={dst="8.8.8.8",tcp={th_dport=443}},track=quality_track}
+local quality_strategy, quality_source, quality_trial = locked_adaptive_quality_selection(
+  quality_desync, "cdn.example.org", "1", "mark:7", 1, "cdn.example.org")
+assert(quality_strategy == 2 and quality_source == "browser_trial" and quality_trial.id == id,
+  "AUTO circular_quality selector did not resolve the active browser trial")
+quality_track.lua_state.adaptive_browser_syn = nil
+assert(locked_adaptive_quality_selection(quality_desync, "cdn.example.org", "1", "mark:7", 1, "cdn.example.org") == nil,
+  "a trial without a post-trial SYN was selected in circular_quality")
+quality_track.lua_state.adaptive_browser_syn = {ip="8.8.8.8",profile="1",proto="tcp",scope="mark:7",seen=1000}
+slm_is_user_lock = function() return true end
+assert(locked_adaptive_quality_selection(quality_desync, "cdn.example.org", "1", "mark:7", 1, "cdn.example.org") == nil,
+  "user-locked quality entry must not be overridden by a browser trial")
+slm_is_user_lock = nil
 local track = {}
 local syn = {outgoing=true, track=track, dis={dst="8.8.8.8", tcp={th_dport=443, th_flags=2}}}
 local captured, capture_reason = locked_browser_capture_syn_for_tests(syn, "1", "mark:7")

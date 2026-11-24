@@ -49,6 +49,7 @@ function renderRouterStatus(state) {
   }
   const local = cachedConfig || {};
   addStatusItem(features, `Browser learning: ${active ? "active" : status.mode || "off"}`);
+  addStatusItem(features, `Router autorotation: ${status.autorotation_enabled === true ? "enabled" : "off"}`);
   addStatusItem(features, `Media quality sampling: ${local.mediaQualityOptIn === true ? "enabled" : "off"}`);
   addStatusItem(features, `Ramp canary: ${status.ramp_configured && local.mediaQualityOptIn === true && local.rampCanaryOptIn === true ? "enabled by consent" : "off"}`);
   addStatusItem(features, `Shared rankings: ${status.ranking_opt_in ? "enabled" : "off"}`);
@@ -99,6 +100,7 @@ async function render() {
     NOT_TESTED: "not counted; no confirmed new flow",
     TARGET_NOT_MANAGED: "target is not managed by Zator",
     MANUAL_LOCKED: "manual lock prevents a trial",
+    AUTOROTATION_DISABLED: "enable router autorotation to test a strategy",
     COOLDOWN: "trial cooldown is active"
   })[row.router_status] || row.router_status;
   const rampEvidence = row.ramp_treatment

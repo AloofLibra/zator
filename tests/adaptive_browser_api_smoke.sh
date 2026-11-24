@@ -20,6 +20,7 @@ mkdir -p "$tmp/zator/lua"
 cp "$ROOT/orchestra/locked.lua" "$tmp/zator/lua/locked.lua"
 printf 'AGENT_BETA\n' > "$tmp/zator/extra_strats/cache/adaptive/mode"
 printf 'CLIENT_SCOPE_ENABLE=1\n' > "$tmp/zapret2/config"
+printf '#Z2R_AUTO_MODE=1\n' >> "$tmp/zapret2/config"
 printf 'mark:7\t192.168.1.42\n' > "$CLIENT_SCOPE_MAP_FILE"
 config_get_var() { awk -F= -v k="$2" '$1==k {print $2; exit}' "$1"; }
 . "$ROOT/lib/adaptive_browser.sh"
@@ -65,6 +66,7 @@ learning_status="$(printf '%s' "$learning_status_body" | env REQUEST_METHOD=POST
 grep -q '"hostname":"example.org"' <<< "$learning_status"
 grep -q '"strategy_number":1,"strategy_source":"profile_auto"' <<< "$learning_status"
 grep -q '"quic_profile_available":false' <<< "$learning_status"
+grep -q '"autorotation_enabled":true' <<< "$learning_status"
 observed_ms="$(( $(date +%s) * 1000 ))"
 critical_body="schema_version=1&action=browser_report_failure&browser_event_id=11111111111111111111111111111111&trigger=critical_resource_repeated_failure&request_class=script&hostname=unseen.example.org&method=GET&failure_class=network_failure&failure_count=2&observed_at=$observed_ms"
 critical="$(printf '%s' "$critical_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#critical_body}" \
@@ -202,6 +204,7 @@ ws_user="$(id -un)"
 cat > "$ZAPRET2_ROOT/config" <<EOF
 CLIENT_SCOPE_ENABLE=1
 NFQWS2_ENABLE=1
+#Z2R_AUTO_MODE=1
 WS_USER=$ws_user
 FWTYPE=nft
 DESYNC_MARK=0x40000000
@@ -260,6 +263,27 @@ shopt -s nullglob
 reservations=("$Z2R_ADAPTIVE_BROWSER_DIR/attempts"/.reserve.*)
 [[ ${#reservations[@]} -eq 0 ]] || { echo 'successful trial left a capacity reservation behind' >&2; exit 1; }
 shopt -u nullglob
+# A manual profile lock must block the API before a temporary trial is created.
+manual_host=manual-lock.example.org
+manual_now="$(date +%s)"
+mkdir -p "$ZATOR_ROOT/extra_strats/cache/orchestra"
+printf '1\ttls\t6\n' > "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.manual.tsv"
+printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$manual_host" "$manual_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+manual_body="schema_version=1&action=browser_report_failure&browser_event_id=15151515151515151515151515151515&trigger=main_frame_network_failure&request_class=main_frame&hostname=$manual_host&method=GET&failure_class=network_failure&failure_count=1&observed_at=$((manual_now * 1000))"
+manual_response="$(printf '%s' "$manual_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#manual_body}" HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"status":"MANUAL_LOCKED"' <<< "$manual_response"
+! grep -q '"attempt_id"' <<< "$manual_response"
+rm -f "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.manual.tsv"
+# Browser trials must not start when router autorotation is off.
+auto_off_host=auto-off.example.org
+auto_off_now="$(date +%s)"
+printf '1\tseen\t%s\t8.8.8.8\t1\ttls\tmark:7\t%s\n' "$auto_off_host" "$auto_off_now" > "$Z2R_ADAPTIVE_DIR/events.tsv"
+sed -i 's/^#Z2R_AUTO_MODE=1$/#Z2R_AUTO_MODE=0/' "$ZAPRET2_ROOT/config"
+auto_off_body="schema_version=1&action=browser_report_failure&browser_event_id=14141414141414141414141414141414&trigger=main_frame_network_failure&request_class=main_frame&hostname=$auto_off_host&method=GET&failure_class=network_failure&failure_count=1&observed_at=$((auto_off_now * 1000))"
+auto_off_response="$(printf '%s' "$auto_off_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#auto_off_body}" HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"status":"AUTOROTATION_DISABLED"' <<< "$auto_off_response"
+! grep -q '"attempt_id"' <<< "$auto_off_response"
+sed -i 's/^#Z2R_AUTO_MODE=0$/#Z2R_AUTO_MODE=1/' "$ZAPRET2_ROOT/config"
 # Multiple eligible production observations are ambiguous, not unmanaged, and
 # must not create a trial.
 ambiguous_now="$(date +%s)"
@@ -314,6 +338,9 @@ printf '%s\n' '--lua-desync=fake:strategy=1' '--lua-desync=multisplit:strategy=2
 printf '1\ttls\t6\n' > "$ORCH_DIR/locked.tsv"
 if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi
 rm -f "$ORCH_DIR/locked.tsv"
+printf '1\ttls\t6\n' > "$ORCH_DIR/locked.manual.tsv"
+if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls default "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi
+rm -f "$ORCH_DIR/locked.manual.tsv"
 mkdir -p "$ORCH_DIR/scopes"
 printf '1\ttls\t5\n' > "$ORCH_DIR/scopes/mark_7.tsv"
 if adaptive_browser_candidate_select example.org 8.8.8.8 1 tls mark:7 "$tmp/args/strategies" "$ZAPRET2_ROOT/nfq2/nfqws2" "$ORCH_DIR" "$client_id"; then exit 1; else [[ "$?" = 4 ]]; fi

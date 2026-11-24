@@ -1455,6 +1455,13 @@ function circular_quality(ctx, desync)
         return VERDICT_PASS
     end
 
+    -- Browser trials need the SYN timestamp before the empty ACK/SYN fast path.
+    local profile = desync_profile_key(desync)
+    local scope = type(desync_client_scope) == "function" and desync_client_scope(desync) or "default"
+    if type(locked_browser_capture_syn_for_quality) == "function" then
+        locked_browser_capture_syn_for_quality(desync, profile, scope)
+    end
+
     -- AUTO profiles also pass payload_type=empty so an incoming TCP RST can
     -- reach the failure detector.  Empty ACK/SYN/FIN packets are common and
     -- carry no quality signal; reject them before orchestrate() to avoid doing
@@ -1560,7 +1567,6 @@ function circular_quality(ctx, desync)
     end
     -- Normalize hostkey for slm_* functions
     hostkey = slm_normalize_hostkey(hostkey) or hostkey
-    local scope = type(desync_client_scope) == "function" and desync_client_scope(desync) or "default"
     if type(z2r_adaptive_observe_connection) == "function" then
         z2r_adaptive_observe_connection(desync, desync_profile_key(desync), observed_hostname, scope, true)
     end
@@ -1569,6 +1575,41 @@ function circular_quality(ctx, desync)
     count_strategies(hrec, desync.plan)
     if hrec.ctstrategy==0 then
         error("circular_quality: add strategy=N tag argument to each following instance ! N must start from 1 and increment")
+    end
+
+    -- The AUTO configuration invokes circular_quality rather than
+    -- circular_locked. Keep browser trials and router/browser-confirmed rules
+    -- active in this path too, while leaving user locks and ordinary quality
+    -- learning in charge when no adaptive selection applies.
+    local adaptive_strategy, adaptive_source, adaptive_trial, adaptive_ip, adaptive_proto
+    if type(locked_adaptive_quality_selection) == "function" then
+        adaptive_strategy, adaptive_source, adaptive_trial, adaptive_ip, adaptive_proto =
+            locked_adaptive_quality_selection(desync, observed_hostname or hostname, desync_profile_key(desync),
+                scope, hrec.nstrategy, hostkey)
+    end
+    if adaptive_strategy == 0 then
+        DLOG("circular_quality: adaptive DIRECT host=" .. tostring(observed_hostname or hostname))
+        if ctx then lua_cutoff(ctx) end
+        plan_clear(desync)
+        return VERDICT_PASS
+    end
+    if adaptive_strategy ~= nil and adaptive_strategy >= 1 and adaptive_strategy <= hrec.ctstrategy then
+        hrec.nstrategy = adaptive_strategy
+        local state = desync.track and desync.track.lua_state
+        local context = type(state) == "table" and state.adaptive_observe_context or nil
+        if context then
+            context.adaptive_rule_applied = true
+            context.selected_strategy = adaptive_strategy
+            context.strategy_count = hrec.ctstrategy
+        end
+        if adaptive_trial and type(locked_browser_record_quality_flow) == "function" then
+            locked_browser_record_quality_flow(desync, adaptive_trial, observed_hostname or hostname,
+                adaptive_ip, desync_profile_key(desync), adaptive_proto, scope, adaptive_strategy)
+        end
+        adaptive_strategy = hrec.nstrategy
+    else
+        adaptive_strategy = nil
+        adaptive_trial = nil
     end
 
     local skip_pass = false
@@ -1609,7 +1650,9 @@ function circular_quality(ctx, desync)
 
     -- Check if we should use locked strategy
     local locked = slm_get_locked(desync.arg.key, hostkey, scope)
-    if locked then
+    if adaptive_strategy then
+        DLOG("circular_quality: adaptive strategy " .. adaptive_strategy .. " source=" .. tostring(adaptive_source))
+    elseif locked then
         -- BLOCKED: If locked strategy is marked as blocked by user, reset and re-learn
         if slm_is_blocked(desync.arg.key, hostkey, locked, scope) then
             DLOG("circular_quality: BLOCKED " .. (hostkey or "?") .. " -> locked=" .. locked .. " is blocked, resetting")

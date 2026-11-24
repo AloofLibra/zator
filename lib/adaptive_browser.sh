@@ -116,8 +116,8 @@ adaptive_browser_profile_lock_check() {
   [[ "$profile" != 5 ]] && proto=tls
   scoped_lock=""
   if [[ "$scope" != default ]]; then scoped_lock="$orch_dir/scopes/${scope/:/_}.tsv"; fi
-  # Match Lua's scoped-first, default-fallback lock resolution.
-  for lock_file in "$scoped_lock" "$orch_dir/locked.tsv"; do
+  # Match Lua's scoped-first, default-fallback lock resolution, including manual locks.
+  for lock_file in "$scoped_lock" "$orch_dir/locked.tsv" "$orch_dir/locked.manual.tsv"; do
     [[ -n "$lock_file" && -e "$lock_file" ]] || continue
     [[ -f "$lock_file" && ! -L "$lock_file" && -r "$lock_file" ]] || return 2
     if awk -F '\t' -v pr="$profile" -v proto="$proto" '$1==pr && (($2==proto && NF>=3) || NF==2) {found=1} END{exit !found}' "$lock_file"; then

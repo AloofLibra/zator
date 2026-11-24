@@ -1,12 +1,16 @@
 # Browser Feedback Beta — status
 
-**Updated:** 2026-11-23
+**Updated:** 2026-11-24
 **Branch:** `feat/bash-adaptive-rotation`
 **Decision:** **NO-GO for beta release.** Software paths are developing; a passing mock or legacy q65535 probe is not production browser-flow acceptance. Keep deployment/test use restricted to an explicitly paired test router.
 
 ## Architecture clarification (2026-11-22)
 
 The browser extension is an optional higher-confidence feedback source. Router AUTO works without browser/agent pairing: two independent production transport failures on the exact host/IP/profile/transport/scope candidate advance to the next configured strategy. It ignores application/client-abort and ambiguous upstream redirect signals, caps the candidate chain at ten, and reports exhaustion without claiming recovery. Router-only evidence has lower confidence and does not report a confirmed success. Browser-confirmed domain rules are also stored as a shared baseline for clients without a separate scope; their exact scope and manual locks retain precedence. The passive QUIC Health Monitor records bounded Initial/retry/response/possible-TCP-fallback observations and can feed only unanswered retry suspicion into the low-confidence router loop; it never runs active probes. Software implementation and regression coverage are complete for this code path; hardware acceptance remains open.
+
+## Trial prerequisites (2026-11-24)
+
+Browser trials require both browser Beta mode and the router's normal `#Z2R_AUTO_MODE=1`; Beta mode alone does not mean the router is configured to rotate strategies. A matching profile lock, including `locked.manual.tsv` or the client's scoped lock, blocks a trial. The API reports `AUTOROTATION_DISABLED` or `MANUAL_LOCKED`, and the extension popup shows whether router autorotation is enabled. Media quality sampling remains optional evidence collected only during a confirmed active Googlevideo attempt; it does not enable rotation or start trials. Focused API, extension, and package smokes pass for these gates. A live Chrome-to-production-q300 outcome remains unverified, so release remains NO-GO.
 
 ## Implemented and software-tested
 

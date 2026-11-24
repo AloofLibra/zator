@@ -67,6 +67,7 @@ browser_start_trial() {
   [[ "$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)" = AGENT_BETA ]] || return 5
   [[ ! -d "${Z2R_ADAPTIVE_LOCK_DIR:-/tmp/z2r-supersweep.lock}" ]] || return 4
   [[ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" NFQWS2_ENABLE 2>/dev/null | tr -d '"\047')" = 1 ]] || return 5
+  grep -q '^#Z2R_AUTO_MODE=1$' "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null || return 8
   case "$proto" in
     tls) recipe=tls-http1-v1 ;;
     googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;;
@@ -152,12 +153,13 @@ browser_start_trial() {
 
 browser_learning_status() {
   local events now rows row ver status host ip profile proto row_scope seen extra host_key strategy strategy_source lock lock_proto stamp nfqws
-  local targets='[' first=1 count=0 ranking=false stats=false ramp=false quic=false
+  local targets='[' first=1 count=0 ranking=false stats=false ramp=false quic=false autorotation=false
   events="${Z2R_ADAPTIVE_EVENTS_FILE:-${Z2R_ADAPTIVE_DIR:-/tmp/z2r-adaptive}/events.tsv}"
   now="$(date +%s)" || now=0
   ORCH_DIR="$ROOT/extra_strats/cache/orchestra"
   ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
   nfqws="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+  grep -q '^#Z2R_AUTO_MODE=1$' "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null && autorotation=true
   stamp=''
   if [[ -x "$nfqws" && -r "${ZAPRET2_ROOT:-/opt/zapret2}/config" ]]; then
     stamp="$(adaptive_rules_runtime_stamp "${ZAPRET2_ROOT:-/opt/zapret2}/config" "$nfqws" "$ORCH_DIR" 2>/dev/null || true)"
@@ -218,7 +220,7 @@ browser_learning_status() {
     done <<< "$rows"
   fi
   targets+=']'
-  send '200 OK' "{\"schema_version\":1,\"status\":\"paired\",\"mode\":\"$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null | tr -cd 'A-Z_')\",\"scope\":\"$scope\",\"ranking_opt_in\":$ranking,\"stats_opt_in\":$stats,\"ramp_configured\":$ramp,\"quic_profile_available\":$quic,\"targets\":$targets}"
+  send '200 OK' "{\"schema_version\":1,\"status\":\"paired\",\"mode\":\"$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null | tr -cd 'A-Z_')\",\"scope\":\"$scope\",\"autorotation_enabled\":$autorotation,\"ranking_opt_in\":$ranking,\"stats_opt_in\":$stats,\"ramp_configured\":$ramp,\"quic_profile_available\":$quic,\"targets\":$targets}"
 }
 
 browser_confirm_flow() {
@@ -567,6 +569,7 @@ case "${f[action]:-}" in
       5) send '200 OK' '{"schema_version":1,"status":"MODE_DISABLED","state":"NOT_TESTED"}' ;;
       6) send '200 OK' '{"schema_version":1,"status":"MANUAL_LOCKED","state":"NOT_TESTED"}' ;;
       7) send '200 OK' '{"schema_version":1,"status":"ACTIVE_ATTEMPT","state":"ACTIVE_ATTEMPT"}' ;;
+      8) send '200 OK' '{"schema_version":1,"status":"AUTOROTATION_DISABLED","state":"NOT_TESTED"}' ;;
       *) send '200 OK' '{"schema_version":1,"status":"NO_CANDIDATE","state":"NOT_TESTED"}' ;;
     esac
     ;;

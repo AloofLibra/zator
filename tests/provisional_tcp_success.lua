@@ -229,6 +229,34 @@ assert(cutoff_calls == 1, "include_substrings auto counterpart must cut off non-
 G.slm_get_locked = prior_get_locked
 result_calls, reset_calls, lock_checks, failure_counter_calls = 0, 0, 0, 0
 
+-- AUTO routes through circular_quality. An active browser trial must select
+-- its numbered strategy here and bypass ordinary quality learning.
+local syn_captures, flow_records, adaptive_lookups = 0, 0, 0
+G.locked_browser_capture_syn_for_quality = function() syn_captures = syn_captures + 1 end
+G.locked_adaptive_quality_selection = function()
+    adaptive_lookups = adaptive_lookups + 1
+    return 2, "browser_trial", { strategy = 2 }, "192.168.1.10", "tls"
+end
+G.locked_browser_record_quality_flow = function() flow_records = flow_records + 1 end
+G.z2r_adaptive_observe_connection = function() end
+mock_locked, mock_failure, mock_validated = nil, false, false
+result_calls = 0
+local adaptive_auto = {
+    arg = { key = "test", failure_detector = "test_provisional_failure", success_detector = "test_provisional_success" },
+    plan = { { arg = { strategy = 1 } }, { arg = { strategy = 2 } } },
+    track = { hostname = "test.example", lua_state = {} },
+    _hrec = {}, _crec = {},
+}
+circular_quality(nil, adaptive_auto)
+assert(syn_captures == 1 and adaptive_lookups == 1, "AUTO quality path must capture SYN and query adaptive selection")
+assert(adaptive_auto._hrec.nstrategy == 2 and flow_records == 1, "AUTO quality path must apply and record the browser trial")
+assert(result_calls == 0, "adaptive trial traffic must not contaminate ordinary quality rankings")
+G.locked_browser_capture_syn_for_quality = nil
+G.locked_adaptive_quality_selection = nil
+G.locked_browser_record_quality_flow = nil
+G.z2r_adaptive_observe_connection = nil
+result_calls, reset_calls, lock_checks, failure_counter_calls = 0, 0, 0, 0
+
 local circular = {
     arg = { key = "test", failure_detector = "test_provisional_failure", success_detector = "test_provisional_success", unlock_fails = 4 },
     plan = { { arg = { strategy = 1 } } },
