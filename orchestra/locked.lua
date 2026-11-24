@@ -2247,8 +2247,12 @@ function circular_locked(ctx, desync)
     desync.track.lua_state.adaptive_browser_trial_generation = adaptive_trial.generation
     desync.track.lua_state.adaptive_browser_trial_strategy = adaptive_trial.strategy
     if not desync.track.lua_state.adaptive_browser_flow_recorded then
-      desync.track.lua_state.adaptive_browser_flow_recorded = adaptive_browser_record_flow(
-        desync, adaptive_trial, host, adaptive_trial.ip, base_profile, adaptive_proto, scope, selected_strategy)
+      local flow_dst = dis_ipdst(desync.dis)
+      local flow_ip = flow_dst and ntop(flow_dst) or nil
+      if flow_ip then
+        desync.track.lua_state.adaptive_browser_flow_recorded = adaptive_browser_record_flow(
+          desync, adaptive_trial, host, flow_ip, base_profile, adaptive_proto, scope, selected_strategy)
+      end
     end
   end
 

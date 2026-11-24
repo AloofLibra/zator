@@ -13,7 +13,8 @@ const popupScript = readFileSync(resolve(root, 'browser-extension/popup.js'), 'u
 const options = readFileSync(resolve(root, 'browser-extension/options.html'), 'utf8')
 const optionsScript = readFileSync(resolve(root, 'browser-extension/options.js'), 'utf8')
 assert.equal(manifest.manifest_version, 3)
-assert.match(popup, /failed main-frame GET may retry once/i)
+assert.match(popup, /eligible network failures start a scoped trial automatically/i)
+assert.match(popup, /YouTube media retries may reload the watch page once/i)
 assert.doesNotMatch(popup, /No automatic reloads/i)
 assert.match(popupScript, /UNKNOWN: "outcome unknown; no candidate advanced"/)
 assert.match(popupScript, /multiple recent connections match; no trial started/)
@@ -56,6 +57,8 @@ const fakeRouter = createServer(async (request, response) => {
     ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'a'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
     : action === 'browser_report_failure' && params.get('hostname') === 'media.example.test'
       ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: 'c'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 45 }
+      : action === 'browser_report_failure' && params.get('hostname')?.endsWith('.googlevideo.com')
+        ? { schema_version: 1, state: 'WAIT_NEW_FLOW', attempt_id: '6'.repeat(32), expires_at: Math.floor(Date.now() / 1000) + 180 }
     : action === 'browser_attempt_status'
       ? params.get('attempt_id') === 'w'.repeat(32)
         ? { schema_version: 1, state: 'EXPIRED' }
@@ -197,20 +200,34 @@ const image = await api.rememberFailure(subresource('image-1', '/chunk/a', 'imag
 assert.equal(image.trigger, 'observe_only')
 assert.equal(sent.length, 2)
 
+currentTabUrl = 'https://www.youtube.com/watch?v=test'
+const googlevideoFailure = (requestId, host) => ({ tabId: 10, documentId: 'doc-googlevideo', requestId, type: 'media', method: 'GET',
+  url: `https://${host}/videoplayback?private=1`, error: 'net::ERR_CONNECTION_CLOSED', timeStamp: Date.now(), ip: '8.8.8.8' })
+const firstGooglevideoFailure = await api.rememberFailure(googlevideoFailure('gv-1', 'rr2---sn-h5gtov-n8vl.googlevideo.com'))
+assert.equal(firstGooglevideoFailure.trigger, 'observe_only')
+const secondGooglevideoFailure = await api.rememberFailure(googlevideoFailure('gv-2', 'rr5---sn-8ph2xajvh-n8vs.googlevideo.com'))
+assert.equal(secondGooglevideoFailure.trigger, 'critical_resource_repeated_failure', 'same media path across Googlevideo CDN hosts must start an automatic trial')
+assert.equal(sent.length, 3)
+assert.equal(new URLSearchParams(sent[2].body).get('hostname'), 'rr5---sn-8ph2xajvh-n8vs.googlevideo.com', 'trial target must be the actual failed CDN host')
+assert.equal(reloads.length, 2, 'an approved Googlevideo media trial should automatically retry the YouTube GET once')
+assert.equal(reloads[1].id, 10)
+assert.equal(reloads[1].options.bypassCache, true)
+currentTabUrl = 'https://video.example.test/watch?v=secret'
+
 const manual = await api.requestCurrentPageFix('https://manual.example.test/path?secret=1', 5)
 assert.equal(manual.ok, true)
-assert.equal(sent.length, 3)
-const manualBody = new URLSearchParams(sent[2].body)
+assert.equal(sent.length, 4)
+const manualBody = new URLSearchParams(sent[3].body)
 assert.equal(manualBody.get('trigger'), 'user_fix')
 assert.equal(manualBody.get('failure_class'), 'user_requested')
 assert.equal(manualBody.get('hostname'), 'manual.example.test')
-assert.ok(!sent[2].body.includes('/path') && !sent[2].body.includes('secret'))
+assert.ok(!sent[3].body.includes('/path') && !sent[3].body.includes('secret'))
 
 stored.config.token = 'x'.repeat(48)
 const badToken = await api.requestCurrentPageFix('https://manual.example.test/', 5)
 assert.equal(badToken.ok, false)
-assert.equal(sent.length, 4)
-assert.equal(sent[3].authorization, `Bearer ${'x'.repeat(48)}`)
+assert.equal(sent.length, 5)
+assert.equal(sent[4].authorization, `Bearer ${'x'.repeat(48)}`)
 stored.config.token = routerToken
 
 const resultRequestsBefore = sent.filter(row => new URLSearchParams(row.body).get('action') === 'browser_report_result').length
@@ -250,12 +267,12 @@ assert.equal(stored.events.find(row => row.id === resourceAttempt.id).pending_re
   'confirmed serialized outcomes should drain the bounded local result queue')
 
 await api.recordHttpResponse({ tabId: 2, type: 'main_frame', statusCode: 503, url: 'https://server.example.test/path' })
-assert.equal(sent.length, 6)
+assert.equal(sent.length, 7)
 assert.equal(stored.events.at(-1).trigger, 'manual_only')
 assert.ok(!Object.keys(stored.events.at(-1)).includes('url'))
 
 const googlevideoUrl = 'https://rr1---sn-a5mekn6e.googlevideo.com/videoplayback?sig=private'
-const googlevideoPath = `${new URL(googlevideoUrl).origin}${new URL(googlevideoUrl).pathname}`
+const googlevideoPath = `googlevideo.com${new URL(googlevideoUrl).pathname}`
 const googlevideoHash = Array.from(new Uint8Array(await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(googlevideoPath))),
   x => x.toString(16).padStart(2, '0')).join('')
 const googlevideoAttempt = '4'.repeat(32)
@@ -331,7 +348,7 @@ stored.events.push({ id: 'r'.repeat(32), hostname: 'video.example.test', tab_id:
 await api.syncAttempt('r'.repeat(32))
 assert.equal(stored.events.at(-1).attempt_id, '1'.repeat(32), 'next server candidate must become the active attempt')
 assert.equal(stored.events.at(-1).router_status, 'WAIT_NEW_FLOW')
-assert.equal(reloads.length, 2, 'each server-issued candidate gets one controlled browser retry')
+assert.equal(reloads.length, 3, 'each server-issued candidate gets one controlled browser retry')
 assert.ok(stored.autoRetriedAttempts.includes('1'.repeat(32)))
 
 stored.events.push({ id: 'u'.repeat(32), hostname: 'video.example.test', tab_id: 2, attempt_id: 'z'.repeat(32),
@@ -341,7 +358,7 @@ const disconnectedResult = await api.syncAttempt('u'.repeat(32))
 assert.equal(disconnectedResult.ok, false, 'router result failure must be surfaced')
 assert.equal(stored.events.at(-1).attempt_id, 'z'.repeat(32), 'router failure must not invent or select a candidate')
 assert.equal(stored.events.at(-1).pending_results.length, 1, 'unacknowledged browser result must remain queued')
-assert.equal(reloads.length, 2, 'router failure must not trigger another browser reload')
+assert.equal(reloads.length, 3, 'router failure must not trigger another browser reload')
 
 stored.events.push({ id: 'l'.repeat(32), hostname: 'media.example.test', tab_id: 8, attempt_id: 'm'.repeat(32),
   trigger: 'critical_resource_repeated_failure', request_class: 'xmlhttprequest', router_status: 'FLOW_CONFIRMED',

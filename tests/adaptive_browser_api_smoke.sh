@@ -160,6 +160,14 @@ if adaptive_browser_trial_add 88888888888888888888888888888888 1 "$client_id" 19
 adaptive_browser_trial_remove "$trial_id" 1
 if grep -q "$trial_id" "$(adaptive_browser_trials_file)"; then exit 1; fi
 
+family_trial_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+family_host=rr1---sn-a.googlevideo.com
+adaptive_browser_trial_add "$family_trial_id" 1 "$client_id" 192.168.1.42 mark:7 "$family_host" 8.8.8.8 2 googlevideo-tcp 4 sha256:$(printf 'a%.0s' {1..64}) "$trial_now" "$((trial_now + 180))"
+if adaptive_browser_trial_add bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 "$client_id" 192.168.1.42 mark:7 rr2---sn-b.googlevideo.com 1.1.1.1 2 googlevideo-tcp 5 sha256:$(printf 'b%.0s' {1..64}) "$trial_now" "$((trial_now + 180))"; then
+  echo 'a second active Googlevideo family trial was accepted for one client scope' >&2; exit 1
+else [[ "$?" = 3 ]]; fi
+adaptive_browser_trial_remove "$family_trial_id" 1
+
 bash -n "$ROOT/webui/cgi-bin/adaptive-browser.cgi" "$ROOT/lib/adaptive_browser.sh" "$ROOT/tools/adaptive-browser-pair.sh"
 grep -q 'browser_hello' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 grep -q 'browser_cancel_attempt' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"

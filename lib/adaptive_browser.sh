@@ -662,7 +662,10 @@ adaptive_browser_trial_add() {
          ( "$old_fp" = - || "$old_fp" =~ ^sha256:[a-f0-9]{64}$ ) && "$old_created" =~ ^[0-9]{1,10}$ && "$old_expires" =~ ^[0-9]{1,10}$ && -z "${extra:-}" ]] || { rm -f "$tmp"; rmdir "$lock"; return 1; }
       (( old_expires > now )) || continue
       count=$((count + 1)); (( count <= 63 )) || { rm -f "$tmp"; rmdir "$lock"; return 1; }
-      if [[ "$old_client" = "$client_id" && "$old_scope" = "$scope" && "$old_host" = "$host" ]]; then
+      if [[ "$old_client" = "$client_id" && "$old_scope" = "$scope" &&
+            ( "$old_host" = "$host" ||
+              ( "$profile" = 2 && "$proto" = googlevideo-tcp && "$old_profile" = 2 && "$old_proto" = googlevideo-tcp &&
+                "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$old_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) ]]; then
         rm -f "$tmp"; rmdir "$lock"; return 3
       fi
       printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock"; return 1; }

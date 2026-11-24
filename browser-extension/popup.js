@@ -26,9 +26,10 @@ async function render() {
     return;
   }
   activeEvent = row;
-  const attemptActive = row.attempt_id && ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status);
+  const attemptActive = ["ACTIVE_ATTEMPT", "WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status);
   const autoRetryStarted = attemptActive && (state.autoRetriedAttempts || []).includes(row.attempt_id);
   const status = ({
+    ACTIVE_ATTEMPT: "a trial is already running for this scope",
     WAIT_NEW_FLOW: "waiting for a new connection",
     FLOW_CONFIRMED: "new connection and strategy confirmed",
     WAIT_BROWSER_RESULT: "waiting for browser result",
@@ -52,7 +53,7 @@ async function render() {
     strategy_fingerprint_changed_or_promotion_failed: "strategy changed or could not be confirmed"
   })[row.router_reason] || "";
   latest.textContent = attemptActive
-    ? `${row.hostname} · ${status}${reason ? ` · ${reason}` : ""}${rampEvidence}${mediaEvidence}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · retrying the failed GET once" : ""}`
+    ? `${row.hostname} · ${status}${reason ? ` · ${reason}` : ""}${rampEvidence}${mediaEvidence}${row.pending_result ? " · browser result received" : autoRetryStarted ? " · reloading once for retry" : ""}`
     : `${row.hostname} · ${(row.failure_class || "user requested").replaceAll("_", " ")}${row.router_status ? ` · ${status}` : ""}${reason ? ` · ${reason}` : ""}${rampEvidence}${mediaEvidence}`;
   fix.hidden = attemptActive || Date.now() - row.observed_at > 120_000;
   cancel.hidden = !attemptActive;

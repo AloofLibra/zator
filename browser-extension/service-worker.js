@@ -58,7 +58,8 @@
   async function resourceIdentity(value) {
     try {
       const url = new URL(value);
-      const path = `${url.origin}${url.pathname}`;
+      const hostKey = url.hostname.endsWith(".googlevideo.com") ? "googlevideo.com" : url.origin;
+      const path = `${hostKey}${url.pathname}`;
       const bytes = new TextEncoder().encode(path);
       const digest = await crypto.subtle.digest("SHA-256", bytes);
       return Array.from(new Uint8Array(digest), x => x.toString(16).padStart(2, "0")).join("");
@@ -218,7 +219,8 @@
     else if (RESOURCE_TYPES.has(type) && safeMethod(method)) {
       resourceId = await resourceIdentity(details.url);
       if (resourceId) {
-        const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${host}|${type}|${resourceId}`;
+        const resourceHost = type === "media" && host.endsWith(".googlevideo.com") ? "googlevideo.com" : host;
+        const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${resourceHost}|${type}|${resourceId}`;
         const recent = state.resourceErrors.filter(x => x && Number.isFinite(x.at) && now - x.at <= DEDUPE_MS);
         const matching = recent.filter(x => x.key === resourceKey);
         if (matching.length >= 1) trigger = "critical_resource_repeated_failure";
@@ -278,14 +280,19 @@
 
   async function retryFailedGetOnce(event, result) {
     const attemptId = result?.data?.attempt_id;
+    const mainFrameRetry = event.trigger === "main_frame_network_failure" && event.request_class === "main_frame";
+    const youtubeMediaRetry = event.trigger === "critical_resource_repeated_failure" && event.request_class === "media" &&
+      typeof event.hostname === "string" && event.hostname.endsWith(".googlevideo.com");
     if (!result?.ok || result.data.state !== "WAIT_NEW_FLOW" || !/^[a-f0-9]{32}$/.test(attemptId || "") ||
-        event.trigger !== "main_frame_network_failure" || event.request_class !== "main_frame" ||
-        event.method !== "GET" || event.failure_class !== "network_failure" || !Number.isInteger(event.tab_id) || event.tab_id < 0) return false;
+        (!mainFrameRetry && !youtubeMediaRetry) || event.method !== "GET" || event.failure_class !== "network_failure" ||
+        !Number.isInteger(event.tab_id) || event.tab_id < 0) return false;
     const latest = await loadState();
     if (latest.autoRetriedAttempts.includes(attemptId)) return false;
     let tab;
     try { tab = await chrome.tabs.get(event.tab_id); } catch { return false; }
-    if (safeHost(tab?.url) !== event.hostname) return false;
+    const tabHost = safeHost(tab?.url);
+    if (mainFrameRetry && tabHost !== event.hostname) return false;
+    if (youtubeMediaRetry && !(tabHost === "youtube.com" || tabHost.endsWith(".youtube.com"))) return false;
     latest.autoRetriedAttempts.push(attemptId);
     latest.autoRetriedAttempts = latest.autoRetriedAttempts.slice(-64);
     await chrome.storage.local.set({ autoRetriedAttempts: latest.autoRetriedAttempts });

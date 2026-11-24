@@ -491,7 +491,7 @@ case "${f[action]:-}" in
       4) send '200 OK' '{"schema_version":1,"status":"ROUTER_BUSY","state":"NOT_TESTED"}' ;;
       5) send '200 OK' '{"schema_version":1,"status":"MODE_DISABLED","state":"NOT_TESTED"}' ;;
       6) send '200 OK' '{"schema_version":1,"status":"MANUAL_LOCKED","state":"NOT_TESTED"}' ;;
-      7) send '200 OK' '{"schema_version":1,"status":"ACTIVE_ATTEMPT","state":"WAIT_NEW_FLOW"}' ;;
+      7) send '200 OK' '{"schema_version":1,"status":"ACTIVE_ATTEMPT","state":"ACTIVE_ATTEMPT"}' ;;
       *) send '200 OK' '{"schema_version":1,"status":"NO_CANDIDATE","state":"NOT_TESTED"}' ;;
     esac
     ;;
