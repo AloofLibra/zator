@@ -96,32 +96,34 @@ if ADAPTIVE_OBSERVE_ENABLED then
       if not ver then ver, status, host, ip, profile, proto, scope, seen, selected =
         line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)\t(%d+)$") end
       if not ver then ver, status, host, ip, profile, proto, scope, seen = line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)$") end
-      local valid_kind = proto == "tls" and profile:match("^[1-4]$")
-      or proto == "googlevideo-tcp" and profile == "2" and adaptive_googlevideo_host_valid(host)
-        or proto == "quic" and profile == "5" and adaptive_quic_host_allowed(host)
-      local router_candidate = status:match("^router_trial_([1-9][0-9]?[0-9]?)$")
-      if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure" or status == "active_rule_degraded" or router_candidate or status == "router_exhausted") and #host <= 253
-        and host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") and valid_kind
-        and (scope == "default" or scope:match("^mark:%d+$")) then
-        local key = table.concat({host, profile, proto, scope}, "\0")
-        if not ADAPTIVE_OBSERVE_EVENTS[key] then
-          local event = {key = key, host = host, ip = ip, profile = profile, proto = proto,
-            scope = scope, status = status, seen = tonumber(seen) or 0,
-            selected_strategy = tonumber(selected) or 0,
-            strategy_count = tonumber(strategy_count) or 0,
-            failure_count = (status == "suspected_failure" or status == "active_rule_degraded") and 2 or 0}
-          if router_candidate then event.router_candidate = tonumber(router_candidate) end
-          ADAPTIVE_OBSERVE_EVENTS[key] = event
-          ADAPTIVE_OBSERVE_ORDER[#ADAPTIVE_OBSERVE_ORDER + 1] = event
-          ADAPTIVE_OBSERVE_COUNT = ADAPTIVE_OBSERVE_COUNT + 1
-        else
-          local event = ADAPTIVE_OBSERVE_EVENTS[key]
-          -- Legacy event files may contain one row per destination IP. Keep
-          -- their freshest router tuple but discard conflicting trial state.
-          event.ip = ip
-          event.status, event.selected_strategy, event.router_candidate = "seen", 0, nil
-          event.failure_count, event.failure_strategy = 0, nil
-          event.seen = math.max(event.seen or 0, tonumber(seen) or 0)
+      if ver and status and host and ip and profile and proto and scope and seen then
+        local valid_kind = proto == "tls" and profile:match("^[1-4]$")
+        or proto == "googlevideo-tcp" and profile == "2" and adaptive_googlevideo_host_valid(host)
+          or proto == "quic" and profile == "5" and adaptive_quic_host_allowed(host)
+        local router_candidate = status:match("^router_trial_([1-9][0-9]?[0-9]?)$")
+        if ver == "1" and (status == "seen" or status == "needs_verify" or status == "suspected_failure" or status == "active_rule_degraded" or router_candidate or status == "router_exhausted") and #host <= 253
+          and host:match("^[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") and valid_kind
+          and (scope == "default" or scope:match("^mark:%d+$")) then
+          local key = table.concat({host, profile, proto, scope}, "\0")
+          if not ADAPTIVE_OBSERVE_EVENTS[key] then
+            local event = {key = key, host = host, ip = ip, profile = profile, proto = proto,
+              scope = scope, status = status, seen = tonumber(seen) or 0,
+              selected_strategy = tonumber(selected) or 0,
+              strategy_count = tonumber(strategy_count) or 0,
+              failure_count = (status == "suspected_failure" or status == "active_rule_degraded") and 2 or 0}
+            if router_candidate then event.router_candidate = tonumber(router_candidate) end
+            ADAPTIVE_OBSERVE_EVENTS[key] = event
+            ADAPTIVE_OBSERVE_ORDER[#ADAPTIVE_OBSERVE_ORDER + 1] = event
+            ADAPTIVE_OBSERVE_COUNT = ADAPTIVE_OBSERVE_COUNT + 1
+          else
+            local event = ADAPTIVE_OBSERVE_EVENTS[key]
+            -- Legacy event files may contain one row per destination IP. Keep
+            -- their freshest router tuple but discard conflicting trial state.
+            event.ip = ip
+            event.status, event.selected_strategy, event.router_candidate = "seen", 0, nil
+            event.failure_count, event.failure_strategy = 0, nil
+            event.seen = math.max(event.seen or 0, tonumber(seen) or 0)
+          end
         end
       end
     end
