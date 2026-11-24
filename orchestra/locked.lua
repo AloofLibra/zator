@@ -673,6 +673,19 @@ function locked_browser_trial_for_tuple(host, ip, profile, proto, scope, now)
   proto, scope = string.lower(tostring(proto or "tcp")), string.lower(tostring(scope or "default"))
   local key = table.concat({host, ip, profile, proto, scope}, "\0")
   local trial = ADAPTIVE_BROWSER_TRIALS[key]
+  if (not trial or trial.expires <= (now or os.time())) and proto == "googlevideo-tcp" and profile == "2"
+    and host:match("^[a-z0-9%-]+%.googlevideo%.com$") then
+    -- YouTube may select another Googlevideo CDN hostname/IP on retry. Reuse
+    -- the same short, client-scoped profile-2 trial for that media family.
+    local newest_created = -1
+    for _, candidate in pairs(ADAPTIVE_BROWSER_TRIALS) do
+      if candidate.expires > (now or os.time()) and candidate.profile == "2" and candidate.proto == proto
+        and candidate.scope == scope and candidate.client_id and candidate.host:match("^[a-z0-9%-]+%.googlevideo%.com$")
+        and (candidate.created or 0) > newest_created then
+        trial, newest_created = candidate, candidate.created or 0
+      end
+    end
+  end
   if not trial or trial.expires <= (now or os.time()) then return nil end
   return trial
 end
@@ -1928,7 +1941,8 @@ local function adaptive_browser_record_flow(desync, trial, host, ip, profile, pr
   if type(syn) ~= "table" or syn.ip ~= ip or syn.profile ~= tostring(profile) or syn.proto ~= expected_syn_proto or syn.scope ~= scope
     or (proto == "quic" and syn.quic_repeated)
     or syn.seen < trial.created or syn.seen > now or now > trial.expires
-    or trial.host ~= host or trial.ip ~= ip or trial.profile ~= tostring(profile) or trial.proto ~= proto
+    or (trial.host ~= host and not (proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$")
+      and trial.host:match("^[a-z0-9%-]+%.googlevideo%.com$"))) or trial.profile ~= tostring(profile) or trial.proto ~= proto
     or trial.scope ~= scope or trial.strategy ~= strategy or not trial.id:match("^[0-9a-f]+$")
     or #trial.id ~= 32 or not tostring(trial.fingerprint):match("^sha256:[0-9a-f]+$") then return false end
   local path = ADAPTIVE_BROWSER_FLOW_DIR .. "/" .. trial.id .. "." .. tostring(trial.generation) .. ".tsv"
@@ -1938,7 +1952,17 @@ local function adaptive_browser_record_flow(desync, trial, host, ip, profile, pr
     local second = existing:read("*l")
     existing:close()
     if first ~= nil then
-      if first ~= "AMBIGUOUS" or second ~= nil then adaptive_browser_mark_flow_ambiguous(path) end
+      if first ~= "AMBIGUOUS" or second ~= nil then
+        local fields = {}
+        for value in (first .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = value end
+        local same_attempt = first:sub(1, #table.concat({"1", trial.id, tostring(trial.generation), trial.client_id, scope}, "\t") + 1)
+          == table.concat({"1", trial.id, tostring(trial.generation), trial.client_id, scope}, "\t") .. "\t"
+        if same_attempt and fields[8] == tostring(profile)
+          and fields[9] == proto and fields[10] == tostring(strategy)
+          and fields[11] == trial.fingerprint and proto == "googlevideo-tcp"
+          and fields[6]:match("^[a-z0-9%-]+%.googlevideo%.com$") then return true end
+        adaptive_browser_mark_flow_ambiguous(path)
+      end
       return false
     end
   end

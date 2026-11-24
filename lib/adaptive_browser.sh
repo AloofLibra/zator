@@ -644,7 +644,7 @@ adaptive_browser_trial_add() {
   if [[ "$trigger" = ramp_canary ]]; then
     (( expires > now && expires <= now + 300 && created <= now + 5 )) || return 2
   else
-    (( expires > now && expires <= now + 90 && created <= now + 5 )) || return 2
+    (( expires > now && expires <= now + 180 && created <= now + 5 )) || return 2
   fi
   file="$(adaptive_browser_trials_file)"; dir="$(dirname "$file")"; lock="$file.lock"
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$file" && ! -L "$lock" ]] || return 1

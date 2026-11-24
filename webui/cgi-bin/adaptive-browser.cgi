@@ -96,7 +96,7 @@ browser_start_trial() {
   fi
   raw_id="$(adaptive_browser_random_hex 16)"
   [[ "$raw_id" =~ ^[a-f0-9]{32}$ ]] || return 1
-  id="$raw_id"; now="$(date +%s)"; expires=$((now + 45))
+  id="$raw_id"; now="$(date +%s)"; expires=$((now + 180))
   if [[ "$trigger" = ramp_canary ]]; then expires=$((now + 300)); trial_kind=ramp_canary; fi
   raw_id="$(adaptive_browser_random_hex 4)"
   [[ "$raw_id" =~ ^[a-f0-9]{8}$ ]] || return 1
@@ -156,7 +156,10 @@ browser_confirm_flow() {
   IFS=$'\t' read -r ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy fingerprint syn_at selected_at ramp_treatment ramp_ack_evidence extra <<< "$row"
   now="$(date +%s)"
   [[ "$ver" = 1 && "$flow_id" = "$attempt_id" && "$flow_generation" = "$generation" && "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" &&
-     "$flow_host" = "$host" && "$flow_ip" = "$ip" && "$flow_profile" = "$profile" && "$flow_proto" = "$proto" &&
+     ( ( "$flow_host" = "$host" && "$flow_ip" = "$ip" ) ||
+       ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$flow_proto" = googlevideo-tcp && "$flow_profile" = 2 &&
+         "$flow_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) &&
+     "$flow_profile" = "$profile" && "$flow_proto" = "$proto" &&
      "$flow_strategy" = "$strategy" && "$fingerprint" = "$attempt_fingerprint" &&
      "$syn_at" -ge "$created" && "$selected_at" -ge "$syn_at" && "$selected_at" -le "$expires" && "$now" -le "$expires" && -z "${extra:-}" ]] || return 2
   BROWSER_FLOW_RAMP_TREATMENT="${ramp_treatment:-unknown}"
@@ -610,7 +613,10 @@ case "${f[action]:-}" in
     fi
     flow_row="$(adaptive_browser_flow_read "$attempt_id" "$generation" 2>/dev/null)" || fail '409 Conflict' 'production flow evidence is unavailable'
     IFS=$'\t' read -r flow_ver flow_id flow_generation flow_client flow_scope flow_host flow_ip flow_profile flow_proto flow_strategy flow_fingerprint syn_at selected_at flow_ramp_treatment flow_ramp_ack_evidence flow_extra <<< "$flow_row"
-    [[ "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" && "$flow_host" = "$host" && "$flow_ip" = "$ip" && "${f[browser_ip]}" = "$flow_ip" &&
+    [[ "$flow_client" = "$client_id" && "$flow_scope" = "$attempt_scope" &&
+       ( ( "$flow_host" = "$host" && "$flow_ip" = "$ip" ) ||
+         ( "$proto" = googlevideo-tcp && "$profile" = 2 && "$flow_proto" = googlevideo-tcp && "$flow_profile" = 2 &&
+           "$flow_host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ && "$host" =~ ^([a-z0-9-]+\.)+googlevideo\.com$ ) ) && "${f[browser_ip]}" = "$flow_ip" &&
        "$flow_profile" = "$profile" && "$flow_proto" = "$proto" && "$flow_strategy" = "$strategy" && "$flow_fingerprint" = "$attempt_fingerprint" ]] || fail '409 Conflict' 'production flow does not match this attempt'
     (( f[observed_at] >= selected_at * 1000 && f[observed_at] <= now_ms + 5000 && f[observed_at] <= expires * 1000 )) || fail '400 Bad Request' 'result is outside the confirmed flow window'
     [[ "$state" = WAIT_BROWSER_RESULT || "$state" = PROVISIONAL_SUCCESS ]] || fail '409 Conflict' 'attempt is not waiting for a browser result'

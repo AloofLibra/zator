@@ -100,10 +100,20 @@ local video_trial = table.concat({"1", id, "3", client, "192.168.1.42", "mark:7"
   "8.8.8.8", "2", "googlevideo-tcp", "4", fingerprint, "990", "1045"}, "\t")
 locked_load_browser_trials_for_tests({video_trial}, now)
 local video_match = locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now)
+local alternate_video = "rr2---sn-b.googlevideo.com"
+local alternate_match = locked_browser_trial_for_tuple(alternate_video, "1.1.1.1", 2, "googlevideo-tcp", "mark:7", now)
+assert(alternate_match and alternate_match.id == video_match.id and alternate_match.strategy == video_match.strategy,
+  "Googlevideo retry on another CDN host/IP did not reuse the scoped trial")
+assert(locked_browser_trial_for_tuple(alternate_video, "1.1.1.1", 2, "googlevideo-tcp", "mark:8", now) == nil,
+  "Googlevideo family trial escaped its client scope")
 local video_track = {lua_state={adaptive_browser_syn={ip="8.8.8.8",profile="2",proto="tcp",scope="mark:7",seen=1000},
   wssize_ramp_treatment="applied",wssize_ramp_late_ack_confirmed=true}}
 assert(locked_browser_record_flow_for_tests({track=video_track}, video_match, video_host, "8.8.8.8", "2", "googlevideo-tcp", "mark:7", 4),
   "Googlevideo production flow did not record the Ramp treatment")
+local alternate_track = {lua_state={adaptive_browser_syn={ip="1.1.1.1",profile="2",proto="tcp",scope="mark:7",seen=1000},
+  wssize_ramp_treatment="bypassed"}}
+assert(locked_browser_record_flow_for_tests({track=alternate_track}, alternate_match, alternate_video, "1.1.1.1", "2", "googlevideo-tcp", "mark:7", 4),
+  "second Googlevideo CDN flow was treated as an ambiguous attempt")
 local video_file = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".3.tsv", "r"))
 local video_line = video_file:read("*l"); video_file:close()
 assert(video_line and video_line:match("\t1000\t1000\tapplied\tconfirmed$"), "Googlevideo Ramp treatment/ACK evidence was not serialized: " .. tostring(video_line))

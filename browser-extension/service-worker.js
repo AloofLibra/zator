@@ -264,6 +264,7 @@
           router_reason: result.data.reason || null,
           attempt_id: result.data.attempt_id || row.attempt_id || null,
           candidate_protocol: result.data.candidate?.protocol || row.candidate_protocol || null,
+          candidate_profile: result.data.candidate?.profile_id || row.candidate_profile || null,
           attempt_expires_at: result.data.expires_at || row.attempt_expires_at || null,
           pending_result: row.pending_result || null }
       : row);
@@ -348,6 +349,7 @@
         ...row,
         attempt_id: result.data.next_attempt?.attempt_id || row.attempt_id,
         candidate_protocol: result.data.next_attempt?.candidate?.protocol || row.candidate_protocol || null,
+        candidate_profile: result.data.next_attempt?.candidate?.profile_id || row.candidate_profile || null,
         attempt_expires_at: result.data.next_attempt?.expires_at || row.attempt_expires_at,
         router_status: result.data.next_attempt?.state || result.data.state || result.data.status || (result.ok ? status.data.state : result.status),
         router_reason: result.data.reason || row.router_reason || null,
@@ -395,7 +397,10 @@
   }
 
   function findAttemptForCapture(state, host, tabId, requestClass, observedAt, resourceId = "") {
-    const event = [...state.events].reverse().find(row => row && row.attempt_id && row.hostname === host && row.tab_id === tabId &&
+    const event = [...state.events].reverse().find(row => row && row.attempt_id &&
+      (row.hostname === host || (row.candidate_protocol === "googlevideo-tcp" && row.candidate_profile === 2 &&
+        typeof row.hostname === "string" && typeof host === "string" &&
+        row.hostname.endsWith(".googlevideo.com") && host.endsWith(".googlevideo.com"))) && row.tab_id === tabId &&
       ["WAIT_NEW_FLOW", "FLOW_CONFIRMED", "WAIT_BROWSER_RESULT", "PROVISIONAL_SUCCESS"].includes(row.router_status));
     if (!event || (event.attempt_expires_at && observedAt > event.attempt_expires_at * 1000)) return null;
     if (requestClass !== "main_frame" && !(event.trigger === "critical_resource_repeated_failure" &&
