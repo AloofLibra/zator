@@ -245,11 +245,11 @@ local adaptive_auto = {
     arg = { key = "test", failure_detector = "test_provisional_failure", success_detector = "test_provisional_success" },
     plan = { { arg = { strategy = 1 } }, { arg = { strategy = 2 } } },
     track = { hostname = "test.example", lua_state = {} },
-    _hrec = {}, _crec = {},
+    _hrec = { nstrategy = 1, ctstrategy = 2 }, _crec = {},
 }
 circular_quality(nil, adaptive_auto)
 assert(syn_captures == 1 and adaptive_lookups == 1, "AUTO quality path must capture SYN and query adaptive selection")
-assert(adaptive_auto._hrec.nstrategy == 2 and flow_records == 1, "AUTO quality path must apply and record the browser trial")
+assert(adaptive_auto._hrec.nstrategy == 1 and flow_records == 1, "browser trial must apply to the flow and restore its prior router candidate")
 assert(result_calls == 0, "adaptive trial traffic must not contaminate ordinary quality rankings")
 G.locked_browser_capture_syn_for_quality = nil
 G.locked_adaptive_quality_selection = nil

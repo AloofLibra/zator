@@ -1524,6 +1524,10 @@ function circular_quality(ctx, desync)
         return VERDICT_PASS
     end
 
+    if hostname and type(z2r_adaptive_quic_health_observe) == "function" then
+        z2r_adaptive_quic_health_observe(desync, hostname, profile, scope)
+    end
+
     local hrec = desync.track and automate_host_record(desync)
     if not hrec then
         if allow_nohost then
@@ -1582,6 +1586,10 @@ function circular_quality(ctx, desync)
     -- active in this path too, while leaving user locks and ordinary quality
     -- learning in charge when no adaptive selection applies.
     local adaptive_strategy, adaptive_source, adaptive_trial, adaptive_ip, adaptive_proto
+    local browser_trial_previous_strategy, browser_trial_previous_last
+    local browser_trial_applied = false
+    local observe_state = desync.track and desync.track.lua_state
+    local observe_context = type(observe_state) == "table" and observe_state.adaptive_observe_context or nil
     if type(locked_adaptive_quality_selection) == "function" then
         adaptive_strategy, adaptive_source, adaptive_trial, adaptive_ip, adaptive_proto =
             locked_adaptive_quality_selection(desync, observed_hostname or hostname, desync_profile_key(desync),
@@ -1594,14 +1602,16 @@ function circular_quality(ctx, desync)
         return VERDICT_PASS
     end
     if adaptive_strategy ~= nil and adaptive_strategy >= 1 and adaptive_strategy <= hrec.ctstrategy then
+        if adaptive_source == "browser_trial" then
+            browser_trial_previous_strategy, browser_trial_previous_last = hrec.nstrategy, hrec._last_strategy
+            browser_trial_applied = true
+        end
         hrec.nstrategy = adaptive_strategy
-        local state = desync.track and desync.track.lua_state
-        local context = type(state) == "table" and state.adaptive_observe_context or nil
-        if context then
-            context.adaptive_rule_applied = true
-            context.selected_strategy = adaptive_strategy
-            context.strategy_count = hrec.ctstrategy
-            context.adaptive_source = adaptive_source or "router_auto_baseline"
+        if observe_context then
+            observe_context.adaptive_rule_applied = true
+            observe_context.selected_strategy = adaptive_strategy
+            observe_context.strategy_count = hrec.ctstrategy
+            observe_context.adaptive_source = adaptive_source or "router_auto_baseline"
         end
         if adaptive_trial and type(locked_browser_record_quality_flow) == "function" then
             locked_browser_record_quality_flow(desync, adaptive_trial, observed_hostname or hostname,
@@ -1766,6 +1776,10 @@ function circular_quality(ctx, desync)
 
         -- Success detected and no failure
         elseif is_success and not crec.quality_failure_recorded then
+            if observe_context and (not crec.provisional_success or crec.validated_success)
+                and type(z2r_adaptive_confirmed_rule_success) == "function" then
+                z2r_adaptive_confirmed_rule_success(observe_context, hrec.nstrategy)
+            end
             if not crec.quality_success_recorded then
                 crec.quality_success_recorded = true
                 slm_record_result(desync.arg.key, hostkey, hrec.nstrategy, true, scope)
@@ -1798,6 +1812,9 @@ function circular_quality(ctx, desync)
         end
     end
 
+    if observe_context and type(z2r_adaptive_observe_record_strategy) == "function" then
+        z2r_adaptive_observe_record_strategy(observe_context, hrec.nstrategy, hrec.ctstrategy)
+    end
     DLOG("circular_quality: current strategy " .. hrec.nstrategy ..
          " profile=" .. (desync.arg.key or "default") .. " host=" .. (hostkey or "?"))
     -- Log strategy switches to RAM file (last 3 entries)
@@ -1812,6 +1829,13 @@ function circular_quality(ctx, desync)
         if instance.arg.strategy and tonumber(instance.arg.strategy)==hrec.nstrategy then
             verdict = blob_override_execute(desync, verdict, instance, desync.arg.key)
         end
+    end
+
+    -- A client-scoped browser trial must not overwrite the mark's ordinary
+    -- quality candidate. The API owns trial confirmation and rollback.
+    if browser_trial_applied then
+        hrec.nstrategy = browser_trial_previous_strategy
+        hrec._last_strategy = browser_trial_previous_last
     end
 
     return verdict

@@ -36,7 +36,8 @@ function z2r_wssize_ramp_exempt_for_new_flow(ip)
 	local root = os.getenv("ZATOR_ROOT") or "/opt/zator"
 	local mode = io.open(root .. "/extra_strats/cache/adaptive/mode", "r")
 	if not mode then return false end
-	local active = mode:read("*l") == "AGENT_BETA"
+	local active_mode = mode:read("*l")
+	local active = active_mode == "AGENT_BETA" or active_mode == "AUTO"
 	mode:close()
 	if not active then return false end
 	local consent = io.open(root .. "/extra_strats/cache/adaptive/apply-default-scope", "r")

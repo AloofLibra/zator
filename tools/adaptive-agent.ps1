@@ -400,7 +400,7 @@ if ($Watch) {
     while ($true) {
         try {
             $queue = Invoke-AdaptiveApi @{ action = 'events' }
-            if ($queue.schema_version -ne 1 -or $queue.mode -notin @('OFF', 'OBSERVE', 'TEST_ONLY', 'AGENT_BETA') -or $null -eq $queue.events) {
+            if ($queue.schema_version -ne 1 -or $queue.mode -notin @('OFF', 'OBSERVE', 'TEST_ONLY', 'AUTO', 'AGENT_BETA') -or $null -eq $queue.events) {
                 throw 'Router returned an invalid observation response.'
             }
             Send-AdaptiveAgentStatus -Stage 'idle'
@@ -417,7 +417,7 @@ if ($Watch) {
             foreach ($key in @($script:AdaptiveCooldownNotices.Keys)) {
                 if (-not $currentCooldowns.ContainsKey($key)) { [void]$script:AdaptiveCooldownNotices.Remove($key) }
             }
-            if ($queue.mode -in @('TEST_ONLY', 'AGENT_BETA')) {
+            if ($queue.mode -in @('TEST_ONLY', 'AUTO', 'AGENT_BETA')) {
                 $exploreInterval = if ($UploadStatistics) { [Math]::Max(240, $ExploreIntervalSeconds) } else { $ExploreIntervalSeconds }
                 $exploreDue = -not $Explore -or ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $exploreState.Last -ge ($exploreInterval + $exploreState.Jitter))
                 $hasUrgentRequest = @($queue.events | Where-Object { $_.status -in @('needs_verify', 'suspected_failure', 'active_rule_degraded') }).Count -gt 0
@@ -491,7 +491,7 @@ if ($Watch) {
                 if ($next.Count -eq 0 -and (Test-AdaptiveWatchCooldownPending -State $failureRetryState -Events @($queue.events))) {
                     Send-AdaptiveAgentStatus -Stage 'cooldown'
                 }
-                if ($RampAudit -and $queue.mode -eq 'AGENT_BETA' -and -not $hasUrgentRequest -and $next.Count -eq 0) {
+                if ($RampAudit -and $queue.mode -in @('AUTO', 'AGENT_BETA') -and -not $hasUrgentRequest -and $next.Count -eq 0) {
                     try {
                         $rampLoad = Get-ExploreMachineLoad
                         Send-AdaptiveAgentStatus -Stage 'idle' -CpuPercent $rampLoad.CpuPercent `
@@ -568,8 +568,8 @@ if ($Watch) {
                     } catch {
                         [Console]::Error.WriteLine("Adaptive Ramp audit is paused: $($_.Exception.Message)")
                     }
-                } elseif ($RampAudit -and $queue.mode -ne 'AGENT_BETA' -and -not $exploreLoadWarningShown) {
-                    [Console]::Error.WriteLine('Adaptive Ramp audit requires router mode AGENT_BETA and an explicitly enabled Ramp pool.')
+                } elseif ($RampAudit -and $queue.mode -notin @('AUTO', 'AGENT_BETA') -and -not $exploreLoadWarningShown) {
+                    [Console]::Error.WriteLine('Adaptive Ramp audit requires router autorotation mode and an explicitly enabled Ramp pool.')
                     $exploreLoadWarningShown = $true
                 }
                 if ($next.Count -gt 0) {

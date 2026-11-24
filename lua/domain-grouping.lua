@@ -6,10 +6,8 @@
 function get_grouped_hostname(hostname)
     if not hostname then return nil end
 
-    -- Each service gets its own key to find optimal strategy independently
-    if string.match(hostname, "%.googlevideo%.com$") then
-        return "googlevideo.com"
-    end
+    -- Keep Googlevideo CDN hosts distinct: the family rule supplies a common
+    -- starting strategy, while real traffic learns each host independently.
 
     if string.match(hostname, "%.youtube%.com$") or hostname == "youtube.com" then
         return "youtube.com"
@@ -75,18 +73,21 @@ function automate_host_record(desync)
     if not autostate[askey] then
         autostate[askey] = {}
     end
-    if not autostate[askey][hostkey] then
-        autostate[askey][hostkey] = {}
+    local record_key = hostkey
+    local scope = type(desync_client_scope) == "function" and desync_client_scope(desync) or "default"
+    if scope ~= "default" then record_key = hostkey .. "\0" .. tostring(scope) end
+    if not autostate[askey][record_key] then
+        autostate[askey][record_key] = {}
         -- Store hostname in record for logging in circular
-        autostate[askey][hostkey]._hostname = hostkey
-        autostate[askey][hostkey]._askey = askey
+        autostate[askey][record_key]._hostname = hostkey
+        autostate[askey][record_key]._askey = askey
 
         -- NEW: При первом обращении к домену, начинаем с лучшей стратегии из истории
         -- Это быстрее чем начинать с 1 и перебирать все стратегии
         if get_best_strategy_from_history then
             local best = get_best_strategy_from_history(hostkey)
             if best then
-                autostate[askey][hostkey].nstrategy = best
+                autostate[askey][record_key].nstrategy = best
                 DLOG("domain-grouping: starting " .. hostkey .. " from history strategy " .. best)
             end
         else
@@ -96,7 +97,7 @@ function automate_host_record(desync)
     end
 
     -- Log current strategy for this domain (for UI monitoring)
-    local hrec = autostate[askey][hostkey]
+    local hrec = autostate[askey][record_key]
     if hrec.nstrategy then
         -- Only log periodically to avoid spam (every 10th call)
         hrec._log_counter = (hrec._log_counter or 0) + 1
@@ -109,5 +110,5 @@ function automate_host_record(desync)
         end
     end
 
-    return autostate[askey][hostkey]
+    return autostate[askey][record_key]
 end

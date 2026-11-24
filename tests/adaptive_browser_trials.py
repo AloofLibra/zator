@@ -217,7 +217,7 @@ end
 local qambiguous = assert(io.open(fake_getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR") .. "/" .. id .. ".2.tsv", "r"))
 local qcontents = qambiguous:read("*a")
 qambiguous:close()
-assert(qcontents == "AMBIGUOUS\n", "repeated QUIC Initial must invalidate its proof with one bounded marker")
+assert(qcontents:match("^1\t" .. id .. "\t2\t") ~= nil, "repeated QUIC Initial invalidated valid strategy evidence")
 local nonvideo = qtrial:gsub(qhost, "example.org")
 locked_load_browser_trials_for_tests({nonvideo}, now)
 assert(locked_browser_trial_for_tuple("example.org", "8.8.8.8", 5, "quic", "mark:7", now) == nil,

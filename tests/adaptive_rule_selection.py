@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import tempfile
+import time
 
 from lupa import LuaRuntime
 
@@ -146,4 +147,60 @@ stale_manual = run_selection(True, ["1\ttls\t4"], process_stamp="99:98|97:96|95:
 assert stale_manual[0] == 4, f"manual profile fallback did not retain priority after catalog invalidation: {stale_manual}"
 cached = run_selection(True, repeat=True)
 assert cached[0] == 7 and cached[1] == 7, f"connection changed strategy mid-flow: {cached}"
+
+with tempfile.TemporaryDirectory(prefix="adaptive-rule-renewal-") as tmp:
+    root = Path(tmp)
+    adaptive = root / "extra_strats/cache/adaptive"
+    adaptive.mkdir(parents=True)
+    (adaptive / "mode").write_text("AUTO\n")
+    renewal_file = root / "rule-renewals.tsv"
+    rules_file = root / "rules.tsv"
+    lua = LuaRuntime(unpack_returned_tuples=True)
+    env = {"ZATOR_ROOT": str(root), "Z2R_ADAPTIVE_RULE_RENEWALS_FILE": str(renewal_file),
+           "Z2R_ADAPTIVE_RULES_FILE": str(rules_file)}
+    lua.globals().fake_getenv = lambda key: env.get(key)
+    lua.execute("os.getenv = fake_getenv")
+    lua.execute(f"dofile({json.dumps(str(repo / 'orchestra/locked.lua'))})")
+    lua.globals().renewal_stamp = STAMP
+    lua.execute(f'''\n      local now = os.time()
+      local line = table.concat({{"1", "cdn.example.org", "93.184.216.34", "1", "tls", "shared", "7",
+        {json.dumps(FP)}, {json.dumps(CAT)}, renewal_stamp, tostring(now + 60)}}, string.char(9))
+      locked_load_lines_for_tests({{}})
+      locked_load_adaptive_lines_for_tests({{line}}, now, renewal_stamp)
+      assert(z2r_adaptive_confirmed_rule_success({{host="cdn.example.org", ip="93.184.216.34", profile="1",
+        proto="tls", scope="default", adaptive_source="browser_confirmed_shared"}}, 7),
+        "confirmed browser success did not renew its rule")
+    ''')
+    rows = renewal_file.read_text().splitlines()
+    assert len(rows) == 1 and int(rows[0].split("\t")[-1]) >= int(time.time()) - 2, rows
+    rules_file.write_text("\t".join(["1", "cdn.example.org", "93.184.216.34", "1", "tls", "shared", "7",
+                                      FP, CAT, STAMP, str(int(time.time()) - 1)] ) + "\n")
+    renewed_lua = LuaRuntime(unpack_returned_tuples=True)
+    renewed_lua.globals().fake_getenv = lambda key: env.get(key)
+    renewed_lua.execute("os.getenv = fake_getenv")
+    renewed_lua.execute(f"dofile({json.dumps(str(repo / 'orchestra/locked.lua'))})")
+    renewed_lua.execute(f'''\n      locked_reload_adaptive_rules_for_tests({json.dumps(STAMP)})
+      assert(locked_adaptive_shared_strategy_for_tuple("cdn.example.org", "93.184.216.34", "1", "tls") == 7,
+        "recent confirmed-traffic renewal did not preserve the rule across reload")
+    ''')
+
+lua = LuaRuntime(unpack_returned_tuples=True)
+lua.execute(f'''\n  DLOG = function() end
+  autostate = {{}}
+  automate_host_record = function() return {{}} end
+  desync_client_scope = function(d) return d.scope end
+  host_or_ip = function(d) return d.track.hostname end
+  local history = nil
+  get_best_strategy_from_history = history
+  dofile({json.dumps(str(repo / "lua/domain-grouping.lua"))})
+  local function get(scope)
+    return automate_host_record({{arg={{reqhost=true,key="2"}}, track={{hostname="rr1---sn-cdn.googlevideo.com"}}, scope=scope}})
+  end
+  local marked = get("mark:7"); marked.nstrategy = 3
+  assert(get("mark:8").nstrategy == nil, "host state leaked across marks")
+  assert(get("mark:7").nstrategy == 3, "same-mark host state did not persist")
+  assert(get("default").nstrategy == nil, "marked host state leaked into default scope")
+  assert(get_grouped_hostname("rr1---sn-cdn.googlevideo.com") == "rr1---sn-cdn.googlevideo.com",
+    "Googlevideo CDN host was collapsed into the shared family record")
+''')
 print("adaptive Lua strategy selection smoke ok")

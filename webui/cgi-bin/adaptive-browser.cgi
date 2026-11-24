@@ -467,6 +467,7 @@ browser_ramp_canary_handle_result() {
 }
 
 browser_promote_attempt() {
+  local rule_host="${1:-$host}" rule_ip="${2:-$ip}"
   local dir args_file recipe config_value config nfqws max stamp current_fp catalog_rows catalog_version catalog_fp now expires
   adaptive_browser_rotation_enabled || return 1
   adaptive_browser_profile_lock_check "$profile" "$attempt_scope" "$ROOT/extra_strats/cache/orchestra"
@@ -501,19 +502,19 @@ browser_promote_attempt() {
   # A strategy belongs to the configured mark (or to the unmarked shared
   # population). A marked result must never leak into the default scope.
   if [[ "$attempt_scope" != default ]]; then
-    adaptive_rule_add "$host" "$ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
+    adaptive_rule_add "$rule_host" "$rule_ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
       "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
     if [[ "$proto" = googlevideo-tcp ]]; then
-      adaptive_rule_add googlevideo.com "$ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
+      adaptive_rule_add googlevideo.com "$rule_ip" "$profile" "$proto" "$attempt_scope" "$strategy" "$attempt_fingerprint" \
         "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
     fi
     rm -rf "$dir"
     return 0
   fi
-  adaptive_rule_add "$host" "$ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
+  adaptive_rule_add "$rule_host" "$rule_ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
     "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
   if [[ "$proto" = googlevideo-tcp ]]; then
-    adaptive_rule_add googlevideo.com "$ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
+    adaptive_rule_add googlevideo.com "$rule_ip" "$profile" "$proto" shared "$strategy" "$attempt_fingerprint" \
       "$catalog_version" "$stamp" "$expires" browser-confirmed || { local rc=$?; rm -rf "$dir"; return "$rc"; }
   fi
   local rc=$?
@@ -764,7 +765,7 @@ case "${f[action]:-}" in
         state=PROVISIONAL_SUCCESS
         ;;
       PROVISIONAL_SUCCESS:network_success)
-        browser_promote_attempt || {
+        browser_promote_attempt "$flow_host" "$flow_ip" || {
           adaptive_browser_attempt_transition "$attempt_id" PROVISIONAL_SUCCESS UNKNOWN || :
           adaptive_browser_trial_remove "$attempt_id" "$generation" || :
           send '200 OK' "{\"schema_version\":1,\"attempt_id\":\"$attempt_id\",\"state\":\"UNKNOWN\",\"reason\":\"strategy_fingerprint_changed_or_promotion_failed\"}"

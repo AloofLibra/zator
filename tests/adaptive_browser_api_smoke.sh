@@ -21,13 +21,19 @@ cp "$ROOT/orchestra/locked.lua" "$tmp/zator/lua/locked.lua"
 printf 'AGENT_BETA\n' > "$tmp/zator/extra_strats/cache/adaptive/mode"
 printf 'CLIENT_SCOPE_ENABLE=1\n' > "$tmp/zapret2/config"
 printf '#Z2R_AUTO_MODE=1\n' >> "$tmp/zapret2/config"
-printf 'mark:7\t192.168.1.42\n' > "$CLIENT_SCOPE_MAP_FILE"
+printf 'mark:7\t192.168.1.42\nmark:7\t192.168.1.43\n' > "$CLIENT_SCOPE_MAP_FILE"
 config_get_var() { awk -F= -v k="$2" '$1==k {print $2; exit}' "$1"; }
 . "$ROOT/lib/adaptive_browser.sh"
 
 token="$(printf '%064d' 0 | tr 0 a)"
 hash="$(printf '%s' "$token" | sha256sum | awk '{print $1}')"
 client_id=0123456789abcdef0123456789abcdef
+adaptive_browser_context_valid "$client_id" 192.168.1.42 mark:7 || { echo 'browser IP was rejected from a mark with multiple members' >&2; exit 1; }
+printf 'AUTO\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
+printf '1\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
+adaptive_browser_context_valid "$client_id" 192.168.1.42 default || { echo 'AUTO default scope consent was rejected' >&2; exit 1; }
+rm -f "$ZATOR_ROOT/extra_strats/cache/adaptive/apply-default-scope"
+printf 'AGENT_BETA\n' > "$ZATOR_ROOT/extra_strats/cache/adaptive/mode"
 printf '1\t%s\t%s\t192.168.1.42\tmark:7\t%s\n' "$client_id" "$hash" "$(( $(date +%s) + 3600 ))" > "$Z2R_ADAPTIVE_BROWSER_CLIENTS_FILE"
 chmod 600 "$Z2R_ADAPTIVE_BROWSER_CLIENTS_FILE"
 
@@ -195,6 +201,7 @@ if adaptive_browser_trial_add bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 "$client_id" 19
 else [[ "$?" = 3 ]]; fi
 adaptive_browser_trial_remove "$family_trial_id" 1
 
+trial_now="$(date +%s)"
 long_family_trial_id=cccccccccccccccccccccccccccccccc
 adaptive_browser_trial_add "$long_family_trial_id" 1 "$client_id" 192.168.1.42 mark:7 "$family_host" 8.8.8.8 2 googlevideo-tcp 4 sha256:$(printf 'a%.0s' {1..64}) "$trial_now" "$((trial_now + 600))"
 if adaptive_browser_trial_add dddddddddddddddddddddddddddddddd 1 "$client_id" 192.168.1.42 mark:7 "$family_host" 8.8.8.8 2 googlevideo-tcp 4 - "$trial_now" "$((trial_now + 601))"; then
@@ -439,7 +446,10 @@ video_attempt=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
 video_host=rr1---sn-a5mekn6e.googlevideo.com
 video_now="$(date +%s)"
 video_expires=$((video_now + 30))
-video_fingerprint="sha256:$(printf '%064d' 0 | tr 0 c)"
+Z2R_SUPERSWEEP_DIR="$tmp/video-promotion-plan"; export Z2R_SUPERSWEEP_DIR
+supersweep_probe_config 2 "$ZAPRET2_ROOT/config" standard 8.8.8.8 googlevideo-tcp-media-v1
+video_strategy=2
+video_fingerprint="$(adaptive_strategy_fingerprint 2 "$video_strategy" "$Z2R_SUPERSWEEP_DIR/probe/nfqws2.args" "$ZAPRET2_ROOT/nfq2/nfqws2" standard googlevideo-tcp-media-v1)"
 adaptive_browser_attempt_write "$video_attempt" "$client_id" 192.168.1.42 mark:7 "$video_host" 8.8.8.8 2 googlevideo-tcp main_frame_network_failure WAIT_NEW_FLOW 4 "$video_fingerprint" "$video_now" "$video_expires" 11
 printf '1\t%s\t11\t%s\tmark:7\t%s\t8.8.8.8\t2\tgooglevideo-tcp\t4\t%s\t%s\t%s\tapplied\tconfirmed\n' \
   "$video_attempt" "$client_id" "$video_host" "$video_fingerprint" "$video_now" "$video_now" > "$flow_dir/$video_attempt.11.tsv"
@@ -454,12 +464,13 @@ grep -q '"ramp_ack_evidence":"confirmed"' <<< "$video_status_response"
 
 video_media_attempt=edededededededededededededededed
 video_media_event=fefefefefefefefefefefefefefefefe
+video_flow_host=rr2---sn-a5mekn6e.googlevideo.com
 video_media_now="$(date +%s)"
 video_media_expires=$((video_media_now + 30))
 adaptive_browser_attempt_write "$video_media_attempt" "$client_id" 192.168.1.42 mark:7 "$video_host" 8.8.8.8 2 googlevideo-tcp \
-  critical_resource_repeated_failure WAIT_NEW_FLOW 4 "$video_fingerprint" "$video_media_now" "$video_media_expires" 12
-printf '1\t%s\t12\t%s\tmark:7\t%s\t8.8.8.8\t2\tgooglevideo-tcp\t4\t%s\t%s\t%s\tapplied\tconfirmed\n' \
-  "$video_media_attempt" "$client_id" "$video_host" "$video_fingerprint" "$video_media_now" "$video_media_now" > "$flow_dir/$video_media_attempt.12.tsv"
+  critical_resource_repeated_failure WAIT_NEW_FLOW "$video_strategy" "$video_fingerprint" "$video_media_now" "$video_media_expires" 12
+printf '1\t%s\t12\t%s\tmark:7\t%s\t8.8.8.8\t2\tgooglevideo-tcp\t%s\t%s\t%s\t%s\tapplied\tconfirmed\n' \
+  "$video_media_attempt" "$client_id" "$video_flow_host" "$video_strategy" "$video_fingerprint" "$video_media_now" "$video_media_now" > "$flow_dir/$video_media_attempt.12.tsv"
 video_media_status_body="schema_version=1&action=browser_attempt_status&attempt_id=$video_media_attempt"
 video_media_status="$(printf '%s' "$video_media_status_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_media_status_body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
@@ -483,6 +494,13 @@ weak_media_body="${weak_media_body//media_progress_ms=7000/media_progress_ms=100
 weak_media_response="$(printf '%s' "$weak_media_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#weak_media_body}" \
   HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
 grep -q 'healthy media evidence is too weak' <<< "$weak_media_response"
+video_media_confirm_body="schema_version=1&action=browser_report_result&attempt_id=$video_media_attempt&browser_event_id=abababababababababababababababab&result=network_success&request_class=media&browser_ip=8.8.8.8&observed_at=$((video_media_now * 1000))&media_quality=healthy&media_sample_ms=8000&media_progress_ms=7000&media_stall_ms=0&media_dropped_frames=2&media_total_frames=240"
+video_media_confirm="$(printf '%s' "$video_media_confirm_body" | env REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded CONTENT_LENGTH="${#video_media_confirm_body}" \
+  HTTP_ORIGIN="$origin" HTTP_AUTHORIZATION="Bearer $token" REMOTE_ADDR=192.168.1.42 bash "$ROOT/webui/cgi-bin/adaptive-browser.cgi")"
+grep -q '"state":"CONFIRMED_SUCCESS"' <<< "$video_media_confirm"
+grep -q $'^1\t'"$video_flow_host"$'\t8.8.8.8\t2\tgooglevideo-tcp\tmark:7\t' "$Z2R_ADAPTIVE_DIR/rules.tsv" || {
+  echo 'Googlevideo rule was saved for the original trial host instead of the verified CDN host' >&2; exit 1;
+}
 
 video_unknown_attempt=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
 video_unknown_event=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2

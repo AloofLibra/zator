@@ -53,18 +53,18 @@ adaptive_browser_context_valid() {
   [[ "$client_id" =~ ^[a-f0-9]{32}$ && "$client_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && "$now" =~ ^[0-9]{1,10}$ ]] || return 1
   awk -F. 'NF==4 {for(i=1;i<=4;i++) if($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i>255) exit 1; a=$1+0; b=$2+0; if(a==10 || (a==192 && b==168) || (a==172 && b>=16 && b<=31)) exit 0; exit 1} {exit 1}' <<< "$client_ip" || return 1
   if [[ "$scope" = default ]]; then
-    adaptive_browser_rotation_enabled &&
-       -f "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/apply-default-scope" &&
+    adaptive_browser_rotation_enabled || return 1
+    [[ -f "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/apply-default-scope" &&
        ! -L "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/apply-default-scope" &&
-       "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/apply-default-scope" 2>/dev/null)" = 1 ]]
+       "$(cat "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/adaptive/apply-default-scope" 2>/dev/null)" = 1 ]] || return 1
     return
   fi
   [[ "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ]] && (( ${scope#mark:} <= 65535 )) || return 1
   [[ "$(config_get_var "${ZAPRET2_ROOT:-/opt/zapret2}/config" CLIENT_SCOPE_ENABLE 2>/dev/null | tr -d '"\047')" = 1 &&
      -r "$map_file" && ! -L "$map_file" ]] || return 1
   awk -F '\t' -v ip="$client_ip" -v sc="$scope" '
-    $1 ~ /^mark:[1-9][0-9]*$/ && $2 ~ /^[0-9.]+$/ { if ($2==ip) {ip_count++; ip_scope=$1}; if ($1==sc) {scope_count++; scope_ip=$2} }
-    END {exit !(ip_count==1 && ip_scope==sc && scope_count==1 && scope_ip==ip)}
+    $1 ~ /^mark:[1-9][0-9]*$/ && $2 ~ /^[0-9.]+$/ { if ($2==ip) {ip_count++; ip_scope=$1}; if ($1==sc) mark_found=1 }
+    END {exit !(ip_count==1 && ip_scope==sc && mark_found)}
   ' "$map_file"
 }
 

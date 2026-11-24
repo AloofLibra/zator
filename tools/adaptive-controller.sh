@@ -226,7 +226,7 @@ trap 'exit 143' TERM HUP
 
 [[ "$NFQWS2_ENABLE" = 1 && -x "$nfqws" ]] || { printf 'unavailable\n' > "$run/error"; exit 1; }
 mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
-[[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || {
+[[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA || "$mode" = AUTO ]] || {
   printf 'probe_mode_off\n' > "$run/error"; exit 1;
 }
 now="$(date +%s)"
@@ -381,7 +381,7 @@ controller_started_at="$(date +%s)"
 for ((i=0; i<35; i++)); do
   if [[ -e "$run/cancel" ]]; then cancelled=1; break; fi
   mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
-  [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA ]] || { cancelled=1; break; }
+  [[ "$mode" = TEST_ONLY || "$mode" = AGENT_BETA || "$mode" = AUTO ]] || { cancelled=1; break; }
   [[ -s "$Z2R_ADAPTIVE_RESULT_FILE" ]] && break
   kill -0 "$Z2R_ADAPTIVE_NFQWS2_PID" 2>/dev/null || break
   if (( $(date +%s) >= expires )); then lease_expired=1; break; fi
@@ -458,7 +458,7 @@ else
     final_reason=ramp_stage_unconfirmed
   fi
   mode="$(cat "$ROOT/extra_strats/cache/adaptive/mode" 2>/dev/null)"
-  if [[ "$mode" != TEST_ONLY && "$mode" != AGENT_BETA ]]; then
+  if [[ "$mode" != TEST_ONLY && "$mode" != AGENT_BETA && "$mode" != AUTO ]]; then
     route_verified=false
     final_reason=cancelled
     transport=UNKNOWN

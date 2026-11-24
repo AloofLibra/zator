@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-ramp-") as tmp:
     root = Path(tmp) / "zator"
     adaptive = root / "extra_strats/cache/adaptive"
     adaptive.mkdir(parents=True)
-    (adaptive / "mode").write_text("AGENT_BETA\n")
+    (adaptive / "mode").write_text("AUTO\n")
     (adaptive / "apply-default-scope").write_text("1\n")
     targets = Path(tmp) / "ramp-targets.tsv"
     exemptions = Path(tmp) / "ramp-exempt.tsv"
@@ -32,6 +32,10 @@ with tempfile.TemporaryDirectory(prefix="zator-adaptive-ramp-") as tmp:
         os.chdir(repo)
         LuaRuntime(unpack_returned_tuples=True).execute((repo / "tests/wssize_ramp_smoke.lua").read_text())
         assert audit.read_text() == "1\t1\t1\n", "Ramp stage audit did not persist both confirmed stages"
+        (adaptive / "mode").write_text("AGENT_BETA\n")
+        audit.write_text("1\t0\t0\n")
+        LuaRuntime(unpack_returned_tuples=True).execute((repo / "tests/wssize_ramp_smoke.lua").read_text())
+        assert audit.read_text() == "1\t1\t1\n", "legacy Ramp exemption compatibility regressed"
     finally:
         os.chdir(old_cwd)
         for key, value in old_env.items():

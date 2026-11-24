@@ -44,7 +44,7 @@ assert(#fields == 11 and fields[1] == "2" and fields[2] == host and fields[3] ==
 local fallback_track = {lua_state={}}
 qhm_initial(host, ip, fallback_track)
 locked_quic_health_observe_for_tests({outgoing=true,
-  dis={tcp={th_dport=443, th_flags=TH_SYN}, ip=ip}, track=fallback_track}, host, 5, "default")
+  l7payload="tls_client_hello", dis={tcp={th_dport=443, th_flags=TH_ACK}, ip=ip}, track=fallback_track}, host, 5, "default")
 f = assert(io.open(qhm_path, "r"))
 f:read("*l")
 local fallback_line = f:read("*l")

@@ -29,6 +29,9 @@ local MODE_OVERRIDES = {}
 local CLONESIZE_PATH = LOCKED_DIR .. "/clonesize.tsv"
 local CLONE_SIZES = {}
 local ADAPTIVE_RULES_PATH = os.getenv("Z2R_ADAPTIVE_RULES_FILE") or "/tmp/z2r-adaptive/rules.tsv"
+local ADAPTIVE_RULE_RENEWALS_PATH = os.getenv("Z2R_ADAPTIVE_RULE_RENEWALS_FILE") or "/tmp/z2r-adaptive/rule-renewals.tsv"
+local load_locked_tables
+local adaptive_observe_ip_valid
 local ADAPTIVE_RULES_SNAPSHOT_PATH = (os.getenv("ZATOR_ROOT") or "/opt/zator") .. "/extra_strats/cache/adaptive/rules.tsv"
 local ADAPTIVE_BROWSER_TRIALS_PATH = os.getenv("Z2R_ADAPTIVE_BROWSER_TRIALS_FILE") or "/tmp/z2r-adaptive/browser/trials.tsv"
 local ADAPTIVE_BROWSER_FLOW_DIR = os.getenv("Z2R_ADAPTIVE_BROWSER_FLOW_DIR")
@@ -567,10 +570,82 @@ local function load_adaptive_rules_file(path)
     end
     f:close()
   end
+  local renewals, renewal_file = {}, io.open(ADAPTIVE_RULE_RENEWALS_PATH, "r")
+  local now = os.time()
+  if renewal_file then
+    for line in renewal_file:lines() do
+      local host, ip, profile, proto, scope, strategy, fingerprint, renewed =
+        line:match("^([^\t]+)\t([^\t]+)\t([1-5])\t([^\t]+)\t([^\t]+)\t(%d+)\t(sha256:[0-9a-f]+)\t(%d+)$")
+      renewed = tonumber(renewed)
+      if host and ip and strategy and fingerprint and renewed and renewed <= now + 10 and renewed >= now - 604800 then
+        renewals[table.concat({host, ip, profile, proto, scope, strategy, fingerprint}, "\0")] = renewed
+      end
+    end
+    renewal_file:close()
+  end
+  for i, line in ipairs(lines) do
+    local fields = {}
+    for value in (line .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = value end
+    if #fields == 11 then
+      local key = table.concat({fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8]}, "\0")
+      local renewed = renewals[key]
+      local current_expiry = tonumber(fields[11])
+      if renewed and current_expiry and renewed + 900 > now and current_expiry < renewed + 900 then
+        fields[11] = tostring(renewed + 900)
+        lines[i] = table.concat(fields, "\t")
+      end
+    end
+  end
   adaptive_rules_load(lines)
 end
 
-local function load_locked_tables()
+local ADAPTIVE_RULE_RENEWAL_LAST = {}
+function z2r_adaptive_confirmed_rule_success(context, strategy)
+  if type(context) ~= "table" or (context.adaptive_source ~= "browser_confirmed"
+    and context.adaptive_source ~= "browser_confirmed_shared") then return false end
+  load_locked_tables()
+  local host, ip = tostring(context.host or ""), tostring(context.ip or "")
+  local profile, proto, scope = tostring(context.profile or ""), tostring(context.proto or "tls"), tostring(context.scope or "default")
+  strategy = tonumber(strategy)
+  if profile == "2" and adaptive_googlevideo_host_valid(host) then proto = "googlevideo-tcp" end
+  if not strategy or not adaptive_observe_ip_valid(ip) then return false end
+  local now, rows, seen, renewed_keys, refreshed = os.time(), {}, {}, {}, false
+  for key, rule in pairs(ADAPTIVE_RULES) do
+    local scope_matches = rule.scope == scope or (scope == "default" and rule.scope == "shared")
+    local host_matches = rule.host == host or (proto == "googlevideo-tcp" and rule.host == "googlevideo.com")
+    if scope_matches and host_matches and rule.profile == profile and rule.proto == proto and rule.strategy == strategy then
+      local row_key = table.concat({rule.host, rule.ip, rule.profile, rule.proto, rule.scope, tostring(rule.strategy), rule.fingerprint}, "\0")
+      if now - (ADAPTIVE_RULE_RENEWAL_LAST[row_key] or 0) >= 300 then
+        seen[row_key] = table.concat({rule.host, rule.ip, rule.profile, rule.proto, rule.scope,
+          tostring(rule.strategy), rule.fingerprint, tostring(now)}, "\t")
+        renewed_keys[#renewed_keys + 1] = row_key
+        rule.expires = math.max(rule.expires, now + 900)
+        refreshed = true
+      end
+    end
+  end
+  if not refreshed then return false end
+  local f = io.open(ADAPTIVE_RULE_RENEWALS_PATH, "r")
+  if f then
+    for line in f:lines() do
+      local host0, ip0, profile0, proto0, scope0, strategy0, fp0 = line:match("^([^\t]+)\t([^\t]+)\t([1-5])\t([^\t]+)\t([^\t]+)\t(%d+)\t(sha256:[0-9a-f]+)\t%d+$")
+      local row_key = host0 and table.concat({host0, ip0, profile0, proto0, scope0, strategy0, fp0}, "\0")
+      if row_key and not seen[row_key] and #rows < 127 then rows[#rows + 1] = line end
+    end
+    f:close()
+  end
+  for _, line in pairs(seen) do if #rows < 128 then rows[#rows + 1] = line end end
+  local tmp = ADAPTIVE_RULE_RENEWALS_PATH .. ".tmp"
+  f = io.open(tmp, "w")
+  if not f then return false end
+  local ok = f:write(table.concat(rows, "\n"), "\n")
+  f:close()
+  if not ok or not os.rename(tmp, ADAPTIVE_RULE_RENEWALS_PATH) then os.remove(tmp); return false end
+  for _, row_key in ipairs(renewed_keys) do ADAPTIVE_RULE_RENEWAL_LAST[row_key] = now end
+  return true
+end
+
+load_locked_tables = function()
   local now = ADAPTIVE_BROWSER_TEST_NOW or os.time()
   if now and (now - last_load) < cache_ttl then return end
   last_load = now or 0
@@ -639,6 +714,13 @@ function locked_load_adaptive_lines_for_tests(lines, now, runtime_stamp)
   ADAPTIVE_TEST_LINES = lines or {}
   ADAPTIVE_TEST_RUNTIME_STAMP = runtime_stamp
   adaptive_rules_load(lines or {}, now)
+end
+
+function locked_reload_adaptive_rules_for_tests(runtime_stamp)
+  LOCKED_TEST_LINES, ADAPTIVE_TEST_LINES = nil, nil
+  ADAPTIVE_TEST_RUNTIME_STAMP = runtime_stamp
+  last_load = 0
+  load_locked_tables()
 end
 
 function locked_load_browser_trials_for_tests(lines, now)
@@ -1515,7 +1597,7 @@ local function adaptive_probe_ack(host, profile, strategy)
   ADAPTIVE_ACKED = true
 end
 
-local function adaptive_observe_ip_valid(ip)
+adaptive_observe_ip_valid = function(ip)
   if type(ip) ~= "string" then return false end
   local octets = {}
   for part in (ip .. "."):gmatch("(.-)%.") do
@@ -1754,6 +1836,10 @@ local function adaptive_observe_record_strategy(context, strategy, strategy_coun
   end
 end
 
+function z2r_adaptive_observe_record_strategy(context, strategy, strategy_count)
+  adaptive_observe_record_strategy(context, strategy, strategy_count)
+end
+
 local ADAPTIVE_QUIC_BOOT_ID = tostring({}):match("0x([0-9a-fA-F]+)") or tostring(os.time())
 local ADAPTIVE_QUIC_TRACK_SEQ = 0
 local function adaptive_quic_track_id(track)
@@ -1899,8 +1985,9 @@ local function adaptive_quic_health_observe(desync, host, profile, scope)
   if desync.outgoing == true and type(desync.dis) == "table" and type(desync.dis.tcp) == "table"
     and tonumber(desync.dis.tcp.th_dport) == 443 and type(dis_ipdst) == "function" and type(ntop) == "function" then
     local flags = tonumber(desync.dis.tcp.th_flags) or 0
-    if type(bitand) ~= "function" or type(TH_SYN) ~= "number" or type(TH_ACK) ~= "number"
-      or bitand(flags, TH_SYN) == 0 or bitand(flags, TH_ACK) ~= 0 then return end
+    local initial_syn = type(bitand) == "function" and type(TH_SYN) == "number" and type(TH_ACK) == "number"
+      and bitand(flags, TH_SYN) ~= 0 and bitand(flags, TH_ACK) == 0
+    if not initial_syn and desync.l7payload ~= "tls_client_hello" then return end
     local dst = dis_ipdst(desync.dis)
     ip = dst and ntop(dst) or nil
     if not ip or not adaptive_observe_ip_valid(ip) then return end
@@ -1924,6 +2011,10 @@ local function adaptive_quic_health_observe(desync, host, profile, scope)
 end
 
 function locked_quic_health_observe_for_tests(desync, host, profile, scope)
+  return adaptive_quic_health_observe(desync, host, profile, scope)
+end
+
+function z2r_adaptive_quic_health_observe(desync, host, profile, scope)
   return adaptive_quic_health_observe(desync, host, profile, scope)
 end
 
@@ -2041,12 +2132,6 @@ local function adaptive_browser_capture_quic_initial(desync, host, profile, scop
   if state.adaptive_browser_syn then
     if state.adaptive_browser_syn.proto == "quic" then
       state.adaptive_browser_syn.quic_repeated = true
-      local id, generation = state.adaptive_browser_trial_id, state.adaptive_browser_trial_generation
-      if not state.adaptive_browser_flow_ambiguous_recorded and type(id) == "string"
-        and id:match("^[0-9a-f]+$") and #id == 32 and tonumber(generation) then
-        state.adaptive_browser_flow_ambiguous_recorded = adaptive_browser_mark_flow_ambiguous(
-          ADAPTIVE_BROWSER_FLOW_DIR .. "/" .. id .. "." .. tostring(generation) .. ".tsv")
-      end
     end
     return false, "already-seen"
   end
@@ -2065,7 +2150,6 @@ local function adaptive_browser_record_flow(desync, trial, host, ip, profile, pr
   local now = os.time()
   local expected_syn_proto = proto == "quic" and "quic" or "tcp"
   if type(syn) ~= "table" or syn.ip ~= ip or syn.profile ~= tostring(profile) or syn.proto ~= expected_syn_proto or syn.scope ~= scope
-    or (proto == "quic" and syn.quic_repeated)
     or syn.seen < trial.created or syn.seen > now or now > trial.expires
     or (trial.host ~= host and not (proto == "googlevideo-tcp" and profile == "2" and host:match("^[a-z0-9%-]+%.googlevideo%.com$")
       and trial.host:match("^[a-z0-9%-]+%.googlevideo%.com$"))) or trial.profile ~= tostring(profile) or trial.proto ~= proto
@@ -2145,9 +2229,11 @@ function locked_adaptive_quality_selection(desync, host, profile, scope, current
   end
 
   local strategy = locked_adaptive_strategy_for_tuple(host, ip, profile, adaptive_proto, scope)
-  if strategy ~= nil then return strategy, "verified_rule", nil, ip, adaptive_proto end
-  strategy = locked_adaptive_shared_strategy_for_tuple(host, ip, profile, adaptive_proto)
-  if strategy ~= nil then return strategy, "browser_confirmed_shared", nil, ip, adaptive_proto end
+  if strategy ~= nil then return strategy, "browser_confirmed", nil, ip, adaptive_proto end
+  if scope == "default" then
+    strategy = locked_adaptive_shared_strategy_for_tuple(host, ip, profile, adaptive_proto)
+    if strategy ~= nil then return strategy, "browser_confirmed_shared", nil, ip, adaptive_proto end
+  end
   if ADAPTIVE_ROTATION_ENABLED then
     local state = desync.track.lua_state
     local context = type(state) == "table" and state.adaptive_observe_context or nil
@@ -2336,7 +2422,7 @@ function circular_locked(ctx, desync)
           adaptive_strategy = locked_adaptive_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto, scope)
           if adaptive_strategy ~= nil then adaptive_strategy_source = "browser_confirmed" end
         end
-        if not adaptive_strategy then
+        if not adaptive_strategy and scope == "default" then
           adaptive_strategy = locked_adaptive_shared_strategy_for_tuple(host, dst_ip, base_profile, adaptive_proto)
           if adaptive_strategy ~= nil then adaptive_strategy_source = "browser_confirmed_shared" end
         end
