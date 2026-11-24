@@ -13,12 +13,12 @@ function dis_ipdst(dis) return dis.ip end
 function ntop(ip) return ip end
 
 local function qhm_initial(host, ip, track)
-  local desync = {outgoing=true, l7payload="quic_initial", dis={udp={th_dport=443}, ip=ip}, track=track}
+  local desync = {outgoing=true, l7payload="quic_initial", dis={udp={th_sport=51234, th_dport=443}, ip=ip}, track=track}
   locked_quic_health_observe_for_tests(desync, host, 5, "default")
 end
 
 local function qhm_response(host, ip, track)
-  local desync = {outgoing=false, dis={udp={th_sport=443}}, track=track}
+  local desync = {outgoing=false, dis={udp={th_sport=443, th_dport=51234}}, track=track}
   locked_quic_health_observe_for_tests(desync, host, 5, "default")
 end
 
@@ -36,9 +36,24 @@ local first = f:read("*l")
 f:close()
 local fields = {}
 for field in (first .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = field end
-assert(#fields == 9 and fields[1] == "1" and fields[2] == host and fields[3] == ip
-  and fields[5] == "2" and fields[6] == "1" and fields[7] == "1" and fields[8] == "1",
+assert(#fields == 11 and fields[1] == "2" and fields[2] == host and fields[3] == ip
+  and fields[5] == "51234" and fields[7] == "2" and fields[8] == "1"
+  and fields[9] == "1" and fields[10] == "0",
   "QHM did not record Initial/retry/response/TCP fallback")
+
+local fallback_track = {lua_state={}}
+qhm_initial(host, ip, fallback_track)
+locked_quic_health_observe_for_tests({outgoing=true,
+  dis={tcp={th_dport=443, th_flags=TH_SYN}, ip=ip}, track=fallback_track}, host, 5, "default")
+f = assert(io.open(qhm_path, "r"))
+f:read("*l")
+local fallback_line = f:read("*l")
+f:close()
+local fallback_fields = {}
+for field in (fallback_line .. "\t"):gmatch("(.-)\t") do fallback_fields[#fallback_fields + 1] = field end
+assert(#fallback_fields == 11 and fallback_fields[2] == host and fallback_fields[7] == "1"
+  and fallback_fields[9] == "0" and fallback_fields[10] == "1",
+  "QHM did not mark a separate unanswered QUIC connection with possible TCP fallback")
 
 for i=1,70 do
   local h, t = string.format("h%d.googlevideo.com", i), {lua_state={}}
