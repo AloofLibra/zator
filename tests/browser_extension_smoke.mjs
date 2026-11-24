@@ -225,12 +225,12 @@ assert.equal(image.trigger, 'observe_only')
 assert.equal(sent.length, 2)
 
 currentTabUrl = 'https://www.youtube.com/watch?v=test'
-const googlevideoFailure = (requestId, host) => ({ tabId: 10, documentId: 'doc-googlevideo', requestId, type: 'media', method: 'GET',
-  url: `https://${host}/videoplayback?private=1`, error: 'net::ERR_CONNECTION_CLOSED', timeStamp: Date.now(), ip: '8.8.8.8' })
+const googlevideoFailure = (requestId, host, path = '/videoplayback') => ({ tabId: 10, documentId: 'doc-googlevideo', requestId, type: 'media', method: 'GET',
+  url: `https://${host}${path}?private=1`, error: 'net::ERR_CONNECTION_CLOSED', timeStamp: Date.now(), ip: '8.8.8.8' })
 const firstGooglevideoFailure = await api.rememberFailure(googlevideoFailure('gv-1', 'rr2---sn-h5gtov-n8vl.googlevideo.com'))
 assert.equal(firstGooglevideoFailure.trigger, 'observe_only')
-const secondGooglevideoFailure = await api.rememberFailure(googlevideoFailure('gv-2', 'rr5---sn-8ph2xajvh-n8vs.googlevideo.com'))
-assert.equal(secondGooglevideoFailure.trigger, 'critical_resource_repeated_failure', 'same media path across Googlevideo CDN hosts must start an automatic trial')
+const secondGooglevideoFailure = await api.rememberFailure(googlevideoFailure('gv-2', 'rr5---sn-8ph2xajvh-n8vs.googlevideo.com', '/videoplayback/segment-2'))
+assert.equal(secondGooglevideoFailure.trigger, 'critical_resource_repeated_failure', 'Googlevideo media failures across CDN hosts and paths in one document must start an automatic trial')
 assert.equal(sent.length, 3)
 assert.equal(new URLSearchParams(sent[2].body).get('hostname'), 'rr5---sn-8ph2xajvh-n8vs.googlevideo.com', 'trial target must be the actual failed CDN host')
 assert.equal(reloads.length, 2, 'an approved Googlevideo media trial should automatically retry the YouTube GET once')

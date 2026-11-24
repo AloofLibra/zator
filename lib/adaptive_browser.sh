@@ -253,6 +253,12 @@ adaptive_browser_candidate_select() {
   case "$proto" in googlevideo-tcp) recipe=googlevideo-tcp-media-v1 ;; quic) recipe=googlevideo-quic-h3-media-v1 ;; *) recipe=tls-http1-v1 ;; esac
   remote="$(adaptive_browser_redis_ranked_candidates "$profile" "$proto" "$recipe" "$stamp" "$max" "$args_file" "$nfqws" "$(adaptive_browser_state_dir)/catalog-cache" || true)"
   while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$remote"
+  # Prefer the numeric successor of the strategy actually used before the
+  # broader family-diverse exploration order (which can start at #31).
+  if [[ "$current" =~ ^[1-9][0-9]{0,2}$ ]]; then
+    for ((strategy=current + 1; strategy<=max; strategy++)); do candidates+=("$strategy"); done
+    for ((strategy=1; strategy<current; strategy++)); do candidates+=("$strategy"); done
+  fi
   family="$(adaptive_exploration_strategy_order "$args_file" "$max" 2>/dev/null || true)"
   while IFS= read -r strategy; do [[ "$strategy" =~ ^[1-9][0-9]{0,2}$ ]] && candidates+=("$strategy"); done <<< "$family"
   now="$(date +%s)" || return 1
@@ -678,7 +684,7 @@ adaptive_browser_trial_add() {
   [[ $# = 13 || $# = 14 ]] || return 2
   local id="$1" generation="$2" client_id="$3" client_ip="$4" scope="$5" host="$6" ip="$7"
   local profile="$8" proto="$9" strategy="${10}" fingerprint="${11}" created="${12}" expires="${13}"
-  local trigger="${14:-standard}"
+  local trigger="${14:-standard}" max_ttl=180
   local file lock dir tmp row ver old_id old_gen old_client old_client_ip old_scope old_host old_ip old_profile old_proto old_strategy old_fp old_created old_expires extra now count=0 tries=0
   [[ "$id" =~ ^[a-f0-9]{32}$ && "$generation" =~ ^[1-9][0-9]{0,8}$ && "$client_id" =~ ^[a-f0-9]{32}$ &&
      "$client_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ && ( "$scope" = default || "$scope" =~ ^mark:[1-9][0-9]{0,4}$ ) &&
@@ -692,7 +698,8 @@ adaptive_browser_trial_add() {
   if [[ "$trigger" = ramp_canary ]]; then
     (( expires > now && expires <= now + 300 && created <= now + 5 )) || return 2
   else
-    (( expires > now && expires <= now + 180 && created <= now + 5 )) || return 2
+    [[ "$profile" = 2 && "$proto" = googlevideo-tcp ]] && max_ttl=600
+    (( expires > now && expires <= now + max_ttl && created <= now + 5 )) || return 2
   fi
   file="$(adaptive_browser_trials_file)"; dir="$(dirname "$file")"; lock="$file.lock"
   [[ ! -L "$(adaptive_browser_state_dir)" && ! -L "$file" && ! -L "$lock" ]] || return 1

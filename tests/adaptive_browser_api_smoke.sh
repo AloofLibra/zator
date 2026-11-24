@@ -195,6 +195,13 @@ if adaptive_browser_trial_add bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 "$client_id" 19
 else [[ "$?" = 3 ]]; fi
 adaptive_browser_trial_remove "$family_trial_id" 1
 
+long_family_trial_id=cccccccccccccccccccccccccccccccc
+adaptive_browser_trial_add "$long_family_trial_id" 1 "$client_id" 192.168.1.42 mark:7 "$family_host" 8.8.8.8 2 googlevideo-tcp 4 sha256:$(printf 'a%.0s' {1..64}) "$trial_now" "$((trial_now + 600))"
+if adaptive_browser_trial_add dddddddddddddddddddddddddddddddd 1 "$client_id" 192.168.1.42 mark:7 "$family_host" 8.8.8.8 2 googlevideo-tcp 4 - "$trial_now" "$((trial_now + 601))"; then
+  echo 'Googlevideo trial exceeded the ten-minute lifetime cap' >&2; exit 1
+else [[ "$?" = 2 ]]; fi
+adaptive_browser_trial_remove "$long_family_trial_id" 1
+
 bash -n "$ROOT/webui/cgi-bin/adaptive-browser.cgi" "$ROOT/lib/adaptive_browser.sh" "$ROOT/tools/adaptive-browser-pair.sh"
 grep -q 'browser_hello' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"
 grep -q 'browser_cancel_attempt' "$ROOT/webui/cgi-bin/adaptive-browser.cgi"

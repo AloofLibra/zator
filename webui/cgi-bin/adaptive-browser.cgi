@@ -98,6 +98,7 @@ browser_start_trial() {
   raw_id="$(adaptive_browser_random_hex 16)"
   [[ "$raw_id" =~ ^[a-f0-9]{32}$ ]] || return 1
   id="$raw_id"; now="$(date +%s)"; expires=$((now + 180))
+  if [[ "$profile" = 2 && "$proto" = googlevideo-tcp ]]; then expires=$((now + 600)); fi
   if [[ "$trigger" = ramp_canary ]]; then expires=$((now + 300)); trial_kind=ramp_canary; fi
   raw_id="$(adaptive_browser_random_hex 4)"
   [[ "$raw_id" =~ ^[a-f0-9]{8}$ ]] || return 1

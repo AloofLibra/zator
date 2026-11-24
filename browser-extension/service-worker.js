@@ -220,7 +220,10 @@
       resourceId = await resourceIdentity(details.url);
       if (resourceId) {
         const resourceHost = type === "media" && host.endsWith(".googlevideo.com") ? "googlevideo.com" : host;
-        const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${resourceHost}|${type}|${resourceId}`;
+        // YouTube changes CDN hosts and media URL paths across retries/ranges.
+        // Count critical Googlevideo media failures within this document as a
+        // family, while keeping other resources keyed to their exact identity.
+        const resourceKey = `${details.tabId}|${details.documentId || details.frameId || 0}|${resourceHost}|${type}|${resourceHost === "googlevideo.com" ? "family" : resourceId}`;
         const recent = state.resourceErrors.filter(x => x && Number.isFinite(x.at) && now - x.at <= DEDUPE_MS);
         const matching = recent.filter(x => x.key === resourceKey);
         if (matching.length >= 1) trigger = "critical_resource_repeated_failure";
