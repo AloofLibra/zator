@@ -474,7 +474,7 @@ local function adaptive_browser_trial_parse_line(line, now)
       (proto == "quic" and profile == 5 and adaptive_quic_host_allowed(host))) or
     (strategy < 1 or strategy > 999 or strategy % 1 ~= 0) or
     (fingerprint ~= "-" and (not fingerprint:match("^sha256:[0-9a-f]+$") or #fingerprint ~= 71)) or
-    not created or not expires or expires <= (now or os.time()) or expires > (now or os.time()) + 90 then return nil end
+    not created or not expires or expires <= (now or os.time()) or expires > (now or os.time()) + 300 then return nil end
   if proto == "quic" and not adaptive_quic_host_allowed(host) then return nil end
   if scope == "default" and not ADAPTIVE_DEFAULT_SCOPE_APPLY then return nil end
   return {id=id, generation=generation, client_id=client_id, client_ip=client_ip, scope=scope,

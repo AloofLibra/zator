@@ -100,6 +100,19 @@ local video_trial = table.concat({"1", id, "3", client, "192.168.1.42", "mark:7"
   "8.8.8.8", "2", "googlevideo-tcp", "4", fingerprint, "990", "1045"}, "\t")
 locked_load_browser_trials_for_tests({video_trial}, now)
 local video_match = locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now)
+local standard_video_trial = video_trial:gsub("\t1045$", "\t1180")
+locked_load_browser_trials_for_tests({standard_video_trial}, now)
+assert(locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now),
+  "180-second Googlevideo trial was rejected before its CDN retry window")
+local ramp_video_trial = video_trial:gsub("\t1045$", "\t1300")
+locked_load_browser_trials_for_tests({ramp_video_trial}, now)
+assert(locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now),
+  "300-second Ramp canary trial was rejected")
+local overlong_video_trial = video_trial:gsub("\t1045$", "\t1301")
+locked_load_browser_trials_for_tests({overlong_video_trial}, now)
+assert(locked_browser_trial_for_tuple(video_host, "8.8.8.8", 2, "googlevideo-tcp", "mark:7", now) == nil,
+  "trial beyond the 300-second maximum was accepted")
+locked_load_browser_trials_for_tests({video_trial}, now)
 local alternate_video = "rr2---sn-b.googlevideo.com"
 local alternate_match = locked_browser_trial_for_tuple(alternate_video, "1.1.1.1", 2, "googlevideo-tcp", "mark:7", now)
 assert(alternate_match and alternate_match.id == video_match.id and alternate_match.strategy == video_match.strategy,
