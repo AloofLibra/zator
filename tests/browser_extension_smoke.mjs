@@ -25,6 +25,8 @@ assert.match(popupScript, /Router rejected this pairing\. Pair the extension aga
 assert.match(popupScript, /Router browser API is unavailable\. Update or enable it on the router\./)
 assert.match(popupScript, /profile default/)
 assert.doesNotMatch(popupScript, /automatic start/)
+assert.match(popupScript, /row\.request_class \|\| "unknown request"/)
+assert.match(popupScript, /no trial started from this request/)
 assert.ok(manifest.permissions.includes('webRequest'))
 assert.ok(manifest.permissions.includes('scripting'))
 assert.ok(!manifest.permissions.includes('webNavigation'), 'extension must not request an unused navigation permission')
