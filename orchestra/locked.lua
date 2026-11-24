@@ -2065,7 +2065,8 @@ local function adaptive_quic_recovery_apply(event, host, ip, scope, count)
       line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t(%d+)\t(%d+)\t(%d+)\t([0-9a-f]+)$")
     if ver == "1" and tonumber(expires) and tonumber(expires) > now then
       if not applied and queued_host == host and queued_ip == ip and queued_scope == scope
-        and #attempt == 32 and tonumber(failed) < tonumber(count) then
+        and #attempt == 32 and tonumber(queued_count) == tonumber(count)
+        and tonumber(failed) < tonumber(queued_count) then
         local candidate = tonumber(failed) + 1
         event.router_candidate, event.status = candidate, "router_trial_" .. tostring(candidate)
         event.failure_count, event.failure_strategy, event.seen = 0, nil, now
