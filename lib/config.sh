@@ -208,35 +208,99 @@ config_auto_layout_valid() {
   [ "$(grep -c '^#Z2R_AUTO_FALLBACK_WAS=[01]$' "$cfg")" -eq 1 ]
 }
 
-# Определяет Linux-имя WAN интерфейса по default route.
-# На Keenetic это может быть ppp0, eth*, nwg*, wwan0 и т.п.
-config_keenetic_detect_default_iface() {
+# Определяет Linux-имена WAN интерфейсов по default route (все, без дублей).
+# На Keenetic это может быть ppp0, ppp1, eth*, nwg*, wwan0 и т.п.
+# Несколько default route = несколько провайдеров: zapret2 строит правила
+# на КАЖДЫЙ интерфейс из IFACE_WAN, иначе резервный провайдер (PBR-политика)
+# остаётся без обхода.
+config_keenetic_detect_default_ifaces() {
   local family="$1"
 
   command -v ip >/dev/null 2>&1 || return 1
   ip "-$family" route show default 2>/dev/null | awk '
     {
       for (i = 1; i <= NF; i++) {
-        if ($i == "dev" && $(i + 1) != "" && $(i + 1) != "lo") {
-          print $(i + 1)
-          exit
-        }
+        if ($i == "dev" && $(i + 1) != "" && $(i + 1) != "lo") print $(i + 1)
       }
     }
-  '
+  ' | awk '!seen[$0]++'
+}
+
+# Совместимость: основной (первый) WAN интерфейс по default route.
+config_keenetic_detect_default_iface() {
+  config_keenetic_detect_default_ifaces "$1" | head -n1
+}
+
+# Значение IFACE_WAN/IFACE_WAN6 из конфига как список через пробел.
+# Комментированная строка (#IFACE_WAN=...) значением не считается.
+config_keenetic_wan_get() {
+  local cfg="$1" var="$2" line
+  line="$(grep -E "^[[:space:]]*${var}=" "$cfg" 2>/dev/null | tail -n1)"
+  [ -n "$line" ] || return 0
+  printf '%s' "$line" | sed 's/^[^=]*=//; s/^[[:space:]]*//; s/^"//; s/".*$//' \
+    | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
+}
+
+# Выбор значения WAN: уже заданный список из 2+ интерфейсов не сужаем —
+# при PBR второй провайдер не обязан быть основным маршрутом.
+config_keenetic_wan_pick() {
+  local cur="$1" auto="$2" n
+  n="$(printf '%s\n' $cur | grep -c .)"
+  if [ "${n:-0}" -ge 2 ]; then
+    printf '%s\n' "$cur"
+  else
+    printf '%s\n' "$auto"
+  fi
+}
+
+# Добавляет --bind-fix4/--bind-fix6 в NFQWS2_OPT, если их там нет (идемпотентно).
+# Зачем: nfqws2 всегда домешивает свой бит 0x40000000 в fwmark сгенерированных
+# пакетов, а KeeneticOS матчит fwmark в ip rule целым словом
+# ("from all fwmark 0xffffaad lookup N"). Без bind-fix raw-пакеты (фейки,
+# переставленные/переотправленные сегменты ClientHello) уходят мимо таблицы
+# политики в main/default провайдера и на втором провайдере теряются.
+# bind-fix прибивает raw-сокет к исходному интерфейсу через SO_BINDTODEVICE.
+config_keenetic_ensure_bindfix() {
+  local cfg="$1" opt tmp
+  [ -f "$cfg" ] || return 0
+  grep -q '^[[:space:]]*NFQWS2_OPT="' "$cfg" || return 0
+  for opt in --bind-fix4 --bind-fix6; do
+    grep -q -- "^[[:space:]]*${opt}[[:space:]]*$" "$cfg" && continue
+    tmp="$cfg.z2r_bindfix.$$"
+    if awk -v opt="$opt" '
+        { print }
+        /^[[:space:]]*NFQWS2_OPT="[[:space:]]*$/ && !done { print opt; done = 1 }
+      ' "$cfg" > "$tmp"; then
+      chmod 644 "$tmp" 2>/dev/null
+      mv -f "$tmp" "$cfg"
+    else
+      rm -f "$tmp"
+      return 1
+    fi
+  done
+  return 0
 }
 
 # Прописывает IFACE_WAN/IFACE_WAN6 в указанный конфиг только для Keenetic.
+# Значение — список ВСЕХ default-route интерфейсов ("ppp0 ppp1" при двух
+# PPPoE); пользовательский список из 2+ интерфейсов сохраняется.
 # Если IPv6 default route не найден, IFACE_WAN6 не трогаем: zapret2 возьмёт IFACE_WAN.
 config_keenetic_set_wan_iface() {
   local cfg="$1"
-  local wan4 wan6
+  local wan4 wan6 cur4 cur6
 
   [ "$hardware" = "keenetic" ] || return 0
   [ -f "$cfg" ] || return 0
 
-  wan4="$(config_keenetic_detect_default_iface 4)" || wan4=""
-  wan6="$(config_keenetic_detect_default_iface 6)" || wan6=""
+  wan4="$(config_keenetic_detect_default_ifaces 4 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan4=""
+  wan6="$(config_keenetic_detect_default_ifaces 6 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan6=""
+
+  cur4="$(config_keenetic_wan_get "$cfg" IFACE_WAN)"
+  wan4="$(config_keenetic_wan_pick "$cur4" "$wan4")"
+  cur6="$(config_keenetic_wan_get "$cfg" IFACE_WAN6)"
+  wan6="$(config_keenetic_wan_pick "$cur6" "$wan6")"
+
+  config_keenetic_ensure_bindfix "$cfg" || true
 
   if [ -z "$wan4" ]; then
     echo -e "${yellow}Не удалось автоматически определить WAN интерфейс Keenetic. IFACE_WAN не изменён.${plain}"
