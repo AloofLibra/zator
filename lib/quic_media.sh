@@ -1,5 +1,5 @@
-# This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
 #!/bin/bash
+# This repository, including its original source code and implementation, is licensed under GNU GPL v3.0; see LICENSE for the full terms. Redistribution, modification, and reuse must comply with that license and preserve applicable copyright and license notices. Unauthorized copying, including verbatim code copying or presenting this repository implementation or operating logic as your own, may be reported to the relevant hosting platforms.
 # QUIC-медиапроверка профиля 5: перебор UDP-стратегий с проверкой googlevideo
 # по HTTP/3 с самого роутера. Транспортных правил, выделенных портов и
 # изолированных probe-инстансов не нужно: прод-NFQUEUE-правило (mangle
