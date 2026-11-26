@@ -101,7 +101,11 @@ config_apply_from_default() {
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then
     config_client_scope_apply "$old_scope_cfg" "$root/config" || true
-    [ "$hardware" = "keenetic" ] && { config_keenetic_policy_apply "$old_scope_cfg" "$root/config" || true; }
+    [ "$hardware" = "keenetic" ] && {
+      config_keenetic_policy_apply "$old_scope_cfg" "$root/config" || true
+      # Пользовательский выбор bind-fix (п.19) не должен теряться при применении эталона.
+      config_keenetic_bindfix_apply "$old_scope_cfg" "$root/config" || true
+    }
     # Routine upgrades keep the three Ramp controls; explicit config reset calls
     # this function without the flag and continues to use shipped defaults.
     if [ "$preserve_ramp" = preserve_wssize ]; then
@@ -1751,6 +1755,13 @@ backup_smart_apply_flags() {
   v_new="$(config_get_var "$new_cfg" FLOWOFFLOAD)"
   if [ -n "$v_old" ] && [ "$v_old" != "$v_new" ]; then
     config_set_var "$new_cfg" FLOWOFFLOAD "$v_old"
+  fi
+
+  # --- Пункт 19: bind-fix для Keenetic (auto/1/0) ---
+  v_old="$(config_get_var "$old_cfg" Z2R_KEENETIC_BINDFIX)"
+  v_new="$(config_get_var "$new_cfg" Z2R_KEENETIC_BINDFIX)"
+  if [ -n "$v_old" ] && [ "$v_old" != "$v_new" ]; then
+    config_set_var "$new_cfg" Z2R_KEENETIC_BINDFIX "$v_old"
   fi
 
   # --- Пункт 19: MODE_FILTER (hostlist/autohostlist) ---

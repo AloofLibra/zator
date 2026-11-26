@@ -621,6 +621,14 @@ POLICY_NAME=
 POLICY_MARK=
 POLICY_EXCLUDE=0
 
+# Keenetic: bind-fix для сгенерированных пакетов (SO_BINDTODEVICE).
+# nfqws2 домешивает в fwmark своих пакетов бит 0x40000000, а KeeneticOS матчит
+# policy-fwmark в ip rule целым словом — без bind-fix такие пакеты уходят мимо
+# таблицы политики (в main/default провайдера). При одном провайдере это лишний
+# setsockopt на каждый rawsend, поэтому по умолчанию включается только при PBR:
+#   auto — по факту PBR (несколько WAN или политики доступа), 1 — всегда, 0 — никогда.
+Z2R_KEENETIC_BINDFIX=auto
+
 # do not work with ipv4
 #DISABLE_IPV4=1
 # do not work with ipv6

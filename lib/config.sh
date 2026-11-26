@@ -76,7 +76,9 @@ config_set_var() {
   local esc_val
 
   [ -f "$cfg" ] || return 1
-  esc_val=$(printf '%s' "$val" | sed 's/[\/&]/\\&/g')
+  # '#' экранируем вместе с разделителем sed и '&': иначе значение с '#' (например
+  # хвостовой комментарий, попавший в значение) ломает sed-скрипт.
+  esc_val=$(printf '%s' "$val" | sed 's/[\/&#]/\\&/g')
   if grep -q "^[[:space:]]*${var}=" "$cfg"; then
     sed -i "s#^[[:space:]]*${var}=.*#${var}=${esc_val}#" "$cfg"
   else
@@ -233,52 +235,214 @@ config_keenetic_detect_default_iface() {
 
 # Значение IFACE_WAN/IFACE_WAN6 из конфига как список через пробел.
 # Комментированная строка (#IFACE_WAN=...) значением не считается.
-config_keenetic_wan_get() {
-  local cfg="$1" var="$2" line
-  line="$(grep -E "^[[:space:]]*${var}=" "$cfg" 2>/dev/null | tail -n1)"
-  [ -n "$line" ] || return 0
-  printf '%s' "$line" | sed 's/^[^=]*=//; s/^[[:space:]]*//; s/^"//; s/".*$//' \
-    | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
-}
-
-# Выбор значения WAN: уже заданный список из 2+ интерфейсов не сужаем —
-# при PBR второй провайдер не обязан быть основным маршрутом.
-config_keenetic_wan_pick() {
-  local cur="$1" auto="$2" n
-  n="$(printf '%s\n' $cur | grep -c .)"
-  if [ "${n:-0}" -ge 2 ]; then
-    printf '%s\n' "$cur"
-  else
-    printf '%s\n' "$auto"
-  fi
-}
-
-# Добавляет --bind-fix4/--bind-fix6 в NFQWS2_OPT, если их там нет (идемпотентно).
-# Зачем: nfqws2 всегда домешивает свой бит 0x40000000 в fwmark сгенерированных
-# пакетов, а KeeneticOS матчит fwmark в ip rule целым словом
-# ("from all fwmark 0xffffaad lookup N"). Без bind-fix raw-пакеты (фейки,
-# переставленные/переотправленные сегменты ClientHello) уходят мимо таблицы
-# политики в main/default провайдера и на втором провайдере теряются.
-# bind-fix прибивает raw-сокет к исходному интерфейсу через SO_BINDTODEVICE.
-config_keenetic_ensure_bindfix() {
-  local cfg="$1" opt tmp
+# Маркер последнего автоопределённого значения рядом с переменной:
+#   #Z2R_IFACE_WAN_AUTO="ppp0 ppp1"
+#   IFACE_WAN="ppp0 ppp1"
+# По нему отличаем «список ведёт установщик» (можно актуализировать по текущим
+# маршрутам) от «пользователь правил руками» (не трогаем).
+config_keenetic_wan_marker_get() {
+  local cfg="$1" var="${2:-IFACE_WAN}" line
   [ -f "$cfg" ] || return 0
-  grep -q '^[[:space:]]*NFQWS2_OPT="' "$cfg" || return 0
-  for opt in --bind-fix4 --bind-fix6; do
-    grep -q -- "^[[:space:]]*${opt}[[:space:]]*$" "$cfg" && continue
-    tmp="$cfg.z2r_bindfix.$$"
-    if awk -v opt="$opt" '
+  line="$(grep -E "^[[:space:]]*#Z2R_${var}_AUTO=" "$cfg" 2>/dev/null | head -n1)"
+  [ -n "$line" ] || return 0
+  printf '%s' "$line" |
+    sed -e "s/^[[:space:]]*#Z2R_${var}_AUTO=//" \
+        -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        -e "s/^[\"']//" -e "s/[\"']$//" |
+    sed -e 's/[[:space:]][[:space:]]*/ /g'
+}
+
+config_keenetic_wan_marker_set() {
+  local cfg="$1" var="${2:-IFACE_WAN}" value="$3" line tmp
+  [ -f "$cfg" ] || return 1
+  line="#Z2R_${var}_AUTO=\"$value\""
+  if grep -qE "^[[:space:]]*#Z2R_${var}_AUTO=" "$cfg" 2>/dev/null; then
+    # '|' как разделитель: в значении '#' нет, но он есть в самой строке маркера.
+    sed -i "s|^[[:space:]]*#Z2R_${var}_AUTO=.*|$line|" "$cfg" && return 0
+    return 1
+  fi
+  if grep -qE "^[[:space:]]*${var}=" "$cfg" 2>/dev/null; then
+    tmp="$cfg.z2r_wanmark.$$"
+    if awk -v anchor="$var=" -v line="$line" '
+        !done && $0 ~ ("^[[:space:]]*" anchor) { print line; done = 1 }
         { print }
-        /^[[:space:]]*NFQWS2_OPT="[[:space:]]*$/ && !done { print opt; done = 1 }
       ' "$cfg" > "$tmp"; then
       chmod 644 "$tmp" 2>/dev/null
       mv -f "$tmp" "$cfg"
-    else
-      rm -f "$tmp"
-      return 1
+      return 0
     fi
+    rm -f "$tmp"
+    return 1
+  fi
+  printf '%s\n' "$line" >> "$cfg"
+}
+
+# Какое значение записать: если список не правили руками (пусто или совпадает
+# с прошлым авто-значением) — свежий автосписок (актуализация: провайдер ушёл,
+# добавился, переименовался); иначе сохраняем пользовательский выбор.
+config_keenetic_wan_resolve() {
+  local cur="$1" prev="$2" auto="$3"
+  if [ -z "$auto" ]; then
+    printf '%s\n' "$cur"
+  elif [ -z "$cur" ] || [ "$cur" = "$prev" ]; then
+    printf '%s\n' "$auto"
+  else
+    printf '%s\n' "$cur"
+  fi
+}
+
+# bind-fix (SO_BINDTODEVICE для сгенерированных пакетов) включается ТОЛЬКО при
+# активном PBR: при одном провайдере это лишний setsockopt на каждый rawsend.
+# Решение принимает init-скрипт в момент старта демона (Entware/zapret,
+# функции z2r_pbr_active/z2r_bindfix_args) — здесь только режим для меню.
+# Значения: auto (по факту PBR), 1 (всегда), 0 (никогда).
+config_keenetic_bindfix_mode() {
+  local cfg="$1" mode
+  mode="$(config_get_var "$cfg" Z2R_KEENETIC_BINDFIX 2>/dev/null | tr -d ' "')"
+  case "$mode" in
+    0|off|no) printf '0\n' ;;
+    1|on|yes) printf '1\n' ;;
+    *) printf 'auto\n' ;;
+  esac
+}
+
+# Признак активного PBR: несколько WAN либо политики доступа Keenetic
+# (технически — правила ip rule с fwmark). Для статуса в меню 19 и тестов;
+# init-скрипт считает то же самое сам, без lib/config.sh (boot-critical путь).
+config_keenetic_pbr_status() {
+  local cfg="$1" wan n
+  wan="$(config_get_iface_var "$cfg" IFACE_WAN)"
+  n="$(printf '%s\n' $wan | grep -c .)"
+  if [ "${n:-0}" -ge 2 ]; then
+    printf 'yes\n'
+    return 0
+  fi
+  if command -v ndmc >/dev/null 2>&1 && ndmc -c "show ip policy" 2>/dev/null | grep -q 'mark:'; then
+    printf 'yes\n'
+    return 0
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    if ip -4 rule show 2>/dev/null | grep -q 'fwmark' || ip -6 rule show 2>/dev/null | grep -q 'fwmark'; then
+      printf 'yes\n'
+      return 0
+    fi
+  fi
+  printf 'no\n'
+}
+
+# Переносит пользовательский выбор bind-fix в новый конфиг: config_apply_from_default
+# копирует эталон поверх живого, и без этого «1»/«0» из п.19 терялись бы.
+config_keenetic_bindfix_apply() {
+  local old_cfg="$1" new_cfg="$2" v_old v_new
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+  config_var_exists "$old_cfg" Z2R_KEENETIC_BINDFIX || return 0
+  v_old="$(config_get_var "$old_cfg" Z2R_KEENETIC_BINDFIX | tr -d ' "')"
+  v_new="$(config_get_var "$new_cfg" Z2R_KEENETIC_BINDFIX | tr -d ' "')"
+  [ "$v_old" = "$v_new" ] && return 0
+  config_set_var "$new_cfg" Z2R_KEENETIC_BINDFIX "$v_old"
+}
+
+# Метки, занятые на этом устройстве: политики доступа Keenetic (ndmc) плюс
+# служебные метки zapret2 из конфига. Печатает по одной на строку (0x...).
+# Нужна, чтобы не выделять бит, который уже занят: Keenetic матчит policy
+# fwmark целым словом, а служебные биты (DESYNC/CLIENT_SCOPE) вообще нельзя
+# пересекать никому.
+config_keenetic_used_marks() {
+  local cfg="$1" m
+
+  command -v ndmc >/dev/null 2>&1 &&
+    ndmc -c "show ip policy" 2>/dev/null |
+      sed -n 's/^[[:space:]]*mark:[[:space:]]*//p' |
+      tr -d ' \r' |
+      awk 'NF { print ($0 ~ /^0[xX]/ ? $0 : "0x" $0) }'
+
+  [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
+  for m in DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK; do
+    config_get_var "$cfg" "$m" 2>/dev/null | tr -d ' "'
+  done | awk 'NF { print }'
+}
+
+# Пересекается ли метка $1 хоть с одной из переданных меток (битовое И).
+config_keenetic_mark_conflicts() {
+  local mark="$1" used
+  shift
+  case "$mark" in ''|*[!0-9a-fA-FxX]*) return 1 ;; esac
+  for used in "$@"; do
+    case "$used" in ''|*[!0-9a-fA-FxX]*) continue ;; esac
+    [ "$(( mark & used ))" -ne 0 ] && return 0
   done
-  return 0
+  return 1
+}
+
+# Свободный бит для Z2R_WSSIZE_MARK. Сначала старшие биты; затем только
+# 0x400 — низкие биты (0x000000FF) отданы client scope, а 0x100 Keenetic
+# использует сам (connmark DNS-маршрутизации), поэтому их не предлагаем.
+config_keenetic_free_wssize_mark() {
+  local cand
+  for cand in 0x80000000 0x08000000 0x00800000 0x00080000 0x00008000 0x00002000 0x00001000 0x00000400; do
+    config_keenetic_mark_conflicts "$cand" "$@" || { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+# Не даём Z2R_WSSIZE_MARK пересечься с метками Keenetic-политик.
+# Бит wssize гейтит профиль wssize_ramp (--filter-mark=...), а Keenetic ставит
+# policy-метки вида 0xffffaad, в которых этот бит уже установлен — тогда профиль
+# получает ВЕСЬ TLS-трафик policy-устройств (пакеты > 20/10), а не только
+# googlevideo. Если свободного бита нет — экспериментальная фича выключается.
+config_keenetic_ensure_wssize_mark() {
+  local cfg="$1" cur enable used cand
+  [ "$hardware" = "keenetic" ] || return 0
+  [ -f "$cfg" ] || return 0
+
+  enable="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d ' "')"
+  [ "$enable" = "1" ] || return 0
+
+  config_var_exists "$cfg" Z2R_WSSIZE_MARK || config_set_var "$cfg" Z2R_WSSIZE_MARK "0x04000000"
+  cur="$(config_get_var "$cfg" Z2R_WSSIZE_MARK 2>/dev/null | tr -d ' "')"
+  [ -n "$cur" ] || cur=0x04000000
+
+  used="$(config_keenetic_used_marks "$cfg")"
+  # shellcheck disable=SC2086  # список меток разделён переводами строк/пробелами
+  config_keenetic_mark_conflicts "$cur" $used || return 0
+
+  if cand="$(config_keenetic_free_wssize_mark $used)"; then
+    config_set_var "$cfg" Z2R_WSSIZE_MARK "$cand"
+    echo -e "${yellow}Z2R_WSSIZE_MARK=$cur пересекается с метками Keenetic; перенесён в $cand.${plain}"
+  else
+    config_set_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE 0
+    echo -e "${red}Z2R_WSSIZE_MARK=$cur пересекается с метками Keenetic, свободного бита нет — wssize_ramp выключен (экспериментальная функция).${plain}"
+  fi
+}
+
+# На Keenetic + iptables FLOWOFFLOAD у zapret2 не работает: управление offload
+# есть только в nftables-ветке, а аппаратное ускорение (HNAT/FASTNAT) задаётся
+# в веб-интерфейсе роутера. Оставляем honest donttouch вместо «включённого»
+# hardware/software, чтобы состояние в меню не вводило в заблуждение.
+config_keenetic_ensure_flowoffload() {
+  local cfg="$1" fwtype flowoff
+  [ "$hardware" = "keenetic" ] || return 0
+  [ -f "$cfg" ] || return 0
+
+  fwtype="$(config_get_var "$cfg" FWTYPE 2>/dev/null | tr -d ' "')"
+  [ "$fwtype" = "nftables" ] && return 0
+  flowoff="$(config_get_var "$cfg" FLOWOFFLOAD 2>/dev/null | tr -d ' "')"
+  case "$flowoff" in
+    hardware|software)
+      config_set_var "$cfg" FLOWOFFLOAD "donttouch"
+      echo -e "${yellow}FLOWOFFLOAD=$flowoff не действует при FWTYPE=$fwtype (offload в zapret2 управляется только nftables).${plain}"
+      echo -e "${yellow}Аппаратное ускорение Keenetic настраивается в веб-интерфейсе роутера. Установлено donttouch.${plain}"
+      ;;
+  esac
+}
+
+# Все Keenetic-правки конфига, которые обязаны пережить установку/обновление
+# и «применить config.default»: безопасные метки и честный FLOWOFFLOAD.
+# bind-fix сюда НЕ входит: он решается на старте демона и только при PBR.
+config_keenetic_ensure_safe_settings() {
+  local cfg="$1"
+  config_keenetic_ensure_wssize_mark "$cfg" || true
+  config_keenetic_ensure_flowoffload "$cfg" || true
 }
 
 # Прописывает IFACE_WAN/IFACE_WAN6 в указанный конфиг только для Keenetic.
@@ -287,36 +451,56 @@ config_keenetic_ensure_bindfix() {
 # Если IPv6 default route не найден, IFACE_WAN6 не трогаем: zapret2 возьмёт IFACE_WAN.
 config_keenetic_set_wan_iface() {
   local cfg="$1"
-  local wan4 wan6 cur4 cur6
+  local auto4 auto6 cur4 cur6 prev4 prev6 chosen4 chosen6 hint4=0 hint6=0
 
   [ "$hardware" = "keenetic" ] || return 0
   [ -f "$cfg" ] || return 0
 
-  wan4="$(config_keenetic_detect_default_ifaces 4 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan4=""
-  wan6="$(config_keenetic_detect_default_ifaces 6 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan6=""
+  auto4="$(config_keenetic_detect_default_ifaces 4 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || auto4=""
+  auto6="$(config_keenetic_detect_default_ifaces 6 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || auto6=""
 
-  cur4="$(config_keenetic_wan_get "$cfg" IFACE_WAN)"
-  wan4="$(config_keenetic_wan_pick "$cur4" "$wan4")"
-  cur6="$(config_keenetic_wan_get "$cfg" IFACE_WAN6)"
-  wan6="$(config_keenetic_wan_pick "$cur6" "$wan6")"
+  cur4="$(config_get_iface_var "$cfg" IFACE_WAN)"
+  prev4="$(config_keenetic_wan_marker_get "$cfg" IFACE_WAN)"
+  chosen4="$(config_keenetic_wan_resolve "$cur4" "$prev4" "$auto4")"
+  if [ -n "$cur4" ] && [ "$cur4" != "$prev4" ] && [ "$cur4" != "$auto4" ]; then
+    hint4=1
+  fi
 
-  config_keenetic_ensure_bindfix "$cfg" || true
+  cur6="$(config_get_iface_var "$cfg" IFACE_WAN6)"
+  prev6="$(config_keenetic_wan_marker_get "$cfg" IFACE_WAN6)"
+  chosen6="$(config_keenetic_wan_resolve "$cur6" "$prev6" "$auto6")"
+  if [ -n "$cur6" ] && [ "$cur6" != "$prev6" ] && [ "$cur6" != "$auto6" ]; then
+    hint6=1
+  fi
 
-  if [ -z "$wan4" ]; then
+  config_keenetic_ensure_safe_settings "$cfg" || true
+
+  if [ -z "$chosen4" ]; then
     echo -e "${yellow}Не удалось автоматически определить WAN интерфейс Keenetic. IFACE_WAN не изменён.${plain}"
     return 0
   fi
 
-  config_set_var "$cfg" IFACE_WAN "\"$wan4\""
-  if [ -n "$wan6" ]; then
-    config_set_var "$cfg" IFACE_WAN6 "\"$wan6\""
-    if [ "$wan6" != "$wan4" ]; then
-      echo -e "${green}WAN интерфейсы Keenetic для $cfg: IPv4=$wan4, IPv6=$wan6${plain}"
+  config_set_var "$cfg" IFACE_WAN "\"$chosen4\""
+  [ -n "$auto4" ] && config_keenetic_wan_marker_set "$cfg" IFACE_WAN "$auto4" || true
+
+  if [ -n "$auto6" ]; then
+    config_set_var "$cfg" IFACE_WAN6 "\"$chosen6\""
+    config_keenetic_wan_marker_set "$cfg" IFACE_WAN6 "$auto6" || true
+    if [ "$chosen6" != "$chosen4" ]; then
+      echo -e "${green}WAN интерфейсы Keenetic для $cfg: IPv4=$chosen4, IPv6=$chosen6${plain}"
     else
-      echo -e "${green}WAN интерфейс Keenetic для $cfg: $wan4${plain}"
+      echo -e "${green}WAN интерфейс Keenetic для $cfg: $chosen4${plain}"
     fi
   else
-    echo -e "${green}WAN интерфейс Keenetic для $cfg: $wan4${plain}"
+    echo -e "${green}WAN интерфейс Keenetic для $cfg: $chosen4${plain}"
+  fi
+
+  if [ "$hint4" = "1" ]; then
+    echo -e "${yellow}IFACE_WAN ведётся вручную ($cur4), автоопределение: $auto4. Список не меняю.${plain}"
+    echo -e "${yellow}Чтобы вернуть автосписок: очистите IFACE_WAN и примените конфиг снова.${plain}"
+  fi
+  if [ "$hint6" = "1" ]; then
+    echo -e "${yellow}IFACE_WAN6 ведётся вручную ($cur6), автоопределение: $auto6. Список не меняю.${plain}"
   fi
 }
 
@@ -603,20 +787,32 @@ config_mode_text() {
   esac
 }
 
-# Значение IFACE_WAN из живого config: WAN-интерфейс (у Keenetic задаётся
-# установщиком: IFACE_WAN="eth3", у OpenWRT/VPS в эталоне строка закомментирована:
-# #IFACE_WAN=eth1). Закомментированная строка — комментарий и НЕ учитывается:
-# пусто = нигде не показывать. Значит, показываем только явно прописанный порт.
-config_get_iface_wan() {
-  local cfg line wan
+# Значение IFACE_* из конфига как список через пробел. Снимаются кавычки
+# ("..." и '...'), trailing-комментарий и лишние пробелы. Закомментированная
+# строка (#IFACE_WAN=eth1 — эталон OpenWRT/VPS) значением НЕ считается:
+# пусто = нигде не показывать, значит показываем только явно прописанный порт.
+# Ограничение: '#' внутри значения не поддержан (для имён интерфейсов невозможен).
+config_get_iface_var() {
+  local cfg var line wan
   cfg="${1:-}"
+  var="${2:-IFACE_WAN}"
   [ -n "$cfg" ] || { cfg="$(config_get_file 2>/dev/null)" || return 0; }
   [ -f "$cfg" ] || return 0
-  line="$(grep -E '^IFACE_WAN=' "$cfg" 2>/dev/null | head -n1)"
+  line="$(grep -E "^[[:space:]]*${var}=" "$cfg" 2>/dev/null | head -n1)"
   [ -n "$line" ] || return 0
-  wan="$(printf '%s' "$line" | sed 's/^IFACE_WAN=//; s/[[:space:]]*#.*$//; s/^[[:space:]]*//; s/^"//; s/".*$//; s/[[:space:]]*$//')"
+  wan="$(printf '%s' "$line" |
+    sed -e "s/^[[:space:]]*${var}=//" \
+        -e 's/[[:space:]]*#.*$//' \
+        -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        -e "s/^[\"']//" -e "s/[\"']$//" \
+        -e 's/[[:space:]][[:space:]]*/ /g')"
   [ -n "$wan" ] && printf '%s\n' "$wan"
   return 0
+}
+
+# Значение IFACE_WAN живого config (шапка меню, netcheck, webui).
+config_get_iface_wan() {
+  config_get_iface_var "${1:-}" IFACE_WAN
 }
 
 # Сводка платформы для шапки меню. Keenetic: ndmc show version (description

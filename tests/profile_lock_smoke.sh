@@ -589,6 +589,21 @@ printf 'IFACE_WAN="eth2" # note\n' > "$wan_cfg"
   || fail "config_get_iface_wan must strip trailing comments with quotes"
 [ -z "$(config_get_iface_wan "$TMP_DIR/wan-missing.cfg")" ] \
   || fail "config_get_iface_wan must return empty without a config file"
+# Одинарные кавычки и параметризованный парсер (IFACE_WAN6 и т.п.).
+printf "IFACE_WAN='ppp0 ppp1'\n" > "$wan_cfg"
+[ "$(config_get_iface_wan "$wan_cfg")" = "ppp0 ppp1" ] \
+  || fail "config_get_iface_wan must strip single quotes"
+printf 'IFACE_WAN6="ipsec0 wireguard0"\n' > "$wan_cfg"
+[ "$(config_get_iface_var "$wan_cfg" IFACE_WAN6)" = "ipsec0 wireguard0" ] \
+  || fail "config_get_iface_var must read IFACE_WAN6"
+[ -z "$(config_get_iface_var "$wan_cfg" IFACE_WAN)" ] \
+  || fail "config_get_iface_var must not confuse IFACE_WAN with IFACE_WAN6"
+# Значение с '#' не ломает config_set_var (разделитель sed — '#')
+printf 'X=1\n' > "$wan_cfg"
+config_set_var "$wan_cfg" X 'value # hash' \
+  || fail "config_set_var must survive '#' in the value"
+[ "$(config_get_var "$wan_cfg" X)" = 'value # hash' ] \
+  || fail "config_set_var mangled a value with '#'"
 grep -qF '${MENU_WAN_LINE}' "$REPO_DIR/z2r.sh" \
   || fail "main menu does not show the WAN port line"
 
