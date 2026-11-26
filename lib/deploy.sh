@@ -563,11 +563,16 @@ deploy_offer_media_jq() {
   ) || true
 }
 
-deploy_is_keenetic() {
-  [ "${hardware:-}" = keenetic ] && return 0
-  grep -Eqi 'keenetic|netcraze' /proc/version 2>/dev/null && return 0
-  command -v ndmc >/dev/null 2>&1 && return 0
-  [ -d /opt/etc/ndm ]
+deploy_platform_ensure() {
+  [ "${Z2R_PLATFORM_DETECTED:-}" = 1 ] && return 0
+  [ -n "${OSystem:-}" ] && [ -n "${release:-}" ] && return 0
+  if ! type z2r_detect_platform >/dev/null 2>&1; then
+    local config_lib="$ZATOR_ROOT/z2r_lib/config.sh"
+    [ -r "$config_lib" ] || config_lib="$ZAPRET2_ROOT/z2r_lib/config.sh"
+    [ -r "$config_lib" ] || return 1
+    . "$config_lib" || return 1
+  fi
+  z2r_detect_platform
 }
 
 # Режимы A/B/D: пофайловая установка из staging; совпадающие SHA256 пропускаются во всех трёх.
@@ -715,7 +720,10 @@ deploy_apply_newdir() {
 deploy_apply_config_default() {
   [ -f "$DEPLOY_PAYLOAD_DIR/config.default" ] || return 0
   local root="${ZAPRET2_ROOT:-/opt/zapret2}"
-  if deploy_is_keenetic && [ -f "$root/config" ]; then
+  if [ -f "$root/config" ]; then
+    deploy_platform_ensure || return 1
+  fi
+  if [ "${hardware:-}" = keenetic ] && [ -f "$root/config" ]; then
     local init="$root/init.d/sysv/zapret2"
     if [ -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" ]; then
       mkdir -p "$(dirname "$init")" || return 1

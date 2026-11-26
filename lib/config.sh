@@ -3,6 +3,45 @@
 
 Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
+z2r_detect_platform() {
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    release="$ID"
+  elif [ -f /usr/lib/os-release ]; then
+    . /usr/lib/os-release
+    release="$ID"
+  elif [ -f /opt/etc/entware_release ]; then
+    release=entware
+  elif [ -f /etc/entware_release ]; then
+    release=entware
+  else
+    return 1
+  fi
+
+  if [ "$release" = entware ]; then
+    if [ -d /jffs ] || uname -a | grep -qi Merlin; then
+      hardware=merlin
+    elif grep -Eqi 'netcraze|keenetic' /proc/version; then
+      hardware=keenetic
+    else
+      printf '%b\n' "${yellow:-}Железо не определено. Будем считать что это Keenetic. Если будут проблемы - пишите в саппорт.${plain:-}"
+      hardware=keenetic
+    fi
+  fi
+
+  OSystem=
+  case "$release" in
+    ubuntu|debian|endeavouros|arch|raspbian) OSystem=VPS ;;
+    openwrt|immortalwrt|asuswrt|x-wrt|kwrt|istoreos) OSystem=WRT ;;
+    entware) OSystem=entware ;;
+    *)
+      [ "${hardware:-}" = keenetic ] && OSystem=entware
+      ;;
+  esac
+  Z2R_PLATFORM_DETECTED=1
+  return 0
+}
+
 orch_scope_validate() {
   local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" max custom_domain=0
   printf '%s' "$scope$profile$proto$strategy" | grep -q '[[:cntrl:]]' && { echo "Lock values must not contain tabs or newlines" >&2; return 1; }

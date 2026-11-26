@@ -459,19 +459,32 @@ backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
 # Simulate the already-loaded function on an older running z2r.sh. The core
 # post-apply hook must source the freshly deployed deploy.sh before this call.
 deploy_apply_config_default() { echo stale >> "$STALE_APPLY_MARK"; return 99; }
-# Standalone deploy.sh has no hardware variable; ndmc is a Keenetic marker.
+# Standalone deploy.sh has no platform result; it must use the shared detector.
 hardware=
-ndmc() { :; }
+release=
+OSystem=
+PLATFORM_MARK="$WORK/platform.mark"
+z2r_detect_platform() {
+  echo called >> "$PLATFORM_MARK"
+  release=entware
+  hardware=keenetic
+  OSystem=entware
+}
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (apply) упал"
 [ -s "$APPLY_MARK" ] || fail "config_apply_from_default не вызван при живом config"
+[ -s "$PLATFORM_MARK" ] || fail "standalone-деплой не вызвал общий детектор платформы"
 [ ! -e "$STALE_APPLY_MARK" ] || fail "обновление вызвало старый deploy_apply_config_default из памяти"
 grep -q '^stop$' "$RESTART_MARK" || fail "нет stop перед применением config.default"
 grep -q '^restart$' "$RESTART_MARK" || fail "нет restart после применения config.default"
 [ -x "$ZAPRET2_ROOT/init.d/sysv/zapret2" ] || fail "Keenetic init не установлен/не исполняемый"
 cmp -s "$ZAPRET2_ROOT/init.d/sysv/zapret2" "$REPO_DIR/Entware/zapret" || fail "Keenetic init не обновлён из payload"
 ok "payload config.default применяется к живому конфигу (stop -> apply -> restart)"
-hardware=generic
-unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create ndmc
+Z2R_PLATFORM_DETECTED=1
+: > "$PLATFORM_MARK"
+deploy_platform_ensure || fail "не удалось переиспользовать определённую платформу"
+[ ! -s "$PLATFORM_MARK" ] || fail "деплой повторно определял платформу из главного скрипта"
+hardware=generic release=debian OSystem=VPS
+unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create z2r_detect_platform
 
 # --- 4b-2. webui-only деплой не трогает живой конфиг ---
 # регресс: безусловный deploy_apply_config_default в конце deploy_apply_staging
