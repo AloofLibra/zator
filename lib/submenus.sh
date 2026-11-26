@@ -1192,10 +1192,17 @@ flowoffload_submenu() {
     clear -x
     echo -e "${cyan}--- FLOWOFFLOAD ---${plain}"
     echo "Текущее состояние: $(config_get_var /opt/zapret2/config FLOWOFFLOAD 2>/dev/null)"
+    if [ "${hardware:-}" = "keenetic" ] && [ "$(config_get_var /opt/zapret2/config FWTYPE 2>/dev/null)" != "nftables" ]; then
+      echo ""
+      echo -e "${yellow}При FWTYPE=iptables zapret2 не управляет flow offload: это работает только с nftables.${plain}"
+      echo -e "${yellow}Аппаратное ускорение Keenetic (HNAT/FASTNAT) задаётся в веб-интерфейсе роутера —${plain}"
+      echo -e "${yellow}(Общие настройки → Аппаратное ускорение) и этим пунктом не меняется.${plain}"
+      echo -e "${yellow}Включать hardware/software здесь бессмысленно; конфиг приводится к donttouch.${plain}"
+    fi
     echo ""
 
     submenu_item "1" "software (программное ускорение)"
-    submenu_item "2" "hardware (аппаратное NAT)"
+    submenu_item "2" "hardware (аппаратное NAT)$([ "${hardware:-}" = keenetic ] && [ "$(config_get_var /opt/zapret2/config FWTYPE 2>/dev/null)" != nftables ] && echo ' — не действует при iptables')"
     submenu_item "3" "none (отключено)"
     submenu_item "4" "donttouch (дефолт)"
     submenu_item "0" "Назад"
@@ -2833,6 +2840,7 @@ advanced_settings_submenu() {
     local keenetic_status keenetic_color
     local wd_status wd_color
     local wssize_value wssize_color googlevideo_collect_value
+    local bindfix_mode bindfix_pbr bindfix_value bindfix_color
     clear -x
     current_state="$(config_mode_text reasm_disable /opt/zapret2/config)"
     if [ "$current_state" = "включено" ]; then
@@ -2911,6 +2919,20 @@ advanced_settings_submenu() {
       submenu_status_item "" "Локально обнаружено адресов." "$(googlevideo_local_kernel_ips | wc -l | tr -d ' ')" "gray"
       submenu_item "10" "Принудительно отправить новые локальные IP на сервер"
     fi
+    if [ "${hardware:-}" = "keenetic" ]; then
+      bindfix_mode="$(config_keenetic_bindfix_mode /opt/zapret2/config)"
+      bindfix_pbr="$(config_keenetic_pbr_status /opt/zapret2/config)"
+      case "$bindfix_mode" in
+        1) bindfix_value="включён принудительно"; bindfix_color="green" ;;
+        0) bindfix_value="выключен"; bindfix_color="red" ;;
+        *) if [ "$bindfix_pbr" = "yes" ]; then
+             bindfix_value="auto (PBR обнаружен)"; bindfix_color="green"
+           else
+             bindfix_value="auto (PBR не обнаружен)"; bindfix_color="yellow"
+           fi ;;
+      esac
+      submenu_status_item "11" "Bind-fix сгенерированных пакетов (нужен при PBR)." "$bindfix_value" "$bindfix_color"
+    fi
     submenu_item "0" "Назад"
     echo ""
 
@@ -2956,6 +2978,28 @@ advanced_settings_submenu() {
         ;;
       "10")
         googlevideo_upload_local_manual || true
+        pause_enter
+        ;;
+      "11")
+        if [ "${hardware:-}" = "keenetic" ]; then
+          local bf_mode bf_next
+          bf_mode="$(config_keenetic_bindfix_mode /opt/zapret2/config)"
+          case "$bf_mode" in
+            auto) bf_next=1 ;;
+            1) bf_next=0 ;;
+            *) bf_next=auto ;;
+          esac
+          if config_set_var /opt/zapret2/config Z2R_KEENETIC_BINDFIX "$bf_next"; then
+            if pidof nfqws2 >/dev/null; then
+              z2r_service_action restart \
+                || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
+            fi
+            echo -e "${green}Режим bind-fix: $bf_next.${plain}"
+            [ "$bf_next" = "auto" ] && echo -e "${cyan}auto — включать только при PBR (несколько WAN или политики доступа).${plain}"
+          else
+            echo -e "${red}Не удалось записать Z2R_KEENETIC_BINDFIX в config.${plain}"
+          fi
+        fi
         pause_enter
         ;;
       "0"|"")
@@ -3025,6 +3069,10 @@ wssize_ramp_submenu() {
     echo -e "${yellow}Зажимает приёмное окно TCP на рукопожатиях к googlevideo: сервер${plain}"
     echo -e "${yellow}первые секунды шлёт мелкие TLS-записи, которые DPI не может собрать${plain}"
     echo -e "${yellow}в узнаваемый поток. Работает по списку IP (сейчас: ${plain}${green}${count}${yellow}).${plain}"
+    if [ "$(config_get_var "$cfg" FLOWOFFLOAD 2>/dev/null)" = "hardware" ]; then
+      echo -e "${yellow}FLOWOFFLOAD=hardware: при аппаратном ускорении Keenetic часть пакетов идёт мимо${plain}"
+      echo -e "${yellow}netfilter, поэтому эффект wssize_ramp будет неполным.${plain}"
+    fi
     echo ""
     if [ "$enabled" = 1 ]; then
       submenu_status_item "1" "Включить/выключить" "включен" green
