@@ -22,6 +22,48 @@ contains()
 }
 
 # z2r: оверрайд run_daemon — см. AGENTS.md (High-Risk Areas).
+# z2r: bind-fix (SO_BINDTODEVICE для сгенерированных пакетов) нужен только при
+# активном PBR. При одном провайдере это лишний setsockopt на каждый rawsend,
+# поэтому решение принимается здесь, на старте демона, а не записывается в конфиг.
+z2r_pbr_active()
+{
+	local wan_n
+	# IFACE_WAN уже развёрнут шеллом из конфига (functions его source-ит).
+	set -- $IFACE_WAN
+	wan_n=$#
+	[ "$wan_n" -ge 2 ] && return 0
+	if command -v ndmc >/dev/null 2>&1 && ndmc -c "show ip policy" 2>/dev/null | grep -q 'mark:'; then
+		return 0
+	fi
+	if command -v ip >/dev/null 2>&1; then
+		ip -4 rule show 2>/dev/null | grep -q 'fwmark' && return 0
+		ip -6 rule show 2>/dev/null | grep -q 'fwmark' && return 0
+	fi
+	return 1
+}
+
+# Аргументы nfqws2 с префиксом --bind-fix4/--bind-fix6 по режиму
+# Z2R_KEENETIC_BINDFIX: auto (только при PBR), 1 (всегда), 0 (никогда).
+# Глобальные опции обязаны идти до первого профиля/--new, поэтому префикс.
+z2r_bindfix_args()
+{
+	local args="$1"
+
+	case "${Z2R_KEENETIC_BINDFIX:-auto}" in
+		0|off|no) printf '%s\n' "$args"; return 0 ;;
+		1|on|yes) ;;
+		*) z2r_pbr_active || { printf '%s\n' "$args"; return 0; } ;;
+	esac
+	case " $args " in
+		*" --bind-fix4 "*) printf '%s\n' "$args"; return 0 ;;
+	esac
+	if [ -z "$args" ]; then
+		printf '%s\n' "--bind-fix4 --bind-fix6"
+	else
+		printf '%s\n' "--bind-fix4 --bind-fix6 $args"
+	fi
+}
+
 run_daemon()
 {
 	# $1 - daemon number : 1,2,3,...
@@ -29,7 +71,11 @@ run_daemon()
 	# $3 - daemon args
 	local DAEMONBASE="$(basename "$2")"
 	local PID= PIDFILE=$PIDDIR/${DAEMONBASE}_$1.pid
-	echo "Starting daemon $1: $2 $3"
+	local DAEMONARGS="$3"
+	case "$DAEMONBASE" in
+		*nfqws2) DAEMONARGS="$(z2r_bindfix_args "$DAEMONARGS")" ;;
+	esac
+	echo "Starting daemon $1: $2 $DAEMONARGS"
 
 	[ -f "$PIDFILE" ] && {
 		read PID <"$PIDFILE"
@@ -42,7 +88,7 @@ run_daemon()
 		ERRLOG="/tmp/${DAEMONBASE}_$1.err"
 		: > "$ERRLOG"
 		if command -v setsid >/dev/null 2>&1; then
-			setsid "$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
+			setsid "$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 		elif [ -t 0 ]; then
 			# job control даёт фону свою группу процессов (защита от Ctrl+C в
@@ -50,17 +96,17 @@ run_daemon()
 			# под uhttpd/CGI с мёртвым pty (панель поднята nohup'ом из уже
 			# закрытой SSH-сессии) busybox ash уходит в вечный спин на set -m
 			set -m 2>/dev/null
-			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
+			"$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 			set +m 2>/dev/null
 		else
-			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
+			"$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 		fi
 		if [ -n "$PID" ]; then
 			echo $PID >$PIDFILE
 		else
-			echo could not start daemon $1 : $2 $3
+			echo could not start daemon $1 : $2 $DAEMONARGS
 			false
 		fi
 	fi
@@ -69,41 +115,61 @@ run_daemon()
 NAME=zapret
 DESC=anti-zapret
 
+# z2r: модули ядра ищем в обоих местах KeeneticOS. На NDMS 5.1.x они переехали
+# в /lib/system-modules/<kver>, а /lib/modules/<kver> остаётся почти пустым —
+# прежний insmod по одному пути молча проваливался и на xt_connbytes убивал
+# старт через exit 1, оставляя роутер без правил. Каталоги переопределяемы
+# (тесты): Z2R_MODULE_DIRS.
+Z2R_MODULE_DIRS="${Z2R_MODULE_DIRS:-/lib/modules/$(uname -r) /lib/system-modules/$(uname -r) /lib/system-modules}"
+Z2R_IPT_TARGETS="${Z2R_IPT_TARGETS:-/proc/net/ip_tables_targets}"
+
+z2r_module_loaded()
+{
+	lsmod 2>/dev/null | grep -q "^$1 "
+}
+
+# $1 - имя модуля (xt_connbytes). 0 = загружен или уже был загружен.
+# Ничего не считаем фатальным: без модуля не встанут его правила, но роутер
+# останется в сети (NFQUEUE ставится с --queue-bypass).
+z2r_load_module()
+{
+	local name="$1" dir path
+	z2r_module_loaded "$name" && { echo "$name.ko is already loaded"; return 0; }
+	for dir in $Z2R_MODULE_DIRS; do
+		[ -d "$dir" ] || continue
+		path="$dir/$name.ko"
+		[ -f "$path" ] || path="$(ls "$dir/$name".ko* 2>/dev/null | head -n 1)"
+		[ -n "$path" ] && [ -f "$path" ] || continue
+		if insmod "$path" >/dev/null 2>&1; then
+			echo "$name.ko loaded"
+			return 0
+		fi
+	done
+	if command -v modprobe >/dev/null 2>&1 && modprobe -q "$name" >/dev/null 2>&1; then
+		echo "$name.ko loaded"
+		return 0
+	fi
+	return 1
+}
+
 do_start()
 {
+	if ! z2r_load_module xt_multiport; then
+		echo -e "\033[0;31mCannot find xt_multiport.ko kernel module, this make some problems. Or not.\033[0m"
+	fi
+	if ! z2r_load_module xt_connbytes; then
+		echo -e "\033[0;31mCannot find xt_connbytes.ko: правила -m connbytes не встанут. Проверьте /lib/system-modules.\033[0m"
+	fi
+	if ! z2r_load_module xt_NFQUEUE; then
+		echo -e "\033[0;31mCannot find xt_NFQUEUE.ko: NFQUEUE недоступен, обход работать не будет.\033[0m"
+	fi
+	z2r_load_module xt_CONNMARK || z2r_load_module xt_connmark || true
+	z2r_load_module nfnetlink_queue || true
 
-   if lsmod | grep "xt_multiport " &> /dev/null ;  then
-		echo "xt_multiport.ko is already loaded"
-    else
-        if insmod /lib/modules/$(uname -r)/xt_multiport.ko &> /dev/null; then
-			echo "xt_multiport.ko loaded"
-        else
-			echo -e "\033[0;31mCannot find xt_multiport.ko kernel module, this make some problems. Or not.\033[0m"
-        fi
+	if [ -r "$Z2R_IPT_TARGETS" ] && ! grep -qw CONNMARK "$Z2R_IPT_TARGETS"; then
+		echo -e "\033[0;31mCONNMARK target is not available: правило FILTER_TTL_EXPIRED_ICMP не установится.\033[0m"
 	fi
-     
-	if lsmod | grep "xt_connbytes " &> /dev/null ;  then
-        echo "xt_connbytes.ko is already loaded"
-    else
-        if insmod /lib/modules/$(uname -r)/xt_connbytes.ko &> /dev/null; then
-			echo "xt_connbytes.ko loaded"
-        else
-			echo "Cannot find xt_connbytes.ko kernel module, aborting"
-			exit 1
-        fi
-	fi
-	
-	if lsmod | grep "xt_NFQUEUE " &> /dev/null ;  then
-        echo "xt_NFQUEUE.ko is already loaded"
-    else
-        if insmod /lib/modules/$(uname -r)/xt_NFQUEUE.ko &> /dev/null; then
-            echo "xt_NFQUEUE.ko loaded"
-        else
-            echo "Cannot find xt_NFQUEUE.ko kernel module, aborting"
-            exit 1
-        fi
-    fi		 
-	
+
 	zapret_run_daemons
 	[ "$INIT_APPLY_FW" != "1" ] || { zapret_apply_firewall; }
 }
