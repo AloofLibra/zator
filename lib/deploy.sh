@@ -563,6 +563,13 @@ deploy_offer_media_jq() {
   ) || true
 }
 
+deploy_is_keenetic() {
+  [ "${hardware:-}" = keenetic ] && return 0
+  grep -Eqi 'keenetic|netcraze' /proc/version 2>/dev/null && return 0
+  command -v ndmc >/dev/null 2>&1 && return 0
+  [ -d /opt/etc/ndm ]
+}
+
 # Режимы A/B/D: пофайловая установка из staging; совпадающие SHA256 пропускаются во всех трёх.
 deploy_apply_staging() {
   local staging="$1" tracking="$2"
@@ -708,7 +715,7 @@ deploy_apply_newdir() {
 deploy_apply_config_default() {
   [ -f "$DEPLOY_PAYLOAD_DIR/config.default" ] || return 0
   local root="${ZAPRET2_ROOT:-/opt/zapret2}"
-  if [ "${hardware:-}" = keenetic ] && [ -f "$root/config" ]; then
+  if deploy_is_keenetic && [ -f "$root/config" ]; then
     local init="$root/init.d/sysv/zapret2"
     if [ -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" ]; then
       mkdir -p "$(dirname "$init")" || return 1

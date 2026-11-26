@@ -182,6 +182,11 @@ googlevideo_local_collection_supported() {
 # listener binary; zapret2 upgrades can remove this file from init.d.
 googlevideo_listener_hook_install() {
   local init_root="${ZAPRET2_ROOT:-/opt/zapret2}/init.d" source="${ZATOR_ROOT:-/opt/zator}/tools/wssize-ramp-firewall.sh" dest
+  # Core updates can replace deploy.sh after the running menu sourced its old
+  # definitions. Refresh it here, before the caller applies config.default.
+  if [ -r "${ZATOR_ROOT:-/opt/zator}/z2r_lib/deploy.sh" ]; then
+    . "${ZATOR_ROOT:-/opt/zator}/z2r_lib/deploy.sh" || return 1
+  fi
   [ -x "$source" ] || return 0
   case "${OSystem:-}" in
     WRT) dest="$init_root/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;
