@@ -160,6 +160,17 @@ config_keenetic_set_wan_iface "$CFG"
 grep -q -- '--bind-fix' "$CFG" && fail "generic: в конфиг попал bind-fix"
 hardware=keenetic
 
+# --- 3b. атомарная синхронизация init из локального payload -----------------
+INIT_SRC="$WORK/payload-zapret"
+INIT_DEST="$WORK/init.d/zapret2"
+mkdir -p "$WORK/init.d"
+printf '# old init\n' > "$INIT_DEST"
+printf '# updated init\n' > "$INIT_SRC"
+config_keenetic_init_sync "$INIT_SRC" "$INIT_DEST" || fail "init sync завершился ошибкой"
+cmp -s "$INIT_SRC" "$INIT_DEST" || fail "init не заменён содержимым payload"
+[ -x "$INIT_DEST" ] || fail "init после замены потерял executable bit"
+[ ! -e "$INIT_DEST.z2r.$$" ] || fail "временный init остался после замены"
+
 # --- 4. config_set_var с '#' и перенос настроек Keenetic -------------------
 printf 'FWTYPE=iptables\n' > "$CFG"
 config_set_var "$CFG" TEST_VAR 'a#b'

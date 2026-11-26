@@ -2853,6 +2853,9 @@ esac
 
 
 detect_os
+if [ "$hardware" = "keenetic" ]; then
+  config_keenetic_init_sync || echo -e "${yellow}Не удалось обновить init-скрипт Keenetic из локального payload.${plain}" >&2
+fi
 set_zapret2_init
 case "$OSystem" in
   WRT) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;

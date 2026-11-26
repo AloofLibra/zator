@@ -42,6 +42,19 @@ z2r_detect_platform() {
   return 0
 }
 
+config_keenetic_init_sync() {
+  local src="${1:-${ZATOR_ROOT:-/opt/zator}/.deploy-payload/Entware/zapret}"
+  local dest="${2:-${ZAPRET2_ROOT:-/opt/zapret2}/init.d/sysv/zapret2}"
+  local tmp="${dest}.z2r.$$"
+
+  [ -f "$src" ] || return 0
+  cmp -s "$src" "$dest" && [ -x "$dest" ] && return 0
+  mkdir -p "${dest%/*}" || return 1
+  cp -f "$src" "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 755 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+}
+
 orch_scope_validate() {
   local scope="${1:-}" profile="${2:-}" proto="${3:-}" strategy="${4:-}" max custom_domain=0
   printf '%s' "$scope$profile$proto$strategy" | grep -q '[[:cntrl:]]' && { echo "Lock values must not contain tabs or newlines" >&2; return 1; }

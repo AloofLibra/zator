@@ -564,14 +564,14 @@ deploy_offer_media_jq() {
 }
 
 deploy_platform_ensure() {
-  [ "${Z2R_PLATFORM_DETECTED:-}" = 1 ] && return 0
-  [ -n "${OSystem:-}" ] && [ -n "${release:-}" ] && return 0
-  if ! type z2r_detect_platform >/dev/null 2>&1; then
+  if ! type z2r_detect_platform >/dev/null 2>&1 || ! type config_keenetic_init_sync >/dev/null 2>&1; then
     local config_lib="$ZATOR_ROOT/z2r_lib/config.sh"
     [ -r "$config_lib" ] || config_lib="$ZAPRET2_ROOT/z2r_lib/config.sh"
     [ -r "$config_lib" ] || return 1
     . "$config_lib" || return 1
   fi
+  [ "${Z2R_PLATFORM_DETECTED:-}" = 1 ] && return 0
+  [ -n "${OSystem:-}" ] && [ -n "${release:-}" ] && return 0
   z2r_detect_platform
 }
 
@@ -726,15 +726,16 @@ deploy_apply_config_default() {
   if [ "${hardware:-}" = keenetic ] && [ -f "$root/config" ]; then
     local init="$root/init.d/sysv/zapret2"
     if [ -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" ]; then
-      mkdir -p "$(dirname "$init")" || return 1
-      cp -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" "$init" || return 1
+      config_keenetic_init_sync "$DEPLOY_PAYLOAD_DIR/Entware/zapret" "$init" || return 1
     elif type z2r_download_project_file >/dev/null 2>&1; then
-      z2r_download_project_file "$init" "Entware/zapret" || return 1
+      local source_tmp="${init}.source.$$"
+      z2r_download_project_file "$source_tmp" "Entware/zapret" || { rm -f "$source_tmp"; return 1; }
+      config_keenetic_init_sync "$source_tmp" "$init" || { rm -f "$source_tmp"; return 1; }
+      rm -f "$source_tmp"
     else
       echo -e "${red}Нет локального payload Entware/zapret для обновления Keenetic.${plain}"
       return 1
     fi
-    chmod +x "$init" || return 1
   fi
   mkdir -p "$root"
   cp -f "$DEPLOY_PAYLOAD_DIR/config.default" "$root/config.default" || return 1
