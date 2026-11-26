@@ -76,7 +76,9 @@ config_set_var() {
   local esc_val
 
   [ -f "$cfg" ] || return 1
-  esc_val=$(printf '%s' "$val" | sed 's/[\/&]/\\&/g')
+  # '#' экранируем вместе с '&' и разделителем sed: иначе значение с '#'
+  # (например, хвостовой комментарий, попавший в значение) ломает sed-скрипт.
+  esc_val=$(printf '%s' "$val" | sed 's/[\/&#]/\\&/g')
   if grep -q "^[[:space:]]*${var}=" "$cfg"; then
     sed -i "s#^[[:space:]]*${var}=.*#${var}=${esc_val}#" "$cfg"
   else
@@ -160,6 +162,21 @@ config_keenetic_policy_apply() {
   done
 }
 
+# Режим bind-fix (Z2R_KEENETIC_BINDFIX: auto|1|0) — пользовательское состояние
+# внутри config, как и Keenetic-политика: при применении эталона и
+# восстановлении бэкапа переносим его из старого конфига в новый, иначе
+# config_apply_from_default вернул бы дефолт auto.
+config_keenetic_bindfix_apply() {
+  local old_cfg="$1" new_cfg="$2" v_old v_new
+  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
+  config_var_exists "$old_cfg" Z2R_KEENETIC_BINDFIX || return 0
+  v_old="$(config_get_var "$old_cfg" Z2R_KEENETIC_BINDFIX | tr -d ' "\r\n' | sed 's/[[:space:]]*$//')"
+  [ -n "$v_old" ] || return 0
+  v_new="$(config_get_var "$new_cfg" Z2R_KEENETIC_BINDFIX | tr -d ' "\r\n' | sed 's/[[:space:]]*$//')"
+  [ "$v_old" = "$v_new" ] && return 0
+  config_set_var "$new_cfg" Z2R_KEENETIC_BINDFIX "$v_old"
+}
+
 config_sed_ereg() {
   if printf "x" | sed -E 's/x/x/' >/dev/null 2>&1; then
     printf '%s' "-E"
@@ -208,35 +225,84 @@ config_auto_layout_valid() {
   [ "$(grep -c '^#Z2R_AUTO_FALLBACK_WAS=[01]$' "$cfg")" -eq 1 ]
 }
 
-# Определяет Linux-имя WAN интерфейса по default route.
-# На Keenetic это может быть ppp0, eth*, nwg*, wwan0 и т.п.
-config_keenetic_detect_default_iface() {
-  local family="$1"
+# Виртуальный туннель (WireGuard/tun, ARPHRD_NONE): DPI внутри туннеля не видит,
+# а NFQUEUE на каждом пакете туннеля — лишняя нагрузка. В автосписок WAN такие
+# интерфейсы не берём; прописанные пользователем в IFACE_WAN они не теряются.
+config_keenetic_iface_virtual() {
+  local iface="$1" line
+
+  [ -n "$iface" ] || return 1
+  line="$(ip -o link show dev "$iface" 2>/dev/null | head -n1)"
+  case "$line" in
+    *'link/none'*|*'link/[65534]'*) return 0 ;;
+  esac
+  return 1
+}
+
+# Определяет Linux-имена WAN-интерфейсов: все, через которые уходит интернет,
+# то есть интерфейсы default-маршрутов из ВСЕХ таблиц (main + таблицы политик
+# доступа Keenetic). У второго провайдера при PBR своего default в main нет, и
+# выборка одного main его теряла — правила zapret2 создавались только для
+# основного провайдера. На Keenetic это ppp0/ppp1, eth*, wwan0 и т.п.
+config_keenetic_detect_default_ifaces() {
+  local family="$1" iface
 
   command -v ip >/dev/null 2>&1 || return 1
-  ip "-$family" route show default 2>/dev/null | awk '
-    {
-      for (i = 1; i <= NF; i++) {
-        if ($i == "dev" && $(i + 1) != "" && $(i + 1) != "lo") {
-          print $(i + 1)
-          exit
-        }
+  # main-таблица запрашивается отдельно: на старых busybox/iproute2
+  # "route show table all" может быть неизвестной командой.
+  {
+    ip "-$family" route show default 2>/dev/null
+    ip "-$family" route show table all 2>/dev/null | grep -E '(^|[[:space:]])default([[:space:]]|$)'
+  } | awk '
+      {
+        for (i = 1; i <= NF; i++)
+          if ($i == "dev" && $(i + 1) != "" && $(i + 1) != "lo") print $(i + 1)
       }
-    }
-  '
+    ' | awk '!seen[$0]++' | while IFS= read -r iface; do
+      config_keenetic_iface_virtual "$iface" && continue
+      printf '%s\n' "$iface"
+    done
+}
+
+# Совместимость: основной (первый) WAN-интерфейс по default route.
+config_keenetic_detect_default_iface() {
+  config_keenetic_detect_default_ifaces "$1" | head -n1
+}
+
+# Объединяет текущий список WAN с автоопределённым: пользовательский список не
+# сужается (резервный провайдер может быть доступен только через PBR), а новые
+# интерфейсы из автоопределения добавляются — список актуализируется.
+config_keenetic_wan_merge() {
+  local cur="$1" auto="$2" out="" iface
+
+  for iface in $cur $auto; do
+    # Плейсхолдеры install_easy (ANY = без фильтра по интерфейсу) в правило
+    # "-o ANY" превращаться не должны: на Keenetic пишем явный список.
+    case "$iface" in ANY|any|NONE|none) continue ;; esac
+    case " $out " in *" $iface "*) continue ;; esac
+    out="${out:+$out }$iface"
+  done
+  printf '%s\n' "$out"
 }
 
 # Прописывает IFACE_WAN/IFACE_WAN6 в указанный конфиг только для Keenetic.
+# Значение — список интерфейсов через пробел ("ppp0 ppp1" при двух провайдерах):
+# zapret2 создаёт правила на КАЖДЫЙ интерфейс из списка.
 # Если IPv6 default route не найден, IFACE_WAN6 не трогаем: zapret2 возьмёт IFACE_WAN.
 config_keenetic_set_wan_iface() {
   local cfg="$1"
-  local wan4 wan6
+  local wan4 wan6 cur4 cur6
 
   [ "$hardware" = "keenetic" ] || return 0
   [ -f "$cfg" ] || return 0
 
-  wan4="$(config_keenetic_detect_default_iface 4)" || wan4=""
-  wan6="$(config_keenetic_detect_default_iface 6)" || wan6=""
+  wan4="$(config_keenetic_detect_default_ifaces 4 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan4=""
+  wan6="$(config_keenetic_detect_default_ifaces 6 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan6=""
+
+  cur4="$(config_get_iface_var "$cfg" IFACE_WAN)"
+  wan4="$(config_keenetic_wan_merge "$cur4" "$wan4")"
+  cur6="$(config_get_iface_var "$cfg" IFACE_WAN6)"
+  wan6="$(config_keenetic_wan_merge "$cur6" "$wan6")"
 
   if [ -z "$wan4" ]; then
     echo -e "${yellow}Не удалось автоматически определить WAN интерфейс Keenetic. IFACE_WAN не изменён.${plain}"
@@ -539,20 +605,33 @@ config_mode_text() {
   esac
 }
 
-# Значение IFACE_WAN из живого config: WAN-интерфейс (у Keenetic задаётся
-# установщиком: IFACE_WAN="eth3", у OpenWRT/VPS в эталоне строка закомментирована:
-# #IFACE_WAN=eth1). Закомментированная строка — комментарий и НЕ учитывается:
-# пусто = нигде не показывать. Значит, показываем только явно прописанный порт.
-config_get_iface_wan() {
-  local cfg line wan
-  cfg="${1:-}"
+# Значение IFACE_* из config как список через пробел: снимает двойные и
+# одинарные кавычки, хвостовой комментарий и лишние пробелы. Полностью
+# закомментированная строка (#IFACE_WAN=...) значением не считается; берётся
+# последнее присваивание — его же увидит shell, который config source-ит.
+config_get_iface_var() {
+  local cfg="${1:-}" var="$2" line
+
+  [ -n "$var" ] || return 0
   [ -n "$cfg" ] || { cfg="$(config_get_file 2>/dev/null)" || return 0; }
   [ -f "$cfg" ] || return 0
-  line="$(grep -E '^IFACE_WAN=' "$cfg" 2>/dev/null | head -n1)"
+  line="$(grep -E "^[[:space:]]*${var}=" "$cfg" 2>/dev/null | tail -n1)"
   [ -n "$line" ] || return 0
-  wan="$(printf '%s' "$line" | sed 's/^IFACE_WAN=//; s/[[:space:]]*#.*$//; s/^[[:space:]]*//; s/^"//; s/".*$//; s/[[:space:]]*$//')"
-  [ -n "$wan" ] && printf '%s\n' "$wan"
+  printf '%s' "$line" | sed \
+    -e "s/^[[:space:]]*${var}=//" \
+    -e 's/[[:space:]]*#.*$//' \
+    -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    -e "s/^['\"]//" -e "s/['\"]$//" |
+    sed 's/[[:space:]][[:space:]]*/ /g'
   return 0
+}
+
+# Значение IFACE_WAN из живого config: список WAN-интерфейсов (у Keenetic
+# задаётся установщиком: IFACE_WAN="ppp0 ppp1", у OpenWRT/VPS в эталоне строка
+# закомментирована: #IFACE_WAN=eth1). Закомментированная строка — комментарий и
+# НЕ учитывается: пусто = нигде не показывать, показываем только прописанный порт.
+config_get_iface_wan() {
+  config_get_iface_var "${1:-}" IFACE_WAN
 }
 
 # Сводка платформы для шапки меню. Keenetic: ndmc show version (description

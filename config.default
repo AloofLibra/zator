@@ -621,6 +621,18 @@ POLICY_NAME=
 POLICY_MARK=
 POLICY_EXCLUDE=0
 
+# Keenetic + PBR / несколько провайдеров (ppp0 + ppp1 и т.п.).
+# nfqws2 всегда домешивает в fwmark сгенерированных пакетов свой бит 0x40000000,
+# а KeeneticOS матчит policy-метку в ip rule целым словом
+# ("from all fwmark 0xffffaad lookup N") — без bind-fix фейки и
+# переотправленные сегменты уходят в main (провайдер по умолчанию) и теряются
+# на втором провайдере. init-скрипт добавляет nfqws2 --bind-fix4/--bind-fix6
+# на старте демона и только при активном PBR (2+ интерфейса в IFACE_WAN или
+# fwmark-правила в ip rule): при одном провайдере это лишний
+# setsockopt(SO_BINDTODEVICE) на каждый rawsend.
+# auto - по факту PBR, 1 - всегда, 0 - никогда.
+Z2R_KEENETIC_BINDFIX=auto
+
 # do not work with ipv4
 #DISABLE_IPV4=1
 # do not work with ipv6

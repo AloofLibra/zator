@@ -102,6 +102,9 @@ config_apply_from_default() {
   if [ -f "$old_scope_cfg" ]; then
     config_client_scope_apply "$old_scope_cfg" "$root/config" || true
     [ "$hardware" = "keenetic" ] && { config_keenetic_policy_apply "$old_scope_cfg" "$root/config" || true; }
+    # Пользовательский режим bind-fix (auto|1|0) — такое же состояние, как
+    # Keenetic-политика: без переноса применение эталона вернуло бы auto.
+    [ "$hardware" = "keenetic" ] && { config_keenetic_bindfix_apply "$old_scope_cfg" "$root/config" || true; }
     # Routine upgrades keep the three Ramp controls; explicit config reset calls
     # this function without the flag and continues to use shipped defaults.
     if [ "$preserve_ramp" = preserve_wssize ]; then
@@ -1658,6 +1661,8 @@ backup_smart_apply_flags() {
   # а тесты зовут применение флагов напрямую — unset не должен ронять.
   if [ "${hardware:-}" = "keenetic" ]; then
     config_keenetic_policy_apply "$old_cfg" "$new_cfg"
+    # Режим bind-fix (auto|1|0) — пользовательский выбор в config, переносим.
+    config_keenetic_bindfix_apply "$old_cfg" "$new_cfg" || true
     ensure_keenetic_policy_config "$new_cfg"
   fi
 
