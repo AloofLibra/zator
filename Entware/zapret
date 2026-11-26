@@ -41,10 +41,10 @@ z2r_bindfix_wanted()
 	# PBR: несколько WAN-интерфейсов в списке (Keenetic пишет их установщик).
 	set -- $IFACE_WAN
 	[ $# -ge 2 ] && return 0
-	# PBR по политикам доступа Keenetic: ip rule матчит fwmark.
+	# PBR по политикам доступа Keenetic: fwmark в policy-таблицу.
 	command -v ip >/dev/null 2>&1 || return 1
-	ip -4 rule show 2>/dev/null | grep -q 'fwmark' && return 0
-	ip -6 rule show 2>/dev/null | grep -q 'fwmark' && return 0
+	ip -4 rule show 2>/dev/null | awk '/fwmark/ && /lookup/ { for (i=1;i<=NF;i++) if ($i=="lookup" && $(i+1)!="main" && $(i+1)!="254") found=1 } END { exit !found }' && return 0
+	ip -6 rule show 2>/dev/null | awk '/fwmark/ && /lookup/ { for (i=1;i<=NF;i++) if ($i=="lookup" && $(i+1)!="main" && $(i+1)!="254") found=1 } END { exit !found }' && return 0
 	return 1
 }
 
@@ -56,20 +56,14 @@ z2r_bindfix_args()
 {
 	local bin="$1" args="$2"
 
-	case " $args " in *" --bind-fix4 "*) printf '%s\n' "$args"; return 0 ;; esac
 	z2r_bindfix_wanted || { printf '%s\n' "$args"; return 0; }
-	if [ -z "${Z2R_BINDFIX_SUPPORT:-}" ]; then
-		case "$("$bin" --help 2>&1 | grep -c -- '--bind-fix4')" in
-			0|'') Z2R_BINDFIX_SUPPORT=0 ;;
-			*) Z2R_BINDFIX_SUPPORT=1 ;;
-		esac
-	fi
-	[ "$Z2R_BINDFIX_SUPPORT" = 1 ] || { printf '%s\n' "$args"; return 0; }
-	if [ -z "$args" ]; then
-		printf '%s\n' "--bind-fix4 --bind-fix6"
-	else
-		printf '%s\n' "--bind-fix4 --bind-fix6 $args"
-	fi
+	local help prefix="" opt
+	help="$("$bin" --help 2>&1)"
+	for opt in --bind-fix4 --bind-fix6; do
+		case " $args " in *" $opt "*) continue ;; esac
+		case "$help" in *"$opt"*) prefix="${prefix}${prefix:+ }$opt" ;; esac
+	done
+	printf '%s\n' "${prefix:+$prefix${args:+ }}$args"
 }
 
 # z2r: оверрайд run_daemon — см. AGENTS.md (High-Risk Areas).
@@ -80,11 +74,10 @@ run_daemon()
 	# $3 - daemon args
 	local DAEMONBASE="$(basename "$2")"
 	local PID= PIDFILE=$PIDDIR/${DAEMONBASE}_$1.pid
-	local DAEMONARGS="$3"
 	case "$DAEMONBASE" in
-		*nfqws2) DAEMONARGS="$(z2r_bindfix_args "$2" "$3")" ;;
+		*nfqws2) set -- "$1" "$2" "$(z2r_bindfix_args "$2" "$3")" ;;
 	esac
-	echo "Starting daemon $1: $2 $DAEMONARGS"
+	echo "Starting daemon $1: $2 $3"
 
 	[ -f "$PIDFILE" ] && {
 		read PID <"$PIDFILE"
@@ -97,7 +90,7 @@ run_daemon()
 		ERRLOG="/tmp/${DAEMONBASE}_$1.err"
 		: > "$ERRLOG"
 		if command -v setsid >/dev/null 2>&1; then
-			setsid "$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
+			setsid "$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 		elif [ -t 0 ]; then
 			# job control даёт фону свою группу процессов (защита от Ctrl+C в
@@ -105,17 +98,17 @@ run_daemon()
 			# под uhttpd/CGI с мёртвым pty (панель поднята nohup'ом из уже
 			# закрытой SSH-сессии) busybox ash уходит в вечный спин на set -m
 			set -m 2>/dev/null
-			"$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
+			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 			set +m 2>/dev/null
 		else
-			"$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
+			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 		fi
 		if [ -n "$PID" ]; then
 			echo $PID >$PIDFILE
 		else
-			echo could not start daemon $1 : $2 $DAEMONARGS
+			echo could not start daemon $1 : $2 $3
 			false
 		fi
 	fi

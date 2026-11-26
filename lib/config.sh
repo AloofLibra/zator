@@ -156,25 +156,11 @@ config_client_scope_apply() {
 config_keenetic_policy_apply() {
   local old_cfg="$1" new_cfg="$2" v
   [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
-  for v in NAME MARK EXCLUDE; do
-    config_var_exists "$old_cfg" "POLICY_$v" || continue
-    config_set_var "$new_cfg" "POLICY_$v" "$(config_get_var "$old_cfg" "POLICY_$v")"
+  for v in POLICY_NAME POLICY_MARK POLICY_EXCLUDE Z2R_KEENETIC_BINDFIX; do
+    config_var_exists "$old_cfg" "$v" || continue
+    [ "$v" != Z2R_KEENETIC_BINDFIX ] || [ -n "$(config_get_var "$old_cfg" "$v")" ] || continue
+    config_set_var "$new_cfg" "$v" "$(config_get_var "$old_cfg" "$v")"
   done
-}
-
-# Режим bind-fix (Z2R_KEENETIC_BINDFIX: auto|1|0) — пользовательское состояние
-# внутри config, как и Keenetic-политика: при применении эталона и
-# восстановлении бэкапа переносим его из старого конфига в новый, иначе
-# config_apply_from_default вернул бы дефолт auto.
-config_keenetic_bindfix_apply() {
-  local old_cfg="$1" new_cfg="$2" v_old v_new
-  [ -f "$old_cfg" ] && [ -f "$new_cfg" ] || return 0
-  config_var_exists "$old_cfg" Z2R_KEENETIC_BINDFIX || return 0
-  v_old="$(config_get_var "$old_cfg" Z2R_KEENETIC_BINDFIX | tr -d ' "\r\n' | sed 's/[[:space:]]*$//')"
-  [ -n "$v_old" ] || return 0
-  v_new="$(config_get_var "$new_cfg" Z2R_KEENETIC_BINDFIX | tr -d ' "\r\n' | sed 's/[[:space:]]*$//')"
-  [ "$v_old" = "$v_new" ] && return 0
-  config_set_var "$new_cfg" Z2R_KEENETIC_BINDFIX "$v_old"
 }
 
 config_sed_ereg() {
@@ -232,7 +218,12 @@ config_keenetic_iface_virtual() {
   local iface="$1" line
 
   [ -n "$iface" ] || return 1
-  line="$(ip -o link show dev "$iface" 2>/dev/null | head -n1)"
+  if [ -r "/sys/class/net/$iface/type" ]; then
+    IFS= read -r line < "/sys/class/net/$iface/type"
+    [ "$line" = 65534 ] && return 0
+    return 1
+  fi
+  line="$(ip -o link show dev "$iface" 2>/dev/null)"
   case "$line" in
     *'link/none'*|*'link/[65534]'*) return 0 ;;
   esac
@@ -252,21 +243,15 @@ config_keenetic_detect_default_ifaces() {
   # "route show table all" может быть неизвестной командой.
   {
     ip "-$family" route show default 2>/dev/null
-    ip "-$family" route show table all 2>/dev/null | grep -E '(^|[[:space:]])default([[:space:]]|$)'
+    ip "-$family" route show table all 2>/dev/null
   } | awk '
-      {
-        for (i = 1; i <= NF; i++)
-          if ($i == "dev" && $(i + 1) != "" && $(i + 1) != "lo") print $(i + 1)
+      /(^|[[:space:]])default([[:space:]]|$)/ {
+        for (i = 1; i < NF; i++) if ($i == "dev" && $(i+1) != "" && $(i+1) != "lo" && !seen[$(i+1)]++) print $(i+1)
       }
-    ' | awk '!seen[$0]++' | while IFS= read -r iface; do
+    ' | while IFS= read -r iface; do
       config_keenetic_iface_virtual "$iface" && continue
       printf '%s\n' "$iface"
     done
-}
-
-# Совместимость: основной (первый) WAN-интерфейс по default route.
-config_keenetic_detect_default_iface() {
-  config_keenetic_detect_default_ifaces "$1" | head -n1
 }
 
 # Объединяет текущий список WAN с автоопределённым: пользовательский список не
@@ -296,8 +281,8 @@ config_keenetic_set_wan_iface() {
   [ "$hardware" = "keenetic" ] || return 0
   [ -f "$cfg" ] || return 0
 
-  wan4="$(config_keenetic_detect_default_ifaces 4 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan4=""
-  wan6="$(config_keenetic_detect_default_ifaces 6 | tr '\n' ' ' | sed 's/[[:space:]]*$//')" || wan6=""
+  wan4="$(config_keenetic_detect_default_ifaces 4)" || wan4=""
+  wan6="$(config_keenetic_detect_default_ifaces 6)" || wan6=""
 
   cur4="$(config_get_iface_var "$cfg" IFACE_WAN)"
   wan4="$(config_keenetic_wan_merge "$cur4" "$wan4")"

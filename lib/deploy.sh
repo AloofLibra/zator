@@ -618,7 +618,7 @@ deploy_apply_staging() {
   # срабатывает на устаревший payload от прошлого полного релиза (бэкап-промпт,
   # рестарт zapret2 при обычном обновлении панели).
   if [ "${DEPLOY_MODE:-}" != D ] && { [ -e "$staging/_root/z2r.sh" ] || [ -d "$staging/z2r_lib" ]; }; then
-    deploy_apply_config_default || true
+    deploy_apply_config_default || return 1
     deploy_offer_media_jq
   fi
 }
@@ -693,7 +693,7 @@ deploy_apply_newdir() {
   deploy_post_apply "$ZATOR_ROOT" "$tracking" "$z2r_updated" "$webui_updated"
   type fake_files_refresh >/dev/null 2>&1 && fake_files_refresh
   if [ "$has_core" = 1 ]; then
-    deploy_apply_config_default || true
+    deploy_apply_config_default || return 1
     deploy_offer_media_jq
   fi
 }
@@ -708,6 +708,19 @@ deploy_apply_newdir() {
 deploy_apply_config_default() {
   [ -f "$DEPLOY_PAYLOAD_DIR/config.default" ] || return 0
   local root="${ZAPRET2_ROOT:-/opt/zapret2}"
+  if [ "${hardware:-}" = keenetic ] && [ -f "$root/config" ]; then
+    local init="$root/init.d/sysv/zapret2"
+    if [ -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" ]; then
+      mkdir -p "$(dirname "$init")" || return 1
+      cp -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" "$init" || return 1
+    elif type z2r_download_project_file >/dev/null 2>&1; then
+      z2r_download_project_file "$init" "Entware/zapret" || return 1
+    else
+      echo -e "${red}Нет локального payload Entware/zapret для обновления Keenetic.${plain}"
+      return 1
+    fi
+    chmod +x "$init" || return 1
+  fi
   mkdir -p "$root"
   cp -f "$DEPLOY_PAYLOAD_DIR/config.default" "$root/config.default" || return 1
   if [ ! -f "$root/config" ]; then

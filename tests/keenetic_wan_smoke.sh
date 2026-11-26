@@ -98,8 +98,6 @@ printf 'IFACE_WAN6="ipsec0 wireguard0"\n' > "$CFG"
   || fail "detect4: ожидалось 'ppp0 ppp1', получено '$(config_keenetic_detect_default_ifaces 4 | tr '\n' ' ')'"
 [ "$(config_keenetic_detect_default_ifaces 6 | tr '\n' ' ')" = "ppp0 " ] \
   || fail "detect6: ожидалось 'ppp0', получено '$(config_keenetic_detect_default_ifaces 6 | tr '\n' ' ')'"
-[ "$(config_keenetic_detect_default_iface 4)" = "ppp0" ] \
-  || fail "compat-обёртка detect_default_iface"
 
 # --- 2. Слияние списков ----------------------------------------------------
 [ "$(config_keenetic_wan_merge 'ppp0 ppp1' 'ppp0 ppp1')" = "ppp0 ppp1" ] \
@@ -162,19 +160,22 @@ config_keenetic_set_wan_iface "$CFG"
 grep -q -- '--bind-fix' "$CFG" && fail "generic: в конфиг попал bind-fix"
 hardware=keenetic
 
-# --- 4. config_set_var с '#' и перенос режима bind-fix ---------------------
+# --- 4. config_set_var с '#' и перенос настроек Keenetic -------------------
 printf 'FWTYPE=iptables\n' > "$CFG"
 config_set_var "$CFG" TEST_VAR 'a#b'
 ( . "$CFG"; [ "$TEST_VAR" = 'a#b' ] ) || fail "config_set_var не сохранил значение с '#'"
 
-printf 'Z2R_KEENETIC_BINDFIX=auto\n' > "$CFG"
-printf 'Z2R_KEENETIC_BINDFIX=1\n' > "$WORK/old-config"
-config_keenetic_bindfix_apply "$WORK/old-config" "$CFG"
+printf 'POLICY_NAME=new\nPOLICY_MARK=1\nPOLICY_EXCLUDE=0\nZ2R_KEENETIC_BINDFIX=auto\n' > "$CFG"
+printf 'POLICY_NAME=old\nPOLICY_MARK=2\nPOLICY_EXCLUDE=1\nZ2R_KEENETIC_BINDFIX=1\n' > "$WORK/old-config"
+config_keenetic_policy_apply "$WORK/old-config" "$CFG"
+[ "$(config_get_var "$CFG" POLICY_NAME)" = "old" ] || fail "POLICY_NAME не перенесён"
+[ "$(config_get_var "$CFG" POLICY_MARK)" = "2" ] || fail "POLICY_MARK не перенесён"
+[ "$(config_get_var "$CFG" POLICY_EXCLUDE)" = "1" ] || fail "POLICY_EXCLUDE не перенесён"
 [ "$(config_get_var "$CFG" Z2R_KEENETIC_BINDFIX)" = "1" ] \
   || fail "режим bind-fix не перенесён: '$(config_get_var "$CFG" Z2R_KEENETIC_BINDFIX)'"
-printf 'FWTYPE=iptables\n' > "$WORK/old-config"
+printf 'FWTYPE=iptables\nZ2R_KEENETIC_BINDFIX=\n' > "$WORK/old-config"
 printf 'Z2R_KEENETIC_BINDFIX=auto\n' > "$CFG"
-config_keenetic_bindfix_apply "$WORK/old-config" "$CFG"
+config_keenetic_policy_apply "$WORK/old-config" "$CFG"
 [ "$(config_get_var "$CFG" Z2R_KEENETIC_BINDFIX)" = "auto" ] \
   || fail "без ключа в старом конфиге значение нового изменилось"
 

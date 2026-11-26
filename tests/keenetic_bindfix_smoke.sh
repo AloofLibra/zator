@@ -32,20 +32,20 @@ ip() {
   return 0
 }
 
-# Фейковый nfqws2: на --help печатает опции (с --bind-fix4 или без), на старте
+# Фейковый nfqws2: на --help печатает выбранные опции, на старте
 # записывает argv в ARGV_LOG.
 cat > "$WORK/fake-nfqws2" <<'EOF'
 #!/bin/sh
 if [ "$1" = "--help" ]; then
   echo " --qnum=<int>                     ; set queue number"
-  [ "${FAKE_BINDFIX:-1}" = "1" ] && \
-    echo " --bind-fix4                     ; apply outgoing interface selection fix for generated ipv4 packets"
+  case "${FAKE_BINDFIX:-both}" in both|4) echo " --bind-fix4 ; fix ipv4" ;; esac
+  case "${FAKE_BINDFIX:-both}" in both|6) echo " --bind-fix6 ; fix ipv6" ;; esac
   exit 1
 fi
 printf '%s\n' "$*" > "${ARGV_LOG:-/dev/null}"
 EOF
 chmod +x "$WORK/fake-nfqws2"
-export FAKE_BINDFIX=1
+export FAKE_BINDFIX=both
 
 BASE='--qnum=300 --lua-init=@x'
 
@@ -56,38 +56,41 @@ case1() { # want desc
   [ "$out" = "$want" ] || fail "$desc: ожидалось '$want', получено '$out'"
 }
 
-IFACE_WAN='ppp0 ppp1'; IP_RULES=''; Z2R_KEENETIC_BINDFIX=auto; FAKE_BINDFIX=1
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
+IFACE_WAN='ppp0 ppp1'; IP_RULES=''; Z2R_KEENETIC_BINDFIX=auto; FAKE_BINDFIX=both
 case1 "--bind-fix4 --bind-fix6 $BASE" "два WAN должны включать bind-fix"
 
 IFACE_WAN='ppp0'; IP_RULES=''
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
 case1 "$BASE" "один WAN без политик: bind-fix лишний"
 
-IP_RULES='1152:	from all fwmark 0xffffaad lookup 4102'
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
+IP_RULES='1152: from all fwmark 0xffffaad lookup 4102'
 case1 "--bind-fix4 --bind-fix6 $BASE" "PBR по fwmark-правилам"
 
-IFACE_WAN='ppp0'; IP_RULES=''; Z2R_KEENETIC_BINDFIX=1
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
+IFACE_WAN='ppp0'; IP_RULES=''; Z2R_KEENETIC_BINDFIX=1; FAKE_BINDFIX=both
 case1 "--bind-fix4 --bind-fix6 $BASE" "режим 1 включает bind-fix без PBR"
 
 IFACE_WAN='ppp0 ppp1'; Z2R_KEENETIC_BINDFIX=0
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
 case1 "$BASE" "режим 0 выключает bind-fix даже при PBR"
 
 IFACE_WAN='ppp0 ppp1'; Z2R_KEENETIC_BINDFIX=auto
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
 out="$(z2r_bindfix_args "$WORK/fake-nfqws2" "--bind-fix4 $BASE")"
-[ "$out" = "--bind-fix4 $BASE" ] || fail "уже заданная опция задублирована: '$out'"
+[ "$out" = "--bind-fix6 --bind-fix4 $BASE" ] || fail "добавление отсутствующей IPv6-опции: '$out'"
+out="$(z2r_bindfix_args "$WORK/fake-nfqws2" "--bind-fix6 $BASE")"
+[ "$out" = "--bind-fix4 --bind-fix6 $BASE" ] || fail "добавление второй опции при заданной первой: '$out'"
 
-FAKE_BINDFIX=0
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
-case1 "$BASE" "сборка без опции: демон стартует как раньше"
-FAKE_BINDFIX=1
+IFACE_WAN='ppp0'; IP_RULES='100: from all fwmark 0xffffa00 lookup main'
+case1 "$BASE" "системное fwmark lookup main не включает bind-fix"
+IP_RULES=''
 
 IFACE_WAN='ppp0 ppp1'
-unset Z2R_BINDFIX_SUPPORT 2>/dev/null || true
+FAKE_BINDFIX=none
+case1 "$BASE" "сборка без опции: демон стартует как раньше"
+FAKE_BINDFIX=4
+case1 "--bind-fix4 $BASE" "сборка поддерживает только bind-fix4"
+FAKE_BINDFIX=6
+case1 "--bind-fix6 $BASE" "сборка поддерживает только bind-fix6"
+FAKE_BINDFIX=both
+
+IFACE_WAN='ppp0 ppp1'
 out="$(z2r_bindfix_args "$WORK/fake-nfqws2" "")"
 [ "$out" = "--bind-fix4 --bind-fix6" ] || fail "пустые аргументы: '$out'"
 
@@ -125,23 +128,20 @@ run_start() {
   cat "$WORK/argv.log" 2>/dev/null || true
 }
 
-args="$(IFACE_WAN='ppp0 ppp1' Z2R_KEENETIC_BINDFIX=auto FAKE_BINDFIX=1 run_start)"
+args="$(IFACE_WAN='ppp0 ppp1' Z2R_KEENETIC_BINDFIX=auto FAKE_BINDFIX=both run_start)"
 [ "$args" = "--bind-fix4 --bind-fix6 --qnum=300 --lua-init=@x" ] \
   || fail "run_daemon не добавил bind-fix при двух WAN: '$args'"
-args="$(IFACE_WAN='ppp0' Z2R_KEENETIC_BINDFIX=auto FAKE_BINDFIX=1 run_start)"
+args="$(IFACE_WAN='ppp0' Z2R_KEENETIC_BINDFIX=auto FAKE_BINDFIX=both run_start)"
 [ "$args" = "--qnum=300 --lua-init=@x" ] \
   || fail "run_daemon добавил bind-fix при одном WAN без PBR: '$args'"
-args="$(IFACE_WAN='ppp0 ppp1' Z2R_KEENETIC_BINDFIX=auto FAKE_BINDFIX=0 run_start)"
+args="$(IFACE_WAN='ppp0 ppp1' Z2R_KEENETIC_BINDFIX=auto FAKE_BINDFIX=none run_start)"
 [ "$args" = "--qnum=300 --lua-init=@x" ] \
   || fail "run_daemon добавил bind-fix в сборке без опции: '$args'"
 
 # --- статический wiring ----------------------------------------------------
-grep -q '\*nfqws2) DAEMONARGS=' "$INIT" || fail "run_daemon не считает DAEMONARGS для nfqws2"
-[ "$(grep -c -- 'setsid "\$2" \$DAEMONARGS' "$INIT")" = "1" ] \
-  || fail "спавн через setsid должен идти с DAEMONARGS"
-[ "$(grep -c -- '"\$2" \$DAEMONARGS' "$INIT")" = "3" ] \
-  || fail "все три ветки спавна должны использовать DAEMONARGS"
-grep -q -- '"\$2" \$3 ' "$INIT" && fail "остался старый спавн с \$3"
+grep -q '\*nfqws2) set --' "$INIT" || fail "run_daemon не заменяет третий аргумент для nfqws2"
+[ "$(grep -c -- '"\$2" \$3' "$INIT")" = "3" ] \
+  || fail "все три ветки спавна должны использовать третий аргумент"
 grep -qx 'Z2R_KEENETIC_BINDFIX=auto' "$REPO_DIR/config.default" \
   || fail "config.default: нет Z2R_KEENETIC_BINDFIX=auto"
 grep -q '^--bind-fix' "$REPO_DIR/config.default" \

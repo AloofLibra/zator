@@ -370,6 +370,7 @@ cmp -s "$ZATOR_ROOT/lua/locked.lua" "$ZATOR_ROOT/extra_strats/cache/orchestra/lo
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"
 [ -f "$ZATOR_ROOT/.deploy-payload/config.default" ] || fail "payload config.default не разложен"
 [ -f "$ZATOR_ROOT/.deploy-payload/Entware/keenetic-policy.sh" ] || fail "payload keenetic-policy.sh не разложен"
+[ -f "$ZATOR_ROOT/.deploy-payload/Entware/zapret" ] || fail "payload Entware/zapret не разложен"
 # payload config.default применяется к эталону в корне zapret2
 # (живой config в standalone-контексте смоука отсутствует)
 [ -f "$ZAPRET2_ROOT/config.default" ] || fail "payload config.default не скопирован в эталон zapret2"
@@ -454,11 +455,15 @@ export APPLY_MARK RESTART_MARK
 config_apply_from_default() { echo applied >> "$APPLY_MARK"; }
 z2r_service_action() { echo "$1" >> "$RESTART_MARK"; }
 backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
+hardware=keenetic
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (apply) упал"
 [ -s "$APPLY_MARK" ] || fail "config_apply_from_default не вызван при живом config"
 grep -q '^stop$' "$RESTART_MARK" || fail "нет stop перед применением config.default"
 grep -q '^restart$' "$RESTART_MARK" || fail "нет restart после применения config.default"
+[ -x "$ZAPRET2_ROOT/init.d/sysv/zapret2" ] || fail "Keenetic init не установлен/не исполняемый"
+cmp -s "$ZAPRET2_ROOT/init.d/sysv/zapret2" "$REPO_DIR/Entware/zapret" || fail "Keenetic init не обновлён из payload"
 ok "payload config.default применяется к живому конфигу (stop -> apply -> restart)"
+hardware=generic
 unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
 
 # --- 4b-2. webui-only деплой не трогает живой конфиг ---
