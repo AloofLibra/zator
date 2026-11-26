@@ -21,6 +21,57 @@ contains()
 	return 1
 }
 
+# z2r: bind-fix для сгенерированных пакетов при PBR (Keenetic).
+# nfqws2 всегда домешивает в fwmark сгенерированных пакетов свой бит
+# 0x40000000 (--fwmark), а KeeneticOS матчит policy-метку в ip rule целым
+# словом ("from all fwmark 0xffffaad lookup N"). Без bind-fix фейки и
+# переотправленные/переставленные сегменты уходят в main (провайдер по
+# умолчанию) и теряются на втором провайдере: трафик из политики второго
+# провайдера перестаёт работать. bind-fix прибивает raw-сокет к исходному
+# интерфейсу через SO_BINDTODEVICE.
+# При одном провайдере без PBR опция не нужна (лишний setsockopt на каждый
+# rawsend), поэтому решение принимается на старте демона, а не в конфиге.
+# Z2R_KEENETIC_BINDFIX: auto (по факту PBR) | 1 (всегда) | 0 (никогда).
+z2r_bindfix_wanted()
+{
+	case "${Z2R_KEENETIC_BINDFIX:-auto}" in
+		0|off|no|false) return 1 ;;
+		1|on|yes|true) return 0 ;;
+	esac
+	# PBR: несколько WAN-интерфейсов в списке (Keenetic пишет их установщик).
+	set -- $IFACE_WAN
+	[ $# -ge 2 ] && return 0
+	# PBR по политикам доступа Keenetic: ip rule матчит fwmark.
+	command -v ip >/dev/null 2>&1 || return 1
+	ip -4 rule show 2>/dev/null | grep -q 'fwmark' && return 0
+	ip -6 rule show 2>/dev/null | grep -q 'fwmark' && return 0
+	return 1
+}
+
+# Аргументы nfqws2 с префиксом --bind-fix4/--bind-fix6. Глобальные опции
+# обязаны идти до первого профиля/--new, поэтому префикс. Поддержку опции
+# проверяем по --help конкретной сборки: официальные и старые релизы её могут
+# не знать, и тогда демон просто стартует как раньше.
+z2r_bindfix_args()
+{
+	local bin="$1" args="$2"
+
+	case " $args " in *" --bind-fix4 "*) printf '%s\n' "$args"; return 0 ;; esac
+	z2r_bindfix_wanted || { printf '%s\n' "$args"; return 0; }
+	if [ -z "${Z2R_BINDFIX_SUPPORT:-}" ]; then
+		case "$("$bin" --help 2>&1 | grep -c -- '--bind-fix4')" in
+			0|'') Z2R_BINDFIX_SUPPORT=0 ;;
+			*) Z2R_BINDFIX_SUPPORT=1 ;;
+		esac
+	fi
+	[ "$Z2R_BINDFIX_SUPPORT" = 1 ] || { printf '%s\n' "$args"; return 0; }
+	if [ -z "$args" ]; then
+		printf '%s\n' "--bind-fix4 --bind-fix6"
+	else
+		printf '%s\n' "--bind-fix4 --bind-fix6 $args"
+	fi
+}
+
 # z2r: оверрайд run_daemon — см. AGENTS.md (High-Risk Areas).
 run_daemon()
 {
@@ -29,7 +80,11 @@ run_daemon()
 	# $3 - daemon args
 	local DAEMONBASE="$(basename "$2")"
 	local PID= PIDFILE=$PIDDIR/${DAEMONBASE}_$1.pid
-	echo "Starting daemon $1: $2 $3"
+	local DAEMONARGS="$3"
+	case "$DAEMONBASE" in
+		*nfqws2) DAEMONARGS="$(z2r_bindfix_args "$2" "$3")" ;;
+	esac
+	echo "Starting daemon $1: $2 $DAEMONARGS"
 
 	[ -f "$PIDFILE" ] && {
 		read PID <"$PIDFILE"
@@ -42,7 +97,7 @@ run_daemon()
 		ERRLOG="/tmp/${DAEMONBASE}_$1.err"
 		: > "$ERRLOG"
 		if command -v setsid >/dev/null 2>&1; then
-			setsid "$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
+			setsid "$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 		elif [ -t 0 ]; then
 			# job control даёт фону свою группу процессов (защита от Ctrl+C в
@@ -50,17 +105,17 @@ run_daemon()
 			# под uhttpd/CGI с мёртвым pty (панель поднята nohup'ом из уже
 			# закрытой SSH-сессии) busybox ash уходит в вечный спин на set -m
 			set -m 2>/dev/null
-			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
+			"$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 			set +m 2>/dev/null
 		else
-			"$2" $3 </dev/null >/dev/null 2>>"$ERRLOG" &
+			"$2" $DAEMONARGS </dev/null >/dev/null 2>>"$ERRLOG" &
 			PID=$!
 		fi
 		if [ -n "$PID" ]; then
 			echo $PID >$PIDFILE
 		else
-			echo could not start daemon $1 : $2 $3
+			echo could not start daemon $1 : $2 $DAEMONARGS
 			false
 		fi
 	fi
