@@ -563,16 +563,29 @@ deploy_offer_media_jq() {
   ) || true
 }
 
+# Платформа нужна только Keenetic-ветке (init + WAN). Её неудача НЕ должна
+# отменять применение config.default: урезанный standalone-payload без
+# z2r_lib/config.sh оставляет hardware пустым, keenetic-ветка пропускается.
 deploy_platform_ensure() {
+  local config_lib
   if ! type z2r_detect_platform >/dev/null 2>&1 || ! type config_keenetic_init_sync >/dev/null 2>&1; then
-    local config_lib="$ZATOR_ROOT/z2r_lib/config.sh"
+    config_lib="$ZATOR_ROOT/z2r_lib/config.sh"
     [ -r "$config_lib" ] || config_lib="$ZAPRET2_ROOT/z2r_lib/config.sh"
-    [ -r "$config_lib" ] || return 1
-    . "$config_lib" || return 1
+    if [ -r "$config_lib" ]; then
+      . "$config_lib" || echo -e "${yellow}Не удалось загрузить $config_lib: платформа не определена.${plain}"
+    else
+      echo -e "${yellow}Не найден z2r_lib/config.sh: платформа не определена, init Keenetic не обновится.${plain}"
+      return 0
+    fi
+    if ! type z2r_detect_platform >/dev/null 2>&1; then
+      echo -e "${yellow}config.sh без z2r_detect_platform: платформа не определена.${plain}"
+      return 0
+    fi
   fi
   [ "${Z2R_PLATFORM_DETECTED:-}" = 1 ] && return 0
   [ -n "${OSystem:-}" ] && [ -n "${release:-}" ] && return 0
-  z2r_detect_platform
+  z2r_detect_platform || echo -e "${yellow}Не удалось определить платформу: init Keenetic не обновится.${plain}"
+  return 0
 }
 
 # Режимы A/B/D: пофайловая установка из staging; совпадающие SHA256 пропускаются во всех трёх.
@@ -721,20 +734,29 @@ deploy_apply_config_default() {
   [ -f "$DEPLOY_PAYLOAD_DIR/config.default" ] || return 0
   local root="${ZAPRET2_ROOT:-/opt/zapret2}"
   if [ -f "$root/config" ]; then
-    deploy_platform_ensure || return 1
+    deploy_platform_ensure
   fi
   if [ "${hardware:-}" = keenetic ] && [ -f "$root/config" ]; then
     local init="$root/init.d/sysv/zapret2"
-    if [ -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" ]; then
+    # Фатален только сбой копирования РЕАЛЬНО доступного источника. Старые
+    # релизы без _payload/Entware/zapret и standalone-лаунчер без функции
+    # скачивания деградируют в жёлтый warning: конфиг применять они не мешают,
+    # init доедет при следующем обновлении из меню.
+    if ! type config_keenetic_init_sync >/dev/null 2>&1; then
+      echo -e "${yellow}Нет config_keenetic_init_sync: init Keenetic не обновлён, доедет при следующем обновлении из меню.${plain}"
+    elif [ -f "$DEPLOY_PAYLOAD_DIR/Entware/zapret" ]; then
       config_keenetic_init_sync "$DEPLOY_PAYLOAD_DIR/Entware/zapret" "$init" || return 1
     elif type z2r_download_project_file >/dev/null 2>&1; then
       local source_tmp="${init}.source.$$"
-      z2r_download_project_file "$source_tmp" "Entware/zapret" || { rm -f "$source_tmp"; return 1; }
-      config_keenetic_init_sync "$source_tmp" "$init" || { rm -f "$source_tmp"; return 1; }
-      rm -f "$source_tmp"
+      if z2r_download_project_file "$source_tmp" "Entware/zapret"; then
+        config_keenetic_init_sync "$source_tmp" "$init" || { rm -f "$source_tmp"; return 1; }
+        rm -f "$source_tmp"
+      else
+        rm -f "$source_tmp"
+        echo -e "${yellow}init Keenetic не обновлён (не удалось скачать Entware/zapret), доедет при следующем обновлении из меню.${plain}"
+      fi
     else
-      echo -e "${red}Нет локального payload Entware/zapret для обновления Keenetic.${plain}"
-      return 1
+      echo -e "${yellow}init Keenetic не обновлён (в payload нет Entware/zapret), доедет при следующем обновлении из меню.${plain}"
     fi
   fi
   mkdir -p "$root"

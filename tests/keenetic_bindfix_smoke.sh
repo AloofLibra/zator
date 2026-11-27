@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Keenetic + PBR: bind-fix (SO_BINDTODEVICE для сгенерированных пакетов)
-# добавляется к аргументам nfqws2 ТОЛЬКО при активном PBR (2+ WAN либо
-# fwmark-правила политик) и только если сборка знает опцию (--help).
-# При одном провайдере это лишний setsockopt на каждый rawsend.
+# добавляется к аргументам nfqws2 при активном PBR (2+ WAN либо любое
+# fwmark-правило с lookup != main/254) и только если сборка знает опцию
+# (--help). Служебные fwmark-правила KeeneticOS есть и без PBR, поэтому auto
+# может включить bind-fix и на одном провайдере: лишний setsockopt безвреден
+# (живой A/B), а ложное выключение при PBR ломает интернет клиенту политики.
 # Режим Z2R_KEENETIC_BINDFIX: auto | 1 (всегда) | 0 (никогда).
 # Только во временной директории, без сети и /opt.
 #
@@ -62,8 +64,9 @@ case1 "--bind-fix4 --bind-fix6 $BASE" "два WAN должны включать 
 IFACE_WAN='ppp0'; IP_RULES=''
 case1 "$BASE" "один WAN без политик: bind-fix лишний"
 
-IP_RULES='1152: from all fwmark 0xffffaad lookup 4102'
-case1 "--bind-fix4 --bind-fix6 $BASE" "PBR по fwmark-правилам"
+IP_RULES='1152: from all fwmark 0xffffaad lookup 4102
+1000: from all fwmark 0x4d616701 lookup 1000'
+case1 "--bind-fix4 --bind-fix6 $BASE" "стоковые fwmark-правила KeeneticOS включают bind-fix в auto (безвредно)"
 
 IFACE_WAN='ppp0'; IP_RULES=''; Z2R_KEENETIC_BINDFIX=1; FAKE_BINDFIX=both
 case1 "--bind-fix4 --bind-fix6 $BASE" "режим 1 включает bind-fix без PBR"
