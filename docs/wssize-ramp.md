@@ -6,6 +6,16 @@ longer used. The profile is placed before the hostlist profiles and imports
 Zator's existing TLS strategy template, so ClientHello desynchronization stays
 active.
 
+> **Warning (Keenetic/Netcraze).** Enabling the feature may break video
+> playback. Verified on a live Netcraze Ultra NC-1812 (2026-11-28): with the
+> shipped `scale=1` the client received no stream at all, while the router's own
+> 8 MB download ran fine (6.4–8.6 MB/s). The bisect showed the Window Scale
+> rewrite itself is the breaker — `wsize=1`, `1460` and `65535` all failed with
+> `scale=1`, and only `scale=7` (no rewrite, i.e. the feature does nothing)
+> restored playback. Keep it disabled if video matters; the CLI submenu shows
+> the warning and asks for confirmation on Keenetic, the WebUI panel shows the
+> same note.
+
 Set `Z2R_WSSIZE_RAMP_ENABLE=1`, `Z2R_WSSIZE_RAMP_MODE=full` and
 `Z2R_WSSIZE_RAMP_SCALE=1` in `/opt/zapret2/config`, or use CLI menu 19 → 7 / the
 WebUI Settings panel. The list can be refreshed from CLI menu 19 → 8. On

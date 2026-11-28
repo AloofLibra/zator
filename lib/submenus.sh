@@ -3008,7 +3008,7 @@ googlevideo_upload_local_manual() {
 }
 
 wssize_ramp_submenu() {
-  local cfg=/opt/zapret2/config enabled mode scale count ans
+  local cfg=/opt/zapret2/config enabled mode scale count ans confirm
   local new_enabled new_mode new_scale
   [ -f "$cfg" ] || { echo -e "${red}Config не найден${plain}"; pause_enter; return 1; }
   while true; do
@@ -3025,6 +3025,12 @@ wssize_ramp_submenu() {
     echo -e "${yellow}Зажимает приёмное окно TCP на рукопожатиях к googlevideo: сервер${plain}"
     echo -e "${yellow}первые секунды шлёт мелкие TLS-записи, которые DPI не может собрать${plain}"
     echo -e "${yellow}в узнаваемый поток. Работает по списку IP (сейчас: ${plain}${green}${count}${yellow}).${plain}"
+    if [ "${hardware:-}" = "keenetic" ]; then
+      echo ""
+      echo -e "${red}ВНИМАНИЕ (Keenetic/Netcraze): включение может сломать видео YouTube.${plain}"
+      echo -e "${yellow}Проверено на NC-1812: подмена Window Scale останавливает поток у клиента,${plain}"
+      echo -e "${yellow}хотя трафик роутера идёт нормально. Если видео важно — оставьте выключенным.${plain}"
+    fi
     echo ""
     if [ "$enabled" = 1 ]; then
       submenu_status_item "1" "Включить/выключить" "включен" green
@@ -3047,6 +3053,16 @@ wssize_ramp_submenu() {
     esac
     [ -n "$new_mode" ] || { new_mode="$mode"; continue; }
     [ -n "$new_scale" ] || { new_scale="$scale"; continue; }
+    # На Keenetic/Netcraze включение экспериментальной функции уже ломало видео
+    # на живом устройстве (NC-1812) — просим явное подтверждение.
+    if [ "$new_enabled" = 1 ] && [ "$enabled" != 1 ] && [ "${hardware:-}" = "keenetic" ]; then
+      read -re -p "Включить, несмотря на риск для видео? Enter — отмена, 1 — включить: " confirm || confirm=""
+      if [ "$confirm" != "1" ]; then
+        echo -e "${yellow}Отменено.${plain}"
+        pause_enter
+        continue
+      fi
+    fi
     if [ "$new_enabled" = 1 ] && [ ! -s /opt/zator/lua/wssize-ramp.lua ]; then
       echo -e "${red}Нет /opt/zator/lua/wssize-ramp.lua; обновите zator через меню 5.${plain}"; pause_enter; continue
     fi

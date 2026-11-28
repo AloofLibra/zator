@@ -54,6 +54,7 @@ async function submit() {
       </span>
     </div>
     <p class="panel-desc">Центральный список содержит {{ settings?.googlevideo_ips ?? 0 }} Googlevideo IP. Локальный DNS-сбор: {{ localCollectionLabel }}. Он пополняет kernel set через dnsmasq на OpenWrt; для управления используйте CLI, пункт 9 расширенных настроек. После сохранения zapret2 перезапускается, если он запущен.</p>
+    <p class="panel-desc" id="wssize-ramp-warning">Внимание: на Keenetic/Netcraze включение может сломать воспроизведение видео (проверено на NC-1812 — подмена Window Scale останавливает поток у клиента). Если видео важно, оставьте функцию выключенной.</p>
     <form id="wssize-ramp-form" class="settings-form" @submit.prevent="submit">
       <label class="toggle-field">
         <input id="wssize-ramp-toggle" type="checkbox" v-model="enabled" :disabled="busyActive">
