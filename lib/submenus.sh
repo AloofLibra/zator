@@ -3052,6 +3052,7 @@ wssize_ramp_submenu() {
     fi
     if [ "$new_enabled" = 1 ]; then googlevideo_ips_update || true; fi
     if backup_smart_set_wssize_ramp "$cfg" "$new_enabled" "$new_mode" "$new_scale"; then
+      config_keenetic_ensure_wssize_mark "$cfg" || true
       z2r_service_action restart || echo -e "${red}Не удалось перезапустить zapret2 — смотрите /tmp/nfqws2_1.err (п.666).${plain}"
       echo -e "${green}Настройки wssize_ramp применены.${plain}"
     else

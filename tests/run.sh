@@ -45,7 +45,7 @@ all_tests() {
   ls tests/*_smoke.sh | sort
 }
 
-QUICK_STATIC='blob_profile client_scope_webui flavor keenetic_bindfix keenetic_wan telemetry sni_pool ui_validation uninstall webui_build'
+QUICK_STATIC='blob_profile client_scope_webui flavor keenetic_bindfix keenetic_marks keenetic_wan telemetry sni_pool ui_validation uninstall webui_build'
 QUICK_FILES='z2r.sh lib/*.sh lua/*.lua orchestra/*.lua webui/cgi-bin/*.cgi webui/cgi-bin/_lib.sh'
 
 selection=""

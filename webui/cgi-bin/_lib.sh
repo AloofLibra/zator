@@ -1649,6 +1649,16 @@ api_wssize_ramp_set() {
     2) send_error "503 Service Unavailable" "Профиль wssize_ramp отсутствует в config. Обновите конфиг через CLI (пункт 5)." ;;
     *) send_error "500 Internal Server Error" "Не удалось сохранить настройки wssize_ramp" ;;
   esac
+  # Keenetic/Netcraze: метка wssize не должна попадать в слово policy-метки.
+  # Платформу определяет сам guard (в CGI переменной hardware нет), вне Keenetic
+  # это no-op. stdout занят JSON-ответом, поэтому сообщения guard'а идут в stderr.
+  if type config_keenetic_ensure_wssize_mark >/dev/null 2>&1; then
+    config_keenetic_ensure_wssize_mark "$CONFIG_FILE" >&2 || true
+    if [ "$enabled" = 1 ]; then
+      enabled="$(config_get_var "$CONFIG_FILE" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null || echo 0)"
+      [ "$enabled" = 1 ] || enabled=0
+    fi
+  fi
   _service_apply_restart
   dnsmasq_state="$(googlevideo_openwrt_dnsmasq_state 2>/dev/null || echo unsupported)"
   send_json "200 OK" "{\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"enabled\":$([ "$enabled" = 1 ] && echo true || echo false),\"mode\":\"$mode\",\"scale\":$scale,\"googlevideo_ips\":$(googlevideo_ips_count 2>/dev/null || echo 0),\"googlevideo_local_collection\":\"$dnsmasq_state\"}"
