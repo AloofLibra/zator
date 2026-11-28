@@ -383,6 +383,11 @@ config_keenetic_used_marks() {
   for m in DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK; do
     config_get_var "$cfg" "$m" 2>/dev/null | tr -d ' "'
   done | awk 'NF { print }'
+
+  # Постоянные резервы: 0x08000000 — метка изолированного пробника суперсвипа
+  # (хук wssize проверяет её сам), 0xff00 — маска групп client scope (биты 8..15;
+  # в конфиге она пустая до включения, но занимать эти биты нельзя).
+  printf '%s\n' 0x08000000 0xff00
 }
 
 # Пересекается ли метка $1 хоть с одной из переданных меток (битовое И).
@@ -400,12 +405,13 @@ config_keenetic_mark_conflicts() {
 
 # Свободный бит для Z2R_WSSIZE_MARK. Сначала старшие биты: младшие не
 # предлагаем — 0x000000FF отданы client scope, а 0x100 Keenetic использует сам
-# (connmark DNS-маршрутизации).
+# (connmark DNS-маршрутизации). Метка суперсвипа (0x08000000) приходит в списке
+# занятых из config_keenetic_used_marks и тоже никогда не выдаётся.
 config_keenetic_free_wssize_mark() {
   local cand
 
-  for cand in 0x80000000 0x08000000 0x00800000 0x00080000 \
-              0x00008000 0x00002000 0x00001000 0x00000400; do
+  for cand in 0x80000000 0x10000000 0x00800000 0x00080000 \
+              0x00008000 0x00002000; do
     config_keenetic_mark_conflicts "$cand" "$@" || { printf '%s\n' "$cand"; return 0; }
   done
   return 1

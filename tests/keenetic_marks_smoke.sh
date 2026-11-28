@@ -86,6 +86,14 @@ config_keenetic_used_marks "$CFG" | grep -qx '0xffffaad' \
   || fail "метки политик не распознаны: $(config_keenetic_used_marks "$CFG" | tr '\n' ' ')"
 config_keenetic_used_marks "$CFG" | grep -qx '0x40000000' \
   || fail "служебная метка DESYNC_MARK не попала в список"
+config_keenetic_used_marks "$CFG" | grep -qx '0x08000000' \
+  || fail "метка суперсвипа (0x08000000) не зарезервирована"
+config_keenetic_used_marks "$CFG" | grep -qx '0xff00' \
+  || fail "пространство client scope (0xff00) не зарезервировано"
+[ "$(config_keenetic_free_wssize_mark 0x80000000 0x40000000 0x20000000 0xffffaad)" = "0x10000000" ] \
+  || fail "после занятого бита 31 должен предлагаться 0x10000000, а не резерв суперсвипа"
+config_keenetic_free_wssize_mark 0x80000000 0x10000000 0x00800000 0x00080000 0x08000000 0xff00 \
+  >/dev/null && fail 'биты client scope (0xff00) предлагаться не должны'
 
 # --- 4. config_keenetic_ensure_wssize_mark --------------------------------
 mkcfg iptables donttouch 0x04000000 1
