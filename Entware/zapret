@@ -21,6 +21,56 @@ contains()
 	return 1
 }
 
+# z2r: bind-fix для сгенерированных пакетов при PBR (Keenetic).
+# nfqws2 всегда домешивает в fwmark сгенерированных пакетов свой бит
+# 0x40000000 (--fwmark), а KeeneticOS матчит policy-метку в ip rule целым
+# словом ("from all fwmark 0xffffaad lookup N"). Без bind-fix фейки и
+# переотправленные/переставленные сегменты уходят в main (провайдер по
+# умолчанию) и теряются на втором провайдере: трафик из политики второго
+# провайдера перестаёт работать. bind-fix прибивает raw-сокет к исходному
+# интерфейсу через SO_BINDTODEVICE.
+# При одном провайдере без PBR опция не нужна, но решение принимается на
+# старте демона, а не в конфиге: auto = 2+ интерфейса в IFACE_WAN ИЛИ любое
+# fwmark-правило с lookup != main/254. KeeneticOS держит служебные
+# fwmark-правила и без PBR (0x4d6167xx, 0xffffaa0-b1), поэтому auto может
+# включить bind-fix и на одном провайдере: лишний setsockopt на каждый rawsend
+# безвреден (живой A/B), а ложное выключение при PBR ломает интернет клиенту
+# политики — переоценка безопаснее.
+# Z2R_KEENETIC_BINDFIX: auto (по факту PBR) | 1 (всегда) | 0 (никогда).
+z2r_bindfix_wanted()
+{
+	case "${Z2R_KEENETIC_BINDFIX:-auto}" in
+		0|off|no|false) return 1 ;;
+		1|on|yes|true) return 0 ;;
+	esac
+	# PBR: несколько WAN-интерфейсов в списке (Keenetic пишет их установщик).
+	set -- $IFACE_WAN
+	[ $# -ge 2 ] && return 0
+	# PBR по политикам доступа Keenetic: fwmark в policy-таблицу.
+	command -v ip >/dev/null 2>&1 || return 1
+	ip -4 rule show 2>/dev/null | awk '/fwmark/ && /lookup/ { for (i=1;i<=NF;i++) if ($i=="lookup" && $(i+1)!="main" && $(i+1)!="254") found=1 } END { exit !found }' && return 0
+	ip -6 rule show 2>/dev/null | awk '/fwmark/ && /lookup/ { for (i=1;i<=NF;i++) if ($i=="lookup" && $(i+1)!="main" && $(i+1)!="254") found=1 } END { exit !found }' && return 0
+	return 1
+}
+
+# Аргументы nfqws2 с префиксом --bind-fix4/--bind-fix6. Глобальные опции
+# обязаны идти до первого профиля/--new, поэтому префикс. Поддержку опции
+# проверяем по --help конкретной сборки: официальные и старые релизы её могут
+# не знать, и тогда демон просто стартует как раньше.
+z2r_bindfix_args()
+{
+	local bin="$1" args="$2"
+
+	z2r_bindfix_wanted || { printf '%s\n' "$args"; return 0; }
+	local help prefix="" opt
+	help="$("$bin" --help 2>&1)"
+	for opt in --bind-fix4 --bind-fix6; do
+		case " $args " in *" $opt "*) continue ;; esac
+		case "$help" in *"$opt"*) prefix="${prefix}${prefix:+ }$opt" ;; esac
+	done
+	printf '%s\n' "${prefix:+$prefix${args:+ }}$args"
+}
+
 # z2r: оверрайд run_daemon — см. AGENTS.md (High-Risk Areas).
 run_daemon()
 {
@@ -29,6 +79,9 @@ run_daemon()
 	# $3 - daemon args
 	local DAEMONBASE="$(basename "$2")"
 	local PID= PIDFILE=$PIDDIR/${DAEMONBASE}_$1.pid
+	case "$DAEMONBASE" in
+		*nfqws2) set -- "$1" "$2" "$(z2r_bindfix_args "$2" "$3")" ;;
+	esac
 	echo "Starting daemon $1: $2 $3"
 
 	[ -f "$PIDFILE" ] && {

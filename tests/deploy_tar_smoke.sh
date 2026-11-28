@@ -370,6 +370,7 @@ cmp -s "$ZATOR_ROOT/lua/locked.lua" "$ZATOR_ROOT/extra_strats/cache/orchestra/lo
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"
 [ -f "$ZATOR_ROOT/.deploy-payload/config.default" ] || fail "payload config.default не разложен"
 [ -f "$ZATOR_ROOT/.deploy-payload/Entware/keenetic-policy.sh" ] || fail "payload keenetic-policy.sh не разложен"
+[ -f "$ZATOR_ROOT/.deploy-payload/Entware/zapret" ] || fail "payload Entware/zapret не разложен"
 # payload config.default применяется к эталону в корне zapret2
 # (живой config в standalone-контексте смоука отсутствует)
 [ -f "$ZAPRET2_ROOT/config.default" ] || fail "payload config.default не скопирован в эталон zapret2"
@@ -381,6 +382,38 @@ ok "deploy_from_tar A: файлы, payload, z2r.sh, symlink"
 
 # Standalone z2r --version path executes deploy.sh without loading z2r.sh
 # functions. The deployed archive must still install its matching arch asset.
+# googlevideo_sniffer_install валидирует ELF-идентичность скачанного файла
+# (lib/googlevideo_ips.sh): мок-фикстура обязана совпасть с архитектурой
+# хоста, иначе установка честно пропускается и сценарий падает не по делу.
+sniffer_arch="$(googlevideo_sniffer_arch 2>/dev/null)" || sniffer_arch=
+sniffer_class= sniffer_data=1 sniffer_machine=
+case "$sniffer_arch" in
+  x86_64) sniffer_class=2; sniffer_machine=62 ;;
+  x86) sniffer_class=1; sniffer_machine=3 ;;
+  arm64) sniffer_class=2; sniffer_machine=183 ;;
+  arm) sniffer_class=1; sniffer_machine=40 ;;
+  lexra|mipselsf) sniffer_class=1; sniffer_machine=8 ;;
+  mipssf) sniffer_class=1; sniffer_data=2; sniffer_machine=8 ;;
+  mips64) sniffer_class=2; sniffer_data=2; sniffer_machine=8 ;;
+  ppc) sniffer_class=1; sniffer_data=2; sniffer_machine=20 ;;
+  riscv64) sniffer_class=2; sniffer_machine=243 ;;
+esac
+SNIFFER_FIXTURE="$WORK/sniffer-fixture"
+if [ -n "$sniffer_class" ]; then
+  if [ "$sniffer_data" = 2 ]; then
+    sniffer_lo=$((sniffer_machine / 256)); sniffer_hi=$((sniffer_machine % 256))
+  else
+    sniffer_lo=$((sniffer_machine % 256)); sniffer_hi=$((sniffer_machine / 256))
+  fi
+  {
+    printf '\177ELF'
+    printf "\\$(printf '%03o' "$sniffer_class")\\$(printf '%03o' "$sniffer_data")"
+    printf '\000\000\000\000\000\000\000\000\000\000\000\000'
+    printf "\\$(printf '%03o' "$sniffer_lo")\\$(printf '%03o' "$sniffer_hi")"
+    printf 'standalone sniffer fixture\n'
+  } > "$SNIFFER_FIXTURE"
+fi
+export SNIFFER_FIXTURE
 mkdir -p "$WORK/sniffer-bin"
 cat > "$WORK/sniffer-bin/curl" <<'EOF'
 #!/bin/sh
@@ -389,7 +422,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac
 done
 [ -n "$out" ] || exit 2
-printf 'standalone sniffer fixture\n' | gzip -c > "$out"
+[ -n "${SNIFFER_FIXTURE:-}" ] && [ -f "$SNIFFER_FIXTURE" ] || exit 3
+gzip -c "$SNIFFER_FIXTURE" > "$out"
 EOF
 chmod +x "$WORK/sniffer-bin/curl"
 SNIF_STANDALONE_ROOT="$WORK/standalone-zator"
@@ -401,10 +435,14 @@ PATH="$WORK/sniffer-bin:$PATH" ZATOR_ROOT="$SNIF_STANDALONE_ROOT" ZAPRET2_ROOT="
   Z2R_GV_SNIFFER_RELEASE_BASE=https://assets.invalid/release \
   bash "$REPO_DIR/lib/deploy.sh" from-tar "$DIST/zator-full.tar.gz" full googlevideo-fix-beta.smoke \
   >/dev/null 2>&1 || fail "standalone deploy failed"
-[ -x "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" ] || fail "standalone deploy did not install platform sniffer"
-[ "$(cat "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer")" = 'standalone sniffer fixture' ] || fail "standalone sniffer asset content mismatch"
 [ -x "$WORK/standalone-zapret2/init.d/sysv/custom.d/90-z2r-wssize-ramp.sh" ] || fail "standalone deploy did not restore SysV collector hook"
-ok "standalone tar deploy installs sniffer and SysV hook despite both init trees"
+if [ -n "$sniffer_class" ]; then
+  [ -x "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" ] || fail "standalone deploy did not install platform sniffer"
+  cmp -s "$SNIFFER_FIXTURE" "$SNIF_STANDALONE_ROOT/tools/bin/googlevideo-dns-sniffer" || fail "standalone sniffer asset content mismatch"
+  ok "standalone tar deploy installs sniffer and SysV hook despite both init trees"
+else
+  ok "standalone tar deploy restores SysV hook (sniffer: unsupported host arch)"
+fi
 
 # Simulate a self-update process that already loaded stale helper functions.
 # deploy_post_apply must source the just-deployed helper and restore the hook.
@@ -451,15 +489,95 @@ mkdir -p "$ZAPRET2_ROOT"
 printf 'LIVE-CONFIG\n' > "$ZAPRET2_ROOT/config"
 APPLY_MARK="$WORK/apply.mark" RESTART_MARK="$WORK/restart.mark"
 export APPLY_MARK RESTART_MARK
+# config.sh определяет z2r_service_action: сорсим его ДО стабов, иначе source
+# перетирает стаб и stop/restart уходят в реальную функцию без ZAPRET2_INIT.
+hardware=
+release=
+OSystem=
+PLATFORM_MARK="$WORK/platform.mark"
+. "$REPO_DIR/lib/config.sh"
 config_apply_from_default() { echo applied >> "$APPLY_MARK"; }
 z2r_service_action() { echo "$1" >> "$RESTART_MARK"; }
 backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
+# Standalone deploy.sh has no platform result; it must use the shared detector.
+z2r_detect_platform() {
+  echo called >> "$PLATFORM_MARK"
+  release=entware
+  hardware=keenetic
+  OSystem=entware
+}
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (apply) упал"
 [ -s "$APPLY_MARK" ] || fail "config_apply_from_default не вызван при живом config"
+[ -s "$PLATFORM_MARK" ] || fail "standalone-деплой не вызвал общий детектор платформы"
 grep -q '^stop$' "$RESTART_MARK" || fail "нет stop перед применением config.default"
 grep -q '^restart$' "$RESTART_MARK" || fail "нет restart после применения config.default"
+[ -x "$ZAPRET2_ROOT/init.d/sysv/zapret2" ] || fail "Keenetic init не установлен/не исполняемый"
+cmp -s "$ZAPRET2_ROOT/init.d/sysv/zapret2" "$REPO_DIR/Entware/zapret" || fail "Keenetic init не обновлён из payload"
 ok "payload config.default применяется к живому конфигу (stop -> apply -> restart)"
-unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
+Z2R_PLATFORM_DETECTED=1
+: > "$PLATFORM_MARK"
+deploy_platform_ensure || fail "не удалось переиспользовать определённую платформу"
+[ ! -s "$PLATFORM_MARK" ] || fail "деплой повторно определял платформу из главного скрипта"
+hardware=generic release=debian OSystem=VPS
+unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create z2r_detect_platform
+
+# --- 4b-1. Keenetic-ветка не блокирует применение конфига ---
+# (a) урезанный standalone-payload без z2r_lib/config.sh: жёлтый warning, не отказ.
+rm -rf "$WORK/nocfg-zator" "$WORK/nocfg-zapret2"
+mkdir -p "$WORK/nocfg-zator/.deploy-payload" "$WORK/nocfg-zapret2"
+cp -f "$REPO_DIR/config.default" "$WORK/nocfg-zator/.deploy-payload/config.default"
+printf 'LIVE\n' > "$WORK/nocfg-zapret2/config"
+( cd "$REPO_DIR" &&
+  ZATOR_ROOT="$WORK/nocfg-zator" ZAPRET2_ROOT="$WORK/nocfg-zapret2" MARK="$WORK/nocfg-apply.mark" \
+  bash -c '
+    source lib/deploy.sh >/dev/null 2>&1
+    hardware=keenetic release=entware OSystem=entware
+    config_apply_from_default() { echo applied >> "$MARK"; }
+    out="$(deploy_apply_config_default 2>&1)" || exit 1
+    case "$out" in *"z2r_lib/config.sh"*) ;; *) printf "%s\n" "$out"; exit 1 ;; esac
+    [ -s "$MARK" ]
+  ' ) > "$WORK/nocfg.out" 2>&1 || { cat "$WORK/nocfg.out"; fail "нет config.sh: config.default не применён"; }
+ok "нет z2r_lib/config.sh: warning, config.default всё равно применён"
+
+# (b) старый релиз: payload без Entware/zapret, функции скачивания нет — warning.
+rm -rf "$WORK/oldrel-zator" "$WORK/oldrel-zapret2"
+mkdir -p "$WORK/oldrel-zator/.deploy-payload" "$WORK/oldrel-zapret2"
+cp -f "$REPO_DIR/config.default" "$WORK/oldrel-zator/.deploy-payload/config.default"
+printf 'LIVE\n' > "$WORK/oldrel-zapret2/config"
+( cd "$REPO_DIR" &&
+  ZATOR_ROOT="$WORK/oldrel-zator" ZAPRET2_ROOT="$WORK/oldrel-zapret2" MARK="$WORK/oldrel-apply.mark" \
+  bash -c '
+    source lib/deploy.sh >/dev/null 2>&1
+    z2r_detect_platform() { :; }
+    config_keenetic_init_sync() { return 0; }
+    Z2R_PLATFORM_DETECTED=1
+    hardware=keenetic release=entware OSystem=entware
+    config_apply_from_default() { echo applied >> "$MARK"; }
+    out="$(deploy_apply_config_default 2>&1)" || exit 1
+    case "$out" in *"в payload нет Entware/zapret"*) ;; *) printf "%s\n" "$out"; exit 1 ;; esac
+    [ -s "$MARK" ]
+  ' ) > "$WORK/oldrel.out" 2>&1 || { cat "$WORK/oldrel.out"; fail "старый payload: config.default не применён"; }
+ok "старый payload без Entware/zapret: warning, config.default применён"
+
+# (c) живой источник init-а есть, но sync падает — фатально (контракт ревью).
+rm -rf "$WORK/oldsync-zator" "$WORK/oldsync-zapret2"
+mkdir -p "$WORK/oldsync-zator/.deploy-payload/Entware" "$WORK/oldsync-zapret2"
+cp -f "$REPO_DIR/config.default" "$WORK/oldsync-zator/.deploy-payload/config.default"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/oldsync-zator/.deploy-payload/Entware/zapret"
+printf 'LIVE\n' > "$WORK/oldsync-zapret2/config"
+( cd "$REPO_DIR" &&
+  ZATOR_ROOT="$WORK/oldsync-zator" ZAPRET2_ROOT="$WORK/oldsync-zapret2" MARK="$WORK/oldsync-apply.mark" \
+  bash -c '
+    source lib/deploy.sh >/dev/null 2>&1
+    z2r_detect_platform() { :; }
+    config_keenetic_init_sync() { return 1; }
+    Z2R_PLATFORM_DETECTED=1
+    hardware=keenetic release=entware OSystem=entware
+    config_apply_from_default() { echo applied >> "$MARK"; }
+    deploy_apply_config_default >/dev/null 2>&1 && exit 1
+    [ ! -s "$MARK" ]
+  ' ) > "$WORK/oldsync.out" 2>&1 || { cat "$WORK/oldsync.out"; fail "сбой sync init с живым источником должен быть фатальным"; }
+ok "сбой config_keenetic_init_sync при живом payload фатален"
 
 # --- 4b-2. webui-only деплой не трогает живой конфиг ---
 # регресс: безусловный deploy_apply_config_default в конце deploy_apply_staging

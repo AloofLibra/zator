@@ -214,6 +214,7 @@ add('tools/wssize-ramp-firewall.sh', 'tools/wssize-ramp-firewall.sh', { executab
 add('_payload/config.default', 'config.default', { cls: 'payload' })
 add('_payload/fake_files.tar.gz', 'fake_files.tar.gz', { cls: 'payload' })
 add('_payload/Entware/keenetic-policy.sh', 'Entware/keenetic-policy.sh', { cls: 'payload', executable: true })
+add('_payload/Entware/zapret', 'Entware/zapret', { cls: 'payload', executable: true })
 add('_payload/Entware/z2r-strategy-validator', 'Entware/z2r-strategy-validator', { cls: 'payload', executable: true })
 add('_payload/init.d/openwrt/z2r-strategy-validator', 'init.d/openwrt/z2r-strategy-validator', { cls: 'payload', executable: true })
 for (const name of blockcheckZ4r) {

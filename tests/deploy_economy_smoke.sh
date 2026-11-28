@@ -10,11 +10,17 @@ export ZATOR_ROOT="$WORK/zator" ZAPRET2_ROOT="$WORK/zapret2" Z2R_SCRIPT_DEST="$W
 . "$REPO_DIR/lib/deploy.sh"
 mkdir -p "$WORK/package/z2r_lib" "$WORK/package/lists" "$WORK/package/_payload" "$WORK/package/extra_strats/cache/deploy"
 printf 'NEW\n' > "$WORK/package/z2r_lib/demo.sh"
+# deploy_platform_ensure сорсит z2r_lib/config.sh. Фикстура содержит ТОЛЬКО
+# платформенные функции: реальный lib/config.sh определил бы
+# z2r_service_action и перетёр стаб теста внутри subshell'а deploy_from_tar —
+# EXIT-ловушка ушла бы в реальную функцию без ZAPRET2_INIT.
+printf 'z2r_detect_platform() { Z2R_PLATFORM_DETECTED=1; OSystem=VPS; release=debian; }\nconfig_keenetic_init_sync() { return 0; }\n' \
+  > "$WORK/package/z2r_lib/config.sh"
 printf 'SAME\n' > "$WORK/package/lists/same.txt"
 printf 'DEFAULT\n' > "$WORK/package/lists/user.txt"
 printf 'NEW-CONFIG\n' > "$WORK/package/_payload/config.default"
 printf 'ZATOR_VERSION="economy-test"\nZATOR_DATE="2026-10-28 00:00"\n' > "$WORK/package/extra_strats/cache/deploy/version.env"
-for path in z2r_lib/demo.sh lists/same.txt lists/user.txt _payload/config.default; do
+for path in z2r_lib/demo.sh z2r_lib/config.sh lists/same.txt lists/user.txt _payload/config.default; do
   cls=auto
   dest="/opt/zator/$path"
   [ "$path" != lists/user.txt ] || cls=keep-if-exists

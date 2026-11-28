@@ -522,30 +522,9 @@ keenetic_policy_ndmc_is_supported() {
 }
 
 detect_os() {
-  if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
-    release=$ID
-  elif [[ -f /usr/lib/os-release ]]; then
-    source /usr/lib/os-release
-    release=$ID
-  elif [[ -f /opt/etc/entware_release ]]; then
-    release="entware"
-  elif [[ -f /etc/entware_release ]]; then
-    release="entware"
-  else
+  if ! z2r_detect_platform; then
     echo "Не удалось определить ОС. Прекращение работы скрипта." >&2
     exit 1
-  fi
-
-  if [[ "$release" == "entware" ]]; then
-    if [ -d /jffs ] || uname -a | grep -qi "Merlin"; then
-      hardware="merlin"
-    elif grep -Eqi "netcraze|keenetic" /proc/version; then
-      hardware="keenetic"
-    else
-      echo -e "${yellow}Железо не определено. Будем считать что это Keenetic. Если будут проблемы - пишите в саппорт.${plain}"
-      hardware="keenetic"
-    fi
   fi
 
   #По просьбе наших слушателей) Теперь netcraze официально детектится скриптом не как keenetic, а отдельно)
@@ -555,13 +534,7 @@ detect_os() {
     echo "OS: $release $hardware"
   fi
 
-  if [[ "$release" == "ubuntu" || "$release" == "debian" || "$release" == "endeavouros" || "$release" == "arch" || "$release" == "raspbian" ]]; then
-    OSystem="VPS"
-  elif [[ "$release" == "openwrt" || "$release" == "immortalwrt" || "$release" == "asuswrt" || "$release" == "x-wrt" || "$release" == "kwrt" || "$release" == "istoreos" ]]; then
-    OSystem="WRT"
-  elif [[ "$release" == "entware" || "$hardware" = "keenetic" ]]; then
-    OSystem="entware"
-  else
+  if [ -z "$OSystem" ]; then
     read -re -p $'\033[31mДля этой ОС нет подходящей функции. Или ОС определение выполнено некорректно.\033[33m Рекомендуется обратиться в чат поддержки
 Enter - выход
 1 - Плюнуть и продолжить как OpenWRT
@@ -2880,6 +2853,9 @@ esac
 
 
 detect_os
+if [ "$hardware" = "keenetic" ]; then
+  config_keenetic_init_sync || echo -e "${yellow}Не удалось обновить init-скрипт Keenetic из локального payload.${plain}" >&2
+fi
 set_zapret2_init
 case "$OSystem" in
   WRT) WSSIZE_RAMP_FIREWALL="$ZAPRET2_ROOT/init.d/openwrt/custom.d/90-z2r-wssize-ramp.sh" ;;

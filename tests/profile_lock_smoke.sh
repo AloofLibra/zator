@@ -587,6 +587,9 @@ printf 'IFACE_WAN=eth1 # comment\n' > "$wan_cfg"
 printf 'IFACE_WAN="eth2" # note\n' > "$wan_cfg"
 [ "$(config_get_iface_wan "$wan_cfg")" = "eth2" ] \
   || fail "config_get_iface_wan must strip trailing comments with quotes"
+printf "IFACE_WAN='eth1 eth2'\n" > "$wan_cfg"
+[ "$(config_get_iface_wan "$wan_cfg")" = "eth1 eth2" ] \
+  || fail "config_get_iface_wan must strip single quotes and keep the interface list"
 [ -z "$(config_get_iface_wan "$TMP_DIR/wan-missing.cfg")" ] \
   || fail "config_get_iface_wan must return empty without a config file"
 grep -qF '${MENU_WAN_LINE}' "$REPO_DIR/z2r.sh" \

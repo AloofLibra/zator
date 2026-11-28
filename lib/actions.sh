@@ -123,10 +123,6 @@ config_apply_from_default() {
   config_client_scope_ensure "$root/config" || true
   client_scope_lua_config_sync "$root/config" || true
   [ "$hardware" = "keenetic" ] && ensure_keenetic_policy_config "$root/config"
-  # После копирования заново подставляем WAN, чтобы перенос не терял IFACE_WAN.
-  if [ "$hardware" = "keenetic" ]; then
-    config_keenetic_set_wan_iface "$root/config"
-  fi
   return 0
 }
 
