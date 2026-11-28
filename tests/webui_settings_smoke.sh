@@ -306,6 +306,12 @@ assert_contains "$(cat "$REPO_DIR/webui-src/src/components/status/StatusCards.vu
 assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" 'update_check' "fake_router_server.py без update_check"
 assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" 'apply_wssize_ramp' "fake_router_server.py не сохраняет wssize_ramp"
 assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" 'build_wssize_ramp_settings' "fake_router_server.py не отдаёт wssize_ramp"
+# Экспериментальная рампа ломала видео на живом Keenetic (NC-1812): предупреждение
+# обязано быть и в CLI-подменю, и в панели, а включение на Keenetic — спрашивать
+# подтверждение.
+assert_contains "$(cat "$REPO_DIR/lib/submenus.sh")" 'включение может сломать видео YouTube' "CLI: нет предупреждения о видео на Keenetic"
+assert_contains "$(cat "$REPO_DIR/lib/submenus.sh")" 'Включить, несмотря на риск для видео?' "CLI: включение рампы на Keenetic без подтверждения"
+assert_contains "$(cat "$REPO_DIR/webui-src/src/components/settings/WssizeRampPanel.vue")" 'wssize-ramp-warning' "панель: нет предупреждения о видео на Keenetic"
 assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'update_check' "API_CONTRACT.md без update_check"
 assert_contains "$app_js" 'AUTO_MODE_GATED_PROFILES' "webui-src не гейтит профили 1-4 при авторотации"
 assert_contains "$app_js" 'fallback-hint' "webui-src без подсказки гейтинга профиля"

@@ -322,6 +322,133 @@ config_keenetic_wan_merge() {
   printf '%s\n' "$out"
 }
 
+# Keenetic/Netcraze. В CLI платформу определяет z2r_detect_platform
+# (hardware=keenetic; Netcraze детектится так же, отдельно только печать в
+# detect_os). В CGI-контексте (webui/cgi-bin/_lib.sh) переменной hardware нет,
+# поэтому там смотрим строку ядра тем же признаком, что и сам детектор.
+# Явно определённая не-Keenetic платформа (merlin и т.п.) приоритетнее.
+# Z2R_PROC_VERSION — подмена только для тестов.
+config_is_keenetic() {
+  case "${hardware:-}" in
+    keenetic) return 0 ;;
+    '') ;;
+    *) return 1 ;;
+  esac
+  grep -Eqi 'netcraze|keenetic' "${Z2R_PROC_VERSION:-/proc/version}" 2>/dev/null
+}
+
+# Метка как число. Принимаем 0x-шестую запись и десятичную без ведущих нулей:
+# значение вида 04000000 в bash-арифметике читалось бы как восьмеричное и
+# молча давало бы другое число, поэтому такие значения отклоняются.
+config_keenetic_mark_num() {
+  local m="$1"
+
+  case "$m" in
+    0[xX][0-9a-fA-F]*) ;;
+    ''|*[!0-9]*) return 1 ;;
+    0?*) return 1 ;;
+  esac
+  printf '%s\n' "$((m))"
+}
+
+# Метки, занятые на устройстве: политики доступа Keenetic (ndmc печатает
+# `mark: ffffaad`) плюс служебные метки zapret2 из конфига. Печатает по одной
+# на строку как 0x...
+# Зачем: Keenetic матчит policy-fwmark в ip rule ЦЕЛЫМ словом (без маски), а
+# метки политик 28-битные — служебный бит внутри этого слова ломает и
+# маршрутизацию, и фильтрацию профиля.
+config_keenetic_used_marks() {
+  local cfg="$1" m out=""
+
+  # Основной источник — NDMS CLI. В CGI PATH может не содержать /bin, поэтому
+  # при отсутствии ndmc берём те же метки из ip rule (fwmark матчится целым
+  # словом, значение совпадает с policy-меткой).
+  if command -v ndmc >/dev/null 2>&1; then
+    out="$(ndmc -c "show ip policy" 2>/dev/null)"
+  fi
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out" |
+      sed -n 's/^[[:space:]]*mark:[[:space:]]*//p' |
+      tr -d ' \r' |
+      awk 'NF { print ($0 ~ /^0[xX]/ ? $0 : "0x" $0) }'
+  elif command -v ip >/dev/null 2>&1; then
+    # v4 и v6 дают одинаковые метки, плюс у каждой есть пара «unspec blackhole» —
+    # для битовых проверок дубликаты не нужны.
+    { ip -4 rule show; ip -6 rule show; } 2>/dev/null |
+      sed -n 's/.*fwmark[[:space:]]*\(0[xX][0-9a-fA-F][0-9a-fA-F]*\).*/\1/p' |
+      awk '!seen[$0]++'
+  fi
+
+  [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
+  for m in DESYNC_MARK DESYNC_MARK_POSTNAT FILTER_MARK CLIENT_SCOPE_MARK_MASK; do
+    config_get_var "$cfg" "$m" 2>/dev/null | tr -d ' "'
+  done | awk 'NF { print }'
+
+  # Постоянные резервы: 0x08000000 — метка изолированного пробника суперсвипа
+  # (хук wssize проверяет её сам), 0xff00 — маска групп client scope (биты 8..15;
+  # в конфиге она пустая до включения, но занимать эти биты нельзя).
+  printf '%s\n' 0x08000000 0xff00
+}
+
+# Пересекается ли метка $1 хоть с одной из переданных меток (битовое И).
+config_keenetic_mark_conflicts() {
+  local mark="$1" used a b
+  shift
+
+  a="$(config_keenetic_mark_num "$mark")" || return 1
+  for used in "$@"; do
+    b="$(config_keenetic_mark_num "$used")" 2>/dev/null || continue
+    [ "$((a & b))" -ne 0 ] && return 0
+  done
+  return 1
+}
+
+# Свободный бит для Z2R_WSSIZE_MARK. Сначала старшие биты: младшие не
+# предлагаем — 0x000000FF отданы client scope, а 0x100 Keenetic использует сам
+# (connmark DNS-маршрутизации). Метка суперсвипа (0x08000000) приходит в списке
+# занятых из config_keenetic_used_marks и тоже никогда не выдаётся.
+config_keenetic_free_wssize_mark() {
+  local cand
+
+  for cand in 0x80000000 0x10000000 0x00800000 0x00080000 \
+              0x00008000 0x00002000; do
+    config_keenetic_mark_conflicts "$cand" "$@" || { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+# Не даём Z2R_WSSIZE_MARK пересечься с метками Keenetic-политик.
+# Метка гейтит профиль wssize_ramp (`--filter-mark=...` в config), а метки
+# политик вида 0xffffaad содержат бит 0x04000000 — с прежним дефолтом профиль
+# получал ВЕСЬ TLS-трафик policy-устройств, а не только googlevideo.
+# Свободного бита нет — экспериментальная функция выключается.
+config_keenetic_ensure_wssize_mark() {
+  local cfg="$1" cur enable used cand
+
+  config_is_keenetic || return 0
+  [ -f "$cfg" ] || return 0
+
+  enable="$(config_get_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE 2>/dev/null | tr -d ' "')"
+  [ "$enable" = "1" ] || return 0
+
+  config_var_exists "$cfg" Z2R_WSSIZE_MARK || config_set_var "$cfg" Z2R_WSSIZE_MARK "0x04000000" || return 0
+  cur="$(config_get_var "$cfg" Z2R_WSSIZE_MARK 2>/dev/null | tr -d ' "')"
+  [ -n "$cur" ] || cur=0x04000000
+
+  used="$(config_keenetic_used_marks "$cfg")"
+  # shellcheck disable=SC2086  # список меток разделён переводами строк
+  config_keenetic_mark_conflicts "$cur" $used || return 0
+
+  # shellcheck disable=SC2086
+  if cand="$(config_keenetic_free_wssize_mark $used)"; then
+    config_set_var "$cfg" Z2R_WSSIZE_MARK "$cand"
+    echo -e "${yellow:-}Z2R_WSSIZE_MARK=$cur пересекается с метками Keenetic; перенесён в $cand.${plain:-}"
+  else
+    config_set_var "$cfg" Z2R_WSSIZE_RAMP_ENABLE 0
+    echo -e "${red:-}Z2R_WSSIZE_MARK=$cur пересекается с метками Keenetic, свободного бита нет — wssize_ramp выключен (экспериментальная функция).${plain:-}"
+  fi
+}
+
 # Прописывает IFACE_WAN/IFACE_WAN6 в указанный конфиг только для Keenetic.
 # Значение — список интерфейсов через пробел ("ppp0 ppp1" при двух провайдерах):
 # zapret2 создаёт правила на КАЖДЫЙ интерфейс из списка.
@@ -332,6 +459,9 @@ config_keenetic_set_wan_iface() {
 
   [ "$hardware" = "keenetic" ] || return 0
   [ -f "$cfg" ] || return 0
+
+  # Метки пакетов: Z2R_WSSIZE_MARK не должен попадать в слово policy-метки.
+  config_keenetic_ensure_wssize_mark "$cfg" || true
 
   wan4="$(config_keenetic_detect_default_ifaces 4)" || wan4=""
   wan6="$(config_keenetic_detect_default_ifaces 6)" || wan6=""

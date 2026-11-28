@@ -118,6 +118,9 @@ config_apply_from_default() {
         config_set_var "$root/config" Z2R_WSSIZE_RAMP_SKIP ""
       fi
     fi
+    # Метки Keenetic: шаблон принёс дефолтный Z2R_WSSIZE_MARK, а пользовательский
+    # ramp-enable вернулся выше — сверяем уже на живом config.
+    [ "${hardware:-}" = "keenetic" ] && config_keenetic_ensure_wssize_mark "$root/config" || true
     rm -f "$old_scope_cfg"
   fi
   config_client_scope_ensure "$root/config" || true
@@ -1734,6 +1737,8 @@ backup_smart_apply_flags() {
       "$(config_get_var "$old_cfg" Z2R_WSSIZE_RAMP_MODE)" \
       "$(config_get_var "$old_cfg" Z2R_WSSIZE_RAMP_SCALE)" || true
   fi
+  # Метки Keenetic: восстановленный ramp не должен получить чужой бит.
+  [ "${hardware:-}" = "keenetic" ] && config_keenetic_ensure_wssize_mark "$new_cfg" || true
 
   # --- Пункт 19: FWTYPE ---
   v_old="$(config_get_var "$old_cfg" FWTYPE)"
